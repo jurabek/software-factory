@@ -191,7 +191,7 @@ Normalizes repository commands and external check providers into attributable ev
 
 ### 4.12 Source Control and GitHub Module
 
-Owns mirrors, worktrees, branches, commits, draft PRs, checks, comments, and workflow observations. Every mutation has a deterministic operation key and reconciliation strategy.
+Owns mirrors, worktrees, branches, commits, draft PRs, checks, comments, and workflow observations. Every mutation has a deterministic operation key and reconciliation strategy. The concrete GitHub adapter shells out with explicit argument arrays to authenticated `gh` commands (`gh auth`, `gh pr`, `gh run`, and narrowly scoped `gh api` where needed); it does not embed a separate GitHub client SDK. Git push credentials are provided by `gh auth setup-git`.
 
 ### 4.13 Delivery Verification Module
 

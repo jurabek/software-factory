@@ -195,7 +195,7 @@ button { color: inherit; }
 .icon-toggle { display: inline-flex; align-items: center; gap: 6px; }
 .controls-spacer { flex: 1; }
 
-.waterfall, .session-log-panel {
+.delivery-panel, .waterfall, .session-log-panel {
   margin: 20px 26px;
   overflow: hidden;
   border: 1px solid var(--border-soft);
@@ -237,6 +237,25 @@ button { color: inherit; }
 
 .panel-head { display: flex; align-items: center; gap: 18px; padding: 15px 18px; border-bottom: 1px solid var(--border); background: var(--panel-2); }
 .panel-head > div { margin-right: auto; }
+.delivery-row {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) auto auto auto;
+  align-items: center;
+  gap: 18px;
+  padding: 13px 18px;
+  border-bottom: 1px solid var(--border-soft);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.delivery-row:last-child { border-bottom: 0; }
+.delivery-row strong, .delivery-row small { display: flex; align-items: center; gap: 6px; }
+.delivery-row small { margin-top: 5px; color: var(--faint); font-size: 10px; }
+.delivery-row a { display: inline-flex; align-items: center; gap: 5px; color: var(--cyan); text-decoration: none; }
+.delivery-row a:hover { text-decoration: underline; }
+.delivery-ci { color: var(--amber); }
+.delivery-ci[data-status="passed"] { color: var(--green); }
+.delivery-ci[data-status="failed"] { color: var(--red); }
+.delivery-checks { color: var(--dim); }
 .panel-head h2 { margin: 0 0 3px; font-size: 15px; }
 .panel-head p { margin: 0; color: var(--faint); font-size: 11px; }
 .auto-scroll { display: inline-flex; align-items: center; gap: 7px; color: var(--dim); font-family: var(--mono); font-size: 11px; }
@@ -278,6 +297,8 @@ button { color: inherit; }
 
 @media (max-width: 1000px) {
   .axis-row, .lane-row { grid-template-columns: 190px 1fr; }
+  .delivery-row { grid-template-columns: 1fr auto; }
+  .delivery-checks { display: none; }
   .campaign-grid { grid-template-columns: 1fr; }
   .log-event { grid-template-columns: 18px 75px 20px 110px 1fr; }
   .log-message { grid-column: 2 / -1; }

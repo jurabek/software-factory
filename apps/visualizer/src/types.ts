@@ -55,6 +55,26 @@ export interface CheckRow {
   attempt: number;
 }
 
+export interface DeliveryCheck {
+  name: string;
+  state: string;
+  bucket: string;
+  link: string | null;
+}
+
+export interface Delivery {
+  workItemId: string;
+  repositoryId: string;
+  branch: string;
+  headSha: string;
+  pullRequestNumber: number;
+  pullRequestUrl: string;
+  draft: boolean;
+  ciStatus: string;
+  checks: DeliveryCheck[];
+  updatedAt: string;
+}
+
 export interface FindingRow {
   id: string;
   work_item_id: string | null;

@@ -1,6 +1,6 @@
-# Local Software Factory MVP
+# Software Factory MVP
 
-This directory implements the local-only boundary of the design in
+This directory implements the local-first boundary of the design in
 [`docs/software-factory`](docs/software-factory/README.md).
 
 It provides:
@@ -11,11 +11,12 @@ It provides:
 - Deterministic local agents for offline testing and an opt-in embedded Pi SDK runtime.
 - Builder worktrees, path/symlink/generated-file policy, immutable base SHAs, and drift checks.
 - A CLI for intake, approval, execution, inspection, pause/resume/abort, and evidence export.
+- Opt-in, idempotent campaign branch, draft PR, and CI-check integration through `gh`.
 - An automatically started, loopback-only, GET-only Vue visualizer with live
   SQLite WAL session logs, trace filtering, and an agent waterfall.
 
-Remote GitHub mutations, merge, deployment, and rollback are deliberately unavailable.
-Delivery verification reports `deferred` in local mode.
+GitHub delivery is disabled by default and uses only authenticated `gh` CLI commands when enabled.
+Merge, deployment, and rollback remain unavailable. Delivery verification reports `deferred`.
 
 Configure agents and repositories in [`config.yaml`](config.yaml). Each agent can
 set its own `model`, `thinking`, and `prompt_engineering` system/user files;
@@ -50,6 +51,18 @@ npm run dev -- approve SF-2026-1234 plan
 npm run dev -- run SF-2026-1234 --until implementation_complete
 npm run dev -- status SF-2026-1234 --verbose
 ```
+
+To push campaign branches, open draft PRs, and observe their checks through `gh`:
+
+```bash
+gh auth status
+export SOFTWARE_FACTORY_DELIVERY=github
+npm run dev -- run SF-2026-1234 --until validating_ci
+# Re-run while CI is pending; successful checks advance the Campaign.
+npm run dev -- run SF-2026-1234 --until implementation_complete
+```
+
+Git authentication is configured through `gh auth setup-git`; the controller never reads or persists the token.
 
 Campaign data is written to `.workspace/`. Builder assignments use detached
 Git worktrees pinned to the source SHA.

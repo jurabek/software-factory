@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -6,6 +7,7 @@ import { once } from "node:events";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadFactoryConfig, resolveAgent } from "../src/config.js";
 import { SoftwareFactory } from "../src/controller.js";
+import { GhCliDelivery, type CommandRunner, type DeliveryRuntime } from "../src/github.js";
 import { ensureBackgroundVisualizer, isVisualizerHealthy } from "../src/background-visualizer.js";
 import { assertLocalRunnerAllowed, assertReadAllowed, assertWriteAllowed, PolicyError } from "../src/policy.js";
 import { loadRepositoryReviewerInstructions } from "../src/repository-reviewer.js";
@@ -21,6 +23,55 @@ const roots: string[] = [];
 afterEach(() => {
   while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true });
 });
+
+class FakeGhRunner implements CommandRunner {
+  readonly calls: string[] = [];
+  pullRequestBody = "";
+  headSha = "";
+  branch = "";
+
+  run(command: string, args: string[], options: { cwd?: string; input?: string; allowFailure?: boolean } = {}) {
+    this.calls.push(`${command} ${args.slice(0, 2).join(" ")}`.trim());
+    if (command === "git") {
+      const stdout = execFileSync(command, args, { cwd: options.cwd, encoding: "utf8" });
+      if (args[0] === "rev-parse" && args[1] === "HEAD") this.headSha = stdout.trim();
+      return { stdout, stderr: "", status: 0 };
+    }
+    if (args[0] === "auth") return { stdout: "", stderr: "", status: 0 };
+    if (args[0] === "pr" && args[1] === "list") {
+      return { stdout: this.pullRequestBody ? JSON.stringify([this.pullRequest()]) : "[]", stderr: "", status: 0 };
+    }
+    if (args[0] === "pr" && args[1] === "create") {
+      this.pullRequestBody = options.input ?? "";
+      this.branch = args[args.indexOf("--head") + 1] ?? "";
+      return { stdout: "https://github.com/example/app/pull/42\n", stderr: "", status: 0 };
+    }
+    if (args[0] === "pr" && args[1] === "view") {
+      return { stdout: JSON.stringify(this.pullRequest()), stderr: "", status: 0 };
+    }
+    if (args[0] === "pr" && args[1] === "checks") {
+      return {
+        stdout: JSON.stringify([{ name: "test", state: "SUCCESS", bucket: "pass", link: "https://github.com/check/1", workflow: "CI" }]),
+        stderr: "",
+        status: 0,
+      };
+    }
+    throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
+  }
+
+  private pullRequest() {
+    return {
+      number: 42,
+      url: "https://github.com/example/app/pull/42",
+      isDraft: true,
+      headRefName: this.branch,
+      headRefOid: this.headSha,
+      baseRefName: "main",
+      title: "Deliver through gh [app]",
+      body: this.pullRequestBody,
+    };
+  }
+}
 
 function fixture() {
   const root = mkdtempSync(resolve(tmpdir(), "software-factory-"));
@@ -44,6 +95,8 @@ describe("state machine", () => {
     expect(canTransition("planning", "testing")).toBe(false);
     expect(() => assertTransition("building", "testing")).toThrow("illegal factory transition");
     expect(canTransition("repairing_test", "re_reviewing_after_test")).toBe(true);
+    expect(canTransition("testing", "opening_prs")).toBe(true);
+    expect(canTransition("validating_ci", "repairing_ci")).toBe(true);
   });
 });
 
@@ -240,6 +293,115 @@ describe("local campaign", () => {
       expect(store.sessionLogs().length).toBeGreaterThan(0);
       expect(store.rows("checks").every((check) => check.status === "passed")).toBe(true);
       expect(store.rows("events").some((event) => event.type === "state_changed")).toBe(true);
+    } finally { store.close(); }
+  });
+
+  it("opens draft pull requests and validates CI when GitHub delivery is enabled", async () => {
+    const { repository, workspace } = fixture();
+    const remote = resolve(repository, "../remote.git");
+    execFileSync("git", ["init", "--bare", remote]);
+    execFileSync("git", ["remote", "add", "origin", remote], { cwd: repository });
+    const fake = new FakeAgentRuntime((assignment) => {
+      if (assignment.role !== "builder") return {};
+      const content = "export const delivered = true;\n";
+      writeFileSync(resolve(assignment.worktree, "src/delivered.ts"), content);
+      return {
+        changedFiles: [{
+          path: "src/delivered.ts",
+          change: "added",
+          purpose: "deliver the requested fixture",
+          generated: false,
+          digest: createHash("sha256").update(content).digest("hex"),
+        }],
+      };
+    });
+    const runner = new FakeGhRunner();
+    const factory = await SoftwareFactory.create({
+      repositoryRoot: repository,
+      workspace,
+      runtime: fake,
+      delivery: new GhCliDelivery(runner),
+    });
+    const campaign = await factory.request({ text: "Deliver through gh", repositories: ["app"] });
+    factory.approve(campaign.id, "plan");
+    const completed = await factory.advance(campaign.id);
+    expect(completed.state).toBe("implementation_complete");
+
+    const store = new CampaignStore(workspace, campaign.id);
+    try {
+      const [delivery] = store.deliveries();
+      expect(delivery).toMatchObject({
+        repositoryId: "app",
+        draft: true,
+        ciStatus: "passed",
+        pullRequestUrl: "https://github.com/example/app/pull/42",
+      });
+      expect(delivery?.branch).toContain(`/r1/app`);
+      expect(store.rows("events").some((event) => event.type === "delivery_updated")).toBe(true);
+    } finally { store.close(); }
+    expect(runner.calls).toContain("gh auth status");
+    expect(runner.calls).toContain("gh auth setup-git");
+    expect(runner.calls).toContain("gh pr create");
+    expect(runner.calls).toContain("gh pr checks");
+    expect(runner.pullRequestBody).toContain("## Review and test evidence");
+    expect(runner.pullRequestBody).toContain(`campaign=${campaign.id}`);
+  });
+
+  it("keeps a Campaign in validating_ci while gh reports pending checks", async () => {
+    const { repository, workspace } = fixture();
+    let passed = false;
+    const delivery: DeliveryRuntime = {
+      openDraftPullRequests({ request }) {
+        return request.workItems.map((item) => ({
+          workItemId: item.id, repositoryId: item.repositoryId, repositoryUrl: item.repositoryUrl,
+          baseBranch: item.baseBranch, branch: "software-factory/pending", headSha: item.baseSha!,
+          pullRequestNumber: 1, pullRequestUrl: "https://github.com/example/app/pull/1",
+          draft: true, ciStatus: "pending", checks: [], updatedAt: new Date().toISOString(),
+        }));
+      },
+      observeCi(_context, deliveries) {
+        return deliveries.map((item) => ({ ...item, ciStatus: passed ? "passed" : "pending" }));
+      },
+    };
+    const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime: "fake", delivery });
+    const campaign = await factory.request({ text: "Wait for CI", repositories: ["app"] });
+    factory.approve(campaign.id, "plan");
+    expect((await factory.advance(campaign.id)).state).toBe("validating_ci");
+    passed = true;
+    expect((await factory.advance(campaign.id)).state).toBe("implementation_complete");
+  });
+
+  it("routes failed CI through Builder, Reviewer, and Tester before polling again", async () => {
+    const { repository, workspace } = fixture();
+    let observations = 0;
+    const delivery: DeliveryRuntime = {
+      openDraftPullRequests({ request }) {
+        return request.workItems.map((item) => ({
+          workItemId: item.id, repositoryId: item.repositoryId, repositoryUrl: item.repositoryUrl,
+          baseBranch: item.baseBranch, branch: "software-factory/repair", headSha: item.baseSha!,
+          pullRequestNumber: 2, pullRequestUrl: "https://github.com/example/app/pull/2",
+          draft: true, ciStatus: "pending", checks: [], updatedAt: new Date().toISOString(),
+        }));
+      },
+      observeCi(_context, deliveries) {
+        observations += 1;
+        return deliveries.map((item) => ({
+          ...item,
+          ciStatus: observations === 1 ? "failed" : "passed",
+          checks: observations === 1 ? [{ name: "unit", state: "FAILURE", bucket: "fail", link: null }] : [],
+        }));
+      },
+    };
+    const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime: "fake", delivery });
+    const campaign = await factory.request({ text: "Repair CI", repositories: ["app"] });
+    factory.approve(campaign.id, "plan");
+    expect((await factory.advance(campaign.id)).state).toBe("implementation_complete");
+    const store = new CampaignStore(workspace, campaign.id);
+    try {
+      expect(store.results().map((result) => result.role)).toEqual([
+        "planner", "builder", "reviewer", "tester", "builder", "reviewer", "tester",
+      ]);
+      expect(store.campaign().repairCycles).toBe(1);
     } finally { store.close(); }
   });
 
