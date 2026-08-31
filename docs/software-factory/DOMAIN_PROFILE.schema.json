@@ -1,0 +1,194 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.sumup.example/software-factory/domain-profile.schema.json",
+  "title": "Software Factory Domain Profile",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "id",
+    "version",
+    "name",
+    "owners",
+    "repositories",
+    "riskDefaults",
+    "requiredReviewKinds",
+    "approvalRules",
+    "deliveryProviders",
+    "evaluationScenarios"
+  ],
+  "properties": {
+    "$schema": { "type": "string" },
+    "schemaVersion": { "const": "1.0.0" },
+    "id": { "$ref": "#/$defs/id" },
+    "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "name": { "$ref": "#/$defs/nonEmpty" },
+    "extends": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/profileRef" },
+      "uniqueItems": true
+    },
+    "owners": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/owner" }
+    },
+    "repositories": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/repository" }
+    },
+    "riskDefaults": { "$ref": "#/$defs/riskDefaults" },
+    "requiredReviewKinds": {
+      "type": "array",
+      "items": { "enum": ["spec", "standards", "contract", "security", "privacy", "network", "codeowners"] },
+      "uniqueItems": true
+    },
+    "approvalRules": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/approvalRule" }
+    },
+    "deliveryProviders": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/provider" }
+    },
+    "evaluationScenarios": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/evaluationScenario" }
+    }
+  },
+  "$defs": {
+    "nonEmpty": { "type": "string", "minLength": 1 },
+    "id": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+    "profileRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "digest"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "version": { "type": "string" },
+        "digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      }
+    },
+    "owner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "identity"],
+      "properties": {
+        "role": { "enum": ["product", "engineering", "security", "platform", "repository", "on_call"] },
+        "identity": { "$ref": "#/$defs/nonEmpty" }
+      }
+    },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "url",
+        "defaultBranch",
+        "adapter",
+        "mode",
+        "instructionPaths",
+        "defaultWritePaths",
+        "generatedPaths",
+        "checkIds"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "url": { "type": "string", "format": "uri" },
+        "defaultBranch": { "$ref": "#/$defs/nonEmpty" },
+        "adapter": { "$ref": "#/$defs/nonEmpty" },
+        "mode": { "enum": ["read_write", "read_only", "break_glass_write"] },
+        "instructionPaths": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmpty" },
+          "uniqueItems": true
+        },
+        "defaultWritePaths": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmpty" },
+          "uniqueItems": true
+        },
+        "generatedPaths": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmpty" },
+          "uniqueItems": true
+        },
+        "checkIds": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/id" },
+          "uniqueItems": true
+        },
+        "environmentSeparation": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "minItems": 2,
+            "items": { "$ref": "#/$defs/nonEmpty" },
+            "uniqueItems": true
+          }
+        }
+      }
+    },
+    "riskDefaults": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["highRiskSignals", "prohibitedEvidenceData"],
+      "properties": {
+        "highRiskSignals": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmpty" },
+          "uniqueItems": true
+        },
+        "prohibitedEvidenceData": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmpty" },
+          "uniqueItems": true
+        }
+      }
+    },
+    "approvalRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "when", "approval"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "when": { "$ref": "#/$defs/nonEmpty" },
+        "approval": { "$ref": "#/$defs/id" }
+      }
+    },
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "adapter", "access"],
+      "properties": {
+        "kind": { "enum": ["ci", "cd", "manifest", "service_mesh", "deployment", "trace", "log", "metric", "artifact"] },
+        "adapter": { "$ref": "#/$defs/nonEmpty" },
+        "access": { "enum": ["read_only", "approved_write"] }
+      }
+    },
+    "evaluationScenario": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "description", "expectedRepositories", "requiredFindings", "prohibitedBehavior"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "description": { "$ref": "#/$defs/nonEmpty" },
+        "expectedRepositories": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/id" },
+          "uniqueItems": true
+        },
+        "requiredFindings": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmpty" }
+        },
+        "prohibitedBehavior": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmpty" }
+        }
+      }
+    }
+  }
+}
