@@ -1,0 +1,404 @@
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
+import { once } from "node:events";
+import { afterEach, describe, expect, it } from "vitest";
+import { loadFactoryConfig, resolveAgent } from "../src/config.js";
+import { SoftwareFactory } from "../src/controller.js";
+import { ensureBackgroundVisualizer, isVisualizerHealthy } from "../src/background-visualizer.js";
+import { assertLocalRunnerAllowed, assertReadAllowed, assertWriteAllowed, PolicyError } from "../src/policy.js";
+import { loadRepositoryReviewerInstructions } from "../src/repository-reviewer.js";
+import { FakeAgentRuntime, type AgentRuntime } from "../src/runtime.js";
+import { assertTransition, canTransition } from "../src/state-machine.js";
+import { CampaignStore, redact } from "../src/store.js";
+import { campaignBusRequest } from "../src/bus.js";
+import { startVisualizer } from "../src/server.js";
+import { buildPiSubagentCommand, parseCommandOptions, usesSubagentHarness } from "../src/harness/subagents.js";
+
+const roots: string[] = [];
+
+afterEach(() => {
+  while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true });
+});
+
+function fixture() {
+  const root = mkdtempSync(resolve(tmpdir(), "software-factory-"));
+  roots.push(root);
+  const repository = resolve(root, "repository");
+  const workspace = resolve(root, "workspace");
+  mkdirSync(repository);
+  execFileSync("git", ["init", "-b", "master"], { cwd: repository });
+  execFileSync("git", ["config", "user.email", "factory@example.test"], { cwd: repository });
+  execFileSync("git", ["config", "user.name", "Factory Test"], { cwd: repository });
+  writeFileSync(resolve(repository, "README.md"), "fixture\n");
+  mkdirSync(resolve(repository, "src"), { recursive: true });
+  writeFileSync(resolve(repository, "src/app.ts"), "export const app = true;\n");
+  execFileSync("git", ["add", "."], { cwd: repository });
+  execFileSync("git", ["commit", "-m", "fixture"], { cwd: repository });
+  return { root, repository, workspace };
+}
+
+describe("state machine", () => {
+  it("rejects role-order shortcuts", () => {
+    expect(canTransition("planning", "testing")).toBe(false);
+    expect(() => assertTransition("building", "testing")).toThrow("illegal factory transition");
+    expect(canTransition("repairing_test", "re_reviewing_after_test")).toBe(true);
+  });
+});
+
+describe("policy", () => {
+  it("allows approved Builder paths and blocks read-only roles", () => {
+    const { repository } = fixture();
+    const builder = {
+      role: "builder" as const,
+      worktree: repository,
+      writePaths: ["src/**"],
+      generatedPaths: [],
+      commandIds: [],
+      allowedHosts: [],
+    };
+    expect(assertWriteAllowed(builder, "src/app.ts")).toContain("app.ts");
+    expect(() => assertWriteAllowed({ ...builder, role: "reviewer" }, "src/app.ts"))
+      .toThrow(PolicyError);
+    expect(() => assertWriteAllowed(builder, "../../outside")).toThrow("PATH_ESCAPE");
+    expect(() => assertReadAllowed(builder, "/etc/passwd")).toThrow("READ_SCOPE_DENIED");
+    expect(assertLocalRunnerAllowed(builder, ["just", "test"])).toEqual(["just", "test"]);
+    expect(() => assertLocalRunnerAllowed(builder, ["rm", "-rf", "/"])).toThrow("COMMAND_DENIED");
+  });
+
+  it("blocks symlink escapes and generated output", () => {
+    const { root, repository } = fixture();
+    mkdirSync(resolve(root, "outside"));
+    symlinkSync(resolve(root, "outside"), resolve(repository, "src/link"));
+    const grant = {
+      role: "builder" as const,
+      worktree: repository,
+      writePaths: ["**"],
+      generatedPaths: ["zz_generated/**"],
+      commandIds: [],
+      allowedHosts: [],
+    };
+    expect(() => assertWriteAllowed(grant, "src/link/secret")).toThrow("PATH_ESCAPE");
+    expect(() => assertWriteAllowed(grant, "zz_generated/policy.yaml")).toThrow("GENERATED_WRITE_DENIED");
+  });
+
+  it("redacts tokens and sensitive fields before persistence", () => {
+    expect(redact({ authorization: "Bearer abc", note: "Bearer abc.def", apiKey: "1234" })).toEqual({
+      authorization: "[REDACTED]",
+      note: "Bearer [REDACTED]",
+      apiKey: "[REDACTED]",
+    });
+  });
+});
+
+describe("repository reviewer instructions", () => {
+  it("loads prompts/reviewer from the worktree and ignores factory recipes", () => {
+    const { repository } = fixture();
+    expect(loadRepositoryReviewerInstructions(repository)).toContain("No repository");
+    mkdirSync(resolve(repository, "@prompts/reviewer"), { recursive: true });
+    writeFileSync(resolve(repository, "@prompts/reviewer/system.md"), "Run `just test` from this repository.\n");
+    expect(loadRepositoryReviewerInstructions(repository)).toContain("just test");
+    expect(loadRepositoryReviewerInstructions(repository)).not.toContain("app-unit");
+  });
+});
+
+describe("subagent harness", () => {
+  it("parses SSSF spawn flags and builds a read-only pi child", () => {
+    expect(parseCommandOptions("--thinking high map handlers").options.thinking).toBe("high");
+    expect(parseCommandOptions("--model google/gemini-3.6-flash --thinking low find handlers").options).toEqual({
+      model: "google/gemini-3.6-flash",
+      thinking: "low",
+    });
+    expect(parseCommandOptions("--speed fast").error).toMatch(/Unknown or malformed/);
+    const command = buildPiSubagentCommand("find handlers", "/tmp/sub.jsonl", {
+      model: "google/gemini-3.6-flash",
+      thinking: "high",
+    });
+    expect(command).toContain("--mode");
+    expect(command).toContain("json");
+    expect(command).toContain("--no-extensions");
+    expect(command).toContain("read,grep,find,ls");
+    expect(command).not.toContain("bash");
+    expect(usesSubagentHarness("planner")).toBe(true);
+    expect(usesSubagentHarness("reviewer")).toBe(true);
+    expect(usesSubagentHarness("builder")).toBe(false);
+  });
+});
+
+describe("factory config", () => {
+  it("loads config.yaml and resolves per-role models", () => {
+    const config = loadFactoryConfig();
+    expect(config.defaults.profile).toBe("local");
+    expect(config.profile?.repositories.map((repository) => repository.id)).toEqual(["app"]);
+    expect(resolveAgent(config, "planner")).toMatchObject({
+      model: "google/gemini-3.6-flash",
+      thinking: "high",
+    });
+    expect(resolveAgent(config, "builder").tools).toEqual(expect.arrayContaining(["edit", "write"]));
+    expect(resolveAgent(config, "reviewer").tools).not.toContain("write");
+    expect(resolveAgent(config, "planner").promptEngineering.system).toMatch(/prompts\/planner\/system\.md$/);
+    expect(resolveAgent(config, "planner").promptEngineering.user).toMatch(/prompts\/planner\/user\.md$/);
+  });
+
+  it("loads configured prompt_engineering files into Pi system and user prompts", async () => {
+    const { repository, workspace, root } = fixture();
+    const configPath = resolve(root, "config.yaml");
+    writeFileSync(resolve(root, "planner-system.md"), "Custom planner system {{attempt}}\n");
+    writeFileSync(resolve(root, "planner-user.md"), "Custom planner user {{factory_socket}}\n");
+    writeFileSync(configPath, [
+      "defaults:",
+      "  model: google/gemini-3.6-flash",
+      "  thinking: medium",
+      "  profile: local",
+      "agents:",
+      "  - name: planner",
+      "    prompt_engineering:",
+      "      system: planner-system.md",
+      "      user: planner-user.md",
+    ].join("\n"));
+    const fake = new FakeAgentRuntime();
+    const assignments: Array<{ role: string; system: string; user: string }> = [];
+    const runtime: AgentRuntime = {
+      async run(assignment) {
+        assignments.push({ role: assignment.role, system: assignment.systemPrompt, user: assignment.prompt });
+        return fake.run(assignment);
+      },
+    };
+    const factory = await SoftwareFactory.create({
+      repositoryRoot: repository,
+      workspace,
+      runtime,
+      config: loadFactoryConfig(configPath),
+    });
+    const campaign = await factory.request({ text: "Configured prompts", repositories: ["app"] });
+    factory.approve(campaign.id, "plan");
+    await factory.advance(campaign.id);
+    const planner = assignments.find((assignment) => assignment.role === "planner");
+    expect(planner?.system).toContain("Custom planner system");
+    expect(planner?.user).toContain("Custom planner user");
+    expect(planner?.user).toMatch(/sf-SF-\d{4}-\d+-[\da-f]+\.sock/);
+  });
+});
+
+describe("local campaign", () => {
+  it("compiles role-specific prompts with prior-agent handoffs", async () => {
+    const { repository, workspace } = fixture();
+    const fake = new FakeAgentRuntime();
+    const assignments: Array<{ role: string; system: string; user: string }> = [];
+    const runtime: AgentRuntime = {
+      async run(assignment) {
+        assignments.push({
+          role: assignment.role,
+          system: assignment.systemPrompt,
+          user: assignment.prompt,
+        });
+        return fake.run(assignment);
+      },
+    };
+    const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime });
+    const campaign = await factory.request({ text: "Prompt-aware campaign", repositories: ["app"] });
+    factory.approve(campaign.id, "plan");
+    await factory.advance(campaign.id);
+
+    expect(assignments.map((assignment) => assignment.role))
+      .toEqual(["planner", "builder", "reviewer", "tester"]);
+    expect(assignments.find((assignment) => assignment.role === "planner")?.system)
+      .toContain("Turn the approved feature request");
+    expect(assignments.find((assignment) => assignment.role === "planner")?.system)
+      .toContain("subagent_create");
+    expect(assignments.find((assignment) => assignment.role === "builder")?.user)
+      .toMatch(/sf-SF-\d{4}-\d+-[\da-f]+\.sock/);
+    expect(assignments.find((assignment) => assignment.role === "builder")?.user)
+      .toContain("read_peer_session");
+    expect(assignments.find((assignment) => assignment.role === "builder")?.user)
+      .toMatch(/fake-/);
+    expect(assignments.find((assignment) => assignment.role === "builder")?.user)
+      .not.toContain("planner fixture completed");
+    expect(assignments.find((assignment) => assignment.role === "reviewer")?.system)
+      .toContain("repository's own reviewer check/test instructions");
+    expect(assignments.find((assignment) => assignment.role === "tester")?.user)
+      .toContain("repository reviewer instructions");
+    expect(assignments.find((assignment) => assignment.role === "reviewer")?.user)
+      .toContain("@prompts/reviewer");
+  });
+
+  it("runs Planner, Builder, Reviewer, and Tester through implementation_complete", async () => {
+    const { repository, workspace } = fixture();
+    const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime: "fake" });
+    const created = await factory.request({ text: "Add feature mapping", repositories: ["app"] });
+    expect(created.state).toBe("awaiting_plan_approval");
+    expect(() => factory.inspect(created.id)).not.toThrow();
+    expect(factory.approve(created.id, "plan").state).toBe("building");
+    const completed = await factory.advance(created.id);
+    expect(completed.state).toBe("implementation_complete");
+
+    const store = new CampaignStore(workspace, created.id);
+    try {
+      expect(store.results().map((result) => result.role)).toEqual(["planner", "builder", "reviewer", "tester"]);
+      expect(store.sessionCatalog().map((session) => session.role)).toEqual(["planner", "builder", "reviewer", "tester"]);
+      expect(store.sessionLogs().length).toBeGreaterThan(0);
+      expect(store.rows("checks").every((check) => check.status === "passed")).toBe(true);
+      expect(store.rows("events").some((event) => event.type === "state_changed")).toBe(true);
+    } finally { store.close(); }
+  });
+
+  it("invalidates approvals and results after an amendment", async () => {
+    const { repository, workspace } = fixture();
+    const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime: "fake" });
+    const campaign = await factory.request({ text: "Original outcome", repositories: ["app"] });
+    factory.approve(campaign.id, "plan");
+    const amended = factory.amend(campaign.id, "/businessOutcome", "Amended outcome");
+    expect(amended.revision).toBe(2);
+    const store = new CampaignStore(workspace, campaign.id);
+    try {
+      expect(store.hasApproval("plan")).toBe(false);
+      expect(store.results()).toEqual([]);
+    } finally { store.close(); }
+  });
+
+  it("rejects stale agent results before persistence or advancement", async () => {
+    const { repository, workspace } = fixture();
+    const fake = new FakeAgentRuntime();
+    const staleRuntime: AgentRuntime = {
+      async run(assignment) {
+        return { ...await fake.run(assignment), requestHash: "0".repeat(64) };
+      },
+    };
+    const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime: staleRuntime });
+    await expect(factory.request({ text: "Reject stale evidence", repositories: ["app"] }))
+      .rejects.toThrow("not bound to the active Campaign");
+  });
+
+  it("does not certify required deferred checks", async () => {
+    const { repository, workspace } = fixture();
+    const runtime = new FakeAgentRuntime((assignment) => assignment.role === "tester" ? {
+      checks: assignment.request.requiredChecks.map((check) => ({
+        checkId: check.id,
+        status: "deferred",
+        required: check.required,
+        attempt: assignment.attempt,
+        failureClass: "capability-missing",
+        evidence: [{ kind: "fixture", reference: "missing capability", digest: null, classification: "internal" }],
+        waiverId: null,
+      })),
+    } : {});
+    const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime });
+    const campaign = await factory.request({ text: "Require real evidence", repositories: ["app"] });
+    factory.approve(campaign.id, "plan");
+    await expect(factory.advance(campaign.id)).rejects.toThrow("repair budget exhausted");
+    expect(factory.inspect(campaign.id).campaign.state).toBe("failed");
+  });
+
+  it("uses and verifies the pinned profile snapshot on resume", async () => {
+    const { repository, workspace } = fixture();
+    const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime: "fake" });
+    const campaign = await factory.request({ text: "Pinned profile", repositories: ["app"] });
+    factory.approve(campaign.id, "plan");
+    const profilePath = resolve(workspace, campaign.id, "profiles/resolved.json");
+    const profile = JSON.parse(readFileSync(profilePath, "utf8"));
+    profile.name = "Tampered Profile";
+    writeFileSync(profilePath, JSON.stringify(profile));
+    await expect(factory.advance(campaign.id)).rejects.toThrow("pinned profile digest mismatch");
+  });
+
+  it("redacts long digit runs before request persistence", async () => {
+    const { repository, workspace } = fixture();
+    const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime: "fake" });
+    const campaign = await factory.request({ text: "Lookup record 123456789", repositories: ["app"] });
+    const inspected = factory.inspect(campaign.id);
+    expect(inspected.request.businessOutcome).toContain("[REDACTED-NUMBER]");
+    const persisted = readFileSync(resolve(workspace, campaign.id, "requests/revision-1.json"), "utf8");
+    expect(persisted).not.toContain("123456789");
+  });
+
+  it("mirrors session JSONL into WAL and serves it over the Unix socket", async () => {
+    const { repository, workspace } = fixture();
+    const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime: "fake" });
+    const campaign = await factory.request({ text: "Session bus", repositories: ["app"] });
+    const writer = new CampaignStore(workspace, campaign.id);
+    try {
+      await writer.listenBus();
+      const catalog = await campaignBusRequest(writer.socketPath, { type: "list_sessions" }) as Array<{
+        role: string;
+        sessionId: string;
+      }>;
+      expect(catalog.some((session) => session.role === "planner")).toBe(true);
+      const reader = new CampaignStore(workspace, campaign.id, { readonly: true });
+      try {
+        writer.appendSessionLog({
+          sessionId: catalog[0]!.sessionId,
+          runId: catalog[0]!.sessionId,
+          role: "planner",
+          workItemId: null,
+          entry: { type: "message", message: { role: "user", content: "live wal" } },
+        });
+        expect(reader.sessionLogs(catalog[0]!.sessionId).some((row) => String(row.entry).includes("live wal"))).toBe(true);
+        const viaSocket = await campaignBusRequest(writer.socketPath, {
+          type: "read_session",
+          sessionId: catalog[0]!.sessionId,
+        }) as Array<{ entry: string }>;
+        expect(viaSocket.some((row) => String(row.entry).includes("live wal"))).toBe(true);
+      } finally {
+        reader.close();
+      }
+    } finally {
+      writer.close();
+    }
+  });
+
+  it("serves campaign data through a GET-only visualizer API", async () => {
+    const { repository, workspace } = fixture();
+    const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime: "fake" });
+    const campaign = await factory.request({ text: "Observable campaign", repositories: ["app"] });
+    const server = startVisualizer({
+      workspace,
+      port: 0,
+      staticRoot: resolve(import.meta.dirname, "../apps/visualizer/dist"),
+    });
+    await once(server, "listening");
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("missing server address");
+      const base = `http://127.0.0.1:${address.port}`;
+      expect(await isVisualizerHealthy("127.0.0.1", address.port)).toBe(true);
+      expect(await ensureBackgroundVisualizer({
+        host: "127.0.0.1",
+        port: address.port,
+        packageRoot: repository,
+      })).toBe("already-running");
+      expect(await fetch(`${base}/api/health`).then((response) => response.json())).toMatchObject({ status: "ok", mode: "read-only" });
+      expect(await fetch(`${base}/api/campaigns`).then((response) => response.json())).toHaveLength(1);
+      const sessions = await fetch(
+        `${base}/api/campaigns/${campaign.id}/sessions?types=log&role=planner`,
+      ).then((response) => response.json()) as {
+        source: string;
+        events: Array<{ type: string; payload: { role: string } }>;
+      };
+      expect(sessions.source).toBe("sqlite-wal");
+      expect(sessions.events.length).toBeGreaterThan(0);
+      expect(sessions.events.every((event) =>
+        event.type === "log" && event.payload.role === "planner",
+      )).toBe(true);
+      const sessionLogs = await fetch(`${base}/api/campaigns/${campaign.id}/session-logs`)
+        .then((response) => response.json()) as { source: string; catalog: unknown[]; logs: unknown[] };
+      expect(sessionLogs.source).toBe("sqlite-wal");
+      expect(sessionLogs.catalog.length).toBeGreaterThan(0);
+      expect(sessionLogs.logs.length).toBeGreaterThan(0);
+      expect((await fetch(`${base}/api/health`, { method: "POST" })).status).toBe(405);
+      const missingUi = startVisualizer({ workspace, port: 0, staticRoot: resolve(workspace, "no-ui") });
+      await once(missingUi, "listening");
+      try {
+        const missingAddress = missingUi.address();
+        if (!missingAddress || typeof missingAddress === "string") throw new Error("missing server address");
+        const home = await fetch(`http://127.0.0.1:${missingAddress.port}/`);
+        expect(home.status).toBe(200);
+        expect(await home.text()).toContain("/api/health");
+      } finally {
+        missingUi.close();
+      }
+    } finally {
+      server.close();
+    }
+  });
+});
