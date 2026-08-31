@@ -2,7 +2,7 @@
 
 Reference inspiration: `disler/super-simple-software-factory/.claude/skills/sssf/apps/visualizer`.
 
-The Visualizer is a local-first, read-only observability UI for Software Factory Campaigns. It makes Planner → Builder → Reviewer → Tester execution understandable while agents are running and after they finish.
+The Visualizer is a local-first observability UI for Software Factory Campaigns. By default it is read-only; an explicitly started loopback control mode can approve a reviewed plan. It makes Planner → Builder → Reviewer → Tester execution understandable while agents are running and after they finish.
 
 ## 1. Goals
 
@@ -23,7 +23,7 @@ The Visualizer MUST show:
 - Contract, generated-artifact, traffic, and deployment dependency graphs.
 - Live updates while the controller writes events.
 
-The Visualizer MUST NOT authorize, modify, retry, merge, deploy, or otherwise control a Campaign. Workflow mutations remain in the controller/CLI approval interface.
+The default Visualizer MUST NOT authorize, modify, retry, merge, deploy, or otherwise control a Campaign. An explicit local control mode may invoke the controller's existing plan-approval operation after a human review. It MUST NOT enable retries, merges, deployment, or any other workflow mutation.
 
 ## 2. MVP architecture
 
@@ -269,6 +269,16 @@ GET /api/campaigns/:campaign_id/delivery
 GET /api/campaigns/:campaign_id/agents/:run_id/prompts
 ```
 
+Default mode exposes no mutation endpoints. Explicit local control mode additionally exposes:
+
+```text
+POST /api/campaigns/:campaign_id/approve-plan
+```
+
+It is loopback-only and requires a per-process token in the
+`X-Software-Factory-Control` header. The controller remains the authority for
+state and approval validation.
+
 Responses set `Cache-Control: no-store`. IDs used in filesystem paths must match a strict safe-segment expression. Every list endpoint has a bounded limit.
 
 The events endpoint returns:
@@ -340,7 +350,7 @@ Required tests:
 2. Planner, parallel Builders, Reviewers, Tester, and repair loops render as distinct lanes/phases.
 3. Tokens, cost, model, context use, tool spans, Agent Results, findings, and checks are inspectable.
 4. Event polling is cursor-based and does not block controller writes.
-5. The Visualizer cannot mutate workflow state.
+5. The default Visualizer cannot mutate workflow state; explicit local control mode can only approve a pending plan through the controller.
 6. Secret/PII fixtures never appear in API responses or rendered output.
 7. Campaign dependency and runtime traffic graphs are understandable from the UI.
 8. Historical Campaign databases remain readable after additive schema evolution.

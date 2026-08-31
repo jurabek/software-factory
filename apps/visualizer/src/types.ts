@@ -1,3 +1,22 @@
+export interface ControlState {
+  enabled: boolean;
+  actor?: string;
+  token?: string;
+}
+
+export interface CampaignRequest {
+  businessOutcome: string;
+  risk: { level: string; rationale: string; signals: string[] };
+  acceptanceCriteria: Array<{ id: string; statement: string; verification: string[] }>;
+  workItems: Array<{ id: string; repositoryId: string; purpose: string }>;
+  unresolved: unknown[];
+}
+
+export interface CampaignDetail {
+  campaign: Campaign;
+  request: CampaignRequest;
+}
+
 export interface Campaign {
   id: string;
   title: string;

@@ -42,19 +42,26 @@ export interface ResolvedAgent {
   purpose?: string;
 }
 
+export interface ApprovalRule {
+  id: string;
+  when: string;
+  approval: string;
+}
+
 export interface FactoryConfig {
   source: string;
   defaults: {
     codingAgent: string;
     model: string;
     thinking: ThinkingLevel;
-    profile: string;
-    repositories: string[];
     tools: string[];
   };
   observability: { pollMs: number };
+  riskSignals: string[];
+  approvalRules: ApprovalRule[];
+  requiredReviewKinds: string[];
+  delivery: { provider: "local" | "github" };
   agents: AgentSpec[];
-  profile?: DomainProfile;
 }
 
 export interface ProfileRepository {
@@ -67,17 +74,6 @@ export interface ProfileRepository {
   defaultWritePaths: string[];
   generatedPaths: string[];
   checkIds: string[];
-}
-
-export interface DomainProfile {
-  schemaVersion: string;
-  id: string;
-  version: string;
-  name: string;
-  repositories: ProfileRepository[];
-  riskDefaults?: { highRiskSignals: string[]; prohibitedEvidenceData: string[] };
-  requiredReviewKinds?: string[];
-  [key: string]: unknown;
 }
 
 export interface WorkItem {

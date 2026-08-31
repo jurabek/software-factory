@@ -43,3 +43,11 @@ Attempt: {{attempt}}
 ## Required handoff
 
 {{required_output}}
+
+## Repository context
+
+The repository's `AGENTS.md` — including the Software Factory block (checks, generated and protected paths, optional risk override) and any hand-written guidance — is authoritative repository context.
+
+```markdown
+{{repository_agents_block}}
+```

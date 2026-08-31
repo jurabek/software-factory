@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { once } from "node:events";
 import { afterEach, describe, expect, it } from "vitest";
+import { stringify as stringifyYaml } from "yaml";
 import { loadFactoryConfig, resolveAgent } from "../src/config.js";
 import { SoftwareFactory } from "../src/controller.js";
 import { GhCliDelivery, type CommandRunner, type DeliveryRuntime } from "../src/github.js";
@@ -73,6 +74,14 @@ class FakeGhRunner implements CommandRunner {
   }
 }
 
+function customConfigPath(value: Record<string, unknown>): string {
+  const root = mkdtempSync(resolve(tmpdir(), "software-factory-config-"));
+  roots.push(root);
+  const path = resolve(root, "config.yaml");
+  writeFileSync(path, stringifyYaml(value));
+  return path;
+}
+
 function fixture() {
   const root = mkdtempSync(resolve(tmpdir(), "software-factory-"));
   roots.push(root);
@@ -83,6 +92,20 @@ function fixture() {
   execFileSync("git", ["config", "user.email", "factory@example.test"], { cwd: repository });
   execFileSync("git", ["config", "user.name", "Factory Test"], { cwd: repository });
   writeFileSync(resolve(repository, "README.md"), "fixture\n");
+  writeFileSync(resolve(repository, "AGENTS.md"), [
+    "# Fixture Repo",
+    "<!-- software-factory:start -->",
+    "```yaml",
+    "checks:",
+    "  - id: app-unit",
+    "    command: npm run test:unit",
+    "  - id: app-lint",
+    "    command: npm run lint",
+    "generated: []",
+    "protected: []",
+    "```",
+    "<!-- software-factory:end -->",
+  ].join("\n") + "\n");
   mkdirSync(resolve(repository, "src"), { recursive: true });
   writeFileSync(resolve(repository, "src/app.ts"), "export const app = true;\n");
   execFileSync("git", ["add", "."], { cwd: repository });
@@ -182,16 +205,63 @@ describe("subagent harness", () => {
 describe("factory config", () => {
   it("loads config.yaml and resolves per-role models", () => {
     const config = loadFactoryConfig();
-    expect(config.defaults.profile).toBe("local");
-    expect(config.profile?.repositories.map((repository) => repository.id)).toEqual(["app"]);
+    expect(config.riskSignals).toEqual([
+      "authentication or authorization",
+      "secrets or credentials",
+      "data-store contract",
+      "destructive rollback",
+    ]);
+    expect(config.approvalRules).toEqual([
+      { id: "multi-repository-plan", when: "more than one work item exists", approval: "plan" },
+      { id: "break-glass", when: "a normally read-only repository write is requested", approval: "break-glass" },
+    ]);
+    expect(config.requiredReviewKinds).toEqual(["spec", "standards", "codeowners"]);
+    expect(config.delivery).toEqual({ provider: "local" });
+    expect(config.defaults).not.toHaveProperty("profile");
+    expect(config.defaults).not.toHaveProperty("repositories");
+    expect(config).not.toHaveProperty("profile");
     expect(resolveAgent(config, "planner")).toMatchObject({
-      model: "google/gemini-3.6-flash",
+      model: "openai-codex/gpt-5.6-sol",
       thinking: "high",
     });
+    expect(resolveAgent(config, "builder")).toMatchObject({ model: "openai-codex/gpt-5.6-luna" });
+    expect(resolveAgent(config, "reviewer")).toMatchObject({ model: "openai-codex/gpt-5.6-luna" });
+    expect(resolveAgent(config, "tester")).toMatchObject({ model: "openai-codex/gpt-5.6-luna" });
     expect(resolveAgent(config, "builder").tools).toEqual(expect.arrayContaining(["edit", "write"]));
     expect(resolveAgent(config, "reviewer").tools).not.toContain("write");
     expect(resolveAgent(config, "planner").promptEngineering.system).toMatch(/prompts\/planner\/system\.md$/);
     expect(resolveAgent(config, "planner").promptEngineering.user).toMatch(/prompts\/planner\/user\.md$/);
+  });
+
+  it("applies defaults and validates the reshaped config fields", () => {
+    const config = loadFactoryConfig(customConfigPath({
+      defaults: { model: "google/gemini-3.6-flash", thinking: "low" },
+      agents: [],
+    }));
+    expect(config.riskSignals).toEqual([]);
+    expect(config.approvalRules).toEqual([]);
+    expect(config.requiredReviewKinds).toEqual(["spec", "standards"]);
+    expect(config.delivery).toEqual({ provider: "local" });
+    expect(() => loadFactoryConfig(customConfigPath({
+      defaults: { model: "x/y" },
+      delivery: { provider: "s3" },
+    }))).toThrow("delivery.provider must be local or github");
+    expect(() => loadFactoryConfig(customConfigPath({
+      defaults: { model: "x/y" },
+      approval_rules: [{ id: "missing-when" }],
+    }))).toThrow("approval_rules[0].when is required");
+  });
+
+  it("accepts github delivery and camelCase or snake_case fields", () => {
+    const config = loadFactoryConfig(customConfigPath({
+      defaults: { model: "x/y" },
+      riskSignals: ["payment flows"],
+      requiredReviewKinds: ["spec"],
+      delivery: { provider: "github" },
+    }));
+    expect(config.riskSignals).toEqual(["payment flows"]);
+    expect(config.requiredReviewKinds).toEqual(["spec"]);
+    expect(config.delivery).toEqual({ provider: "github" });
   });
 
   it("loads configured prompt_engineering files into Pi system and user prompts", async () => {
@@ -203,7 +273,6 @@ describe("factory config", () => {
       "defaults:",
       "  model: google/gemini-3.6-flash",
       "  thinking: medium",
-      "  profile: local",
       "agents:",
       "  - name: planner",
       "    prompt_engineering:",
@@ -224,7 +293,7 @@ describe("factory config", () => {
       runtime,
       config: loadFactoryConfig(configPath),
     });
-    const campaign = await factory.request({ text: "Configured prompts", repositories: ["app"] });
+    const campaign = await factory.request({ text: "Configured prompts", });
     factory.approve(campaign.id, "plan");
     await factory.advance(campaign.id);
     const planner = assignments.find((assignment) => assignment.role === "planner");
@@ -250,7 +319,7 @@ describe("local campaign", () => {
       },
     };
     const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime });
-    const campaign = await factory.request({ text: "Prompt-aware campaign", repositories: ["app"] });
+    const campaign = await factory.request({ text: "Prompt-aware campaign", });
     factory.approve(campaign.id, "plan");
     await factory.advance(campaign.id);
 
@@ -279,7 +348,7 @@ describe("local campaign", () => {
   it("runs Planner, Builder, Reviewer, and Tester through implementation_complete", async () => {
     const { repository, workspace } = fixture();
     const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime: "fake" });
-    const created = await factory.request({ text: "Add feature mapping", repositories: ["app"] });
+    const created = await factory.request({ text: "Add feature mapping", });
     expect(created.state).toBe("awaiting_plan_approval");
     expect(() => factory.inspect(created.id)).not.toThrow();
     expect(factory.approve(created.id, "plan").state).toBe("building");
@@ -301,6 +370,8 @@ describe("local campaign", () => {
     const remote = resolve(repository, "../remote.git");
     execFileSync("git", ["init", "--bare", remote]);
     execFileSync("git", ["remote", "add", "origin", remote], { cwd: repository });
+    // gh operations use the github-style URL; real git pushes go to origin (local bare).
+    execFileSync("git", ["remote", "add", "github", "https://github.com/example/app.git"], { cwd: repository });
     const fake = new FakeAgentRuntime((assignment) => {
       if (assignment.role !== "builder") return {};
       const content = "export const delivered = true;\n";
@@ -322,7 +393,7 @@ describe("local campaign", () => {
       runtime: fake,
       delivery: new GhCliDelivery(runner),
     });
-    const campaign = await factory.request({ text: "Deliver through gh", repositories: ["app"] });
+    const campaign = await factory.request({ text: "Deliver through gh", });
     factory.approve(campaign.id, "plan");
     const completed = await factory.advance(campaign.id);
     expect(completed.state).toBe("implementation_complete");
@@ -331,12 +402,12 @@ describe("local campaign", () => {
     try {
       const [delivery] = store.deliveries();
       expect(delivery).toMatchObject({
-        repositoryId: "app",
+        repositoryId: "repository",
         draft: true,
         ciStatus: "passed",
         pullRequestUrl: "https://github.com/example/app/pull/42",
       });
-      expect(delivery?.branch).toContain(`/r1/app`);
+      expect(delivery?.branch).toContain(`/r1/repository`);
       expect(store.rows("events").some((event) => event.type === "delivery_updated")).toBe(true);
     } finally { store.close(); }
     expect(runner.calls).toContain("gh auth status");
@@ -364,7 +435,7 @@ describe("local campaign", () => {
       },
     };
     const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime: "fake", delivery });
-    const campaign = await factory.request({ text: "Wait for CI", repositories: ["app"] });
+    const campaign = await factory.request({ text: "Wait for CI", });
     factory.approve(campaign.id, "plan");
     expect((await factory.advance(campaign.id)).state).toBe("validating_ci");
     passed = true;
@@ -393,7 +464,7 @@ describe("local campaign", () => {
       },
     };
     const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime: "fake", delivery });
-    const campaign = await factory.request({ text: "Repair CI", repositories: ["app"] });
+    const campaign = await factory.request({ text: "Repair CI", });
     factory.approve(campaign.id, "plan");
     expect((await factory.advance(campaign.id)).state).toBe("implementation_complete");
     const store = new CampaignStore(workspace, campaign.id);
@@ -408,7 +479,7 @@ describe("local campaign", () => {
   it("invalidates approvals and results after an amendment", async () => {
     const { repository, workspace } = fixture();
     const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime: "fake" });
-    const campaign = await factory.request({ text: "Original outcome", repositories: ["app"] });
+    const campaign = await factory.request({ text: "Original outcome", });
     factory.approve(campaign.id, "plan");
     const amended = factory.amend(campaign.id, "/businessOutcome", "Amended outcome");
     expect(amended.revision).toBe(2);
@@ -428,7 +499,7 @@ describe("local campaign", () => {
       },
     };
     const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime: staleRuntime });
-    await expect(factory.request({ text: "Reject stale evidence", repositories: ["app"] }))
+    await expect(factory.request({ text: "Reject stale evidence", }))
       .rejects.toThrow("not bound to the active Campaign");
   });
 
@@ -446,7 +517,7 @@ describe("local campaign", () => {
       })),
     } : {});
     const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime });
-    const campaign = await factory.request({ text: "Require real evidence", repositories: ["app"] });
+    const campaign = await factory.request({ text: "Require real evidence", });
     factory.approve(campaign.id, "plan");
     await expect(factory.advance(campaign.id)).rejects.toThrow("repair budget exhausted");
     expect(factory.inspect(campaign.id).campaign.state).toBe("failed");
@@ -455,7 +526,7 @@ describe("local campaign", () => {
   it("uses and verifies the pinned profile snapshot on resume", async () => {
     const { repository, workspace } = fixture();
     const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime: "fake" });
-    const campaign = await factory.request({ text: "Pinned profile", repositories: ["app"] });
+    const campaign = await factory.request({ text: "Pinned profile", });
     factory.approve(campaign.id, "plan");
     const profilePath = resolve(workspace, campaign.id, "profiles/resolved.json");
     const profile = JSON.parse(readFileSync(profilePath, "utf8"));
@@ -467,7 +538,7 @@ describe("local campaign", () => {
   it("redacts long digit runs before request persistence", async () => {
     const { repository, workspace } = fixture();
     const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime: "fake" });
-    const campaign = await factory.request({ text: "Lookup record 123456789", repositories: ["app"] });
+    const campaign = await factory.request({ text: "Lookup record 123456789", });
     const inspected = factory.inspect(campaign.id);
     expect(inspected.request.businessOutcome).toContain("[REDACTED-NUMBER]");
     const persisted = readFileSync(resolve(workspace, campaign.id, "requests/revision-1.json"), "utf8");
@@ -477,7 +548,7 @@ describe("local campaign", () => {
   it("mirrors session JSONL into WAL and serves it over the Unix socket", async () => {
     const { repository, workspace } = fixture();
     const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime: "fake" });
-    const campaign = await factory.request({ text: "Session bus", repositories: ["app"] });
+    const campaign = await factory.request({ text: "Session bus", });
     const writer = new CampaignStore(workspace, campaign.id);
     try {
       await writer.listenBus();
@@ -512,7 +583,7 @@ describe("local campaign", () => {
   it("serves campaign data through a GET-only visualizer API", async () => {
     const { repository, workspace } = fixture();
     const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime: "fake" });
-    const campaign = await factory.request({ text: "Observable campaign", repositories: ["app"] });
+    const campaign = await factory.request({ text: "Observable campaign", });
     const server = startVisualizer({
       workspace,
       port: 0,
@@ -559,6 +630,36 @@ describe("local campaign", () => {
       } finally {
         missingUi.close();
       }
+    } finally {
+      server.close();
+    }
+  });
+
+  it("allows one-click plan approval only in explicit local control mode", async () => {
+    const { repository, workspace } = fixture();
+    const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime: "fake" });
+    const campaign = await factory.request({ text: "Approve in the UI", });
+    const server = startVisualizer({
+      workspace,
+      port: 0,
+      control: { actor: "ui-reviewer", approvePlan: (id, actor) => factory.approve(id, "plan", actor) },
+    });
+    await once(server, "listening");
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("missing server address");
+      const base = `http://127.0.0.1:${address.port}`;
+      const control = await fetch(`${base}/api/control`).then((response) => response.json()) as {
+        enabled: boolean; actor: string; token: string;
+      };
+      expect(control).toMatchObject({ enabled: true, actor: "ui-reviewer" });
+      expect(await fetch(`${base}/api/campaigns/${campaign.id}/approve-plan`, { method: "POST" }).then((response) => response.status)).toBe(403);
+      const approved = await fetch(`${base}/api/campaigns/${campaign.id}/approve-plan`, {
+        method: "POST",
+        headers: { "X-Software-Factory-Control": control.token },
+      }).then((response) => response.json()) as { campaign: { state: string } };
+      expect(approved.campaign.state).toBe("building");
+      expect(factory.inspect(campaign.id).campaign.state).toBe("building");
     } finally {
       server.close();
     }

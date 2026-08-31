@@ -1,10 +1,12 @@
-# config.yaml — the factory's agent roster. One agent, one prompt, one purpose.
-# Per-agent model and thinking are passed into Pi (and later other coding agents).
+# config.yaml — the factory's agent roster and global defaults.
+# One agent, one prompt, one purpose. Per-agent model and thinking are passed
+# into Pi (and later other coding agents).
+# Per-repo facts (checks, generated paths, protected paths, optional risk
+# override) live in the repo's AGENTS.md block, written by `swf init`.
 defaults:
   coding_agent: pi
-  model: google/gemini-3.6-flash   # provider/id — a bare pattern is ambiguous across providers
+  model: openai-codex/gpt-5.6-luna   # provider/id — a bare pattern is ambiguous across providers
   thinking: medium                 # off | minimal | low | medium | high | xhigh | max
-  profile: local
   tools:
     - read
     - grep
@@ -14,9 +16,34 @@ defaults:
 observability:
   poll_ms: 500
 
+# Global risk signals. They shape what the Reviewer scrutinizes and what gets
+# flagged; a repo's AGENTS.md block may override them per repository.
+risk_signals:
+  - authentication or authorization
+  - secrets or credentials
+  - data-store contract
+  - destructive rollback
+
+# Declarative approval rules. Approval is always manual; these document what
+# gets flagged and what approval is expected.
+approval_rules:
+  - id: multi-repository-plan
+    when: more than one work item exists
+    approval: plan
+  - id: break-glass
+    when: a normally read-only repository write is requested
+    approval: break-glass
+
+required_review_kinds: [spec, standards, codeowners]
+
+# delivery.provider: local is the default; nothing is pushed unless github.
+# Replaces the SOFTWARE_FACTORY_DELIVERY env var.
+delivery:
+  provider: local
+
 agents:
   - name: planner
-    model: google/gemini-3.6-flash
+    model: openai-codex/gpt-5.6-sol
     thinking: high
     color: "#a78bfa"
     purpose: Turn a request into a plan the builder can implement without asking questions.
@@ -30,6 +57,7 @@ agents:
       - ls
 
   - name: builder
+    model: openai-codex/gpt-5.6-luna
     color: "#22d3ee"
     purpose: Implement the plan exactly; report every changed file in the envelope.
     prompt_engineering:
@@ -44,7 +72,7 @@ agents:
       - write
 
   - name: reviewer
-    model: google/gemini-3.6-flash
+    model: openai-codex/gpt-5.6-luna
     thinking: high
     color: "#fb7185"
     purpose: Confirm that what was built is what was asked for; change nothing.
@@ -58,6 +86,7 @@ agents:
       - ls
 
   - name: tester
+    model: openai-codex/gpt-5.6-luna
     color: "#34d399"
     purpose: Run the required checks and report evidence; change nothing.
     prompt_engineering:
@@ -68,67 +97,3 @@ agents:
       - grep
       - find
       - ls
-
-# Domain-agnostic local profile. Replace repositories with your own.
-profile:
-  schemaVersion: "1.0.0"
-  id: local
-  version: "1.0.0"
-  name: Local
-  owners:
-    - role: engineering
-      identity: local-developer
-  repositories:
-    - id: app
-      url: https://github.com/example/app
-      defaultBranch: main
-      adapter: local-git
-      mode: read_write
-      instructionPaths:
-        - AGENTS.md
-        - README.md
-      defaultWritePaths:
-        - "**"
-      generatedPaths: []
-      checkIds:
-        - app-unit
-        - app-lint
-  riskDefaults:
-    highRiskSignals:
-      - authentication or authorization
-      - secrets or credentials
-      - data-store contract
-      - destructive rollback
-    prohibitedEvidenceData:
-      - credentials or tokens
-      - secrets
-      - complete request or response payloads containing secrets
-  requiredReviewKinds:
-    - spec
-    - standards
-    - codeowners
-  approvalRules:
-    - id: multi-repository-plan
-      when: more than one work item exists
-      approval: plan
-    - id: break-glass
-      when: a normally read-only repository write is requested
-      approval: break-glass
-  deliveryProviders:
-    - kind: ci
-      adapter: local-ci
-      access: read_only
-    - kind: artifact
-      adapter: campaign-artifact-store
-      access: approved_write
-  evaluationScenarios:
-    - id: implement-requested-change
-      description: Plan, implement, review, and test a change in the selected repositories
-      expectedRepositories:
-        - app
-      requiredFindings:
-        - request coverage
-        - repository standards
-      prohibitedBehavior:
-        - writes outside approved paths
-        - treating a missing check as passed

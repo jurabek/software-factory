@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://schemas.sumup.example/software-factory/domain-profile.schema.json",
+  "$id": "https://schemas.software-factory.example/domain-profile.schema.json",
   "title": "Software Factory Domain Profile",
   "type": "object",
   "additionalProperties": false,

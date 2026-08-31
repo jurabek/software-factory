@@ -75,8 +75,8 @@ async function isFactoryVisualizerApi(host: string, port: number): Promise<boole
       visualizerVersion?: unknown;
     };
     return body.status === "ok" &&
-      body.mode === "read-only" &&
-      body.visualizerVersion === 2;
+      (body.mode === "read-only" || body.mode === "local-plan-control") &&
+      body.visualizerVersion === 3;
   } catch {
     return false;
   }

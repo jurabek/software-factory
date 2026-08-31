@@ -2,12 +2,12 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { ArrowLeft, CheckCircle2, Clock3, ExternalLink, GitBranch, TriangleAlert, Wrench } from "@lucide/vue";
 import { api } from "../api";
-import type { AgentRun, Campaign, CheckRow, Delivery, FindingRow, Phase, TraceEvent } from "../types";
+import type { AgentRun, Campaign, CheckRow, ControlState, Delivery, FindingRow, Phase, TraceEvent } from "../types";
 import { formatDuration, isRunning, traceTypeGroups } from "../types";
 import SessionLog from "./SessionLog.vue";
 import TraceControls from "./TraceControls.vue";
 
-const props = defineProps<{ campaign: Campaign }>();
+const props = defineProps<{ campaign: Campaign; control: ControlState }>();
 defineEmits<{ back: [] }>();
 
 const campaign = ref(props.campaign);
@@ -24,6 +24,8 @@ const runId = ref("");
 const paused = ref(false);
 const showPayloads = ref(false);
 const error = ref("");
+const approvalMessage = ref("");
+const approving = ref(false);
 const connected = ref(false);
 const now = ref(Date.now());
 let cursor = 0;
@@ -89,6 +91,35 @@ function phaseDuration(phase: Phase): string {
   const start = Date.parse(phase.started_at ?? "");
   const end = phase.completed_at ? Date.parse(phase.completed_at) : now.value;
   return formatDuration(end - start);
+}
+
+const awaitingPlanApproval = computed(() => campaign.value.state === "awaiting_plan_approval");
+const approvalCommand = computed(() => `npm run dev -- approve ${campaign.value.id} plan`);
+
+async function approvePlan() {
+  if (!props.control.enabled || !props.control.token || approving.value) return;
+  if (!window.confirm(`Approve the plan for ${campaign.value.id}? This starts the Builder stage.`)) return;
+  approving.value = true;
+  approvalMessage.value = "";
+  try {
+    const result = await api.approvePlan(campaign.value.id, props.control.token);
+    campaign.value = result.campaign;
+    approvalMessage.value = "Plan approved. Builders can now run.";
+    await tick();
+  } catch (cause) {
+    approvalMessage.value = cause instanceof Error ? cause.message : String(cause);
+  } finally {
+    approving.value = false;
+  }
+}
+
+async function copyApprovalCommand() {
+  try {
+    await navigator.clipboard.writeText(approvalCommand.value);
+    approvalMessage.value = "Approval command copied.";
+  } catch {
+    approvalMessage.value = approvalCommand.value;
+  }
 }
 
 function toolTicks(phase: Phase): number[] {
@@ -159,6 +190,22 @@ onUnmounted(() => window.clearInterval(timer));
       <span class="stat"><CheckCircle2 :size="16" />{{ checks.filter((item) => item.status === "passed").length }}/{{ checks.length }} checks</span>
       <span class="stat"><TriangleAlert :size="16" />{{ findings.filter((item) => !item.resolved).length }} findings</span>
     </div>
+
+    <section v-if="awaitingPlanApproval" class="approval-panel">
+      <div>
+        <p class="kicker">HUMAN CHECKPOINT</p>
+        <h2>Plan approval is ready</h2>
+        <p>The Planner has completed. Review the request and approve this campaign without retyping its ID.</p>
+      </div>
+      <div class="approval-actions">
+        <button v-if="control.enabled" class="approve-button" :disabled="approving" @click="approvePlan">
+          {{ approving ? "Approving…" : "Approve plan" }}
+        </button>
+        <button v-else class="copy-button" @click="copyApprovalCommand">Copy approval command</button>
+        <small v-if="!control.enabled">For one-click approval, restart with <code>visualize --control</code>.</small>
+        <small v-if="approvalMessage" class="approval-message">{{ approvalMessage }}</small>
+      </div>
+    </section>
 
     <section v-if="deliveries.length" class="delivery-panel">
       <div class="panel-head">

@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
-import type { AgentRole, DomainProfile, FactoryConfig, PromptEngineering, ResolvedAgent } from "./types.js";
+import type { AgentRole, ApprovalRule, FactoryConfig, PromptEngineering, ResolvedAgent } from "./types.js";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const factoryRoles: readonly AgentRole[] = ["planner", "builder", "reviewer", "tester"];
@@ -51,13 +51,6 @@ export function resolveAgent(config: FactoryConfig, role: AgentRole): ResolvedAg
   return resolved;
 }
 
-export function defaultRepositories(config: FactoryConfig, profile: DomainProfile, requested?: string[]): string[] {
-  if (requested?.length) return requested;
-  if (config.defaults.repositories.length) return config.defaults.repositories;
-  const writable = profile.repositories.filter((repository) => repository.mode !== "read_only").map((repository) => repository.id);
-  return writable.length > 0 ? writable : profile.repositories.map((repository) => repository.id);
-}
-
 function normalizeFactoryConfig(value: unknown, source: string): FactoryConfig {
   if (!value || typeof value !== "object") throw new Error(`${source} must be a YAML object`);
   const raw = value as Record<string, unknown>;
@@ -66,8 +59,6 @@ function normalizeFactoryConfig(value: unknown, source: string): FactoryConfig {
     codingAgent: stringField(defaultsRaw.coding_agent ?? defaultsRaw.codingAgent, "pi"),
     model: requiredString(defaultsRaw.model, `${source} defaults.model`),
     thinking: thinkingField(defaultsRaw.thinking, "medium"),
-    profile: stringField(defaultsRaw.profile, "local"),
-    repositories: stringList(defaultsRaw.repositories),
     tools: uniqueTools(stringList(defaultsRaw.tools, defaultTools)),
   };
   const observabilityRaw = raw.observability && typeof raw.observability === "object"
@@ -83,10 +74,37 @@ function normalizeFactoryConfig(value: unknown, source: string): FactoryConfig {
     source,
     defaults,
     observability: { pollMs: Number(observabilityRaw.poll_ms ?? observabilityRaw.pollMs ?? 500) },
+    riskSignals: stringList(raw.risk_signals ?? raw.riskSignals, []),
+    approvalRules: approvalRulesField(raw.approval_rules ?? raw.approvalRules, source),
+    requiredReviewKinds: stringList(raw.required_review_kinds ?? raw.requiredReviewKinds, ["spec", "standards"]),
+    delivery: deliveryField(raw.delivery, source),
     agents,
   };
-  if (raw.profile && typeof raw.profile === "object") config.profile = raw.profile as DomainProfile;
   return config;
+}
+
+function approvalRulesField(value: unknown, source: string): ApprovalRule[] {
+  if (value == null) return [];
+  if (!Array.isArray(value)) throw new Error(`${source} approval_rules must be an array`);
+  return value.map((item, index) => {
+    const label = `${source} approval_rules[${index}]`;
+    const raw = asRecord(item, label);
+    return {
+      id: requiredString(raw.id, `${label}.id`),
+      when: requiredString(raw.when, `${label}.when`),
+      approval: requiredString(raw.approval, `${label}.approval`),
+    };
+  });
+}
+
+function deliveryField(value: unknown, source: string): { provider: "local" | "github" } {
+  if (value == null) return { provider: "local" };
+  const raw = asRecord(value, `${source} delivery`);
+  const provider = stringField(raw.provider, "local").toLowerCase();
+  if (provider !== "local" && provider !== "github") {
+    throw new Error(`${source} delivery.provider must be local or github`);
+  }
+  return { provider };
 }
 
 function normalizeAgent(value: unknown, label: string): FactoryConfig["agents"][number] {

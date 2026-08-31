@@ -2,8 +2,9 @@ import { randomInt } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { execFileSync } from "node:child_process";
-import { defaultRepositories, loadFactoryConfig, resolveAgent } from "./config.js";
-import { ContractValidator, digest, loadProfile } from "./contracts.js";
+import { loadFactoryConfig, resolveAgent } from "./config.js";
+import { ContractValidator, digest } from "./contracts.js";
+import { resolveRepoContext, type RepoContext } from "./context.js";
 import { GhCliDelivery, type DeliveryRuntime } from "./github.js";
 import { assertWriteAllowed } from "./policy.js";
 import { RepositoryManager, toWorkItem } from "./repositories.js";
@@ -11,7 +12,7 @@ import { FakeAgentRuntime, PiAgentRuntime, type AgentRuntime, type Assignment } 
 import { compileRolePrompt } from "./prompts.js";
 import { assertTransition, isTerminal } from "./state-machine.js";
 import { CampaignStore, redact } from "./store.js";
-import type { Campaign, DomainProfile, FactoryConfig, FactoryState, FeatureRequest, WorkItem } from "./types.js";
+import type { Campaign, FactoryConfig, FactoryState, FeatureRequest, WorkItem } from "./types.js";
 
 export interface FactoryOptions {
   workspace: string;
@@ -39,38 +40,39 @@ export class SoftwareFactory {
     return this.options.config ?? loadFactoryConfig();
   }
 
-  async request(input: { text: string; profileId?: string; repositories?: string[]; requestedBy?: string; issueUrl?: string }): Promise<Campaign> {
-    const profile = await loadProfile(input.profileId, this.config);
-    this.validator.profile(profile);
+  async request(input: { text: string; cwd?: string; repos?: string[]; requestedBy?: string; issueUrl?: string }): Promise<Campaign> {
+    const cwd = input.cwd ?? this.options.repositoryRoot;
+    const context = resolveRepoContext(cwd, this.config, input.repos);
+    const declaredChecks = context.repositories.flatMap((repository) => repository.checkIds);
+    if (declaredChecks.length === 0) {
+      throw new Error("no checks declared in AGENTS.md; run `swf init` in each repository and add check commands");
+    }
     const campaignId = `SF-${new Date().getUTCFullYear()}-${randomInt(1000, 10_000)}`;
     const store = new CampaignStore(this.options.workspace, campaignId);
     try {
-      const repositoryManager = new RepositoryManager(store, profile, this.options.repositoryRoot);
-      const selectedIds = defaultRepositories(this.config, profile, input.repositories);
-      const selected = profile.repositories.filter((repository) => selectedIds.includes(repository.id));
-      if (selected.length === 0) throw new Error("no matching repositories selected");
-      const workItems = selected.map((repository, index) =>
+      const repositoryManager = new RepositoryManager(store, context);
+      const workItems = context.repositories.map((repository, index) =>
         toWorkItem(repository, index, input.text, repositoryManager.baseSha(repository.id)),
       );
       const now = new Date().toISOString();
-      const profileDigest = digest(profile);
+      const profileDigest = digest(context);
       const safeText = String(redact(input.text));
       const request = this.normalizeRequest(
-        campaignId, safeText, profile, profileDigest, workItems,
+        campaignId, safeText, context, profileDigest, workItems,
         input.requestedBy ?? "local-developer", now, input.issueUrl,
       );
       this.validator.request(request);
       const requestHash = digest(request);
       const campaign: Campaign = {
         id: campaignId, title: request.title, state: "received", previousState: null,
-        requestHash, profileId: profile.id, profileVersion: profile.version,
+        requestHash, profileId: context.id, profileVersion: context.version,
         profileDigest, repairCycles: 0, pausedReason: null, createdAt: now, updatedAt: now,
       };
       store.createCampaign(campaign, request);
-      writeFileSync(resolve(store.campaignDir, "profiles/resolved.json"), JSON.stringify(profile, null, 2));
+      writeFileSync(resolve(store.campaignDir, "profiles/resolved.json"), JSON.stringify(context, null, 2));
       await store.listenBus();
       await this.transition(store, "planning");
-      const result = await this.executeAgent(store, this.assignment(store, profile, request, "planner", null, 1, this.options.repositoryRoot));
+      const result = await this.executeAgent(store, this.assignment(store, context, request, "planner", null, 1, cwd));
       this.validator.result(result);
       store.saveResult(result);
       await this.transition(store, result.status === "completed" ? "awaiting_plan_approval" : "blocked");
@@ -152,7 +154,7 @@ export class SoftwareFactory {
           continue;
         }
         if (state === "opening_prs") {
-          const manager = new RepositoryManager(store, profile, this.options.repositoryRoot);
+          const manager = new RepositoryManager(store, profile);
           const deliveries = this.delivery().openDraftPullRequests({ campaign: store.campaign(), request, profile, repositories: manager, store });
           const expectedDeliveries = request.workItems.filter((item) =>
             profile.repositories.find((repository) => repository.id === item.repositoryId)?.mode !== "read_only",
@@ -166,7 +168,7 @@ export class SoftwareFactory {
           continue;
         }
         if (state === "validating_ci") {
-          const manager = new RepositoryManager(store, profile, this.options.repositoryRoot);
+          const manager = new RepositoryManager(store, profile);
           const deliveries = this.delivery().observeCi(
             { campaign: store.campaign(), request, profile, repositories: manager, store },
             store.deliveries(),
@@ -280,8 +282,8 @@ export class SoftwareFactory {
     const store = this.open(campaignId);
     try {
       const request = store.request();
-      const resolved = JSON.parse(readFileSync(resolve(store.campaignDir, "profiles/resolved.json"), "utf8")) as DomainProfile;
-      const manager = new RepositoryManager(store, resolved, this.options.repositoryRoot);
+      const resolved = JSON.parse(readFileSync(resolve(store.campaignDir, "profiles/resolved.json"), "utf8")) as RepoContext;
+      const manager = new RepositoryManager(store, resolved);
       return request.workItems.map((item) => manager.drift(item));
     } finally { store.close(); }
   }
@@ -292,7 +294,7 @@ export class SoftwareFactory {
   }
 
   private normalizeRequest(
-    campaignId: string, text: string, profile: DomainProfile, profileDigest: string,
+    campaignId: string, text: string, profile: RepoContext, profileDigest: string,
     workItems: WorkItem[], requestedBy: string, now: string, issueUrl?: string,
   ): FeatureRequest {
     const requiredChecks = workItems.flatMap((workItem) => {
@@ -314,7 +316,7 @@ export class SoftwareFactory {
       owner: { kind: "human", id: requestedBy }, requestedBy: { kind: "human", id: requestedBy },
       businessOutcome: text, nonGoals: ["Remote GitHub mutations", "Autonomous deployment"],
       acceptanceCriteria: [{ id: "AC-1", statement: text, verification: requiredChecks.map((check) => check.id) }],
-      risk: { level: "medium", signals: [], rationale: "Default until the planner revises risk from the request and profile" },
+      risk: { level: "medium", signals: [], rationale: "Default until the planner revises risk from the request" },
       workItems, contracts: [], trafficEdges: [],
       dependencyGraph: { nodes: workItems.map((item) => item.id), edges: [] },
       requiredChecks, environments: [],
@@ -322,8 +324,8 @@ export class SoftwareFactory {
       observability: { expectedSignals: [], traceQueries: [], logQueries: [], metricQueries: [], piiLogScan: true },
       security: {
         dataClasses: [], allowedEgress: [], credentialClasses: [],
-        prohibitedLogging: profile.riskDefaults?.prohibitedEvidenceData ?? [],
-        requiredReviews: profile.requiredReviewKinds ?? ["spec", "standards"],
+        prohibitedLogging: [],
+        requiredReviews: this.config.requiredReviewKinds,
       },
       approvalPolicy: { required: ["plan", "codeowners"], expiryMinutes: 120, invalidateOn: ["request", "profile", "base-sha", "write-scope"] },
       rollback: { classification: "application", steps: ["Disable feature", "Restore prior application revision"], irreversiblePolicy: "Do not automatically reverse irreversible user-visible effects", approval: "rollback" },
@@ -332,8 +334,8 @@ export class SoftwareFactory {
     };
   }
 
-  private async runBuilders(store: CampaignStore, profile: DomainProfile, request: FeatureRequest, repair: boolean): Promise<void> {
-    const manager = new RepositoryManager(store, profile, this.options.repositoryRoot);
+  private async runBuilders(store: CampaignStore, profile: RepoContext, request: FeatureRequest, repair: boolean): Promise<void> {
+    const manager = new RepositoryManager(store, profile);
     const attempt = repair ? store.incrementRepair() + 1 : 1;
     const pending = new Map(request.workItems.filter((item) => {
       const repository = profile.repositories.find((candidate) => candidate.id === item.repositoryId);
@@ -366,9 +368,9 @@ export class SoftwareFactory {
     }
   }
 
-  private async runReviewers(store: CampaignStore, profile: DomainProfile, request: FeatureRequest): Promise<boolean> {
+  private async runReviewers(store: CampaignStore, profile: RepoContext, request: FeatureRequest): Promise<boolean> {
     const attempt = store.campaign().repairCycles + 1;
-    const manager = new RepositoryManager(store, profile, this.options.repositoryRoot);
+    const manager = new RepositoryManager(store, profile);
     const results = await Promise.all(request.workItems.filter((item) => item.baseSha).map((workItem) =>
       this.executeAgent(store, this.assignment(store, profile, request, "reviewer", workItem, attempt, manager.worktree(workItem))),
     ));
@@ -380,7 +382,7 @@ export class SoftwareFactory {
     return results.some((result) => result.status === "changes_requested" || result.findings.some((finding) => finding.blocking));
   }
 
-  private async runTester(store: CampaignStore, profile: DomainProfile, request: FeatureRequest): Promise<boolean> {
+  private async runTester(store: CampaignStore, profile: RepoContext, request: FeatureRequest): Promise<boolean> {
     const result = await this.executeAgent(store, this.assignment(
       store, profile, request, "tester", null, store.campaign().repairCycles + 1, this.options.repositoryRoot,
     ));
@@ -390,7 +392,7 @@ export class SoftwareFactory {
   }
 
   private assignment(
-    store: CampaignStore, profile: DomainProfile, request: FeatureRequest, role: Assignment["role"],
+    store: CampaignStore, profile: RepoContext, request: FeatureRequest, role: Assignment["role"],
     workItem: WorkItem | null, attempt: number, worktree: string,
   ): Assignment {
     const repository = workItem ? profile.repositories.find((item) => item.id === workItem.repositoryId) : undefined;
@@ -540,9 +542,8 @@ export class SoftwareFactory {
 
   private open(campaignId: string): CampaignStore { return new CampaignStore(this.options.workspace, campaignId); }
 
-  private pinnedProfile(store: CampaignStore): DomainProfile {
-    const profile = JSON.parse(readFileSync(resolve(store.campaignDir, "profiles/resolved.json"), "utf8")) as DomainProfile;
-    this.validator.profile(profile);
+  private pinnedProfile(store: CampaignStore): RepoContext {
+    const profile = JSON.parse(readFileSync(resolve(store.campaignDir, "profiles/resolved.json"), "utf8")) as RepoContext;
     if (digest(profile) !== store.campaign().profileDigest) throw new Error("pinned profile digest mismatch");
     return profile;
   }

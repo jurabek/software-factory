@@ -4,13 +4,14 @@ import { Factory, Radio } from "@lucide/vue";
 import { api } from "./api";
 import CampaignList from "./components/CampaignList.vue";
 import TraceView from "./components/TraceView.vue";
-import type { Campaign } from "./types";
+import type { Campaign, ControlState } from "./types";
 
 const campaigns = ref<Campaign[]>([]);
 const routeId = ref(decodeURIComponent(location.hash.replace(/^#\/?/, "")));
 const loading = ref(true);
 const error = ref("");
 const connected = ref(false);
+const control = ref<ControlState>({ enabled: false });
 let timer: number | undefined;
 let inflight = false;
 
@@ -47,6 +48,7 @@ async function poll() {
 onMounted(() => {
   window.addEventListener("hashchange", syncRoute);
   void poll();
+  void api.control().then((value) => { control.value = value; }).catch(() => undefined);
   timer = window.setInterval(() => void poll(), 500);
 });
 onUnmounted(() => {
@@ -70,7 +72,7 @@ onUnmounted(() => {
   </header>
 
   <main>
-    <TraceView v-if="selected" :key="selected.id" :campaign="selected" @back="back" />
+    <TraceView v-if="selected" :key="selected.id" :campaign="selected" :control="control" @back="back" />
     <CampaignList v-else :campaigns="campaigns" :loading="loading" @open="open" />
   </main>
   <p v-if="error && !selected" class="error-bar floating">{{ error }}</p>

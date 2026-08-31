@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://schemas.sumup.example/software-factory/feature-request.schema.json",
+  "$id": "https://schemas.software-factory.example/feature-request.schema.json",
   "title": "Software Factory Feature Request",
   "type": "object",
   "additionalProperties": false,

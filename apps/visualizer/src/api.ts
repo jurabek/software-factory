@@ -6,6 +6,7 @@ import type {
   FindingRow,
   Phase,
   Delivery,
+  ControlState,
 } from "./types";
 
 async function get<T>(path: string): Promise<T> {
@@ -15,6 +16,15 @@ async function get<T>(path: string): Promise<T> {
 }
 
 export const api = {
+  control: () => get<ControlState>("/api/control"),
+  approvePlan: async (id: string, token: string) => {
+    const response = await fetch(`/api/campaigns/${encodeURIComponent(id)}/approve-plan`, {
+      method: "POST",
+      headers: { "X-Software-Factory-Control": token },
+    });
+    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+    return response.json() as Promise<{ campaign: Campaign }>;
+  },
   campaigns: () => get<Campaign[]>("/api/campaigns?limit=100"),
   campaign: (id: string) => get<{ campaign: Campaign }>(`/api/campaigns/${encodeURIComponent(id)}`),
   phases: (id: string) => get<Phase[]>(`/api/campaigns/${encodeURIComponent(id)}/phases`),
