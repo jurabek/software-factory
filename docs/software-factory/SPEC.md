@@ -331,9 +331,8 @@ The design is implemented when:
 - [ARCHITECTURE.md](ARCHITECTURE.md): reusable modules, agent runtime, state, and adapter seams.
 - [AGENT_WORKFLOW.md](AGENT_WORKFLOW.md): executable Planner → Builder → Reviewer → Tester protocol.
 - [VISUALIZER.md](VISUALIZER.md): live read-only Campaign observability UI.
-- [LOCAL_PROFILE.md](LOCAL_PROFILE.md): the starter Domain Profile and `config.yaml` roster.
+- [EASY_USE.md](EASY_USE.md): the `swf init` / `swf request` UX and per-repo AGENTS.md block contract.
 - [FEATURE_REQUEST.schema.json](FEATURE_REQUEST.schema.json): developer request and approved plan contract.
 - [AGENT_RESULT.schema.json](AGENT_RESULT.schema.json): Planner/Builder/Reviewer/Tester result contract.
-- [DOMAIN_PROFILE.schema.json](DOMAIN_PROFILE.schema.json): domain extension contract.
-- [RUNBOOK.md](RUNBOOK.md): operating the factory with a Domain Profile.
+- [RUNBOOK.md](RUNBOOK.md): operating the factory on repository contexts.
 - [ROADMAP.md](ROADMAP.md): implementation and adoption stages.

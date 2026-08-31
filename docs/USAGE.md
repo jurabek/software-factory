@@ -1,9 +1,9 @@
 # Software Factory: Running and Usage Guide
 
-This guide covers the local-first Software Factory in `software-factory/`. It can run a
+This guide covers the local-first Software Factory CLI (`swf`). It can run a
 Planner → Builder → Reviewer → Tester campaign against isolated local Git
-worktrees. GitHub branch, draft PR, and CI integration is opt-in through `gh`.
-It does not merge or deploy.
+worktrees of the current repository. GitHub branch, draft PR, and CI
+integration is opt-in through `gh`. It does not merge or deploy.
 
 ## Prerequisites
 
@@ -11,31 +11,9 @@ It does not merge or deploy.
 - npm
 - Git
 - Pi credentials for real agent runs
-- GitHub CLI (`gh`) only when creating a request from a GitHub issue
+- GitHub CLI (`gh`) only for issue intake or GitHub delivery
 
-Generate the factory's lightweight capability report:
-
-```bash
-cd software-factory
-npm install
-npm run dev -- doctor --profile local
-```
-
-This report describes the selected local mode; it is not a full installation or
-credential diagnostic. Use the install and verification commands below to
-validate the toolchain.
-
-Write the capability report to a file when needed:
-
-```bash
-npm run dev -- doctor \
-  --profile local \
-  --output capability-report.json
-```
-
-## Install and verify
-
-From the factory repository root:
+## Install
 
 ```bash
 cd software-factory
@@ -43,14 +21,30 @@ npm install
 npm run typecheck
 npm test
 npm run build
+npm link          # `swf` on PATH
 ```
 
-Use `npm run dev -- ...` while developing. After `npm run build`, the equivalent
-compiled entry point is:
+While developing, `npm run dev -- <command>` is equivalent to `swf <command>`.
+
+## Doctor
+
+`swf doctor` checks Node ≥ 24, that the cwd is a git repo, that the AGENTS.md
+block parses, that the Pi SDK loads, that the campaign workspace is writable,
+and `gh auth` only when `delivery.provider` is `github`.
 
 ```bash
-node dist/cli.js --help
+cd /path/to/your-repo
+swf doctor
 ```
+
+Write the report to a file:
+
+```bash
+swf doctor --output capability-report.json
+```
+
+Doctor also runs at the end of `swf init` and automatically when a request
+fails, so setup problems are surfaced where they happen.
 
 ## Choose an agent runtime
 
@@ -64,14 +58,7 @@ npm exec pi
 ```
 
 Inside Pi, run `/login` and select a provider. If Pi is installed globally,
-running `pi` directly is equivalent. An API key supported by Pi may also be
-supplied through its provider-specific environment variable.
-
-You can select Pi explicitly:
-
-```bash
-export SOFTWARE_FACTORY_RUNTIME=pi
-```
+running `pi` directly is equivalent.
 
 Each assignment gets a persistent Pi session. Builders receive scoped write
 tools for their worktree. Planner, Reviewer, and Tester assignments remain
@@ -113,18 +100,20 @@ software-factory/prompts/
 
 The controller renders each task with the approved Feature Request, assigned
 work item, worktree, attempt number, the campaign Unix socket path
-(`factory.sock`), and a catalog of prior Pi session IDs. Agents load each
-other's work through `list_peer_sessions` / `read_peer_session`, which read
-Pi JSONL session lines from campaign SQLite WAL. The visualizer can read
-those same rows while an agent is still writing. Planner and reviewer sessions also load the SSSF subagent harness:
+(`factory.sock`), a catalog of prior Pi session IDs, and the repository's
+`AGENTS.md` (the repository context, including the Software Factory block).
+Agents load each other's work through `list_peer_sessions` /
+`read_peer_session`, which read Pi JSONL session lines from campaign SQLite
+WAL. The visualizer can read those same rows while an agent is still writing.
+Planner and reviewer sessions also load the SSSF subagent harness:
 `subagent_create`, `subagent_continue`, `subagent_list`, and `subagent_remove`.
 Those spawn a child `pi --mode json` with a persistent JSONL session under
 `sessions/.../subagents/`, ingest that file into WAL, and never receive `bash`.
-Checks and tests come from each provided repository's `prompts/reviewer` or
-`@prompts/reviewer` instructions. The factory does not hardcode domain recipes.
-Builders and testers run those documented commands through `run_local_command`.
-Agent output must still be submitted through `submit_agent_result` and pass
-`AGENT_RESULT.schema.json`.
+Checks and tests come from each repository's `AGENTS.md` block and its
+`prompts/reviewer` or `@prompts/reviewer` instructions. The factory does not
+hardcode domain recipes. Builders and testers run those documented commands
+through `run_local_command`. Agent output must still be submitted through
+`submit_agent_result` and pass `AGENT_RESULT.schema.json`.
 
 ### Fake runtime
 
@@ -141,61 +130,84 @@ tested.
 
 ## Quick start
 
-All commands below run from `software-factory/`.
+All commands run from the repository you want to build in.
 
-1. Create a campaign:
+1. Set the repo up:
 
    ```bash
-   npm run dev -- request \
-     --text "Implement the requested change" \
-     --repositories app
+   swf init
    ```
 
-2. Copy the returned campaign ID, for example `SF-2026-1234`:
+   `swf init` detects checks (package.json / pyproject.toml / Cargo.toml /
+   go.mod), asks at most three questions with defaults, writes the AGENTS.md
+   block, adds `.software-factory/` to `.gitignore`, and runs doctor. Non-TTY
+   input takes all defaults.
+
+2. File a request:
+
+   ```bash
+   swf request "Implement the requested change"
+   ```
+
+   The output includes the campaign ID and the next two commands.
+
+3. Copy the returned campaign ID, for example `SF-2026-1234`:
 
    ```bash
    export CAMPAIGN_ID=SF-2026-1234
    ```
 
-3. Inspect the generated Feature Request:
+4. Inspect the generated Feature Request:
 
    ```bash
-   npm run dev -- request show "$CAMPAIGN_ID"
+   swf request show "$CAMPAIGN_ID"
    ```
 
-4. Approve the plan:
+5. Approve the plan. When it is the only pending plan, no campaign ID is needed:
 
    ```bash
-   npm run dev -- approve "$CAMPAIGN_ID" plan
+   swf approve
    ```
 
-5. Run through Builder, Reviewer, and Tester:
+   Or use the campaign ID explicitly:
 
    ```bash
-   npm run dev -- run "$CAMPAIGN_ID" \
-     --until implementation_complete
+   swf approve "$CAMPAIGN_ID" plan
    ```
 
-6. Inspect the outcome:
+6. Run through Builder, Reviewer, and Tester:
 
    ```bash
-   npm run dev -- status "$CAMPAIGN_ID" --verbose
-   npm run dev -- results "$CAMPAIGN_ID"
-   npm run dev -- checks "$CAMPAIGN_ID"
-   npm run dev -- findings "$CAMPAIGN_ID"
+   swf run "$CAMPAIGN_ID" --until implementation_complete
+   ```
+
+7. Inspect the outcome:
+
+   ```bash
+   swf status "$CAMPAIGN_ID" --verbose
+   swf results "$CAMPAIGN_ID"
+   swf checks "$CAMPAIGN_ID"
+   swf findings "$CAMPAIGN_ID"
    ```
 
 ## Enable GitHub draft PR delivery
 
-GitHub operations use the installed `gh` CLI; no GitHub SDK configuration is required.
-Authenticate and enable delivery before advancing past testing:
+GitHub operations use the installed `gh` CLI; no GitHub SDK configuration is
+required. Set `delivery.provider` in `config.yaml` (replaces the old
+`SOFTWARE_FACTORY_DELIVERY` env var):
+
+```yaml
+delivery:
+  provider: github
+```
+
+Authenticate, then advance past testing:
 
 ```bash
 gh auth login
 gh auth status
-export SOFTWARE_FACTORY_DELIVERY=github
-npm run dev -- doctor --profile local
-npm run dev -- run "$CAMPAIGN_ID" --until validating_ci
+swf doctor
+swf run "$CAMPAIGN_ID" --until validating_ci
 ```
 
 The controller invokes `gh auth setup-git`, pushes a deterministic Campaign branch,
@@ -213,15 +225,23 @@ stored as Campaign evidence.
 ### From text
 
 ```bash
-npm run dev -- request \
-  --profile local \
-  --text "Add a new field to the request" \
-  --repositories app
+swf request "Add a new field to the request"
 ```
 
-`--repositories` is a comma-separated list of repository IDs from `config.yaml`
-or the selected Domain Profile. It defaults to the profile's write-capable
-repositories.
+With no `--text`, `swf request` prompts interactively:
+
+```bash
+swf request
+```
+
+### Against a sibling set of repositories
+
+The cwd is always the primary repository; `--repos` adds sibling paths. Every
+target must have its own AGENTS.md block (`swf init` in each).
+
+```bash
+swf request "change the contract" --repos ../api,../web
+```
 
 ### From a GitHub issue
 
@@ -230,26 +250,25 @@ This is a read-only GitHub operation and requires an authenticated `gh` CLI:
 ```bash
 gh auth status
 
-npm run dev -- request \
-  --profile local \
-  --issue "https://github.com/OWNER/REPOSITORY/issues/123" \
-  --repositories app
+swf request --issue "https://github.com/OWNER/REPOSITORY/issues/123"
 ```
 
 The issue title and body become the request text. The factory does not comment
 on or modify the issue.
 
-## Configure local repositories
+## Repository context
 
-Each repository ID is resolved from `SOFTWARE_FACTORY_REPO_<ID>` first, then the
-factory repository root, then a sibling directory named from the repository URL.
+Each repository is identified by its checkout path. Its AGENTS.md Software
+Factory block supplies:
 
-```bash
-export SOFTWARE_FACTORY_REPO_APP=/path/to/your-repo
-```
+- `checks`: commands the Tester must run and report evidence for.
+- `generated`: build/output paths builders must never touch.
+- `protected`: additional paths builders must never touch.
+- `risk_signals`: optional per-repo override of the global list.
 
-Selected write-capable repositories must exist locally and have the pinned base
-commit available. The factory creates a detached worktree for each work item.
+Selected repositories must exist locally as git work trees and have the pinned
+base commit available. The factory creates a detached worktree for each work
+item.
 
 ## Review or amend a plan
 
@@ -257,22 +276,22 @@ The request is represented by a versioned Feature Request. Amend a value using a
 JSON Pointer:
 
 ```bash
-npm run dev -- request amend "$CAMPAIGN_ID" \
+swf request amend "$CAMPAIGN_ID" \
   --set '/businessOutcome=Add the field without changing public semantics'
 ```
 
 JSON values are accepted:
 
 ```bash
-npm run dev -- request amend "$CAMPAIGN_ID" \
+swf request amend "$CAMPAIGN_ID" \
   --set '/nonGoals=["Changing the provider API","Deploying to production"]'
 ```
 
 Submit and approve the new revision:
 
 ```bash
-npm run dev -- request submit "$CAMPAIGN_ID"
-npm run dev -- approve "$CAMPAIGN_ID" plan
+swf request submit "$CAMPAIGN_ID"
+swf approve "$CAMPAIGN_ID" plan
 ```
 
 An amendment invalidates previous approvals and agent results. Terminal
@@ -283,19 +302,19 @@ campaigns cannot be amended.
 Run until review is clear and testing is next:
 
 ```bash
-npm run dev -- review "$CAMPAIGN_ID"
+swf review "$CAMPAIGN_ID"
 ```
 
 Run testing and any bounded repair cycle through local completion:
 
 ```bash
-npm run dev -- test "$CAMPAIGN_ID"
+swf test "$CAMPAIGN_ID"
 ```
 
 Or select an explicit target:
 
 ```bash
-npm run dev -- run "$CAMPAIGN_ID" --until testing
+swf run "$CAMPAIGN_ID" --until testing
 ```
 
 The controller enforces role order. Blocking review findings return work to a
@@ -305,32 +324,32 @@ testing. Required deferred checks do not pass a campaign.
 ## Inspect a campaign
 
 ```bash
-npm run dev -- status "$CAMPAIGN_ID"
-npm run dev -- status "$CAMPAIGN_ID" --verbose
-npm run dev -- workers "$CAMPAIGN_ID"
-npm run dev -- results "$CAMPAIGN_ID"
-npm run dev -- results "$CAMPAIGN_ID" --role reviewer
-npm run dev -- checks "$CAMPAIGN_ID"
-npm run dev -- findings "$CAMPAIGN_ID"
-npm run dev -- failures "$CAMPAIGN_ID"
-npm run dev -- failures "$CAMPAIGN_ID" --format escalation
+swf status "$CAMPAIGN_ID"
+swf status "$CAMPAIGN_ID" --verbose
+swf workers "$CAMPAIGN_ID"
+swf results "$CAMPAIGN_ID"
+swf results "$CAMPAIGN_ID" --role reviewer
+swf checks "$CAMPAIGN_ID"
+swf findings "$CAMPAIGN_ID"
+swf failures "$CAMPAIGN_ID"
+swf failures "$CAMPAIGN_ID" --format escalation
 ```
 
 Check whether source repositories moved from their pinned base SHAs:
 
 ```bash
-npm run dev -- drift "$CAMPAIGN_ID"
+swf drift "$CAMPAIGN_ID"
 ```
 
 ## Pause, resume, or abort
 
 ```bash
-npm run dev -- pause "$CAMPAIGN_ID" \
+swf pause "$CAMPAIGN_ID" \
   --reason "Waiting for product clarification"
 
-npm run dev -- resume "$CAMPAIGN_ID"
+swf resume "$CAMPAIGN_ID"
 
-npm run dev -- abort "$CAMPAIGN_ID" \
+swf abort "$CAMPAIGN_ID" \
   --reason "Request superseded"
 ```
 
@@ -342,13 +361,13 @@ or reverse product operations.
 A waiver must name a known check, link an issue, and expire:
 
 ```bash
-npm run dev -- waiver propose "$CAMPAIGN_ID" \
-  --check CHECK-app-unit \
+swf waiver propose "$CAMPAIGN_ID" \
+  --check CHECK-unit \
   --issue "https://github.com/OWNER/REPOSITORY/issues/456" \
   --expires "2026-09-15T12:00:00Z" \
   --reason "Known integration environment baseline failure"
 
-npm run dev -- approve "$CAMPAIGN_ID" waiver
+swf approve "$CAMPAIGN_ID" waiver
 ```
 
 Proposing a waiver creates a new request revision and invalidates prior
@@ -357,7 +376,7 @@ approvals/results. A waiver applies only to its exact check and expiry.
 ## Export evidence
 
 ```bash
-npm run dev -- evidence export "$CAMPAIGN_ID" \
+swf evidence export "$CAMPAIGN_ID" \
   --redacted \
   --output "$CAMPAIGN_ID.evidence.json"
 ```
@@ -390,12 +409,24 @@ warnings on stderr and do not discard or block the agent task.
 The server can still be started manually:
 
 ```bash
-npm run dev -- visualize \
+swf visualize \
   --bind 127.0.0.1 \
   --port 4173
 ```
 
 Open `http://127.0.0.1:4173`.
+
+For an explicit, local one-click **plan approval** control, start the visualizer
+in control mode (the background visualizer remains read-only):
+
+```bash
+swf visualize --control
+```
+
+Open a campaign waiting for plan approval, review it, and select **Approve
+plan**. Control mode is loopback-only, only approves plans, and requires a
+per-process token sent in a custom request header. It never enables merge,
+deployment, retry, or other workflow mutations.
 
 The visualizer uses a live, three-level workflow:
 
@@ -415,15 +446,17 @@ boundaries, turns, tool starts and results, session attachment, logs, errors,
 and phase lifecycle events. Prompt bodies and model reasoning remain hidden.
 All persisted trace payloads pass through the factory redactor.
 
-The visualizer has no mutation endpoints. The local server rejects non-GET
-requests and non-loopback bind addresses.
+By default the visualizer has no mutation endpoints and rejects non-GET
+requests. `visualize --control` is the sole exception: it enables only the
+loopback-only, token-protected plan-approval endpoint. Non-loopback bind
+addresses are always rejected.
 
 ## Workspace location
 
-By default, runtime data is stored in:
+By default, runtime data is stored in the target repository:
 
 ```text
-software-factory/.workspace/<campaign-id>/
+<repo>/.software-factory/workspace/<campaign-id>/
 ```
 
 Use another location with:
@@ -439,7 +472,7 @@ campaign.db       SQLite state and Pi session JSONL in WAL mode
 factory.sock      pointer to the short campaign Unix socket path
 events/           redacted append-only event stream
 requests/         Feature Request revisions
-profiles/         pinned resolved profile
+profiles/         pinned resolved repository context
 results/          structured Agent Results
 sessions/         persistent Pi session files
 worktrees/        isolated repository worktrees
@@ -450,20 +483,26 @@ campaign is active.
 
 ## Local-mode limitations
 
-- Branch push, draft PR creation, and CI observation require `SOFTWARE_FACTORY_DELIVERY=github`
+- Branch push, draft PR creation, and CI observation require
+  `delivery.provider: github` in `config.yaml`
 - No merge
 - No CI workflow dispatch or cancellation
 - No deployment or rollback
 - Runtime delivery verification is deferred
-- Missing local repositories and capabilities cannot be treated as passed
+- Missing repository context or capabilities cannot be treated as passed
 
 The verification command therefore reports `deferred`:
 
 ```bash
-npm run dev -- verify "$CAMPAIGN_ID" --environment dev
+swf verify "$CAMPAIGN_ID" --environment dev
 ```
 
 ## Troubleshooting
+
+### A request fails with a missing AGENTS.md block
+
+The error message points at `swf init`. Run it in the repository (and in every
+`--repos` sibling), then request again.
 
 ### Pi cannot start an agent
 
@@ -478,24 +517,24 @@ Use `/login` inside Pi, then retry. For an orchestration-only smoke test, set
 
 ### A selected repository is unavailable
 
-Clone the repository next to the factory or set its
-`SOFTWARE_FACTORY_REPO_<ID>` variable. Then create a new campaign so its base
-SHA is pinned correctly.
+`swf doctor` reports it. Every repository in a campaign must be a local git
+work tree with a committed AGENTS.md block and the pinned base commit
+available. Re-run `swf init` where the block is missing.
 
 ### Plan approval is required
 
 Inspect and approve the current revision:
 
 ```bash
-npm run dev -- request show "$CAMPAIGN_ID"
-npm run dev -- approve "$CAMPAIGN_ID" plan
+swf request show "$CAMPAIGN_ID"
+swf approve "$CAMPAIGN_ID" plan
 ```
 
 If the request was amended but not submitted:
 
 ```bash
-npm run dev -- request submit "$CAMPAIGN_ID"
-npm run dev -- approve "$CAMPAIGN_ID" plan
+swf request submit "$CAMPAIGN_ID"
+swf approve "$CAMPAIGN_ID" plan
 ```
 
 ### A required check is deferred
@@ -508,14 +547,13 @@ executor before expecting implementation completion.
 
 ```bash
 npm run build
-npm run dev -- visualize
+swf visualize
 ```
 
 ### Inspect command help
 
 ```bash
-npm run dev -- --help
-npm run dev -- request --help
-npm run dev -- waiver propose --help
+swf --help
+swf request --help
+swf waiver propose --help
 ```
-

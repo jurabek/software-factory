@@ -1,3 +1,4 @@
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer, type ServerResponse } from "node:http";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { extname, resolve } from "node:path";
@@ -18,33 +19,49 @@ const mime: Record<string, string> = {
   ".svg": "image/svg+xml",
 };
 
+export interface VisualizerControl {
+  actor: string;
+  approvePlan(campaignId: string, actor: string): unknown | Promise<unknown>;
+}
+
 export interface VisualizerOptions {
   workspace: string;
   host?: string;
   port?: number;
   staticRoot?: string;
+  /** Deliberately opt-in local control plane; absent for background visualizers. */
+  control?: VisualizerControl;
 }
 
 export function startVisualizer(options: VisualizerOptions) {
   const host = options.host ?? "127.0.0.1";
   const port = options.port ?? 4173;
+  const control = options.control && { ...options.control, token: randomUUID() };
   if (!["127.0.0.1", "::1", "localhost"].includes(host)) {
     throw new Error("local visualizer may only bind to loopback");
   }
   const staticRoot = options.staticRoot ?? resolve(process.cwd(), "apps/visualizer/dist");
-  const server = createServer((request, response) => {
+  const server = createServer(async (request, response) => {
     const url = new URL(request.url ?? "/", `http://${host}:${port}`);
     response.setHeader("Cache-Control", "no-store");
     response.setHeader("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'");
     response.setHeader("X-Content-Type-Options", "nosniff");
-    if (request.method !== "GET") return json(response, 405, { error: "read-only API" });
     try {
+      if (request.method === "GET" && url.pathname === "/api/control") {
+        return json(response, 200, control
+          ? { enabled: true, actor: control.actor, token: control.token }
+          : { enabled: false });
+      }
+      if (request.method === "POST" && url.pathname.startsWith("/api/campaigns/") && url.pathname.endsWith("/approve-plan")) {
+        return await approvePlan(url, request.headers["x-software-factory-control"], control, response);
+      }
+      if (request.method !== "GET") return json(response, 405, { error: "read-only API" });
       if (url.pathname === "/api/health") {
         return json(response, 200, {
           status: "ok",
-          mode: "read-only",
+          mode: control ? "local-plan-control" : "read-only",
           live: "sqlite-wal-polling",
-          visualizerVersion: 2,
+          visualizerVersion: 3,
           ui: existsSync(resolve(staticRoot, "index.html")),
         });
       }
@@ -152,6 +169,27 @@ function eventPage(store: CampaignStore, url: URL, routeRunId?: string): Record<
     cursor: Number(rows.at(-1)?.id ?? after),
     hasMore: rows.length === limit,
   };
+}
+
+async function approvePlan(
+  url: URL,
+  suppliedToken: string | string[] | undefined,
+  control: (VisualizerControl & { token: string }) | undefined,
+  response: ServerResponse,
+): Promise<void> {
+  if (!control) return json(response, 404, { error: "local control is not enabled" });
+  const id = url.pathname.split("/").filter(Boolean)[2];
+  if (!id || !safeId.test(id)) return json(response, 400, { error: "invalid campaign id" });
+  const token = Array.isArray(suppliedToken) ? suppliedToken[0] : suppliedToken;
+  if (!token || !safeTokenEqual(token, control.token)) return json(response, 403, { error: "local control authorization required" });
+  const campaign = await control.approvePlan(id, control.actor);
+  json(response, 200, { campaign });
+}
+
+function safeTokenEqual(left: string, right: string): boolean {
+  const leftBuffer = Buffer.from(left);
+  const rightBuffer = Buffer.from(right);
+  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
 }
 
 class RouteNotFound extends Error {}

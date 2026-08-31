@@ -17,7 +17,7 @@ Download the signed Go bootstrap launcher through GitHub Releases, verify its ch
 
 ```bash
 gh release download <version> \
-  --repo sumup/software-factory \
+  --repo your-org/software-factory \
   --pattern 'software-factory-bootstrap-*' \
   --dir /tmp/software-factory-bootstrap
 # Verify release metadata, then execute the platform artifact.
@@ -28,10 +28,10 @@ The launcher selects the signed factory container when an approved container run
 Verify readiness:
 
 ```bash
-software-factory doctor --profile local --output capability-report.json
+swf doctor --output capability-report.json
 ```
 
-The Capability Report covers GitHub access, source repositories, Go/Node/Pi, containers, repository generators, databases/brokers, CI/CD, service mesh, deployment state, and observability. Missing capabilities defer checks; they do not pass them.
+The Capability Report covers Node, the git repo, the AGENTS.md block, the Pi SDK, workspace writability, and `gh auth` when delivery is enabled. Missing capabilities defer checks; they do not pass them.
 
 ### 1.1 Start the Visualizer
 
@@ -39,26 +39,22 @@ The Capability Report covers GitHub access, source repositories, Go/Node/Pi, con
 software-factory visualize --workspace /workspace --bind 127.0.0.1
 ```
 
-The command starts the read-only API and UI defined in [VISUALIZER.md](VISUALIZER.md). It polls Campaign SQLite/WAL data and shows live Planner, Builder, Reviewer, Tester, findings, checks, dependencies, costs, and delivery evidence.
+The command starts the default read-only API and UI defined in [VISUALIZER.md](VISUALIZER.md). It polls Campaign SQLite/WAL data and shows live Planner, Builder, Reviewer, Tester, findings, checks, dependencies, costs, and delivery evidence.
 
-The Visualizer does not approve, retry, edit, merge, or deploy. Use the CLI for workflow actions. Do not bind it externally without approved authentication and TLS.
+The default Visualizer does not approve, retry, edit, merge, or deploy. Explicit local control mode may approve a reviewed plan; use the CLI for other workflow actions. Do not bind it externally without approved authentication and TLS.
 
 ## 2. Developer request
 
 Start from an issue:
 
 ```bash
-software-factory request \
-  --profile local \
-  --issue <github-issue-url>
+swf request --issue <github-issue-url>
 ```
 
-Or free-form intent:
+Or free-form intent (prompts interactively when `--text` is omitted):
 
 ```bash
-software-factory request \
-  --profile local \
-  --text '<feature request>'
+swf request --text '<feature request>'
 ```
 
 The command returns a Campaign ID and starts the Planner.
@@ -268,14 +264,13 @@ software-factory evidence export <campaign-id> \
 
 The export includes Feature Request revisions, profile digest, agent results, transitions, approvals, checks, findings, contract/traffic digests, GitHub references, deployment graph, Visualizer-compatible redacted events, and provenance. It excludes credentials, raw PII, and unrestricted logs.
 
-## 15. Add another domain
+## 15. Add another repository
 
-1. Create a profile conforming to [DOMAIN_PROFILE.schema.json](DOMAIN_PROFILE.schema.json).
-2. Implement or reference repository adapters.
-3. Add profile skills for domain-specific planning/review/testing.
+1. Run `swf init` in the repository so its AGENTS.md has a Software Factory block.
+2. Point the campaign at it with `swf request --repos <path>` (the cwd is the primary repo).
+3. The repository's own instructions (AGENTS.md + `prompts/reviewer`) shape planning, review, and testing.
 4. Create evaluation scenarios and fake repository fixtures.
 5. Run shadow and read-only review phases.
 6. Enable scoped Builder writes only after conformance/security thresholds pass.
-7. Pin the released profile version in Campaigns.
 
 The core Planner → Builder → Reviewer → Tester sequence remains unchanged.

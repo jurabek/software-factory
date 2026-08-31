@@ -1,3 +1,4 @@
 .workspace
 dist
 node_modules
+.software-factory/

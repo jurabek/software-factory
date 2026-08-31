@@ -1,22 +1,22 @@
 # Software Factory Docs
 
-This folder contains a complete design package for a profile-driven Software Factory that can plan, build, review, and test multi-repository changes.
+This folder contains a complete design package for a Software Factory that can plan, build, review, and test repository changes.
 
-The architecture is domain-neutral. Repositories, checks, risk, and reviews come from `config.yaml` or a Domain Profile. The starter profile is `local`.
+The architecture is domain-neutral. Repositories, checks, risk, and reviews come from each repository's `AGENTS.md` block (written by `swf init`) plus `config.yaml`. The per-repo block replaces the old Domain Profile machinery (archived under `archive/`).
 
 ## Start Here
 
 1. Read `SPEC.md` for the end-to-end behavior and state machine.
 2. Read `ARCHITECTURE.md` for module seams and runtime topology.
 3. Read `AGENT_WORKFLOW.md` for role contracts and repair loops.
-4. Read `LOCAL_PROFILE.md` plus `config.yaml` for the starter roster, models, and repositories.
+4. Read `EASY_USE.md` for the install/init/request UX plan, then `config.yaml` for the roster and global defaults.
 5. Use `RUNBOOK.md` for operational flow and command examples.
 
 ## Contracts
 
 - `FEATURE_REQUEST.schema.json`: canonical developer-intent and approved-plan contract.
-- `DOMAIN_PROFILE.schema.json`: domain extension contract for reusable orchestration.
 - `AGENT_RESULT.schema.json`: planner/builder/reviewer/tester handoff contract.
+- `archive/`: deprecated Domain Profile schema, starter profile, and profile guide (not loaded).
 
 ## Supporting Docs
 

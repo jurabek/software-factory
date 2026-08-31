@@ -195,7 +195,7 @@ button { color: inherit; }
 .icon-toggle { display: inline-flex; align-items: center; gap: 6px; }
 .controls-spacer { flex: 1; }
 
-.delivery-panel, .waterfall, .session-log-panel {
+.approval-panel, .delivery-panel, .waterfall, .session-log-panel {
   margin: 20px 26px;
   overflow: hidden;
   border: 1px solid var(--border-soft);
@@ -235,6 +235,33 @@ button { color: inherit; }
 .phase-block small { display: block; margin-top: 7px; color: var(--dim); font-family: var(--mono); font-size: 10px; }
 .tool-tick { position: absolute; bottom: 4px; width: 3px; height: 9px; border-radius: 1px; background: var(--cyan); opacity: .7; }
 
+.approval-panel {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  padding: 20px;
+  border-color: rgba(232,182,74,.48);
+  background: linear-gradient(135deg, rgba(232,182,74,.1), rgba(13,17,25,.96));
+}
+.approval-panel > div:first-child { margin-right: auto; }
+.approval-panel .kicker { color: var(--amber); }
+.approval-panel h2 { margin: 0 0 7px; font-size: 18px; }
+.approval-panel p:not(.kicker) { max-width: 640px; margin: 0; color: var(--dim); font-size: 13px; }
+.approval-actions { display: flex; flex-direction: column; align-items: end; gap: 7px; }
+.approve-button, .copy-button {
+  padding: 10px 14px;
+  border: 1px solid rgba(74,222,128,.65);
+  border-radius: 8px;
+  color: #07130b;
+  background: var(--green);
+  font-weight: 750;
+  cursor: pointer;
+}
+.copy-button { border-color: rgba(90,210,221,.6); color: var(--cyan); background: rgba(90,210,221,.08); }
+.approve-button:disabled { cursor: wait; opacity: .65; }
+.approval-actions small { max-width: 330px; color: var(--faint); font-size: 11px; text-align: right; }
+.approval-actions code { color: var(--cyan); font-family: var(--mono); }
+.approval-actions .approval-message { color: var(--green); }
 .panel-head { display: flex; align-items: center; gap: 18px; padding: 15px 18px; border-bottom: 1px solid var(--border); background: var(--panel-2); }
 .panel-head > div { margin-right: auto; }
 .delivery-row {

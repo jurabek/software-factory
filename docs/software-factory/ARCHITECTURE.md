@@ -1,6 +1,6 @@
 # Software Factory Architecture
 
-This document defines the reusable implementation shape for [SPEC.md](SPEC.md). Domain behavior is plugged in through [DOMAIN_PROFILE.schema.json](DOMAIN_PROFILE.schema.json) and the agent roster in [`config.yaml`](../../config.yaml). The starter profile is [LOCAL_PROFILE.md](LOCAL_PROFILE.md).
+This document defines the reusable implementation shape for [SPEC.md](SPEC.md). Domain behavior is plugged in through each repository's `AGENTS.md` block (written by `swf init`) and the agent roster in [`config.yaml`](../../config.yaml). The per-repo block replaces the old Domain Profile (archived under `archive/`); see [EASY_USE.md](EASY_USE.md).
 
 ## 1. Architectural rule
 
@@ -90,18 +90,22 @@ Validates transitions and orchestrates the fixed role sequence. It delegates rep
 
 Validates [FEATURE_REQUEST.schema.json](FEATURE_REQUEST.schema.json), canonicalizes revisions, hashes approvals, tracks amendments, and computes invalidation.
 
-### 4.3 Domain Profile Registry
+### 4.3 Repository Context
 
-Loads pinned profiles conforming to [DOMAIN_PROFILE.schema.json](DOMAIN_PROFILE.schema.json). A profile declares repository adapters, default risks, quality gates, contract/traffic relationships, providers, and evaluation scenarios.
+Resolves the campaign's repository context from each target checkout: the
+`AGENTS.md` Software Factory block (checks, generated/protected paths, optional
+risk override) plus git metadata (branch, remote URL). `swf init` writes the
+block; a missing block is an error that points back at `swf init`.
 
-A profile is data plus referenced skills/adapters. It cannot weaken global security invariants.
+The context is data plus the repo's own instructions. It cannot weaken global
+security invariants.
 
 ### 4.4 Planner Runtime
 
 Creates a read-only Pi session with:
 
 - Developer request.
-- Domain Profile.
+- Repository context (AGENTS.md block + git metadata).
 - Repository metadata and context files.
 - Read-only Git/GitHub tools.
 - `submit_agent_result` as the required completion tool.

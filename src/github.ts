@@ -1,13 +1,14 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import type { CampaignStore } from "./store.js";
-import type { Campaign, DeliveryRecord, DomainProfile, FeatureRequest, WorkItem } from "./types.js";
+import type { Campaign, DeliveryRecord, FeatureRequest, WorkItem } from "./types.js";
+import type { RepoContext } from "./context.js";
 import type { RepositoryManager } from "./repositories.js";
 
 export interface DeliveryContext {
   campaign: Campaign;
   request: FeatureRequest;
-  profile: DomainProfile;
+  profile: RepoContext;
   repositories: RepositoryManager;
   store: CampaignStore;
 }
@@ -360,7 +361,7 @@ function pullRequestBody(context: DeliveryContext, workItem: WorkItem, marker: s
     "## Provenance",
     `- Base SHA: ${workItem.baseSha}`,
     `- Profile: ${context.profile.id}@${context.profile.version} (${context.campaign.profileDigest})`,
-    `- Factory package: @sumup/software-factory-local`,
+    `- Factory package: software-factory-local`,
     "",
     "This pull request is intentionally a draft. Factory review does not replace human or CODEOWNERS approval.",
   ].join("\n");

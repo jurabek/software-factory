@@ -1,10 +1,13 @@
 #!/usr/bin/env node
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import { createInterface } from "node:readline";
 import { Command } from "commander";
 import { loadFactoryConfig } from "./config.js";
+import { runDoctor } from "./doctor.js";
+import { runInit } from "./init.js";
 import { SoftwareFactory } from "./controller.js";
 import { ensureBackgroundVisualizer } from "./background-visualizer.js";
 import { CampaignStore } from "./store.js";
@@ -13,14 +16,18 @@ import { ensureVisualizerBuild } from "./visualizer-assets.js";
 import type { FactoryState } from "./types.js";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const repositoryRoot = resolve(packageRoot, "..");
-const workspace = resolve(process.env.SOFTWARE_FACTORY_WORKSPACE ?? resolve(packageRoot, ".workspace"));
 const visualizerHost = "127.0.0.1";
 const visualizerPort = Number(process.env.SOFTWARE_FACTORY_VISUALIZER_PORT ?? 4173);
 
+/** D2: campaign state lives in the target repo's .software-factory/workspace. */
+function campaignWorkspace(cwd: string = process.cwd()): string {
+  const override = process.env.SOFTWARE_FACTORY_WORKSPACE;
+  return resolve(override ?? resolve(cwd, ".software-factory", "workspace"));
+}
+
 const program = new Command()
   .name("software-factory")
-  .description("Local profile-driven software factory")
+  .description("Local software factory")
   .version("0.1.0");
 
 program.hook("preAction", async (_command, actionCommand) => {
@@ -46,47 +53,58 @@ program.hook("preAction", async (_command, actionCommand) => {
   }
 });
 
+program.command("init")
+  .description("Set up this repo for the Software Factory (AGENTS.md block + .gitignore + doctor)")
+  .option("--cwd <path>", "directory to initialize", process.cwd())
+  .option("--non-interactive", "accept all defaults without prompting")
+  .action(async (options) => {
+    await runInit({
+      cwd: resolve(options.cwd),
+      ...(options.nonInteractive ? { nonInteractive: true } : {}),
+    });
+  });
+
 program.command("doctor")
-  .option("--profile <id>", "profile id")
+  .option("--cwd <path>", "directory to inspect", process.cwd())
   .option("--output <path>")
   .action(async (options) => {
-    const report = {
-      generatedAt: new Date().toISOString(),
-      profile: options.profile ?? loadFactoryConfig().defaults.profile,
-      mode: "local",
-      capabilities: [
-        capability("node", true, process.version),
-        capability("git", existsSync(resolve(repositoryRoot, ".git")), repositoryRoot),
-        capability("pi-sdk", process.env.SOFTWARE_FACTORY_RUNTIME !== "fake", "Pi is the default; set SOFTWARE_FACTORY_RUNTIME=fake only for fixtures"),
-        githubCapability(),
-        capability("deployment", false, "read-only/deferred"),
-      ],
-    };
+    const report = await runDoctor({ cwd: resolve(options.cwd) });
     if (options.output) writeFileSync(resolve(options.output), JSON.stringify(report, null, 2));
     print(report);
   });
 
 const request = program.command("request").description("Create or manage a Feature Request");
 request
-  .option("--profile <id>", "profile id")
+  .argument("[text]", "feature request text")
+  .option("--cwd <path>", "repository to request against", process.cwd())
   .option("--text <request>", "feature request")
   .option("--issue <url>", "read a GitHub issue through gh")
-  .option("--repositories <ids>", "comma-separated profile repository IDs")
-  .action(async (options) => {
-    let text = options.text as string | undefined;
+  .option("--repos <paths>", "comma-separated sibling repository paths")
+  .action(async (text: string | undefined, options) => {
+    let requestText = (options.text as string | undefined) ?? text;
     if (options.issue) {
       const issue = JSON.parse(execFileSync("gh", ["issue", "view", options.issue, "--json", "title,body,url"], { encoding: "utf8" })) as {
         title: string; body: string; url: string;
       };
-      text = `${issue.title}\n\n${issue.body}`;
+      requestText = `${issue.title}\n\n${issue.body}`;
     }
-    if (!text) throw new Error("--text or --issue is required when creating a request");
-    const factory = await createFactory();
-    const input: Parameters<SoftwareFactory["request"]>[0] = { text };
-    if (options.profile) input.profileId = String(options.profile);
-    if (options.repositories) input.repositories = String(options.repositories).split(",").filter(Boolean);
+    if (!requestText) {
+      if (!process.stdin.isTTY) throw new Error("--text, a positional argument, or --issue is required when creating a request");
+      requestText = await ask("What should I build? ");
+    }
+    const factory = await createFactory(resolve(options.cwd));
+    const input: Parameters<SoftwareFactory["request"]>[0] = { text: requestText, cwd: resolve(options.cwd) };
+    if (options.repos) {
+      input.repos = String(options.repos).split(",").map((path) => path.trim()).filter(Boolean).map((path) => resolve(path));
+    }
     if (options.issue) input.issueUrl = options.issue;
-    print(await factory.request(input));
+    try {
+      const campaign = await factory.request(input);
+      print(campaign);
+      console.error(`Next:\n  swf approve ${campaign.id}\n  swf run ${campaign.id}`);
+    } catch (error) {
+      failWithDoctor(resolve(options.cwd), error);
+    }
   });
 request.command("show <campaign-id>").action(async (campaignId) => print((await createFactory()).inspect(campaignId)));
 request.command("amend <campaign-id>")
@@ -102,9 +120,13 @@ request.command("amend <campaign-id>")
   });
 request.command("submit <campaign-id>").action(async (campaignId) => print((await createFactory()).submit(campaignId)));
 
-program.command("approve <campaign-id> <kind>")
+program.command("approve [campaign-id] [kind]")
   .option("--actor <id>", "approver", "local-developer")
-  .action(async (campaignId, kind, options) => print((await createFactory()).approve(campaignId, kind, options.actor)));
+  .option("--latest", "approve the most recently updated campaign awaiting plan approval")
+  .action(async (campaignId, kind = "plan", options) => {
+    const selectedId = campaignId ?? pendingPlanCampaign(options.latest);
+    print((await createFactory()).approve(selectedId, kind, options.actor));
+  });
 
 program.command("run <campaign-id>")
   .option("--until <state>", "target state", "implementation_complete")
@@ -127,7 +149,7 @@ for (const resource of ["results", "checks", "findings", "workers"] as const) {
   program.command(`${resource} <campaign-id>`)
     .option("--role <role>")
     .action((campaignId, options) => {
-      const store = new CampaignStore(workspace, campaignId);
+      const store = new CampaignStore(campaignWorkspace(), campaignId);
       try {
         if (resource === "results") print(store.results(options.role));
         else if (resource === "checks") print(store.rows("checks"));
@@ -140,7 +162,7 @@ for (const resource of ["results", "checks", "findings", "workers"] as const) {
 program.command("failures <campaign-id>")
   .option("--format <format>", "output format", "json")
   .action((campaignId, options) => {
-    const store = new CampaignStore(workspace, campaignId);
+    const store = new CampaignStore(campaignWorkspace(), campaignId);
     try {
       const failures = {
         campaignId,
@@ -189,14 +211,22 @@ program.command("verify <campaign-id>")
 program.command("visualize")
   .option("--bind <host>", "loopback host", "127.0.0.1")
   .option("--port <number>", "port", "4173")
-  .action((options) => {
+  .option("--control", "enable the explicit local UI action for plan approval")
+  .action(async (options) => {
     startVisualizer({
-      workspace,
+      workspace: campaignWorkspace(),
       host: options.bind,
       port: Number(options.port),
       staticRoot: ensureVisualizerBuild(packageRoot),
+      ...(options.control ? {
+        control: {
+          actor: "local-developer",
+          approvePlan: async (campaignId: string, actor: string) =>
+            (await createFactory()).approve(campaignId, "plan", actor),
+        },
+      } : {}),
     });
-    console.log(`Software Factory visualizer: http://${options.bind}:${options.port}`);
+    console.log(`Software Factory visualizer: http://${options.bind}:${options.port}${options.control ? " (plan control enabled)" : ""}`);
   });
 
 program.parseAsync().catch((error: unknown) => {
@@ -204,25 +234,52 @@ program.parseAsync().catch((error: unknown) => {
   process.exitCode = 1;
 });
 
-async function createFactory(): Promise<SoftwareFactory> {
+function pendingPlanCampaign(latest: boolean | undefined): string {
+  const workspace = campaignWorkspace();
+  if (!existsSync(workspace)) throw new Error("no campaigns are awaiting plan approval");
+  const pending = readdirSync(workspace)
+    .filter((id) => /^SF-[0-9]{4}-[0-9]{4,}$/.test(id) && existsSync(resolve(workspace, id, "campaign.db")))
+    .map((id) => {
+      const store = new CampaignStore(workspace, id, { readonly: true });
+      try { return store.campaign(); } finally { store.close(); }
+    })
+    .filter((campaign) => campaign.state === "awaiting_plan_approval")
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  if (pending.length === 0) throw new Error("no campaigns are awaiting plan approval");
+  if (pending.length === 1 || latest) return pending[0]!.id;
+  throw new Error(`multiple campaigns await plan approval; use --latest or visualize --control: ${pending.map((campaign) => campaign.id).join(", ")}`);
+}
+
+async function createFactory(cwd: string = process.cwd()): Promise<SoftwareFactory> {
+  const config = loadFactoryConfig();
   return SoftwareFactory.create({
-    workspace,
-    repositoryRoot,
+    workspace: campaignWorkspace(cwd),
+    repositoryRoot: cwd,
     runtime: process.env.SOFTWARE_FACTORY_RUNTIME === "fake" ? "fake" : "pi",
-    ...(process.env.SOFTWARE_FACTORY_DELIVERY === "github" ? { delivery: "github" as const } : {}),
+    ...(config.delivery.provider === "github" ? { delivery: "github" as const } : {}),
   });
 }
 
-function githubCapability() {
-  if (process.env.SOFTWARE_FACTORY_DELIVERY !== "github") {
-    return capability("github-mutation", false, "disabled; set SOFTWARE_FACTORY_DELIVERY=github");
-  }
-  try {
-    execFileSync("gh", ["auth", "status"], { stdio: "pipe" });
-    return capability("github-mutation", true, "enabled through authenticated gh CLI");
-  } catch {
-    return capability("github-mutation", false, "GitHub delivery requested but gh is not authenticated");
-  }
-}
-function capability(id: string, available: boolean, detail: string) { return { id, available, detail }; }
 function print(value: unknown): void { console.log(JSON.stringify(value, null, 2)); }
+
+function ask(prompt: string): Promise<string> {
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
+  return new Promise((resolveAnswer) => {
+    rl.question(prompt, (answer) => {
+      rl.close();
+      resolveAnswer(answer.trim());
+    });
+  });
+}
+
+/** D19 auto-doctor: print the failure, run doctor against the repo, exit 1. */
+async function failWithDoctor(cwd: string, error: unknown): Promise<void> {
+  console.error(error instanceof Error ? error.message : error);
+  try {
+    const report = await runDoctor({ cwd });
+    print(report);
+  } catch {
+    // doctor itself failed; the original error is the signal
+  }
+  process.exitCode = 1;
+}

@@ -1,5 +1,13 @@
 # Software Factory Roadmap
 
+> **Pivot note (EASY_USE.md, phases 2–4):** per-repository facts no longer come
+> from a Domain Profile file. `swf init` writes a machine-parseable block into
+> each repo's `AGENTS.md` (checks, generated/protected paths, optional risk
+> override), the controller resolves repo context from that block plus git
+> metadata, and the old profile schema/profile dir are archived under
+> `archive/`. This is a data-source change only: the state machine, role
+> contracts, schemas, policy, and delivery mechanics below are unchanged.
+
 This roadmap builds a reusable factory core and proves it through a Domain Profile.
 
 ## 1. Principles
@@ -14,7 +22,7 @@ This roadmap builds a reusable factory core and proves it through a Domain Profi
 
 ### Deliver
 
-- Dedicated `sumup/software-factory` repository.
+- Dedicated `software-factory` repository.
 - TypeScript/Node controller, lockfile, CI, signed container, and Go bootstrap launcher.
 - Feature Request, Domain Profile, and Agent Result schemas.
 - Campaign state machine and repair loops.

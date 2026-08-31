@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadRepositoryReviewerInstructions } from "./repository-reviewer.js";
+import { loadRepositoryAgentsBlock, loadRepositoryReviewerInstructions } from "./repository-reviewer.js";
 import type { AgentRole, FeatureRequest, PeerSessionRef, WorkItem } from "./types.js";
 
 const promptsRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../prompts");
@@ -32,6 +32,7 @@ export function compileRolePrompt(context: PromptContext): CompiledRolePrompt {
     worktree: context.worktree,
     attempt: String(context.attempt),
     repository_reviewer_instructions: loadRepositoryReviewerInstructions(context.worktree),
+    repository_agents_block: loadRepositoryAgentsBlock(context.worktree),
     required_output: requiredOutput(context),
   };
   return {

@@ -2,27 +2,19 @@ import { existsSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import type { CampaignStore } from "./store.js";
-import type { DomainProfile, ProfileRepository, WorkItem } from "./types.js";
+import type { RepoContext, RepoContextRepository } from "./context.js";
+import type { WorkItem } from "./types.js";
 
 export class RepositoryManager {
   constructor(
     private readonly store: CampaignStore,
-    private readonly profile: DomainProfile,
-    private readonly repositoryRoot: string,
+    private readonly context: RepoContext,
   ) {}
 
   sourcePath(repositoryId: string): string | null {
-    const override = process.env[`SOFTWARE_FACTORY_REPO_${repositoryId.toUpperCase().replaceAll("-", "_")}`];
-    if (override && existsSync(override)) return resolve(override);
-    const repository = this.profile.repositories.find((item) => item.id === repositoryId);
-    if (!repository) return null;
-    const folder = repository.url.split("/").at(-1);
-    const candidates = [
-      this.repositoryRoot,
-      folder ? resolve(this.repositoryRoot, folder) : "",
-      folder ? resolve(this.repositoryRoot, "..", folder) : "",
-    ].filter(Boolean);
-    return candidates.find((candidate) => existsSync(resolve(candidate, ".git"))) ?? null;
+    const repository = this.context.repositories.find((item) => item.id === repositoryId);
+    if (!repository || !existsSync(repository.path)) return null;
+    return resolve(repository.path);
   }
 
   baseSha(repositoryId: string): string | null {
@@ -52,7 +44,7 @@ export class RepositoryManager {
   }
 }
 
-export function toWorkItem(repository: ProfileRepository, index: number, purpose: string, sha: string | null): WorkItem {
+export function toWorkItem(repository: RepoContextRepository, index: number, purpose: string, sha: string | null): WorkItem {
   return {
     id: `WI-${repository.id}-${index + 1}`,
     repositoryId: repository.id,
