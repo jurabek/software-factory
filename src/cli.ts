@@ -58,7 +58,7 @@ program.command("doctor")
         capability("node", true, process.version),
         capability("git", existsSync(resolve(repositoryRoot, ".git")), repositoryRoot),
         capability("pi-sdk", process.env.SOFTWARE_FACTORY_RUNTIME !== "fake", "Pi is the default; set SOFTWARE_FACTORY_RUNTIME=fake only for fixtures"),
-        capability("github-mutation", false, "disabled by local-mode policy"),
+        githubCapability(),
         capability("deployment", false, "read-only/deferred"),
       ],
     };
@@ -209,8 +209,20 @@ async function createFactory(): Promise<SoftwareFactory> {
     workspace,
     repositoryRoot,
     runtime: process.env.SOFTWARE_FACTORY_RUNTIME === "fake" ? "fake" : "pi",
+    ...(process.env.SOFTWARE_FACTORY_DELIVERY === "github" ? { delivery: "github" as const } : {}),
   });
 }
 
+function githubCapability() {
+  if (process.env.SOFTWARE_FACTORY_DELIVERY !== "github") {
+    return capability("github-mutation", false, "disabled; set SOFTWARE_FACTORY_DELIVERY=github");
+  }
+  try {
+    execFileSync("gh", ["auth", "status"], { stdio: "pipe" });
+    return capability("github-mutation", true, "enabled through authenticated gh CLI");
+  } catch {
+    return capability("github-mutation", false, "GitHub delivery requested but gh is not authenticated");
+  }
+}
 function capability(id: string, available: boolean, detail: string) { return { id, available, detail }; }
 function print(value: unknown): void { console.log(JSON.stringify(value, null, 2)); }

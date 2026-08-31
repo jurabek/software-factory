@@ -1,8 +1,9 @@
 # Software Factory: Running and Usage Guide
 
-This guide covers the local Software Factory in `software-factory/`. It can run a
+This guide covers the local-first Software Factory in `software-factory/`. It can run a
 Planner → Builder → Reviewer → Tester campaign against isolated local Git
-worktrees. It does not push branches, create pull requests, merge, or deploy.
+worktrees. GitHub branch, draft PR, and CI integration is opt-in through `gh`.
+It does not merge or deploy.
 
 ## Prerequisites
 
@@ -183,6 +184,29 @@ All commands below run from `software-factory/`.
    npm run dev -- checks "$CAMPAIGN_ID"
    npm run dev -- findings "$CAMPAIGN_ID"
    ```
+
+## Enable GitHub draft PR delivery
+
+GitHub operations use the installed `gh` CLI; no GitHub SDK configuration is required.
+Authenticate and enable delivery before advancing past testing:
+
+```bash
+gh auth login
+gh auth status
+export SOFTWARE_FACTORY_DELIVERY=github
+npm run dev -- doctor --profile local
+npm run dev -- run "$CAMPAIGN_ID" --until validating_ci
+```
+
+The controller invokes `gh auth setup-git`, pushes a deterministic Campaign branch,
+reconciles an existing PR before mutation, and creates a draft with `gh pr create`.
+It observes checks with `gh pr checks`. While checks are pending, the Campaign remains
+`validating_ci`; run the command again to poll. Failed checks enter the bounded Builder
+→ Reviewer → Tester CI repair loop.
+
+The authenticated identity must have appropriately scoped repository access. Prefer a
+short-lived `GH_TOKEN` for unattended runs. Tokens and `gh auth token` output are never
+stored as Campaign evidence.
 
 ## Create a request
 
@@ -426,9 +450,9 @@ campaign is active.
 
 ## Local-mode limitations
 
-- No branch push or pull request creation
+- Branch push, draft PR creation, and CI observation require `SOFTWARE_FACTORY_DELIVERY=github`
 - No merge
-- No CI/CD mutation
+- No CI workflow dispatch or cancellation
 - No deployment or rollback
 - Runtime delivery verification is deferred
 - Missing local repositories and capabilities cannot be treated as passed
