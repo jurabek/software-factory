@@ -1,104 +1,70 @@
-# Software Factory MVP
+# Software Factory
 
-This directory implements the local-first boundary of the design in
-[`docs/software-factory`](docs/software-factory/README.md).
+A local-only coding workflow built around Pi. `swf` coordinates a Feature
+Request through Planner, Builder, Reviewer, and Tester agents in isolated Git
+worktrees. `swf-ui` visualizes Campaign state from local SQLite files.
 
-It provides:
+The factory does not open pull requests, poll remote checks, deploy, or call a
+remote Software Factory server. Pi can still use its normal tools, including
+`gh`, when the user explicitly asks it to.
 
-- Draft 2020-12 validation for Domain Profiles, Feature Requests, and Agent Results.
-- A persisted Planner → Builder → Reviewer → Tester state machine with bounded repair loops.
-- SQLite/WAL state plus a redacted append-only event mirror.
-- Deterministic local agents for offline testing and an opt-in embedded Pi SDK runtime.
-- Builder worktrees, path/symlink/generated-file policy, immutable base SHAs, and drift checks.
-- A CLI for intake, approval, execution, inspection, pause/resume/abort, and evidence export.
-- Opt-in, idempotent campaign branch, draft PR, and CI-check integration through `gh`.
-- An automatically started, loopback-only, GET-only Vue visualizer with live
-  SQLite WAL session logs, trace filtering, and an agent waterfall.
+## Packages
 
-GitHub delivery is disabled by default and uses only authenticated `gh` CLI commands when enabled.
-Merge, deployment, and rollback remain unavailable. Delivery verification reports `deferred`.
+- `@software-factory/core`: Campaign orchestration, local Git worktrees,
+  repository checks, Pi runtime, persistence, and the read model.
+- `@software-factory/cli`: the `swf` executable.
+- `@software-factory/ui`: the `swf-ui` executable, loopback server, and Vue UI.
 
-Configure agents and repositories in [`config.yaml`](config.yaml). Each agent can
-set its own `model`, `thinking`, and `prompt_engineering` system/user files;
-those values are passed into Pi.
+Dependencies point inward: CLI and UI depend on core; core never imports an
+executable package, and `swf` never starts the UI.
 
-For complete setup, command reference, multi-repository configuration, campaign
-operations, visualizer usage, and troubleshooting, see
-[`docs/USAGE.md`](docs/USAGE.md).
-
-## Setup
+## Install
 
 Node.js 24 or later is required.
 
 ```bash
-cd software-factory
 npm install
 npm run typecheck
 npm test
 npm run build
+npm link --workspace @software-factory/cli
+npm link --workspace @software-factory/ui
 ```
 
-## Run a local Campaign
+## Run a Campaign
 
-The CLI defaults to authenticated embedded Pi sessions:
+From a local Git repository:
 
 ```bash
-SOFTWARE_FACTORY_RUNTIME=pi npm run dev -- request \
-  --text "Implement the requested change" \
-  --repositories app
-
-npm run dev -- approve SF-2026-1234 plan
-npm run dev -- run SF-2026-1234 --until implementation_complete
-npm run dev -- status SF-2026-1234 --verbose
+swf init
+swf request "implement X"
+swf approve SF-2026-1234
+swf run SF-2026-1234
+swf status SF-2026-1234 --verbose
 ```
 
-To push campaign branches, open draft PRs, and observe their checks through `gh`:
+Repository checks and protected/generated paths live in the marked
+Software Factory block in `AGENTS.md`. Campaign data lives under
+`.software-factory/workspace/`.
+
+For deterministic orchestration tests without model calls:
 
 ```bash
-gh auth status
-export SOFTWARE_FACTORY_DELIVERY=github
-npm run dev -- run SF-2026-1234 --until validating_ci
-# Re-run while CI is pending; successful checks advance the Campaign.
-npm run dev -- run SF-2026-1234 --until implementation_complete
+SOFTWARE_FACTORY_RUNTIME=fake swf request "demo"
 ```
 
-Git authentication is configured through `gh auth setup-git`; the controller never reads or persists the token.
+## Run the UI
 
-Campaign data is written to `.workspace/`. Builder assignments use detached
-Git worktrees pinned to the source SHA.
-
-For deterministic fixture/demo runs with no model calls, opt in explicitly:
+Build once, then start the visualizer explicitly:
 
 ```bash
-SOFTWARE_FACTORY_RUNTIME=fake npm run dev --visualize --bind 127.0.0.1 --port 4173 request \
-  --text "Implement the requested change" \
-  --repositories app
+swf-ui
+swf-ui --port 4180
+swf-ui --control
 ```
 
-The fake runtime is not evidence that product code was implemented; it exists for controller,
-policy, persistence, and UI testing. The Pi runtime creates one persistent session per assignment and requires every role to finish
-through the terminating `submit_agent_result` tool. Planner, Reviewer, and Tester do not receive
-product write tools.
+The server binds to loopback only and runs in the foreground. It is read-only
+unless `--control` is supplied; control mode adds only token-protected local
+plan approval.
 
-## Visualizer
-
-Build and start the read-only UI:
-
-```bash
-npm run build
-npm run dev -- visualize --bind 127.0.0.1 --port 4173
-```
-
-Open `http://127.0.0.1:4173`. The server rejects non-GET methods and non-loopback binds.
-
-## Local repository discovery
-
-Each profile repository resolves from `SOFTWARE_FACTORY_REPO_<ID>`, the
-configured repository root, or a sibling directory named from the repository
-URL. The starter `local` profile uses `app`:
-
-```text
-SOFTWARE_FACTORY_REPO_APP=/path/to/your-repo
-```
-
-Missing repositories are represented with unresolved base SHAs and are not scheduled locally.
+See [`docs/USAGE.md`](docs/USAGE.md) for the command reference.
