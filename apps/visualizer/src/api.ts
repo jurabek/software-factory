@@ -5,6 +5,7 @@ import type {
   EventPage,
   FindingRow,
   Phase,
+  Delivery,
 } from "./types";
 
 async function get<T>(path: string): Promise<T> {
@@ -20,6 +21,7 @@ export const api = {
   agents: (id: string) => get<AgentRun[]>(`/api/campaigns/${encodeURIComponent(id)}/agents`),
   checks: (id: string) => get<CheckRow[]>(`/api/campaigns/${encodeURIComponent(id)}/checks`),
   findings: (id: string) => get<FindingRow[]>(`/api/campaigns/${encodeURIComponent(id)}/findings`),
+  delivery: (id: string) => get<{ status: string; pullRequests?: Delivery[] }>(`/api/campaigns/${encodeURIComponent(id)}/delivery`),
   events: (
     id: string,
     options: { after?: number; limit?: number; types?: string[]; role?: string; runId?: string } = {},

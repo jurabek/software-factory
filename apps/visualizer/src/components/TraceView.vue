@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
-import { ArrowLeft, CheckCircle2, Clock3, GitBranch, TriangleAlert, Wrench } from "@lucide/vue";
+import { ArrowLeft, CheckCircle2, Clock3, ExternalLink, GitBranch, TriangleAlert, Wrench } from "@lucide/vue";
 import { api } from "../api";
-import type { AgentRun, Campaign, CheckRow, FindingRow, Phase, TraceEvent } from "../types";
+import type { AgentRun, Campaign, CheckRow, Delivery, FindingRow, Phase, TraceEvent } from "../types";
 import { formatDuration, isRunning, traceTypeGroups } from "../types";
 import SessionLog from "./SessionLog.vue";
 import TraceControls from "./TraceControls.vue";
@@ -15,6 +15,8 @@ const phases = ref<Phase[]>([]);
 const agents = ref<AgentRun[]>([]);
 const checks = ref<CheckRow[]>([]);
 const findings = ref<FindingRow[]>([]);
+const deliveries = ref<Delivery[]>([]);
+const deliveryStatus = ref("deferred");
 const events = ref<TraceEvent[]>([]);
 const selectedGroups = ref(Object.keys(traceTypeGroups));
 const role = ref("");
@@ -103,18 +105,21 @@ async function tick() {
   inflight = true;
   try {
     const id = campaign.value.id;
-    const [detail, phaseRows, agentRows, checkRows, findingRows] = await Promise.all([
+    const [detail, phaseRows, agentRows, checkRows, findingRows, delivery] = await Promise.all([
       api.campaign(id),
       api.phases(id),
       api.agents(id),
       api.checks(id),
       api.findings(id),
+      api.delivery(id),
     ]);
     campaign.value = detail.campaign;
     phases.value = phaseRows;
     agents.value = agentRows;
     checks.value = checkRows;
     findings.value = findingRows;
+    deliveries.value = delivery.pullRequests ?? [];
+    deliveryStatus.value = delivery.status;
     let page;
     do {
       page = await api.events(id, { after: cursor, limit: 500 });
@@ -154,6 +159,27 @@ onUnmounted(() => window.clearInterval(timer));
       <span class="stat"><CheckCircle2 :size="16" />{{ checks.filter((item) => item.status === "passed").length }}/{{ checks.length }} checks</span>
       <span class="stat"><TriangleAlert :size="16" />{{ findings.filter((item) => !item.resolved).length }} findings</span>
     </div>
+
+    <section v-if="deliveries.length" class="delivery-panel">
+      <div class="panel-head">
+        <div>
+          <h2>GitHub delivery</h2>
+          <p>Draft pull requests and checks observed through the authenticated gh CLI.</p>
+        </div>
+        <span class="source-chip" :class="{ live: deliveryStatus === 'in_progress' }"><i />{{ deliveryStatus }}</span>
+      </div>
+      <div v-for="delivery in deliveries" :key="delivery.workItemId" class="delivery-row">
+        <div>
+          <strong>{{ delivery.repositoryId }} · {{ delivery.workItemId }}</strong>
+          <small><GitBranch :size="13" />{{ delivery.branch }} · {{ delivery.headSha.slice(0, 12) }}</small>
+        </div>
+        <span class="delivery-ci" :data-status="delivery.ciStatus">CI {{ delivery.ciStatus }}</span>
+        <span class="delivery-checks">{{ delivery.checks.length }} checks</span>
+        <a :href="delivery.pullRequestUrl" target="_blank" rel="noreferrer" @click.stop>
+          PR #{{ delivery.pullRequestNumber }} <ExternalLink :size="13" />
+        </a>
+      </div>
+    </section>
 
     <TraceControls
       v-model:selectedGroups="selectedGroups"

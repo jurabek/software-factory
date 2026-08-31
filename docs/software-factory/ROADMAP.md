@@ -116,7 +116,7 @@ Over at least 15 historical/sandbox Campaigns:
 
 ### Deliver
 
-- GitHub App integration and idempotent operation reconciliation.
+- Authenticated `gh` CLI integration and idempotent operation reconciliation; unattended runs use a short-lived GitHub App or workload token.
 - Campaign branches and draft PRs.
 - CI observation and bounded repair.
 - Approval dialogs and GitHub Campaign status.

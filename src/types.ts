@@ -12,6 +12,7 @@ export const factoryStates = [
 export type FactoryState = (typeof factoryStates)[number];
 export type AgentRole = "planner" | "builder" | "reviewer" | "tester";
 export type CheckStatus = "passed" | "failed" | "deferred" | "waived";
+export type CiStatus = "pending" | "passed" | "failed";
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 export interface PromptEngineering {
@@ -154,6 +155,28 @@ export interface AgentResult {
   summary: string;
   startedAt: string;
   completedAt: string;
+}
+
+export interface DeliveryCheck {
+  name: string;
+  state: string;
+  bucket: string;
+  link: string | null;
+}
+
+export interface DeliveryRecord {
+  workItemId: string;
+  repositoryId: string;
+  repositoryUrl: string;
+  baseBranch: string;
+  branch: string;
+  headSha: string;
+  pullRequestNumber: number;
+  pullRequestUrl: string;
+  draft: boolean;
+  ciStatus: CiStatus;
+  checks: DeliveryCheck[];
+  updatedAt: string;
 }
 
 export interface Campaign {

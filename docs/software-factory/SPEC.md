@@ -172,6 +172,8 @@ The factory MUST use:
 - Role-specific model and tool profiles.
 - A GitHub App or workload identity with short-lived scoped credentials.
 
+The controller MUST invoke GitHub authentication, PR, checks, run, and API operations through the preinstalled `gh` CLI. Git push authentication MUST be configured through `gh auth setup-git`; tokens MUST NOT be copied into command arguments or persisted as evidence.
+
 Planner, Reviewer, and Tester sessions MUST NOT have product-code write tools. A Builder receives access only to one approved worktree. Production credentials MUST NOT enter Builder sessions.
 
 Every run records factory, Pi, profile, prompt/skill, model, reasoning-level, source-SHA, and sandbox-image provenance.

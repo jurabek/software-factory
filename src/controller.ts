@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { defaultRepositories, loadFactoryConfig, resolveAgent } from "./config.js";
 import { ContractValidator, digest, loadProfile } from "./contracts.js";
+import { GhCliDelivery, type DeliveryRuntime } from "./github.js";
 import { assertWriteAllowed } from "./policy.js";
 import { RepositoryManager, toWorkItem } from "./repositories.js";
 import { FakeAgentRuntime, PiAgentRuntime, type AgentRuntime, type Assignment } from "./runtime.js";
@@ -16,10 +17,13 @@ export interface FactoryOptions {
   workspace: string;
   repositoryRoot: string;
   runtime?: "fake" | "pi" | AgentRuntime;
+  delivery?: "github" | DeliveryRuntime;
   config?: FactoryConfig;
 }
 
 export class SoftwareFactory {
+  private githubDelivery: GhCliDelivery | undefined;
+
   private constructor(
     private readonly options: FactoryOptions,
     private readonly validator: ContractValidator,
@@ -112,29 +116,69 @@ export class SoftwareFactory {
         const state = store.campaign().state;
         if (state === target || isTerminal(state) || ["blocked", "paused"].includes(state)) break;
         if (state === "awaiting_plan_approval") throw new Error("plan approval is required");
-        if (state === "building" || state === "repairing_review" || state === "repairing_test") {
+        if (["building", "repairing_review", "repairing_test", "repairing_ci"].includes(state)) {
           await this.runBuilders(store, profile, request, state !== "building");
-          await this.transition(store, state === "building" ? "reviewing" : state === "repairing_review" ? "re_reviewing" : "re_reviewing_after_test");
+          const next = state === "building" ? "reviewing"
+            : state === "repairing_review" ? "re_reviewing"
+              : state === "repairing_test" ? "re_reviewing_after_test"
+                : "re_reviewing_after_ci";
+          await this.transition(store, next);
           continue;
         }
-        if (["reviewing", "re_reviewing", "re_reviewing_after_test"].includes(state)) {
+        if (["reviewing", "re_reviewing", "re_reviewing_after_test", "re_reviewing_after_ci"].includes(state)) {
           const blocked = await this.runReviewers(store, profile, request);
           if (blocked) {
             this.assertRepairBudget(store, request);
-            await this.transition(store, state === "re_reviewing_after_test" ? "repairing_test" : "repairing_review");
+            const next = state === "re_reviewing_after_test" ? "repairing_test"
+              : state === "re_reviewing_after_ci" ? "repairing_ci"
+                : "repairing_review";
+            await this.transition(store, next);
           } else {
-            await this.transition(store, state === "re_reviewing_after_test" ? "re_testing" : "testing");
+            const next = state === "re_reviewing_after_test" ? "re_testing"
+              : state === "re_reviewing_after_ci" ? "re_testing_after_ci"
+                : "testing";
+            await this.transition(store, next);
           }
           continue;
         }
-        if (state === "testing" || state === "re_testing") {
+        if (["testing", "re_testing", "re_testing_after_ci"].includes(state)) {
           const failed = await this.runTester(store, profile, request);
           if (failed) {
             this.assertRepairBudget(store, request);
-            await this.transition(store, "repairing_test");
+            await this.transition(store, state === "re_testing_after_ci" ? "repairing_ci" : "repairing_test");
           } else {
-            await this.transition(store, "awaiting_human_review");
+            await this.transition(store, this.options.delivery ? "opening_prs" : "awaiting_human_review");
           }
+          continue;
+        }
+        if (state === "opening_prs") {
+          const manager = new RepositoryManager(store, profile, this.options.repositoryRoot);
+          const deliveries = this.delivery().openDraftPullRequests({ campaign: store.campaign(), request, profile, repositories: manager, store });
+          const expectedDeliveries = request.workItems.filter((item) =>
+            profile.repositories.find((repository) => repository.id === item.repositoryId)?.mode !== "read_only",
+          );
+          if (deliveries.length !== expectedDeliveries.length || deliveries.length === 0) {
+            this.transitionSync(store, "blocked", null, "one or more write-capable work items have no GitHub draft PR");
+            break;
+          }
+          for (const delivery of deliveries) store.saveDelivery(delivery);
+          await this.transition(store, "validating_ci");
+          continue;
+        }
+        if (state === "validating_ci") {
+          const manager = new RepositoryManager(store, profile, this.options.repositoryRoot);
+          const deliveries = this.delivery().observeCi(
+            { campaign: store.campaign(), request, profile, repositories: manager, store },
+            store.deliveries(),
+          );
+          for (const delivery of deliveries) store.saveDelivery(delivery);
+          if (deliveries.some((delivery) => delivery.ciStatus === "failed")) {
+            this.assertRepairBudget(store, request);
+            await this.transition(store, "repairing_ci");
+            continue;
+          }
+          if (deliveries.length === 0 || deliveries.some((delivery) => delivery.ciStatus === "pending")) break;
+          await this.transition(store, "awaiting_human_review");
           continue;
         }
         if (state === "awaiting_human_review") {
@@ -372,7 +416,7 @@ export class SoftwareFactory {
         allowedHosts: [],
       },
       systemPrompt: prompts.system,
-      prompt: prompts.user,
+      prompt: [prompts.user, this.repairContext(store, role)].filter(Boolean).join("\n\n"),
       agent,
     };
   }
@@ -380,6 +424,28 @@ export class SoftwareFactory {
   private runtime(store: CampaignStore): AgentRuntime {
     if (typeof this.options.runtime === "object") return this.options.runtime;
     return this.options.runtime === "pi" ? new PiAgentRuntime(this.validator, store) : new FakeAgentRuntime();
+  }
+
+  private delivery(): DeliveryRuntime {
+    if (!this.options.delivery) throw new Error("GitHub delivery is not enabled");
+    if (typeof this.options.delivery === "object") return this.options.delivery;
+    this.githubDelivery ??= new GhCliDelivery();
+    return this.githubDelivery;
+  }
+
+  private repairContext(store: CampaignStore, role: Assignment["role"]): string {
+    if (role !== "builder" || store.campaign().state !== "repairing_ci") return "";
+    const failed = store.deliveries().filter((delivery) => delivery.ciStatus === "failed");
+    if (!failed.length) return "";
+    return [
+      "Controller-verified CI failures requiring repair:",
+      JSON.stringify(failed.map((delivery) => ({
+        repositoryId: delivery.repositoryId,
+        headSha: delivery.headSha,
+        pullRequestUrl: delivery.pullRequestUrl,
+        checks: delivery.checks.filter((check) => ["fail", "failure", "cancel", "cancelled", "timed_out"].includes(check.bucket.toLowerCase())),
+      })), null, 2),
+    ].join("\n");
   }
 
   private async executeAgent(store: CampaignStore, assignment: Assignment) {

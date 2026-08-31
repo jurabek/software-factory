@@ -117,7 +117,12 @@ function campaignRoute(workspace: string, url: URL, response: ServerResponse): v
     if (resource === "checks" || resource === "findings" || resource === "dependencies" || resource === "phases" || resource === "agents") {
       return store.rows(resource === "agents" ? "agent_runs" : resource).map(normalizeRow);
     }
-    if (resource === "delivery") return { status: "deferred", reason: "local mode has no deployment authority" };
+    if (resource === "delivery") {
+      const deliveries = store.deliveries();
+      return deliveries.length
+        ? { status: deliveries.every((delivery) => delivery.ciStatus === "passed") ? "passed" : "in_progress", pullRequests: deliveries }
+        : { status: "deferred", reason: "GitHub delivery is not enabled for this Campaign" };
+    }
     throw new RouteNotFound();
   });
   json(response, 200, output);
