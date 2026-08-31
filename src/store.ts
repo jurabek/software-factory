@@ -4,7 +4,7 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { CampaignBus } from "./bus.js";
-import type { AgentResult, Campaign, FactoryState, FeatureRequest, PeerSessionRef } from "./types.js";
+import type { AgentResult, Campaign, DeliveryRecord, FactoryState, FeatureRequest, PeerSessionRef } from "./types.js";
 
 interface Row { [key: string]: unknown }
 
@@ -101,6 +101,11 @@ export class CampaignStore {
       );
       CREATE TABLE IF NOT EXISTS operations (
         operation_key TEXT PRIMARY KEY, digest TEXT NOT NULL, result TEXT NOT NULL, created_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS deliveries (
+        work_item_id TEXT PRIMARY KEY, repository_id TEXT NOT NULL, branch TEXT NOT NULL,
+        head_sha TEXT NOT NULL, pull_request_url TEXT NOT NULL, ci_status TEXT NOT NULL,
+        body TEXT NOT NULL, updated_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS pi_sessions (
         session_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, role TEXT NOT NULL,
@@ -396,8 +401,31 @@ export class CampaignStore {
       return JSON.parse(String(existing.result));
     }
     const result = action();
-    this.db.prepare(`INSERT INTO operations VALUES (?, ?, ?, ?)`).run(key, digest, JSON.stringify(result), new Date().toISOString());
+    this.db.prepare(`INSERT INTO operations VALUES (?, ?, ?, ?)`).run(key, digest, JSON.stringify(redact(result)), new Date().toISOString());
     return result;
+  }
+
+  saveDelivery(delivery: DeliveryRecord): void {
+    const safe = redact(delivery) as DeliveryRecord;
+    this.db.prepare(`INSERT OR REPLACE INTO deliveries VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(
+        safe.workItemId, safe.repositoryId, safe.branch, safe.headSha,
+        safe.pullRequestUrl, safe.ciStatus, JSON.stringify(safe), safe.updatedAt,
+      );
+    this.event("delivery_updated", {
+      workItemId: safe.workItemId,
+      repositoryId: safe.repositoryId,
+      branch: safe.branch,
+      headSha: safe.headSha,
+      pullRequestUrl: safe.pullRequestUrl,
+      ciStatus: safe.ciStatus,
+      checks: safe.checks,
+    });
+  }
+
+  deliveries(): DeliveryRecord[] {
+    const rows = this.db.prepare(`SELECT body FROM deliveries ORDER BY repository_id`).all() as Row[];
+    return rows.map((row) => JSON.parse(String(row.body)) as DeliveryRecord);
   }
 
   exportSnapshot(output: string): void {
@@ -409,6 +437,7 @@ export class CampaignStore {
       checks: this.rows("checks"),
       findings: this.rows("findings"),
       dependencies: this.rows("dependencies"),
+      deliveries: this.deliveries(),
     };
     writeFileSync(output, JSON.stringify(redact(snapshot), null, 2));
   }
