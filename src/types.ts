@@ -64,6 +64,11 @@ export interface FactoryConfig {
   agents: AgentSpec[];
 }
 
+export interface RepositoryCheck {
+  id: string;
+  command: string;
+}
+
 export interface ProfileRepository {
   id: string;
   url: string;
@@ -73,7 +78,8 @@ export interface ProfileRepository {
   instructionPaths: string[];
   defaultWritePaths: string[];
   generatedPaths: string[];
-  checkIds: string[];
+  checks: RepositoryCheck[];
+  effectiveRiskSignals: string[];
 }
 
 export interface WorkItem {

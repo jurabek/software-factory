@@ -7,17 +7,6 @@ const reviewerFiles = [
   "@prompts/reviewer.md",
 ];
 
-/**
- * D10: the repo's AGENTS.md (including the Software Factory block) is the
- * repository context handed to every role, replacing profile-authored
- * instructions. Returns "" when the worktree has no AGENTS.md.
- */
-export function loadRepositoryAgentsBlock(worktree: string): string {
-  const path = resolve(worktree, "AGENTS.md");
-  if (!existsSync(path) || !statSync(path).isFile()) return "";
-  return readFileSync(path, "utf8").trim();
-}
-
 export function loadRepositoryReviewerInstructions(worktree: string): string {
   const sections: string[] = [];
   for (const relative of reviewerFiles) {

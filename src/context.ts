@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { readAgentsBlock } from "./repo-block.js";
 import type { FactoryConfig, ProfileRepository } from "./types.js";
@@ -10,13 +10,13 @@ import type { FactoryConfig, ProfileRepository } from "./types.js";
  */
 export interface RepoContextRepository extends ProfileRepository {
   path: string;
+  agentsInstructions: string;
 }
 
 /**
  * The resolved campaign context: one record per target repository, derived
- * from each repo's AGENTS.md block plus git metadata. Keeps the historical
- * DomainProfile shape so state binding, digests, and delivery stay unchanged;
- * it is no longer loaded from disk profile files.
+ * from each repo's AGENTS.md block plus git metadata. This is the pinned source
+ * for role instructions, executable checks, policy paths, and effective risk.
  */
 export interface RepoContext {
   schemaVersion: string;
@@ -52,7 +52,7 @@ export function resolveRepoContext(cwd: string, config: FactoryConfig, repos: st
     name: "Local",
     repositories: paths.map((path) => resolveRepository(path, config)),
     riskDefaults: {
-      highRiskSignals: config.riskSignals,
+      highRiskSignals: [...config.riskSignals],
       prohibitedEvidenceData,
     },
     requiredReviewKinds: config.requiredReviewKinds,
@@ -68,7 +68,8 @@ export function resolveRepoContext(cwd: string, config: FactoryConfig, repos: st
 function resolveRepository(path: string, config: FactoryConfig): RepoContextRepository {
   if (!existsSync(path)) throw new Error(`repository not found: ${path}`);
   if (!isGitRepo(path)) throw new Error(`not a git repository: ${path}`);
-  const block = readAgentsBlock(resolve(path, "AGENTS.md"));
+  const agentsPath = resolve(path, "AGENTS.md");
+  const block = readAgentsBlock(agentsPath);
   // The schema constrains ids to lowercase; directory basenames may not be.
   const id = basename(path).toLowerCase();
   return {
@@ -81,8 +82,10 @@ function resolveRepository(path: string, config: FactoryConfig): RepoContextRepo
     defaultWritePaths: ["**"],
     // `protected` and `generated` are both paths builders must never touch.
     generatedPaths: [...block.generated, ...block.protected],
-    checkIds: block.checks.map((check) => check.id),
+    checks: block.checks.map((check) => ({ ...check })),
+    effectiveRiskSignals: [...(block.riskSignals ?? config.riskSignals)],
     path,
+    agentsInstructions: readFileSync(agentsPath, "utf8"),
   };
 }
 

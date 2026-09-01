@@ -57,23 +57,36 @@ describe("repo context resolution", () => {
       path: repo,
       defaultBranch: "main",
       mode: "read_write",
-      checkIds: ["unit", "typecheck"],
+      checks: [
+        { id: "unit", command: "npm test" },
+        { id: "typecheck", command: "npm run typecheck" },
+      ],
     });
     expect(entry.url).toBe(`local://app`);
     expect(entry.generatedPaths).toEqual(["dist/"]);
     expect(entry.defaultWritePaths).toEqual(["**"]);
+    expect(entry.agentsInstructions).toContain("command: npm test");
     expect(gitBranch(repo)).toBe("main");
   });
 
-  it("merges protected paths into generatedPaths and keeps riskSignals global", () => {
+  it("merges protected paths and applies the per-repository risk override", () => {
     const repo = gitRepo("app");
     blockRepo(repo, { protected: ["src/vendor/"], risk: ["payment flows"] });
     const config = loadFactoryConfig();
     const context = resolveRepoContext(repo, config);
     expect(context.repositories[0]?.generatedPaths).toEqual(["dist/", "src/vendor/"]);
+    expect(context.repositories[0]?.effectiveRiskSignals).toEqual(["payment flows"]);
     expect(context.riskDefaults.highRiskSignals).toEqual(config.riskSignals);
     expect(context.requiredReviewKinds).toEqual(config.requiredReviewKinds);
     expect(context.approvalRules).toEqual(config.approvalRules);
+  });
+
+  it("uses global risk signals when a repository has no override", () => {
+    const repo = gitRepo("app");
+    blockRepo(repo);
+    const config = loadFactoryConfig();
+    expect(resolveRepoContext(repo, config).repositories[0]?.effectiveRiskSignals)
+      .toEqual(config.riskSignals);
   });
 
   it("adds sibling repositories from --repos and deduplicates", () => {
@@ -131,7 +144,45 @@ describe("prompt context injection", () => {
     for (const assignment of assignments) {
       expect(assignment.user).toContain("software-factory:start");
       expect(assignment.user).toContain("id: unit");
+      expect(assignment.user).toContain("Effective risk signals:");
+      expect(assignment.user).toContain(loadFactoryConfig().riskSignals[0]);
     }
     expect(readFileSync(resolve(repository, "AGENTS.md"), "utf8")).toContain("software-factory:start");
+  });
+
+  it("pins repository check commands into role grants with unique check ids", async () => {
+    const app = gitRepo("app");
+    const lib = gitRepo("lib");
+    blockRepo(app);
+    blockRepo(lib);
+    const workspace = mkdtempSync(resolve(tmpdir(), "swf-context-grants-"));
+    roots.push(workspace);
+    const fake = new FakeAgentRuntime();
+    let testerCommands: Array<{ id: string; command: string; cwd: string }> = [];
+    const runtime: AgentRuntime = {
+      async run(assignment) {
+        if (assignment.role === "tester") testerCommands = assignment.grant.commands;
+        return fake.run(assignment);
+      },
+    };
+    const factory = await SoftwareFactory.create({ repositoryRoot: app, workspace, runtime });
+    const campaign = await factory.request({ text: "Cross-repository checks", repos: [lib] });
+    factory.approve(campaign.id, "plan");
+    await factory.advance(campaign.id);
+
+    const request = factory.inspect(campaign.id).request;
+    expect(request.requiredChecks.map((check) => check.id)).toEqual([
+      "CHECK-app-unit",
+      "CHECK-app-typecheck",
+      "CHECK-lib-unit",
+      "CHECK-lib-typecheck",
+    ]);
+    expect(testerCommands.map(({ id, command }) => ({ id, command }))).toEqual([
+      { id: "CHECK-app-unit", command: "npm test" },
+      { id: "CHECK-app-typecheck", command: "npm run typecheck" },
+      { id: "CHECK-lib-unit", command: "npm test" },
+      { id: "CHECK-lib-typecheck", command: "npm run typecheck" },
+    ]);
+    expect(testerCommands.every((command) => command.cwd.includes("/worktrees/"))).toBe(true);
   });
 });
