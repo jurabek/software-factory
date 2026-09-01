@@ -398,4 +398,4 @@ Developer asks for a feature
   → Controller records evidence (remote PR/deploy remain out of local mode)
 ```
 
-Repository paths, commands, identities, and topology belong in the Domain Profile and `config.yaml`, not in core modules.
+Repository paths, commands, identities, and effective risk belong in the Campaign-pinned Repository Context resolved from each repository's `AGENTS.md` block and factory configuration, not in core modules.

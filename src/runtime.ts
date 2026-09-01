@@ -18,7 +18,7 @@ import type { AgentResult, AgentRole, Campaign, FeatureRequest, ResolvedAgent, W
 import type { ContractValidator } from "./contracts.js";
 import type { CampaignStore } from "./store.js";
 import { campaignBusRequest } from "./bus.js";
-import { assertLocalRunnerAllowed, assertReadAllowed, assertWriteAllowed, type PolicyGrant } from "./policy.js";
+import { assertCommandAllowed, assertReadAllowed, assertWriteAllowed, type PolicyGrant } from "./policy.js";
 import { createSubagentHarness, SUBAGENT_TOOL_NAMES, usesSubagentHarness } from "./harness/subagents.js";
 import { ingestSessionJsonl } from "./session-log.js";
 
@@ -114,27 +114,27 @@ export class PiAgentRuntime implements AgentRuntime {
         pi.registerTool({
           name: "run_local_command",
           label: "Run Local Command",
-          description: "Run one argv command from the assigned worktree. Choose commands only from that repository's prompts/reviewer or @prompts/reviewer instructions. No shell interpolation.",
+          description: "Run one check command pinned from a repository's AGENTS.md block.",
           parameters: Type.Object({
-            argv: Type.Array(Type.String(), { minItems: 1 }),
+            commandId: Type.String(),
           }),
           async execute(_id, params) {
-            const command = assertLocalRunnerAllowed(assignment.grant, params.argv);
+            const declared = assertCommandAllowed(assignment.grant, params.commandId);
             try {
-              const { stdout, stderr } = await executeFile(command[0], command.slice(1), {
-                cwd: assignment.worktree,
+              const { stdout, stderr } = await executeFile("/bin/sh", ["-c", declared.command], {
+                cwd: declared.cwd,
                 timeout: 10 * 60_000,
                 maxBuffer: 1024 * 1024,
                 env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "", CI: "1" },
               });
               return {
-                content: [{ type: "text", text: `${stdout}${stderr}`.slice(-20_000) || `${command.join(" ")} passed` }],
-                details: { argv: command, status: "passed" },
+                content: [{ type: "text", text: `${stdout}${stderr}`.slice(-20_000) || `${declared.id} passed` }],
+                details: { commandId: declared.id, status: "passed" },
               };
             } catch (error) {
               return {
                 content: [{ type: "text", text: String(error).slice(0, 20_000) }],
-                details: { argv: command, status: "failed" },
+                details: { commandId: declared.id, status: "failed" },
               };
             }
           },

@@ -5,13 +5,19 @@ import { execFileSync } from "node:child_process";
 import { loadFactoryConfig, resolveAgent } from "./config.js";
 import { ContractValidator, digest } from "./contracts.js";
 import { resolveRepoContext, type RepoContext } from "./context.js";
+import { FeatureRequestModule } from "./feature-request.js";
 import { GhCliDelivery, type DeliveryRuntime } from "./github.js";
-import { assertWriteAllowed } from "./policy.js";
+import { assertWriteAllowed, type PolicyCommand } from "./policy.js";
 import { RepositoryManager, toWorkItem } from "./repositories.js";
 import { FakeAgentRuntime, PiAgentRuntime, type AgentRuntime, type Assignment } from "./runtime.js";
 import { compileRolePrompt } from "./prompts.js";
-import { assertTransition, isTerminal } from "./state-machine.js";
-import { CampaignStore, redact } from "./store.js";
+import {
+  assertTransition,
+  decideCampaignTransition,
+  isTerminal,
+  type CampaignAdvancementOutcome,
+} from "./state-machine.js";
+import { CampaignStore } from "./store.js";
 import type { Campaign, FactoryConfig, FactoryState, FeatureRequest, WorkItem } from "./types.js";
 
 export interface FactoryOptions {
@@ -24,11 +30,14 @@ export interface FactoryOptions {
 
 export class SoftwareFactory {
   private githubDelivery: GhCliDelivery | undefined;
+  private readonly featureRequests: FeatureRequestModule;
 
   private constructor(
     private readonly options: FactoryOptions,
     private readonly validator: ContractValidator,
-  ) {}
+  ) {
+    this.featureRequests = new FeatureRequestModule(validator);
+  }
 
   static async create(options: FactoryOptions): Promise<SoftwareFactory> {
     mkdirSync(options.workspace, { recursive: true });
@@ -43,7 +52,7 @@ export class SoftwareFactory {
   async request(input: { text: string; cwd?: string; repos?: string[]; requestedBy?: string; issueUrl?: string }): Promise<Campaign> {
     const cwd = input.cwd ?? this.options.repositoryRoot;
     const context = resolveRepoContext(cwd, this.config, input.repos);
-    const declaredChecks = context.repositories.flatMap((repository) => repository.checkIds);
+    const declaredChecks = context.repositories.flatMap((repository) => repository.checks);
     if (declaredChecks.length === 0) {
       throw new Error("no checks declared in AGENTS.md; run `swf init` in each repository and add check commands");
     }
@@ -56,13 +65,16 @@ export class SoftwareFactory {
       );
       const now = new Date().toISOString();
       const profileDigest = digest(context);
-      const safeText = String(redact(input.text));
-      const request = this.normalizeRequest(
-        campaignId, safeText, context, profileDigest, workItems,
-        input.requestedBy ?? "local-developer", now, input.issueUrl,
-      );
-      this.validator.request(request);
-      const requestHash = digest(request);
+      const { request, hash: requestHash } = this.featureRequests.create({
+        campaignId,
+        text: input.text,
+        profile: context,
+        profileDigest,
+        workItems,
+        requestedBy: input.requestedBy ?? "local-developer",
+        createdAt: now,
+        ...(input.issueUrl ? { issueUrl: input.issueUrl } : {}),
+      });
       const campaign: Campaign = {
         id: campaignId, title: request.title, state: "received", previousState: null,
         requestHash, profileId: context.id, profileVersion: context.version,
@@ -90,20 +102,8 @@ export class SoftwareFactory {
   approve(campaignId: string, kind: string, actor = "local-developer"): Campaign {
     const store = this.open(campaignId);
     try {
-      const request = store.request();
-      if (kind === "plan") {
-        if (store.campaign().state !== "awaiting_plan_approval" || request.status !== "awaiting_approval") {
-          throw new Error("plan approval is not currently requested");
-        }
-      } else if (kind === "waiver") {
-        if (request.waivers.length === 0) throw new Error("no waiver is awaiting approval");
-      } else {
-        throw new Error(`unsupported local approval kind: ${kind}`);
-      }
-      store.approve(kind, actor, request.approvalPolicy.expiryMinutes);
-      if (kind === "plan" && store.campaign().state === "awaiting_plan_approval") {
-        this.transitionSync(store, "building");
-      }
+      const approval = this.featureRequests.approve(store, kind, actor);
+      if (approval.startBuilding) this.transitionSync(store, "building");
       return store.campaign();
     } finally { store.close(); }
   }
@@ -120,37 +120,17 @@ export class SoftwareFactory {
         if (state === "awaiting_plan_approval") throw new Error("plan approval is required");
         if (["building", "repairing_review", "repairing_test", "repairing_ci"].includes(state)) {
           await this.runBuilders(store, profile, request, state !== "building");
-          const next = state === "building" ? "reviewing"
-            : state === "repairing_review" ? "re_reviewing"
-              : state === "repairing_test" ? "re_reviewing_after_test"
-                : "re_reviewing_after_ci";
-          await this.transition(store, next);
+          this.applyAdvancementDecision(store, request, "builder_completed");
           continue;
         }
         if (["reviewing", "re_reviewing", "re_reviewing_after_test", "re_reviewing_after_ci"].includes(state)) {
           const blocked = await this.runReviewers(store, profile, request);
-          if (blocked) {
-            this.assertRepairBudget(store, request);
-            const next = state === "re_reviewing_after_test" ? "repairing_test"
-              : state === "re_reviewing_after_ci" ? "repairing_ci"
-                : "repairing_review";
-            await this.transition(store, next);
-          } else {
-            const next = state === "re_reviewing_after_test" ? "re_testing"
-              : state === "re_reviewing_after_ci" ? "re_testing_after_ci"
-                : "testing";
-            await this.transition(store, next);
-          }
+          this.applyAdvancementDecision(store, request, blocked ? "review_blocked" : "review_passed");
           continue;
         }
         if (["testing", "re_testing", "re_testing_after_ci"].includes(state)) {
           const failed = await this.runTester(store, profile, request);
-          if (failed) {
-            this.assertRepairBudget(store, request);
-            await this.transition(store, state === "re_testing_after_ci" ? "repairing_ci" : "repairing_test");
-          } else {
-            await this.transition(store, this.options.delivery ? "opening_prs" : "awaiting_human_review");
-          }
+          this.applyAdvancementDecision(store, request, failed ? "test_failed" : "test_passed");
           continue;
         }
         if (state === "opening_prs") {
@@ -159,12 +139,14 @@ export class SoftwareFactory {
           const expectedDeliveries = request.workItems.filter((item) =>
             profile.repositories.find((repository) => repository.id === item.repositoryId)?.mode !== "read_only",
           );
-          if (deliveries.length !== expectedDeliveries.length || deliveries.length === 0) {
-            this.transitionSync(store, "blocked", null, "one or more write-capable work items have no GitHub draft PR");
-            break;
-          }
           for (const delivery of deliveries) store.saveDelivery(delivery);
-          await this.transition(store, "validating_ci");
+          this.applyAdvancementDecision(
+            store,
+            request,
+            deliveries.length !== expectedDeliveries.length || deliveries.length === 0
+              ? "draft_pull_requests_missing"
+              : "draft_pull_requests_opened",
+          );
           continue;
         }
         if (state === "validating_ci") {
@@ -174,17 +156,16 @@ export class SoftwareFactory {
             store.deliveries(),
           );
           for (const delivery of deliveries) store.saveDelivery(delivery);
-          if (deliveries.some((delivery) => delivery.ciStatus === "failed")) {
-            this.assertRepairBudget(store, request);
-            await this.transition(store, "repairing_ci");
-            continue;
-          }
-          if (deliveries.length === 0 || deliveries.some((delivery) => delivery.ciStatus === "pending")) break;
-          await this.transition(store, "awaiting_human_review");
+          const outcome = deliveries.some((delivery) => delivery.ciStatus === "failed")
+            ? "ci_failed"
+            : deliveries.length === 0 || deliveries.some((delivery) => delivery.ciStatus === "pending")
+              ? "ci_pending"
+              : "ci_passed";
+          if (this.applyAdvancementDecision(store, request, outcome) === "wait") break;
           continue;
         }
         if (state === "awaiting_human_review") {
-          await this.transition(store, "implementation_complete");
+          this.applyAdvancementDecision(store, request, "human_review_completed");
           continue;
         }
         throw new Error(`local mode cannot advance state ${state}`);
@@ -224,16 +205,7 @@ export class SoftwareFactory {
   amend(campaignId: string, pointer: string, value: unknown): FeatureRequest {
     const store = this.open(campaignId);
     try {
-      const previous = store.request();
-      if (isTerminal(store.campaign().state)) throw new Error("terminal Campaigns cannot be amended");
-      const request = structuredClone(previous);
-      applyJsonPointer(request as unknown as Record<string, unknown>, pointer, value);
-      request.previousRevisionHash = store.campaign().requestHash;
-      request.revision += 1;
-      request.status = "draft";
-      request.updatedAt = new Date().toISOString();
-      this.validator.request(request);
-      store.bindRequest(request, digest(request));
+      const request = this.featureRequests.amend(store, pointer, value);
       if (store.campaign().state !== "awaiting_plan_approval") store.setState("awaiting_plan_approval");
       return request;
     } finally { store.close(); }
@@ -241,38 +213,13 @@ export class SoftwareFactory {
 
   submit(campaignId: string): FeatureRequest {
     const store = this.open(campaignId);
-    try {
-      const request = store.request();
-      if (request.status !== "draft") throw new Error("only draft requests can be submitted");
-      request.status = "awaiting_approval";
-      request.updatedAt = new Date().toISOString();
-      store.bindRequest(request, digest(request));
-      return request;
-    } finally { store.close(); }
+    try { return this.featureRequests.submit(store); } finally { store.close(); }
   }
 
   proposeWaiver(campaignId: string, checkId: string, issueUrl: string, expiresAt: string, reason: string): FeatureRequest {
     const store = this.open(campaignId);
     try {
-      const request = structuredClone(store.request());
-      if (!request.requiredChecks.some((check) => check.id === checkId)) throw new Error(`unknown check: ${checkId}`);
-      const previousHash = store.campaign().requestHash;
-      request.previousRevisionHash = previousHash;
-      request.revision += 1;
-      request.status = "awaiting_approval";
-      request.updatedAt = new Date().toISOString();
-      request.waivers.push({
-        id: `WAIVER-${checkId.slice(6)}-${request.revision}`.toLowerCase().replace(/^waiver-/, "WAIVER-"),
-        checkId,
-        issueUrl,
-        owner: { kind: "human", id: "local-developer" },
-        reason,
-        baselineEvidence: `Campaign ${campaignId} check ${checkId}`,
-        expiresAt,
-        approvedBy: { kind: "human", id: "pending-approval" },
-      });
-      this.validator.request(request);
-      store.bindRequest(request, digest(request));
+      const request = this.featureRequests.proposeWaiver(store, checkId, issueUrl, expiresAt, reason);
       if (store.campaign().state !== "awaiting_plan_approval") store.setState("awaiting_plan_approval");
       return request;
     } finally { store.close(); }
@@ -291,47 +238,6 @@ export class SoftwareFactory {
   exportEvidence(campaignId: string, output: string): void {
     const store = this.open(campaignId);
     try { store.exportSnapshot(output); } finally { store.close(); }
-  }
-
-  private normalizeRequest(
-    campaignId: string, text: string, profile: RepoContext, profileDigest: string,
-    workItems: WorkItem[], requestedBy: string, now: string, issueUrl?: string,
-  ): FeatureRequest {
-    const requiredChecks = workItems.flatMap((workItem) => {
-      const repository = profile.repositories.find((item) => item.id === workItem.repositoryId);
-      return (repository?.checkIds ?? []).map((checkId) => ({
-        id: `CHECK-${checkId}`, workItem: workItem.id, kind: checkId, required: true,
-        executor: "tester", deferTo: null,
-      }));
-    });
-    return {
-      schemaVersion: "1.0.0", requestId: `FR-${campaignId.slice(3)}`, campaignId,
-      revision: 1, previousRevisionHash: null, status: "awaiting_approval",
-      profile: { id: profile.id, version: profile.version, digest: profileDigest },
-      title: text.slice(0, 100), source: {
-        kind: issueUrl ? "github_issue" : "free_form",
-        reference: issueUrl ?? text,
-        url: issueUrl ?? null,
-      },
-      owner: { kind: "human", id: requestedBy }, requestedBy: { kind: "human", id: requestedBy },
-      businessOutcome: text, nonGoals: ["Remote GitHub mutations", "Autonomous deployment"],
-      acceptanceCriteria: [{ id: "AC-1", statement: text, verification: requiredChecks.map((check) => check.id) }],
-      risk: { level: "medium", signals: [], rationale: "Default until the planner revises risk from the request" },
-      workItems, contracts: [], trafficEdges: [],
-      dependencyGraph: { nodes: workItems.map((item) => item.id), edges: [] },
-      requiredChecks, environments: [],
-      rollout: { strategy: "feature_flag", order: workItems.map((item) => item.id), stopConditions: ["Any required check fails"] },
-      observability: { expectedSignals: [], traceQueries: [], logQueries: [], metricQueries: [], piiLogScan: true },
-      security: {
-        dataClasses: [], allowedEgress: [], credentialClasses: [],
-        prohibitedLogging: [],
-        requiredReviews: this.config.requiredReviewKinds,
-      },
-      approvalPolicy: { required: ["plan", "codeowners"], expiryMinutes: 120, invalidateOn: ["request", "profile", "base-sha", "write-scope"] },
-      rollback: { classification: "application", steps: ["Disable feature", "Restore prior application revision"], irreversiblePolicy: "Do not automatically reverse irreversible user-visible effects", approval: "rollback" },
-      budgets: { maxCostUsd: 25, maxElapsedMinutes: 120, maxConcurrentBuilders: 3, maxRepairCyclesPerRepository: 3, maxStorageMiB: 2048 },
-      waivers: [], unresolved: [], createdAt: now, updatedAt: now,
-    };
   }
 
   private async runBuilders(store: CampaignStore, profile: RepoContext, request: FeatureRequest, repair: boolean): Promise<void> {
@@ -405,6 +311,7 @@ export class SoftwareFactory {
       factorySocket: store.socketPath,
       worktree,
       attempt,
+      repositoryContext: this.repositoryPromptContext(profile, workItem),
       systemTemplate: agent.promptEngineering.system,
       userTemplate: agent.promptEngineering.user,
     });
@@ -414,13 +321,50 @@ export class SoftwareFactory {
         role, worktree,
         writePaths: workItem?.writePaths ?? [],
         generatedPaths: repository?.generatedPaths ?? [],
-        commandIds: repository?.checkIds ?? request.requiredChecks.map((check) => check.kind),
+        commands: role === "builder" || role === "tester"
+          ? this.policyCommands(store, profile, request, workItem, worktree)
+          : [],
         allowedHosts: [],
       },
       systemPrompt: prompts.system,
       prompt: [prompts.user, this.repairContext(store, role)].filter(Boolean).join("\n\n"),
       agent,
     };
+  }
+
+  private policyCommands(
+    store: CampaignStore,
+    profile: RepoContext,
+    request: FeatureRequest,
+    workItem: WorkItem | null,
+    worktree: string,
+  ): PolicyCommand[] {
+    const manager = new RepositoryManager(store, profile);
+    const workItems = workItem ? [workItem] : request.workItems;
+    return workItems.flatMap((item) => {
+      const repository = profile.repositories.find((candidate) => candidate.id === item.repositoryId);
+      if (!repository) throw new Error(`repository context not found: ${item.repositoryId}`);
+      const cwd = workItem ? worktree : manager.worktree(item);
+      return repository.checks.map((check) => {
+        const requirement = request.requiredChecks.find((candidate) =>
+          candidate.workItem === item.id && candidate.kind === check.id,
+        );
+        if (!requirement) throw new Error(`required check not found: ${item.id}/${check.id}`);
+        return { id: requirement.id, command: check.command, cwd };
+      });
+    });
+  }
+
+  private repositoryPromptContext(profile: RepoContext, workItem: WorkItem | null): string {
+    const repositories = workItem
+      ? profile.repositories.filter((repository) => repository.id === workItem.repositoryId)
+      : profile.repositories;
+    return repositories.map((repository) => [
+      `Repository: ${repository.id}`,
+      `Effective risk signals: ${repository.effectiveRiskSignals.join(", ") || "none"}`,
+      "Pinned AGENTS.md:",
+      repository.agentsInstructions.trim(),
+    ].join("\n")).join("\n\n---\n\n");
   }
 
   private runtime(store: CampaignStore): AgentRuntime {
@@ -599,25 +543,21 @@ export class SoftwareFactory {
     store.setState(next, previous, reason);
   }
 
-  private assertRepairBudget(store: CampaignStore, request: FeatureRequest): void {
-    if (store.campaign().repairCycles >= request.budgets.maxRepairCyclesPerRepository) {
-      this.transitionSync(store, "failed");
-      throw new Error("repair budget exhausted");
-    }
+  private applyAdvancementDecision(
+    store: CampaignStore,
+    request: FeatureRequest,
+    outcome: CampaignAdvancementOutcome,
+  ): "continue" | "wait" {
+    const campaign = store.campaign();
+    const decision = decideCampaignTransition(campaign.state, outcome, {
+      deliveryEnabled: Boolean(this.options.delivery),
+      repairCycles: campaign.repairCycles,
+      maxRepairCycles: request.budgets.maxRepairCyclesPerRepository,
+    });
+    if (decision.kind === "wait") return "wait";
+    this.transitionSync(store, decision.nextState, null, decision.reason ?? null);
+    if (decision.kind === "fail") throw new Error(decision.reason);
+    return "continue";
   }
-}
-
-function applyJsonPointer(root: Record<string, unknown>, pointer: string, value: unknown): void {
-  if (!pointer.startsWith("/")) throw new Error("JSON pointer must start with /");
-  const parts = pointer.slice(1).split("/").map((part) => part.replaceAll("~1", "/").replaceAll("~0", "~"));
-  let current: Record<string, unknown> = root;
-  for (const part of parts.slice(0, -1)) {
-    const next = current[part];
-    if (!next || typeof next !== "object") throw new Error(`JSON pointer does not exist: ${pointer}`);
-    current = next as Record<string, unknown>;
-  }
-  const key = parts.at(-1);
-  if (!key) throw new Error("cannot replace document root");
-  current[key] = value;
 }
 

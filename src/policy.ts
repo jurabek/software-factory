@@ -3,12 +3,18 @@ import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { minimatch } from "minimatch";
 import type { AgentRole } from "./types.js";
 
+export interface PolicyCommand {
+  id: string;
+  command: string;
+  cwd: string;
+}
+
 export interface PolicyGrant {
   role: AgentRole;
   worktree: string;
   writePaths: string[];
   generatedPaths: string[];
-  commandIds: string[];
+  commands: PolicyCommand[];
   allowedHosts: string[];
 }
 
@@ -68,11 +74,13 @@ const localRunners = new Set([
   "cargo", "mvn", "gradle", "python", "python3",
 ]);
 
-export function assertCommandAllowed(grant: PolicyGrant, commandId: string): void {
+export function assertCommandAllowed(grant: PolicyGrant, commandId: string): PolicyCommand {
   if (grant.role !== "builder" && grant.role !== "tester") {
     throw new PolicyError("ROLE_COMMAND_DENIED", grant.role);
   }
-  if (!grant.commandIds.includes(commandId)) throw new PolicyError("COMMAND_DENIED", commandId);
+  const command = grant.commands.find((candidate) => candidate.id === commandId);
+  if (!command) throw new PolicyError("COMMAND_DENIED", commandId);
+  return command;
 }
 
 export function assertLocalRunnerAllowed(grant: PolicyGrant, argv: readonly string[]): readonly [string, ...string[]] {

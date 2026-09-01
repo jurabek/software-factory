@@ -10,10 +10,9 @@ import { loadFactoryConfig, resolveAgent } from "../src/config.js";
 import { SoftwareFactory } from "../src/controller.js";
 import { GhCliDelivery, type CommandRunner, type DeliveryRuntime } from "../src/github.js";
 import { ensureBackgroundVisualizer, isVisualizerHealthy } from "../src/background-visualizer.js";
-import { assertLocalRunnerAllowed, assertReadAllowed, assertWriteAllowed, PolicyError } from "../src/policy.js";
+import { assertCommandAllowed, assertLocalRunnerAllowed, assertReadAllowed, assertWriteAllowed, PolicyError } from "../src/policy.js";
 import { loadRepositoryReviewerInstructions } from "../src/repository-reviewer.js";
 import { FakeAgentRuntime, type AgentRuntime } from "../src/runtime.js";
-import { assertTransition, canTransition } from "../src/state-machine.js";
 import { CampaignStore, redact } from "../src/store.js";
 import { campaignBusRequest } from "../src/bus.js";
 import { startVisualizer } from "../src/server.js";
@@ -113,16 +112,6 @@ function fixture() {
   return { root, repository, workspace };
 }
 
-describe("state machine", () => {
-  it("rejects role-order shortcuts", () => {
-    expect(canTransition("planning", "testing")).toBe(false);
-    expect(() => assertTransition("building", "testing")).toThrow("illegal factory transition");
-    expect(canTransition("repairing_test", "re_reviewing_after_test")).toBe(true);
-    expect(canTransition("testing", "opening_prs")).toBe(true);
-    expect(canTransition("validating_ci", "repairing_ci")).toBe(true);
-  });
-});
-
 describe("policy", () => {
   it("allows approved Builder paths and blocks read-only roles", () => {
     const { repository } = fixture();
@@ -131,7 +120,7 @@ describe("policy", () => {
       worktree: repository,
       writePaths: ["src/**"],
       generatedPaths: [],
-      commandIds: [],
+      commands: [{ id: "CHECK-app-unit", command: "npm test", cwd: repository }],
       allowedHosts: [],
     };
     expect(assertWriteAllowed(builder, "src/app.ts")).toContain("app.ts");
@@ -139,6 +128,12 @@ describe("policy", () => {
       .toThrow(PolicyError);
     expect(() => assertWriteAllowed(builder, "../../outside")).toThrow("PATH_ESCAPE");
     expect(() => assertReadAllowed(builder, "/etc/passwd")).toThrow("READ_SCOPE_DENIED");
+    expect(assertCommandAllowed(builder, "CHECK-app-unit")).toEqual({
+      id: "CHECK-app-unit",
+      command: "npm test",
+      cwd: repository,
+    });
+    expect(() => assertCommandAllowed(builder, "CHECK-other")).toThrow("COMMAND_DENIED");
     expect(assertLocalRunnerAllowed(builder, ["just", "test"])).toEqual(["just", "test"]);
     expect(() => assertLocalRunnerAllowed(builder, ["rm", "-rf", "/"])).toThrow("COMMAND_DENIED");
   });
@@ -152,7 +147,7 @@ describe("policy", () => {
       worktree: repository,
       writePaths: ["**"],
       generatedPaths: ["zz_generated/**"],
-      commandIds: [],
+      commands: [],
       allowedHosts: [],
     };
     expect(() => assertWriteAllowed(grant, "src/link/secret")).toThrow("PATH_ESCAPE");
@@ -340,7 +335,9 @@ describe("local campaign", () => {
     expect(assignments.find((assignment) => assignment.role === "reviewer")?.system)
       .toContain("repository's own reviewer check/test instructions");
     expect(assignments.find((assignment) => assignment.role === "tester")?.user)
-      .toContain("repository reviewer instructions");
+      .toContain("Run each required check ID");
+    expect(assignments.find((assignment) => assignment.role === "tester")?.user)
+      .toContain("Effective risk signals:");
     expect(assignments.find((assignment) => assignment.role === "reviewer")?.user)
       .toContain("@prompts/reviewer");
   });
