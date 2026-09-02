@@ -67,9 +67,29 @@ swf evidence export "$CAMPAIGN_ID" --output "$CAMPAIGN_ID.evidence.json"
 
 ## Agent runtime
 
-Pi is the default runtime. Models, thinking levels, tools, and prompt files are
-configured in `packages/core/config.yaml`. Set
-`SOFTWARE_FACTORY_CONFIG=/absolute/config.yaml` to use another roster.
+Pi is the default runtime. Interactive `swf init` lists the Pi models available
+with your configured credentials and asks which model to use for each agent
+role. It installs the resulting roster and editable prompt files under
+`.software-factory/`, using `packages/core/config.yaml` as the template. Set
+`SOFTWARE_FACTORY_CONFIG=/absolute/config.yaml` to override the repo-local
+roster.
+
+Agent sessions have a wall-clock deadline and a bounded empty-response retry
+budget. Both are configurable:
+
+```yaml
+runtime:
+  agent_deadline_ms: 1800000
+  empty_turn_retries: 2
+
+agents:
+  - name: reviewer
+    fallback_model: provider/model-id # optional; used after repeated empty turns
+```
+
+Only one `swf run` process may advance a Campaign at a time. If an owner is
+interrupted, the next run marks its stale worker failed and blocks the
+Campaign; use `swf resume CAMPAIGN_ID` after inspecting the failure.
 
 For deterministic controller tests:
 

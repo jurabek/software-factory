@@ -58,6 +58,12 @@ export interface SubagentHarnessOptions {
   defaultModel?: string;
   defaultThinking?: string;
   onEvent?: (type: string, payload: Record<string, unknown>) => void;
+  spawnProcess?: typeof spawn;
+}
+
+export interface SubagentHarness {
+  extension: (pi: ExtensionAPI) => void;
+  terminateAll: () => void;
 }
 
 export function usesSubagentHarness(role: AgentRole): boolean {
@@ -130,9 +136,17 @@ export function parseCommandOptions(input: string): ParsedCommand {
   return { options, rest: rest.trim() };
 }
 
-export function createSubagentHarness(options: SubagentHarnessOptions): (pi: ExtensionAPI) => void {
-  return (pi: ExtensionAPI): void => {
-    const agents = new Map<number, SubState>();
+export function createSubagentHarness(options: SubagentHarnessOptions): SubagentHarness {
+  const agents = new Map<number, SubState>();
+  let shuttingDown = false;
+  return {
+    terminateAll(): void {
+      shuttingDown = true;
+      for (const state of agents.values()) {
+        if (state.proc && state.status === "running") state.proc.kill("SIGTERM");
+      }
+    },
+    extension(pi: ExtensionAPI): void {
     let nextId = 1;
     const subDir = resolve(options.sessionDir, "subagents");
     mkdirSync(subDir, { recursive: true });
@@ -208,7 +222,7 @@ export function createSubagentHarness(options: SubagentHarnessOptions): (pi: Ext
         task: state.task,
         turnCount: state.turnCount,
       });
-      const proc: ChildProcess = spawn(command, args, {
+      const proc: ChildProcess = (options.spawnProcess ?? spawn)(command, args, {
         cwd: options.worktree,
         stdio: ["ignore", "pipe", "pipe"],
         env: process.env,
@@ -241,7 +255,7 @@ export function createSubagentHarness(options: SubagentHarnessOptions): (pi: Ext
           durationMs: state.elapsed,
           toolCount: state.toolCount,
         });
-        pi.sendMessage({
+        if (!shuttingDown) pi.sendMessage({
           customType: "subagent-result",
           content: `Subagent #${state.id}${state.turnCount > 1 ? ` (Turn ${state.turnCount})` : ""} finished "${prompt}" in ${Math.round(state.elapsed / 1000)}s.\n\nResult:\n${result.slice(0, 8_000)}${result.length > 8_000 ? "\n\n... [truncated]" : ""}`,
           display: true,
@@ -346,5 +360,6 @@ export function createSubagentHarness(options: SubagentHarnessOptions): (pi: Ext
         return { content: [{ type: "text", text: `Subagent #${args.id} removed.` }], details: {} };
       },
     });
+    },
   };
 }

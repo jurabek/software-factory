@@ -9,7 +9,9 @@ const promptsRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../prompts
 export interface PromptContext {
   role: AgentRole;
   request: FeatureRequest;
+  requestHash: string;
   workItem: WorkItem | null;
+  workerRunId: string;
   peerSessions: PeerSessionRef[];
   factorySocket: string;
   worktree: string;
@@ -61,8 +63,10 @@ function requiredOutput(context: PromptContext): string {
     "End by calling submit_agent_result exactly once.",
     "Pass a complete JSON object matching the Software Factory Agent Result contract.",
     `Bind it to campaignId=${context.request.campaignId}, requestRevision=${context.request.revision},`,
-    `profile=${context.request.profile.id}@${context.request.profile.version}, role=${context.role},`,
-    `and workItemId=${context.workItem?.id ?? "null"}.`,
+    `requestHash=${context.requestHash},`,
+    `profile=${context.request.profile.id}@${context.request.profile.version} with digest=${context.request.profile.digest},`,
+    `role=${context.role}, workItemId=${context.workItem?.id ?? "null"}, and workerRunId=${context.workerRunId}.`,
+    "The runtime authoritatively binds these identity fields to the active assignment.",
     "Do not print the result as prose instead of calling the tool.",
   ].join(" ");
 }

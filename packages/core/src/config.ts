@@ -19,13 +19,14 @@ export function factoryConfigPaths(cwd = process.cwd()): string[] {
   const override = process.env.SOFTWARE_FACTORY_CONFIG;
   return [
     override ? resolve(override) : "",
+    resolve(cwd, ".software-factory", "config.yaml"),
     resolve(packageRoot, "config.yaml"),
     resolve(cwd, "config.yaml"),
   ].filter(Boolean);
 }
 
-export function loadFactoryConfig(path?: string): FactoryConfig {
-  const candidates = path ? [resolve(path)] : factoryConfigPaths();
+export function loadFactoryConfig(path?: string, cwd = process.cwd()): FactoryConfig {
+  const candidates = path ? [resolve(path)] : factoryConfigPaths(cwd);
   const found = candidates.find((candidate) => existsSync(candidate));
   if (!found) throw new Error(`config.yaml not found; looked in ${candidates.join(", ")}`);
   const parsed = parseYaml(readFileSync(found, "utf8"));
@@ -46,6 +47,7 @@ export function resolveAgent(config: FactoryConfig, role: AgentRole): ResolvedAg
       user: resolvePromptPath(configDir, agent?.promptEngineering?.user, role, "user"),
     },
   };
+  if (agent?.fallbackModel) resolved.fallbackModel = agent.fallbackModel;
   if (agent?.color) resolved.color = agent.color;
   if (agent?.purpose) resolved.purpose = agent.purpose;
   return resolved;
@@ -64,6 +66,9 @@ function normalizeFactoryConfig(value: unknown, source: string): FactoryConfig {
   const observabilityRaw = raw.observability && typeof raw.observability === "object"
     ? raw.observability as Record<string, unknown>
     : {};
+  const runtimeRaw = raw.runtime && typeof raw.runtime === "object"
+    ? raw.runtime as Record<string, unknown>
+    : {};
   const agents = Array.isArray(raw.agents) ? raw.agents.map((item, index) => normalizeAgent(item, `${source} agents[${index}]`)) : [];
   for (const role of factoryRoles) {
     if (!agents.some((agent) => agent.name === role)) {
@@ -74,6 +79,18 @@ function normalizeFactoryConfig(value: unknown, source: string): FactoryConfig {
     source,
     defaults,
     observability: { pollMs: Number(observabilityRaw.poll_ms ?? observabilityRaw.pollMs ?? 500) },
+    runtime: {
+      agentDeadlineMs: positiveNumber(
+        runtimeRaw.agent_deadline_ms ?? runtimeRaw.agentDeadlineMs,
+        30 * 60_000,
+        `${source} runtime.agent_deadline_ms`,
+      ),
+      emptyTurnRetries: nonNegativeInteger(
+        runtimeRaw.empty_turn_retries ?? runtimeRaw.emptyTurnRetries,
+        2,
+        `${source} runtime.empty_turn_retries`,
+      ),
+    },
     riskSignals: stringList(raw.risk_signals ?? raw.riskSignals, []),
     approvalRules: approvalRulesField(raw.approval_rules ?? raw.approvalRules, source),
     requiredReviewKinds: stringList(raw.required_review_kinds ?? raw.requiredReviewKinds, ["spec", "standards"]),
@@ -104,6 +121,9 @@ function normalizeAgent(value: unknown, label: string): FactoryConfig["agents"][
     name: name as AgentRole,
     ...(raw.coding_agent || raw.codingAgent ? { codingAgent: stringField(raw.coding_agent ?? raw.codingAgent, "pi") } : {}),
     ...(raw.model ? { model: requiredString(raw.model, `${label}.model`) } : {}),
+    ...(raw.fallback_model || raw.fallbackModel
+      ? { fallbackModel: requiredString(raw.fallback_model ?? raw.fallbackModel, `${label}.fallback_model`) }
+      : {}),
     ...(raw.thinking ? { thinking: thinkingField(raw.thinking, "medium") } : {}),
     ...(raw.color ? { color: requiredString(raw.color, `${label}.color`) } : {}),
     ...(raw.purpose ? { purpose: requiredString(raw.purpose, `${label}.purpose`) } : {}),
@@ -157,4 +177,18 @@ function thinkingField(value: unknown, fallback: FactoryConfig["defaults"]["thin
 function stringList(value: unknown, fallback: string[] = []): string[] {
   if (!Array.isArray(value)) return fallback;
   return value.filter((item): item is string => typeof item === "string" && Boolean(item.trim())).map((item) => item.trim());
+}
+
+function positiveNumber(value: unknown, fallback: number, label: string): number {
+  if (value == null) return fallback;
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) throw new Error(`${label} must be a positive number`);
+  return number;
+}
+
+function nonNegativeInteger(value: unknown, fallback: number, label: string): number {
+  if (value == null) return fallback;
+  const number = Number(value);
+  if (!Number.isInteger(number) || number < 0) throw new Error(`${label} must be a non-negative integer`);
+  return number;
 }

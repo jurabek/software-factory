@@ -5,7 +5,7 @@
 # override) live in the repo's AGENTS.md block, written by `swf init`.
 defaults:
   coding_agent: pi
-  model: openai-codex/gpt-5.6-luna   # provider/id — a bare pattern is ambiguous across providers
+  model: cursor/gpt-5.6-luna   # provider/id — a bare pattern is ambiguous across providers
   thinking: medium                 # off | minimal | low | medium | high | xhigh | max
   tools:
     - read
@@ -15,6 +15,10 @@ defaults:
 
 observability:
   poll_ms: 500
+
+runtime:
+  agent_deadline_ms: 1800000
+  empty_turn_retries: 2
 
 # Global risk signals. They shape what the Reviewer scrutinizes and what gets
 # flagged; a repo's AGENTS.md block may override them per repository.
@@ -37,7 +41,7 @@ required_review_kinds: [spec, standards, codeowners]
 
 agents:
   - name: planner
-    model: openai-codex/gpt-5.6-sol
+    model: cursor/gpt-5.6-sol
     thinking: high
     color: "#a78bfa"
     purpose: Turn a request into a plan the builder can implement without asking questions.
@@ -51,7 +55,7 @@ agents:
       - ls
 
   - name: builder
-    model: openai-codex/gpt-5.6-luna
+    model: cursor/gpt-5.6-luna
     color: "#22d3ee"
     purpose: Implement the plan exactly; report every changed file in the envelope.
     prompt_engineering:
@@ -66,7 +70,7 @@ agents:
       - write
 
   - name: reviewer
-    model: openai-codex/gpt-5.6-luna
+    model: cursor/gpt-5.6-luna
     thinking: high
     color: "#fb7185"
     purpose: Confirm that what was built is what was asked for; change nothing.
@@ -80,7 +84,7 @@ agents:
       - ls
 
   - name: tester
-    model: openai-codex/gpt-5.6-luna
+    model: cursor/gpt-5.6-luna
     color: "#34d399"
     purpose: Run the required checks and report evidence; change nothing.
     prompt_engineering:

@@ -1,20 +1,37 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { once } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { afterEach, describe, expect, it } from "vitest";
 import { stringify as stringifyYaml } from "yaml";
 import { loadFactoryConfig, resolveAgent } from "../packages/core/src/config.js";
 import { SoftwareFactory } from "../packages/core/src/controller.js";
 import { assertCommandAllowed, assertLocalRunnerAllowed, assertReadAllowed, assertWriteAllowed, PolicyError } from "../packages/core/src/policy.js";
 import { loadRepositoryReviewerInstructions } from "../packages/core/src/repository-reviewer.js";
-import { FakeAgentRuntime, type AgentRuntime } from "../packages/core/src/runtime.js";
+import {
+  bindAgentResultIdentity,
+  builderChangedFiles,
+  AgentDeadlineError,
+  AgentExecutionGuard,
+  boundedPeerSessionPayload,
+  EmptyAgentResponseError,
+  FakeAgentRuntime,
+  runAgentPromptLoop,
+  visiblePeerSessions,
+  type AgentRuntime,
+  type Assignment,
+} from "../packages/core/src/runtime.js";
 import { CampaignStore, redact } from "../packages/core/src/store.js";
 import { campaignBusRequest } from "../packages/core/src/bus.js";
 import { startVisualizer } from "../packages/ui/src/server.js";
-import { buildPiSubagentCommand, parseCommandOptions, usesSubagentHarness } from "../packages/core/src/harness/subagents.js";
+import {
+  buildPiSubagentCommand,
+  createSubagentHarness,
+  parseCommandOptions,
+  usesSubagentHarness,
+} from "../packages/core/src/harness/subagents.js";
 
 const roots: string[] = [];
 
@@ -104,10 +121,16 @@ describe("policy", () => {
   });
 
   it("redacts tokens and sensitive fields before persistence", () => {
-    expect(redact({ authorization: "Bearer abc", note: "Bearer abc.def", apiKey: "1234" })).toEqual({
+    expect(redact({
+      authorization: "Bearer abc",
+      note: "Bearer abc.def",
+      apiKey: "1234",
+      repositoryUrl: "https://credential-value@example.test/repository.git",
+    })).toEqual({
       authorization: "[REDACTED]",
       note: "Bearer [REDACTED]",
       apiKey: "[REDACTED]",
+      repositoryUrl: "https://example.test/repository.git",
     });
   });
 });
@@ -144,11 +167,56 @@ describe("subagent harness", () => {
     expect(usesSubagentHarness("reviewer")).toBe(true);
     expect(usesSubagentHarness("builder")).toBe(false);
   });
+
+  it("terminates every owned child when its parent lifecycle ends", async () => {
+    const { repository, workspace } = fixture();
+    const store = new CampaignStore(workspace, "SF-2026-9999");
+    const tools = new Map<string, { execute: (...args: any[]) => Promise<unknown> }>();
+    let killed = false;
+    const child = Object.assign(new EventEmitter(), {
+      stdout: Object.assign(new EventEmitter(), { setEncoding() {} }),
+      stderr: Object.assign(new EventEmitter(), { setEncoding() {} }),
+      kill(signal: string) {
+        killed = signal === "SIGTERM";
+        return true;
+      },
+    });
+    try {
+      const harness = createSubagentHarness({
+        store,
+        runId: "reviewer-WI-1",
+        role: "reviewer",
+        workItemId: "WI-1",
+        worktree: repository,
+        sessionDir: resolve(workspace, "sessions"),
+        spawnProcess: (() => child) as unknown as typeof spawn,
+      });
+      harness.extension({
+        registerTool(tool: { name: string; execute: (...args: any[]) => Promise<unknown> }) {
+          tools.set(tool.name, tool);
+        },
+        on() {},
+        getThinkingLevel: () => "medium",
+        sendMessage() {},
+      } as any);
+      await tools.get("subagent_create")!.execute(
+        "tool-1",
+        { task: "inspect", thinking: "low" },
+        undefined,
+        undefined,
+        { model: { provider: "test", id: "model" } },
+      );
+      harness.terminateAll();
+      expect(killed).toBe(true);
+    } finally {
+      store.close();
+    }
+  });
 });
 
 describe("factory config", () => {
   it("loads config.yaml and resolves per-role models", () => {
-    const config = loadFactoryConfig();
+    const config = loadFactoryConfig(resolve("packages/core/config.yaml"));
     expect(config.riskSignals).toEqual([
       "authentication or authorization",
       "secrets or credentials",
@@ -163,12 +231,12 @@ describe("factory config", () => {
     expect(config.defaults).not.toHaveProperty("repositories");
     expect(config).not.toHaveProperty("profile");
     expect(resolveAgent(config, "planner")).toMatchObject({
-      model: "openai-codex/gpt-5.6-sol",
+      model: "cursor/gpt-5.6-sol",
       thinking: "high",
     });
-    expect(resolveAgent(config, "builder")).toMatchObject({ model: "openai-codex/gpt-5.6-luna" });
-    expect(resolveAgent(config, "reviewer")).toMatchObject({ model: "openai-codex/gpt-5.6-luna" });
-    expect(resolveAgent(config, "tester")).toMatchObject({ model: "openai-codex/gpt-5.6-luna" });
+    expect(resolveAgent(config, "builder")).toMatchObject({ model: "cursor/gpt-5.6-luna" });
+    expect(resolveAgent(config, "reviewer")).toMatchObject({ model: "cursor/gpt-5.6-luna" });
+    expect(resolveAgent(config, "tester")).toMatchObject({ model: "cursor/gpt-5.6-luna" });
     expect(resolveAgent(config, "builder").tools).toEqual(expect.arrayContaining(["edit", "write"]));
     expect(resolveAgent(config, "reviewer").tools).not.toContain("write");
     expect(resolveAgent(config, "planner").promptEngineering.system).toMatch(/prompts\/planner\/system\.md$/);
@@ -178,15 +246,64 @@ describe("factory config", () => {
   it("applies defaults and validates the reshaped config fields", () => {
     const config = loadFactoryConfig(customConfigPath({
       defaults: { model: "google/gemini-3.6-flash", thinking: "low" },
-      agents: [],
+      runtime: {
+        agent_deadline_ms: 25_000,
+        empty_turn_retries: 1,
+      },
+      agents: [{ name: "reviewer", fallback_model: "anthropic/claude-sonnet-4" }],
     }));
     expect(config.riskSignals).toEqual([]);
     expect(config.approvalRules).toEqual([]);
     expect(config.requiredReviewKinds).toEqual(["spec", "standards"]);
+    expect(config.runtime).toEqual({ agentDeadlineMs: 25_000, emptyTurnRetries: 1 });
+    expect(resolveAgent(config, "reviewer").fallbackModel).toBe("anthropic/claude-sonnet-4");
     expect(() => loadFactoryConfig(customConfigPath({
       defaults: { model: "x/y" },
       approval_rules: [{ id: "missing-when" }],
     }))).toThrow("approval_rules[0].when is required");
+  });
+
+  it("bounds an agent session by deadline and consecutive empty turns", async () => {
+    const timed = new AgentExecutionGuard({ deadlineMs: 10, emptyTurnRetries: 2 });
+    let deadlineAborts = 0;
+    await expect(timed.run(
+      () => new Promise<void>(() => undefined),
+      async () => { deadlineAborts += 1; },
+    )).rejects.toBeInstanceOf(AgentDeadlineError);
+    expect(deadlineAborts).toBe(1);
+
+    const empty = new AgentExecutionGuard({ deadlineMs: 1_000, emptyTurnRetries: 1 });
+    let emptyAborts = 0;
+    const running = empty.run(
+      () => new Promise<void>(() => undefined),
+      async () => { emptyAborts += 1; },
+    );
+    empty.observeTurn({ role: "assistant", content: [] }, 0);
+    empty.observeTurn({ role: "assistant", content: [{ type: "text", text: "  " }] }, 0);
+    await expect(running).rejects.toBeInstanceOf(EmptyAgentResponseError);
+    expect(emptyAborts).toBe(1);
+  });
+
+  it("switches to an explicit fallback after the empty-response cutoff", async () => {
+    const guard = new AgentExecutionGuard({ deadlineMs: 1_000, emptyTurnRetries: 0 });
+    let submitted = false;
+    let prompts = 0;
+    let fallbacks = 0;
+    await runAgentPromptLoop({
+      guard,
+      initialPrompt: "review",
+      emptyTurnRetries: 0,
+      isSubmitted: () => submitted,
+      prompt: async () => {
+        prompts += 1;
+        if (prompts === 1) guard.observeTurn({ role: "assistant", content: [] }, 0);
+        else submitted = true;
+      },
+      abort: async () => undefined,
+      useFallback: async () => { fallbacks += 1; },
+    });
+    expect(prompts).toBe(2);
+    expect(fallbacks).toBe(1);
   });
 
   it("loads configured prompt_engineering files into Pi system and user prompts", async () => {
@@ -319,6 +436,172 @@ describe("local campaign", () => {
       .rejects.toThrow("not bound to the active Campaign");
   });
 
+  it("binds submitted identity fields to the active assignment", async () => {
+    const { repository, workspace } = fixture();
+    const fake = new FakeAgentRuntime();
+    let captured: Assignment | undefined;
+    const runtime: AgentRuntime = {
+      async run(assignment) {
+        captured = assignment;
+        return fake.run(assignment);
+      },
+    };
+    const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime });
+    await factory.request({ text: "Bind result identity" });
+    expect(captured).toBeDefined();
+    const bound = bindAgentResultIdentity({
+      campaignId: "SF-2000-0000",
+      requestRevision: 99,
+      requestHash: "0".repeat(64),
+      profile: { id: "wrong", version: "wrong", digest: "0".repeat(64) },
+      role: "tester",
+      workItemId: "WI-wrong-1",
+      workerRunId: "wrong",
+      piSessionId: "wrong",
+    }, captured!, "planner-campaign-1", "session-1") as Record<string, unknown>;
+    expect(bound).toMatchObject({
+      campaignId: captured!.campaign.id,
+      requestRevision: captured!.request.revision,
+      requestHash: captured!.campaign.requestHash,
+      profile: captured!.request.profile,
+      role: "planner",
+      workItemId: null,
+      workerRunId: "planner-campaign-1",
+      piSessionId: "session-1",
+    });
+  });
+
+  it("persists timed-out agent runs as failed and resumes from the failed phase", async () => {
+    const { repository, workspace } = fixture();
+    const fake = new FakeAgentRuntime();
+    let failBuilder = true;
+    const runtime: AgentRuntime = {
+      async run(assignment) {
+        if (assignment.role === "builder" && failBuilder) throw new AgentDeadlineError(25);
+        return fake.run(assignment);
+      },
+    };
+    const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime });
+    const campaign = await factory.request({ text: "Recover failed builder" });
+    factory.approve(campaign.id, "plan");
+    await expect(factory.advance(campaign.id)).rejects.toBeInstanceOf(AgentDeadlineError);
+    expect(factory.inspect(campaign.id).campaign).toMatchObject({
+      state: "blocked",
+      previousState: "building",
+      pausedReason: "agent session exceeded deadline of 25ms",
+    });
+    const failed = new CampaignStore(workspace, campaign.id);
+    try {
+      expect(failed.rows("agent_runs")).toContainEqual(expect.objectContaining({
+        role: "builder",
+        status: "failed",
+      }));
+      expect(failed.rows("phases")).toContainEqual(expect.objectContaining({
+        role: "builder",
+        error: "agent session exceeded deadline of 25ms",
+      }));
+    } finally {
+      failed.close();
+    }
+    failBuilder = false;
+    expect(factory.resume(campaign.id).state).toBe("building");
+    expect((await factory.advance(campaign.id)).state).toBe("implementation_complete");
+  });
+
+  it("allows only one active advancement and releases ownership afterward", async () => {
+    const { repository, workspace } = fixture();
+    const fake = new FakeAgentRuntime();
+    let releaseBuilder!: () => void;
+    let builderStarted!: () => void;
+    const release = new Promise<void>((resolveRelease) => { releaseBuilder = resolveRelease; });
+    const started = new Promise<void>((resolveStarted) => { builderStarted = resolveStarted; });
+    const runtime: AgentRuntime = {
+      async run(assignment) {
+        if (assignment.role === "builder") {
+          builderStarted();
+          await release;
+        }
+        return fake.run(assignment);
+      },
+    };
+    const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime });
+    const campaign = await factory.request({ text: "Serialize campaign advancement" });
+    factory.approve(campaign.id, "plan");
+
+    const first = factory.advance(campaign.id);
+    await started;
+    await expect(factory.advance(campaign.id)).rejects.toThrow(/already being advanced/);
+    releaseBuilder();
+    await expect(first).resolves.toMatchObject({ state: "implementation_complete" });
+    await expect(factory.advance(campaign.id)).resolves.toMatchObject({ state: "implementation_complete" });
+  });
+
+  it("recovers stale advancement ownership and stale running rows", async () => {
+    const { repository, workspace } = fixture();
+    const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime: "fake" });
+    const campaign = await factory.request({ text: "Recover stale campaign ownership" });
+    factory.approve(campaign.id, "plan");
+    const store = new CampaignStore(workspace, campaign.id);
+    try {
+      store.startAgent("builder-WI-stale-1", "builder", "WI-stale-1", "stale-session", 1);
+    } finally {
+      store.close();
+    }
+    const lockDir = resolve(workspace, campaign.id, ".advance.lock");
+    mkdirSync(lockDir);
+    writeFileSync(resolve(lockDir, "owner.json"), JSON.stringify({
+      ownerId: "stale-owner",
+      pid: 999_999_999,
+      hostname: hostname(),
+      operation: "advance",
+      startedAt: "2020-01-01T00:00:00.000Z",
+    }));
+
+    await expect(factory.advance(campaign.id)).resolves.toMatchObject({
+      state: "blocked",
+      previousState: "building",
+    });
+    const recovered = new CampaignStore(workspace, campaign.id);
+    try {
+      expect(recovered.rows("agent_runs")).toContainEqual(expect.objectContaining({
+        id: "builder-WI-stale-1",
+        status: "failed",
+      }));
+      expect(recovered.rows("phases")).toContainEqual(expect.objectContaining({
+        id: "builder-WI-stale-1",
+        status: "failed",
+      }));
+    } finally {
+      recovered.close();
+    }
+    expect(factory.resume(campaign.id).state).toBe("building");
+    await expect(factory.advance(campaign.id)).resolves.toMatchObject({ state: "implementation_complete" });
+  });
+
+  it("derives builder changed-file evidence from the complete worktree diff", async () => {
+    const { repository, workspace } = fixture();
+    const fake = new FakeAgentRuntime();
+    let changedFiles: unknown[] = [];
+    const runtime: AgentRuntime = {
+      async run(assignment) {
+        if (assignment.role === "builder") {
+          writeFileSync(resolve(assignment.worktree, "src/app.ts"), "export const app = false;\n");
+          writeFileSync(resolve(assignment.worktree, "src/new.ts"), "export const added = true;\n");
+          changedFiles = builderChangedFiles(assignment, []);
+        }
+        return fake.run(assignment);
+      },
+    };
+    const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime });
+    const campaign = await factory.request({ text: "Collect complete diff" });
+    factory.approve(campaign.id, "plan");
+    await expect(factory.advance(campaign.id)).rejects.toThrow("changed-file claims");
+    expect(changedFiles).toMatchObject([
+      { path: "src/app.ts", change: "modified", generated: false },
+      { path: "src/new.ts", change: "added", generated: false },
+    ]);
+  });
+
   it("does not certify required deferred checks", async () => {
     const { repository, workspace } = fixture();
     const runtime = new FakeAgentRuntime((assignment) => assignment.role === "tester" ? {
@@ -393,6 +676,29 @@ describe("local campaign", () => {
     } finally {
       writer.close();
     }
+  });
+
+  it("limits reviewer peer-session visibility, rows, bytes, and recursive payloads", () => {
+    const catalog = [
+      { sessionId: "planner-1", runId: "planner-campaign-1", role: "planner", workItemId: null, attempt: 1, sessionFile: null },
+      { sessionId: "builder-1", runId: "builder-WI-1", role: "builder", workItemId: "WI-1", attempt: 1, sessionFile: null },
+      { sessionId: "reviewer-1", runId: "reviewer-WI-1", role: "reviewer", workItemId: "WI-1", attempt: 1, sessionFile: null },
+      { sessionId: "tester-1", runId: "tester-campaign-1", role: "tester", workItemId: null, attempt: 1, sessionFile: null },
+    ];
+    expect(visiblePeerSessions("reviewer", catalog, "reviewer-WI-1", "reviewer-1")
+      .map((session) => session.sessionId)).toEqual(["planner-1", "builder-1"]);
+
+    const rows = Array.from({ length: 20 }, (_, id) => ({
+      id,
+      entry: JSON.stringify(id === 0
+        ? { type: "tool_result", toolName: "read_peer_session", content: "x".repeat(10_000) }
+        : { type: "message", content: "x".repeat(300) }),
+    }));
+    const payload = boundedPeerSessionPayload(rows, { maxRows: 5, maxBytes: 2_000 });
+    expect(payload.entries.length).toBeLessThanOrEqual(5);
+    expect(Buffer.byteLength(JSON.stringify(payload), "utf8")).toBeLessThanOrEqual(2_000);
+    expect(JSON.stringify(payload.entries)).not.toContain("x".repeat(1_000));
+    expect(payload.truncated).toBe(true);
   });
 
   it("serves campaign data through a GET-only visualizer API", async () => {

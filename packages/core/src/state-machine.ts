@@ -48,6 +48,12 @@ const interruptible = new Set<FactoryState>([
 export function canTransition(from: FactoryState, to: FactoryState): boolean {
   if (interruptible.has(from) && (to === "paused" || to === "aborting" || to === "failed")) return true;
   if (from === "paused") return to !== "paused";
+  if (from === "blocked") {
+    return [
+      "planning", "building", "reviewing", "repairing_review", "re_reviewing",
+      "testing", "repairing_test", "re_reviewing_after_test", "re_testing",
+    ].includes(to);
+  }
   return normalTransitions[from]?.includes(to) ?? false;
 }
 
