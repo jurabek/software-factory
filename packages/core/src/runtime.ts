@@ -359,7 +359,7 @@ export class PiAgentRuntime implements AgentRuntime {
         sessionDir,
         defaultModel: assignment.agent.model,
         defaultThinking: assignment.agent.thinking,
-        onEvent: (type, payload) => { trace(type, payload); },
+        onEvent: (type, payload, parentId) => trace(type, payload, parentId),
       });
       extensionFactories.push(subagentHarness.extension);
     }
