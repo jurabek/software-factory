@@ -278,6 +278,9 @@ export function createSubagentHarness(options: SubagentHarnessOptions): Subagent
         thinking: thinkingSchema,
       }),
       async execute(_id, args, _signal, _onUpdate, ctx) {
+        if (shuttingDown) {
+          return { content: [{ type: "text", text: "Error: Parent assignment is complete; no new subagents may be started." }], details: {} };
+        }
         const id = nextId;
         nextId += 1;
         const sessionFile = resolve(subDir, `subagent-${id}-${Date.now()}.jsonl`);
@@ -314,6 +317,9 @@ export function createSubagentHarness(options: SubagentHarnessOptions): Subagent
         thinking: thinkingSchema,
       }),
       async execute(_id, args, _signal, _onUpdate, ctx) {
+        if (shuttingDown) {
+          return { content: [{ type: "text", text: "Error: Parent assignment is complete; subagents cannot be continued." }], details: {} };
+        }
         const state = agents.get(args.id);
         if (!state) return { content: [{ type: "text", text: `Error: No subagent #${args.id} found.` }], details: {} };
         if (state.status === "running") return { content: [{ type: "text", text: `Error: Subagent #${args.id} is still running.` }], details: {} };

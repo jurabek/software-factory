@@ -176,6 +176,7 @@ export class PiAgentRuntime implements AgentRuntime {
     const sessionDir = resolve(this.store.campaignDir, "sessions", `${assignment.role}-${assignment.workItem?.id ?? "campaign"}-${assignment.attempt}`);
     mkdirSync(sessionDir, { recursive: true });
     const extensionFactories: Array<(pi: ExtensionAPI) => void> = [];
+    let subagentHarness: ReturnType<typeof createSubagentHarness> | undefined;
     const extension = (pi: ExtensionAPI): void => {
       pi.registerTool({
         name: "submit_agent_result",
@@ -189,6 +190,7 @@ export class PiAgentRuntime implements AgentRuntime {
           }
           validatorResult(validator, bound);
           submitted = bound;
+          subagentHarness?.terminateAll();
           return { content: [{ type: "text", text: "Agent Result accepted" }], details: {}, terminate: true };
         },
       });
@@ -348,7 +350,6 @@ export class PiAgentRuntime implements AgentRuntime {
       });
     };
     extensionFactories.push(extension);
-    let subagentHarness: ReturnType<typeof createSubagentHarness> | undefined;
     if (usesSubagentHarness(assignment.role)) {
       subagentHarness = createSubagentHarness({
         store,
