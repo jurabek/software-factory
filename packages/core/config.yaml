@@ -1,0 +1,93 @@
+# config.yaml — the factory's agent roster and global defaults.
+# One agent, one prompt, one purpose. Per-agent model and thinking are passed
+# into Pi (and later other coding agents).
+# Per-repo facts (checks, generated paths, protected paths, optional risk
+# override) live in the repo's AGENTS.md block, written by `swf init`.
+defaults:
+  coding_agent: pi
+  model: openai-codex/gpt-5.6-luna   # provider/id — a bare pattern is ambiguous across providers
+  thinking: medium                 # off | minimal | low | medium | high | xhigh | max
+  tools:
+    - read
+    - grep
+    - find
+    - ls
+
+observability:
+  poll_ms: 500
+
+# Global risk signals. They shape what the Reviewer scrutinizes and what gets
+# flagged; a repo's AGENTS.md block may override them per repository.
+risk_signals:
+  - authentication or authorization
+  - secrets or credentials
+  - data-store contract
+
+# Declarative approval rules. Approval is always manual; these document what
+# gets flagged and what approval is expected.
+approval_rules:
+  - id: multi-repository-plan
+    when: more than one work item exists
+    approval: plan
+  - id: break-glass
+    when: a normally read-only repository write is requested
+    approval: break-glass
+
+required_review_kinds: [spec, standards, codeowners]
+
+agents:
+  - name: planner
+    model: openai-codex/gpt-5.6-sol
+    thinking: high
+    color: "#a78bfa"
+    purpose: Turn a request into a plan the builder can implement without asking questions.
+    prompt_engineering:
+      system: prompts/planner/system.md
+      user: prompts/planner/user.md
+    tools:
+      - read
+      - grep
+      - find
+      - ls
+
+  - name: builder
+    model: openai-codex/gpt-5.6-luna
+    color: "#22d3ee"
+    purpose: Implement the plan exactly; report every changed file in the envelope.
+    prompt_engineering:
+      system: prompts/builder/system.md
+      user: prompts/builder/user.md
+    tools:
+      - read
+      - grep
+      - find
+      - ls
+      - edit
+      - write
+
+  - name: reviewer
+    model: openai-codex/gpt-5.6-luna
+    thinking: high
+    color: "#fb7185"
+    purpose: Confirm that what was built is what was asked for; change nothing.
+    prompt_engineering:
+      system: prompts/reviewer/system.md
+      user: prompts/reviewer/user.md
+    tools:
+      - read
+      - grep
+      - find
+      - ls
+
+  - name: tester
+    model: openai-codex/gpt-5.6-luna
+    color: "#34d399"
+    purpose: Run the required checks and report evidence; change nothing.
+    prompt_engineering:
+      system: prompts/tester/system.md
+      user: prompts/tester/user.md
+    tools:
+      - read
+      - grep
+      - find
+      - ls

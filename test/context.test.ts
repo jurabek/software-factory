@@ -3,11 +3,11 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { loadFactoryConfig } from "../src/config.js";
-import { SoftwareFactory } from "../src/controller.js";
-import { gitBranch, gitRemoteUrl, resolveRepoContext } from "../src/context.js";
-import { writeAgentsBlock } from "../src/repo-block.js";
-import { FakeAgentRuntime, type AgentRuntime } from "../src/runtime.js";
+import { loadFactoryConfig } from "../packages/core/src/config.js";
+import { SoftwareFactory } from "../packages/core/src/controller.js";
+import { gitBranch, gitRemoteUrl, resolveRepoContext } from "../packages/core/src/context.js";
+import { writeAgentsBlock } from "../packages/core/src/repo-block.js";
+import { FakeAgentRuntime, type AgentRuntime } from "../packages/core/src/runtime.js";
 
 const roots: string[] = [];
 

@@ -9,7 +9,7 @@ import {
   renderRepoBlock,
   writeRepoBlock,
   type RepoBlock,
-} from "../src/repo-block.js";
+} from "../packages/core/src/repo-block.js";
 
 const sampleBlock: RepoBlock = {
   checks: [

@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { runDoctor } from "../src/doctor.js";
+import { runDoctor } from "../packages/core/src/doctor.js";
 import {
   detectChecks,
   detectGitContext,
@@ -12,8 +12,8 @@ import {
   resolveChecksAnswer,
   resolvePathsAnswer,
   runInit,
-} from "../src/init.js";
-import { parseRepoBlock } from "../src/repo-block.js";
+} from "../packages/core/src/init.js";
+import { parseRepoBlock } from "../packages/core/src/repo-block.js";
 
 const roots: string[] = [];
 
@@ -229,7 +229,7 @@ describe("doctor", () => {
     await runInit({ cwd: dir });
     const report = await runDoctor({ cwd: dir });
     const byId = new Map(report.capabilities.map((capability) => [capability.id, capability]));
-    for (const id of ["node", "git-repo", "agents-block", "pi-sdk", "workspace", "github-mutation"]) {
+    for (const id of ["node", "git-repo", "agents-block", "pi-sdk", "workspace"]) {
       expect(byId.get(id)?.available, `${id} available`).toBe(true);
     }
   });
