@@ -14,8 +14,9 @@ const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const traceTypes = new Set([
   "phase_start", "phase_end", "agent_start", "agent_end", "agent_result",
   "session_attached", "turn_start", "turn_end", "model_request",
-  "model_response", "model_selected", "thinking_level", "tool_start",
-  "tool_end", "log", "error",
+  "model_response", "model_progress", "model_heartbeat", "model_selected",
+  "model_fallback", "thinking_level", "tool_start", "tool_end",
+  "subagent_start", "subagent_end", "process_start", "process_end", "log", "error",
 ]);
 const mime: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -123,6 +124,8 @@ function campaignRoute(readModel: CampaignReadModel, url: URL, response: ServerR
     });
   } else if (resource === "results") {
     output = readModel.results(id, url.searchParams.get("role") ?? undefined);
+  } else if (resource === "live") {
+    output = readModel.live(id);
   } else if (resource === "agents" && parts[4] && parts[5] === "prompts") {
     output = { available: false, reason: "Prompt bodies are hidden by local security policy" };
   } else if (resource === "checks" || resource === "findings" || resource === "dependencies" || resource === "phases" || resource === "agents") {

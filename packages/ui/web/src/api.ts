@@ -4,6 +4,7 @@ import type {
   CheckRow,
   EventPage,
   FindingRow,
+  LiveSnapshot,
   Phase,
   ControlState,
 } from "./types";
@@ -28,6 +29,7 @@ export const api = {
   campaign: (id: string) => get<{ campaign: Campaign }>(`/api/campaigns/${encodeURIComponent(id)}`),
   phases: (id: string) => get<Phase[]>(`/api/campaigns/${encodeURIComponent(id)}/phases`),
   agents: (id: string) => get<AgentRun[]>(`/api/campaigns/${encodeURIComponent(id)}/agents`),
+  live: (id: string) => get<LiveSnapshot>(`/api/campaigns/${encodeURIComponent(id)}/live`),
   checks: (id: string) => get<CheckRow[]>(`/api/campaigns/${encodeURIComponent(id)}/checks`),
   findings: (id: string) => get<FindingRow[]>(`/api/campaigns/${encodeURIComponent(id)}/findings`),
   events: (

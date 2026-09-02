@@ -376,6 +376,7 @@ export class SoftwareFactory {
       `pending:${runId}`,
       assignment.attempt,
     );
+    store.startProcess(runId, "agent", assignment.role, process.pid, `swf agent ${assignment.role}`);
     const tracedAssignment = { ...assignment, runId, traceParentId };
     store.event("log", {
       runId,

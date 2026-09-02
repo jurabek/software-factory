@@ -745,6 +745,11 @@ describe("local campaign", () => {
       expect(sessionLogs.source).toBe("sqlite-wal");
       expect(sessionLogs.catalog.length).toBeGreaterThan(0);
       expect(sessionLogs.logs.length).toBeGreaterThan(0);
+      const live = await fetch(`${base}/api/campaigns/${campaign.id}/live`)
+        .then((response) => response.json()) as { generatedAt: string; staleAfterMs: number; runs: unknown[] };
+      expect(live.generatedAt).toEqual(expect.any(String));
+      expect(live.staleAfterMs).toBe(15_000);
+      expect(live.runs).toEqual([]);
       expect((await fetch(`${base}/api/health`, { method: "POST" })).status).toBe(405);
       const missingUi = startVisualizer({ workspace, port: 0, staticRoot: resolve(workspace, "no-ui") });
       await once(missingUi, "listening");

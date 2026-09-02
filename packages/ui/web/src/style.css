@@ -195,7 +195,7 @@ button { color: inherit; }
 .icon-toggle { display: inline-flex; align-items: center; gap: 6px; }
 .controls-spacer { flex: 1; }
 
-.approval-panel, .waterfall, .session-log-panel {
+.approval-panel, .live-runs-panel, .waterfall, .session-log-panel {
   margin: 20px 26px;
   overflow: hidden;
   border: 1px solid var(--border-soft);
@@ -262,6 +262,53 @@ button { color: inherit; }
 .approval-actions small { max-width: 330px; color: var(--faint); font-size: 11px; text-align: right; }
 .approval-actions code { color: var(--cyan); font-family: var(--mono); }
 .approval-actions .approval-message { color: var(--green); }
+.live-runs-panel { padding: 18px; }
+.live-runs-head, .live-run-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.live-runs-head { margin-bottom: 14px; }
+.live-runs-head h2 { margin: 0; font-size: 17px; }
+.live-runs-head small { color: var(--faint); font-family: var(--mono); font-size: 10px; }
+.live-runs-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
+.live-run-card {
+  padding: 15px;
+  border: 1px solid rgba(108,182,255,.4);
+  border-radius: 11px;
+  background: rgba(108,182,255,.05);
+}
+.live-run-card.stale { border-color: rgba(255,111,103,.7); background: rgba(255,111,103,.06); }
+.live-run-title strong { font-size: 13px; }
+.live-run-title strong span { color: var(--dim); font-weight: 500; }
+.runtime-stage {
+  padding: 3px 8px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  color: var(--blue);
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+.runtime-stage[data-stage="tool"] { color: var(--cyan); }
+.runtime-stage[data-stage="idle"] { color: var(--amber); }
+.runtime-stage[data-stage="stale"] { color: var(--red); }
+.live-run-card > p { margin: 9px 0 12px; color: var(--dim); font-family: var(--mono); font-size: 11px; }
+.live-run-card dl { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 0; }
+.live-run-card dl div { padding: 7px 8px; border-radius: 7px; background: rgba(6,8,15,.45); }
+.live-run-card dt { color: var(--faint); font-size: 9px; text-transform: uppercase; letter-spacing: .08em; }
+.live-run-card dd { margin: 3px 0 0; color: var(--text); font-family: var(--mono); font-size: 11px; }
+.process-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 11px; }
+.process-list span {
+  padding: 3px 7px;
+  border: 1px solid var(--border-soft);
+  border-radius: 5px;
+  color: var(--green);
+  font-family: var(--mono);
+  font-size: 9px;
+}
+.process-list span.ended { color: var(--faint); }
 .panel-head { display: flex; align-items: center; gap: 18px; padding: 15px 18px; border-bottom: 1px solid var(--border); background: var(--panel-2); }
 .panel-head > div { margin-right: auto; }
 .panel-head h2 { margin: 0 0 3px; font-size: 15px; }

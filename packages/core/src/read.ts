@@ -36,6 +36,10 @@ export class CampaignReadModel {
     return this.withStore(id, (store) => store.results(role));
   }
 
+  live(id: string): ReturnType<CampaignStore["liveness"]> {
+    return this.withStore(id, (store) => store.liveness());
+  }
+
   events(
     id: string,
     query: { after?: number; limit?: number; types?: string[]; role?: string; runId?: string } = {},
