@@ -2,9 +2,11 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { ArrowLeft, CheckCircle2, Clock3, GitBranch, TriangleAlert, Wrench } from "@lucide/vue";
 import { api } from "../api";
-import type { AgentRun, Campaign, CheckRow, ControlState, FindingRow, LiveRun, LiveSnapshot, Phase, TraceEvent } from "../types";
+import type { AgentResult } from "@software-factory/core";
+import type { AgentRun, Campaign, CheckRow, ControlState, FindingRow, Phase, TraceEvent } from "../types";
 import { formatDuration, isRunning, traceTypeGroups } from "../types";
 import SessionLog from "./SessionLog.vue";
+import ResultsPanel from "./ResultsPanel.vue";
 import TraceControls from "./TraceControls.vue";
 
 const props = defineProps<{ campaign: Campaign; control: ControlState }>();
@@ -15,7 +17,7 @@ const phases = ref<Phase[]>([]);
 const agents = ref<AgentRun[]>([]);
 const checks = ref<CheckRow[]>([]);
 const findings = ref<FindingRow[]>([]);
-const live = ref<LiveSnapshot>({ generatedAt: "", staleAfterMs: 15_000, runs: [] });
+const results = ref<AgentResult[]>([]);
 const events = ref<TraceEvent[]>([]);
 const selectedGroups = ref(Object.keys(traceTypeGroups));
 const role = ref("");
@@ -92,20 +94,6 @@ function phaseDuration(phase: Phase): string {
   return formatDuration(end - start);
 }
 
-function progressValue(run: LiveRun, key: "thinkingChars" | "textChars"): number {
-  const value = run.modelRequest?.progress?.[key];
-  return typeof value === "number" ? value : 0;
-}
-
-function activeDetail(run: LiveRun): string {
-  if (run.stage === "reasoning") return `${formatDuration(run.modelRequest?.elapsedMs ?? 0)} in model`;
-  if (run.stage === "tool") {
-    const name = run.activeTool?.toolName;
-    return typeof name === "string" ? name : "tool running";
-  }
-  return "between operations";
-}
-
 const awaitingPlanApproval = computed(() => campaign.value.state === "awaiting_plan_approval");
 const approvalCommand = computed(() => `npm run dev -- approve ${campaign.value.id} plan`);
 
@@ -149,20 +137,20 @@ async function tick() {
   inflight = true;
   try {
     const id = campaign.value.id;
-    const [detail, phaseRows, agentRows, checkRows, findingRows, liveSnapshot] = await Promise.all([
+    const [detail, phaseRows, agentRows, resultRows, checkRows, findingRows] = await Promise.all([
       api.campaign(id),
       api.phases(id),
       api.agents(id),
+      api.results(id),
       api.checks(id),
       api.findings(id),
-      api.live(id),
     ]);
     campaign.value = detail.campaign;
     phases.value = phaseRows;
     agents.value = agentRows;
+    results.value = resultRows;
     checks.value = checkRows;
     findings.value = findingRows;
-    live.value = liveSnapshot;
     let page;
     do {
       page = await api.events(id, { after: cursor, limit: 500 });
@@ -219,39 +207,6 @@ onUnmounted(() => window.clearInterval(timer));
       </div>
     </section>
 
-    <section v-if="live.runs.length" class="live-runs-panel">
-      <div class="live-runs-head">
-        <div>
-          <p class="kicker">RUNTIME LIVENESS</p>
-          <h2>Active agent processing</h2>
-        </div>
-        <small>stale after {{ formatDuration(live.staleAfterMs) }} without a signal</small>
-      </div>
-      <div class="live-runs-grid">
-        <article v-for="active in live.runs" :key="active.id" class="live-run-card" :class="{ stale: active.stale }">
-          <div class="live-run-title">
-            <strong>{{ active.role }}<span v-if="active.workItemId"> / {{ active.workItemId }}</span></strong>
-            <span class="runtime-stage" :data-stage="active.stale ? 'stale' : active.stage">
-              {{ active.stale ? "stale" : active.stage }}
-            </span>
-          </div>
-          <p>{{ activeDetail(active) }}</p>
-          <dl>
-            <div><dt>run</dt><dd>{{ formatDuration(active.elapsedMs) }}</dd></div>
-            <div><dt>last signal</dt><dd>{{ formatDuration(active.lastActivityMs) }} ago</dd></div>
-            <div><dt>reasoning stream</dt><dd>{{ progressValue(active, "thinkingChars").toLocaleString() }} chars</dd></div>
-            <div><dt>answer stream</dt><dd>{{ progressValue(active, "textChars").toLocaleString() }} chars</dd></div>
-          </dl>
-          <div class="process-list">
-            <span v-for="process in active.processes" :key="process.id" :class="{ ended: !process.running }">
-              PID {{ process.pid }} · {{ process.kind }} · {{ process.running ? "running" : "ended" }}
-            </span>
-            <span v-if="!active.processes.length">no process record</span>
-          </div>
-        </article>
-      </div>
-    </section>
-
     <TraceControls
       v-model:selectedGroups="selectedGroups"
       v-model:role="role"
@@ -289,6 +244,8 @@ onUnmounted(() => window.clearInterval(timer));
       </div>
       <div v-if="lanes.length === 0" class="empty-state">waiting for agent phases…</div>
     </section>
+
+    <ResultsPanel :results="results" />
 
     <SessionLog :events="filteredEvents" :show-payloads="showPayloads" :live="connected && !paused" />
   </section>

@@ -5,6 +5,7 @@ import { createInterface } from "node:readline";
 import { Command } from "commander";
 import { SoftwareFactory, type FactoryState } from "@software-factory/core";
 import { CampaignReadModel } from "@software-factory/core/read";
+import { formatAgentResult } from "@software-factory/core/result-summary";
 import { runDoctor, runInit } from "@software-factory/core/setup";
 
 /** D2: campaign state lives in the target repo's .software-factory/workspace. */
@@ -102,13 +103,21 @@ program.command("status <campaign-id>")
     print(options.verbose ? inspected : inspected.campaign);
   });
 
-for (const resource of ["results", "checks", "findings", "workers"] as const) {
+program.command("results <campaign-id>")
+  .option("--role <role>")
+  .option("--json", "print raw Agent Result JSON")
+  .action((campaignId, options) => {
+    const results = new CampaignReadModel(campaignWorkspace()).results(campaignId, options.role);
+    if (options.json) print(results);
+    else console.log(results.map(formatAgentResult).join("\n\n────────────────────────────────────────\n\n"));
+  });
+
+for (const resource of ["checks", "findings", "workers"] as const) {
   program.command(`${resource} <campaign-id>`)
     .option("--role <role>")
     .action((campaignId, options) => {
       const reader = new CampaignReadModel(campaignWorkspace());
-      if (resource === "results") print(reader.results(campaignId, options.role));
-      else print(reader.rows(campaignId, resource === "workers" ? "agents" : resource));
+      print(reader.rows(campaignId, resource === "workers" ? "agents" : resource));
     });
 }
 

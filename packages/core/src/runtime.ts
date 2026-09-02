@@ -21,13 +21,10 @@ import { campaignBusRequest } from "./bus.js";
 import { assertCommandAllowed, assertReadAllowed, assertWriteAllowed, type PolicyGrant } from "./policy.js";
 import { createSubagentHarness, SUBAGENT_TOOL_NAMES, usesSubagentHarness } from "./harness/subagents.js";
 import { ingestSessionJsonl } from "./session-log.js";
-import { appendRawSdkEvent } from "./raw-events.js";
 
 const executeFile = promisify(execFile);
 const MAX_PEER_SESSION_ROWS = 100;
 const MAX_PEER_SESSION_BYTES = 64 * 1024;
-const MODEL_HEARTBEAT_MS = 5_000;
-const MODEL_PROGRESS_TRACE_MS = 1_000;
 
 export interface Assignment {
   campaign: Campaign;
@@ -170,14 +167,7 @@ export class PiAgentRuntime implements AgentRuntime {
         ...payload,
       }, parentId);
     const toolStarts = new Map<string, { eventId: number; startedAt: number }>();
-    let modelRequest: {
-      eventId: number;
-      startedAt: number;
-      heartbeat: NodeJS.Timeout;
-      textChars: number;
-      thinkingChars: number;
-      lastProgressTraceAt: number;
-    } | undefined;
+    let modelRequest: { eventId: number; startedAt: number } | undefined;
     const liveSession: { id: string; file?: string | undefined } = { id: runId };
     const guard = new AgentExecutionGuard({
       deadlineMs: assignment.deadlineMs,
@@ -185,14 +175,7 @@ export class PiAgentRuntime implements AgentRuntime {
     });
     const sessionDir = resolve(this.store.campaignDir, "sessions", `${assignment.role}-${assignment.workItem?.id ?? "campaign"}-${assignment.attempt}`);
     mkdirSync(sessionDir, { recursive: true });
-    const rawEventFile = resolve(sessionDir, "raw-events.jsonl");
-    const rawEvent = (type: string, payload: unknown): void => appendRawSdkEvent(rawEventFile, type, payload);
-    const clearModelRequest = (): void => {
-      if (modelRequest) clearInterval(modelRequest.heartbeat);
-      modelRequest = undefined;
-    };
     const extensionFactories: Array<(pi: ExtensionAPI) => void> = [];
-    let subagentHarness: ReturnType<typeof createSubagentHarness> | undefined;
     const extension = (pi: ExtensionAPI): void => {
       pi.registerTool({
         name: "submit_agent_result",
@@ -206,7 +189,6 @@ export class PiAgentRuntime implements AgentRuntime {
           }
           validatorResult(validator, bound);
           submitted = bound;
-          subagentHarness?.terminateAll();
           return { content: [{ type: "text", text: "Agent Result accepted" }], details: {}, terminate: true };
         },
       });
@@ -279,7 +261,6 @@ export class PiAgentRuntime implements AgentRuntime {
         });
       }
       pi.on("tool_call", async (event) => {
-        rawEvent("tool_call", event);
         try {
           if (event.toolName === "write" || event.toolName === "edit") {
             assertWriteAllowed(assignment.grant, String((event.input as { path?: unknown }).path ?? ""));
@@ -293,47 +274,27 @@ export class PiAgentRuntime implements AgentRuntime {
         }
         return undefined;
       });
-      pi.on("before_provider_request", (event, context) => {
-        rawEvent("before_provider_request", event);
-        clearModelRequest();
-        const startedAt = Date.now();
-        const eventId = trace("model_request", {
+      pi.on("before_provider_request", (_event, context) => {
+        modelRequest = {
+          eventId: trace("model_request", {
             model: modelIdentity(context.model),
             thinking: context.thinkingLevel ?? null,
             context: context.getContextUsage() ?? null,
-        });
-        const heartbeat = setInterval(() => {
-          if (!modelRequest || modelRequest.eventId !== eventId) return;
-          trace("model_heartbeat", {
-            elapsedMs: Date.now() - startedAt,
-            textChars: modelRequest.textChars,
-            thinkingChars: modelRequest.thinkingChars,
-          }, eventId);
-        }, MODEL_HEARTBEAT_MS);
-        heartbeat.unref();
-        modelRequest = {
-          eventId,
-          startedAt,
-          heartbeat,
-          textChars: 0,
-          thinkingChars: 0,
-          lastProgressTraceAt: startedAt,
+          }),
+          startedAt: Date.now(),
         };
       });
       pi.on("after_provider_response", (event) => {
-        rawEvent("after_provider_response", event);
         trace("model_response", {
           status: event.status,
           durationMs: modelRequest ? Date.now() - modelRequest.startedAt : null,
         }, modelRequest?.eventId);
-        clearModelRequest();
+        modelRequest = undefined;
       });
       pi.on("turn_start", (event) => {
-        rawEvent("turn_start", event);
         trace("turn_start", { turnIndex: event.turnIndex });
       });
       pi.on("turn_end", (event) => {
-        rawEvent("turn_end", event);
         guard.observeTurn(event.message, event.toolResults.length);
         ingestSessionJsonl(store, {
           sessionId: liveSession.id,
@@ -347,32 +308,11 @@ export class PiAgentRuntime implements AgentRuntime {
           toolResults: event.toolResults.length,
         });
       });
-      pi.on("message_update", (event) => {
-        rawEvent("message_update", event);
-        if (!modelRequest) return;
-        const delta = (event as {
-          assistantMessageEvent?: { type?: string; delta?: string };
-        }).assistantMessageEvent;
-        if (!delta?.delta) return;
-        if (delta.type === "thinking_delta") modelRequest.thinkingChars += delta.delta.length;
-        if (delta.type === "text_delta") modelRequest.textChars += delta.delta.length;
-        const now = Date.now();
-        if (now - modelRequest.lastProgressTraceAt < MODEL_PROGRESS_TRACE_MS) return;
-        modelRequest.lastProgressTraceAt = now;
-        trace("model_progress", {
-          elapsedMs: now - modelRequest.startedAt,
-          textChars: modelRequest.textChars,
-          thinkingChars: modelRequest.thinkingChars,
-          deltaType: delta.type ?? "unknown",
-        }, modelRequest.eventId);
-      });
       pi.on("message_end", (event) => {
-        rawEvent("message_end", event);
         const summary = messageSummary(event.message);
         if (summary.role !== "user") trace("log", summary);
       });
       pi.on("tool_execution_start", (event) => {
-        rawEvent("tool_execution_start", event);
         const eventId = trace("tool_start", {
           toolCallId: event.toolCallId,
           toolName: event.toolName,
@@ -381,7 +321,6 @@ export class PiAgentRuntime implements AgentRuntime {
         toolStarts.set(event.toolCallId, { eventId, startedAt: Date.now() });
       });
       pi.on("tool_execution_end", (event) => {
-        rawEvent("tool_execution_end", event);
         const started = toolStarts.get(event.toolCallId);
         trace("tool_end", {
           toolCallId: event.toolCallId,
@@ -399,18 +338,17 @@ export class PiAgentRuntime implements AgentRuntime {
         }, liveSession.file);
       });
       pi.on("model_select", (event) => {
-        rawEvent("model_select", event);
         trace("model_selected", {
           model: modelIdentity(event.model),
           source: event.source,
         });
       });
       pi.on("thinking_level_select", (event) => {
-        rawEvent("thinking_level_select", event);
         trace("thinking_level", { level: event.level });
       });
     };
     extensionFactories.push(extension);
+    let subagentHarness: ReturnType<typeof createSubagentHarness> | undefined;
     if (usesSubagentHarness(assignment.role)) {
       subagentHarness = createSubagentHarness({
         store,
@@ -490,7 +428,6 @@ export class PiAgentRuntime implements AgentRuntime {
         } : undefined,
       });
     } finally {
-      clearModelRequest();
       subagentHarness?.terminateAll();
       ingestSessionJsonl(store, sessionMeta, session.sessionFile);
       session.dispose();

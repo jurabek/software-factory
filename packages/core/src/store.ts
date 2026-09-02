@@ -112,12 +112,6 @@ export class CampaignStore {
         created_at TEXT NOT NULL, UNIQUE(session_id, seq)
       );
       CREATE INDEX IF NOT EXISTS session_logs_session ON session_logs(session_id, id);
-      CREATE TABLE IF NOT EXISTS processes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, kind TEXT NOT NULL,
-        name TEXT NOT NULL, pid INTEGER NOT NULL, command TEXT NOT NULL,
-        started_at TEXT NOT NULL, ended_at TEXT
-      );
-      CREATE INDEX IF NOT EXISTS processes_run ON processes(run_id, ended_at);
     `);
   }
 
@@ -269,36 +263,6 @@ export class CampaignStore {
     }, phaseId);
   }
 
-  startProcess(runId: string, kind: string, name: string, pid: number, command: string): number {
-    const startedAt = new Date().toISOString();
-    const result = this.db.prepare(
-      `INSERT INTO processes (run_id, kind, name, pid, command, started_at, ended_at)
-       VALUES (?, ?, ?, ?, ?, ?, NULL)`,
-    ).run(runId, kind, name, pid, command.slice(0, 500), startedAt);
-    const processId = Number(result.lastInsertRowid);
-    this.event("process_start", { runId, processId, kind, name, pid, command: command.slice(0, 500) });
-    return processId;
-  }
-
-  finishProcess(processId: number): void {
-    const row = this.db.prepare(`SELECT * FROM processes WHERE id=? AND ended_at IS NULL`).get(processId) as Row | undefined;
-    if (!row) return;
-    const endedAt = new Date().toISOString();
-    this.db.prepare(`UPDATE processes SET ended_at=? WHERE id=? AND ended_at IS NULL`).run(endedAt, processId);
-    this.event("process_end", {
-      runId: String(row.run_id),
-      processId,
-      kind: String(row.kind),
-      name: String(row.name),
-      pid: Number(row.pid),
-    });
-  }
-
-  finishRunProcesses(runId: string): void {
-    const rows = this.db.prepare(`SELECT id FROM processes WHERE run_id=? AND ended_at IS NULL`).all(runId) as Row[];
-    for (const row of rows) this.finishProcess(Number(row.id));
-  }
-
   failRunningAgents(reason: string): number {
     const runs = this.db.prepare(
       `SELECT id, role, work_item_id FROM agent_runs WHERE status='running'`,
@@ -328,7 +292,6 @@ export class CampaignStore {
       };
       this.event("agent_end", metadata);
       this.event("phase_end", metadata);
-      this.finishRunProcesses(String(row.id));
     }
     return runs.length;
   }
@@ -350,7 +313,6 @@ export class CampaignStore {
     );
     this.event("agent_end", metadata);
     this.event("phase_end", metadata);
-    this.finishRunProcesses(runId);
   }
 
   resolveFindings(workItemId: string): void {
@@ -421,94 +383,12 @@ export class CampaignStore {
     return rows.map((row) => JSON.parse(String(row.body)) as AgentResult);
   }
 
-  rows(table: "events" | "checks" | "findings" | "dependencies" | "phases" | "agent_runs" | "processes", after = 0, limit = 200): Row[] {
+  rows(table: "events" | "checks" | "findings" | "dependencies" | "phases" | "agent_runs", after = 0, limit = 200): Row[] {
     const bounded = Math.min(Math.max(limit, 1), 500);
     if (table === "events") {
       return this.db.prepare(`SELECT * FROM events WHERE id>? ORDER BY id LIMIT ?`).all(after, bounded) as Row[];
     }
     return this.db.prepare(`SELECT * FROM ${table} LIMIT ?`).all(bounded) as Row[];
-  }
-
-  liveness(now = Date.now(), staleAfterMs = 15_000): {
-    generatedAt: string;
-    staleAfterMs: number;
-    runs: Array<Record<string, unknown>>;
-  } {
-    const runs = this.db.prepare(`SELECT * FROM agent_runs WHERE status='running' ORDER BY started_at`).all() as Row[];
-    return {
-      generatedAt: new Date(now).toISOString(),
-      staleAfterMs,
-      runs: runs.map((run) => {
-        const runId = String(run.id);
-        const latest = this.db.prepare(
-          `SELECT * FROM events WHERE json_extract(payload, '$.runId')=? ORDER BY id DESC LIMIT 1`,
-        ).get(runId) as Row | undefined;
-        const modelRequest = this.db.prepare(
-          `SELECT request.* FROM events request
-           WHERE request.type='model_request'
-             AND json_extract(request.payload, '$.runId')=?
-             AND NOT EXISTS (
-               SELECT 1 FROM events response
-               WHERE response.type='model_response' AND response.parent_id=request.id
-             )
-           ORDER BY request.id DESC LIMIT 1`,
-        ).get(runId) as Row | undefined;
-        const tool = this.db.prepare(
-          `SELECT request.* FROM events request
-           WHERE request.type='tool_start'
-             AND json_extract(request.payload, '$.runId')=?
-             AND NOT EXISTS (
-               SELECT 1 FROM events response
-               WHERE response.type='tool_end' AND response.parent_id=request.id
-             )
-           ORDER BY request.id DESC LIMIT 1`,
-        ).get(runId) as Row | undefined;
-        const progress = modelRequest
-          ? this.db.prepare(
-            `SELECT * FROM events
-             WHERE type IN ('model_progress', 'model_heartbeat')
-               AND parent_id=?
-             ORDER BY id DESC LIMIT 1`,
-          ).get(Number(modelRequest.id)) as Row | undefined
-          : undefined;
-        const processes = this.db.prepare(
-          `SELECT id, kind, name, pid, command, started_at, ended_at
-           FROM processes WHERE run_id=? ORDER BY id`,
-        ).all(runId) as Row[];
-        const lastActivityAt = String(latest?.created_at ?? run.started_at);
-        const lastActivityMs = Math.max(0, now - Date.parse(lastActivityAt));
-        const modelStartedAt = modelRequest ? String(modelRequest.created_at) : null;
-        return {
-          id: runId,
-          role: String(run.role),
-          workItemId: run.work_item_id ? String(run.work_item_id) : null,
-          sessionId: String(run.session_id),
-          stage: modelRequest ? "reasoning" : tool ? "tool" : "idle",
-          startedAt: String(run.started_at),
-          elapsedMs: Math.max(0, now - Date.parse(String(run.started_at))),
-          lastActivityAt,
-          lastActivityMs,
-          stale: lastActivityMs > staleAfterMs,
-          modelRequest: modelRequest ? {
-            eventId: Number(modelRequest.id),
-            startedAt: modelStartedAt,
-            elapsedMs: Math.max(0, now - Date.parse(modelStartedAt!)),
-            progress: progress ? JSON.parse(String(progress.payload)) : null,
-          } : null,
-          activeTool: tool ? JSON.parse(String(tool.payload)) : null,
-          processes: processes.map((process) => ({
-            id: Number(process.id),
-            kind: String(process.kind),
-            name: String(process.name),
-            pid: Number(process.pid),
-            command: String(process.command),
-            startedAt: String(process.started_at),
-            endedAt: process.ended_at ? String(process.ended_at) : null,
-            running: !process.ended_at,
-          })),
-        };
-      }),
-    };
   }
 
   events(
