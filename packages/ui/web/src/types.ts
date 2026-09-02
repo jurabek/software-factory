@@ -66,6 +66,44 @@ export interface AgentRun {
   completed_at: string | null;
 }
 
+export interface LiveProcess {
+  id: number;
+  kind: string;
+  name: string;
+  pid: number;
+  command: string;
+  startedAt: string;
+  endedAt: string | null;
+  running: boolean;
+}
+
+export interface LiveRun {
+  id: string;
+  role: string;
+  workItemId: string | null;
+  sessionId: string;
+  stage: "reasoning" | "tool" | "idle";
+  startedAt: string;
+  elapsedMs: number;
+  lastActivityAt: string;
+  lastActivityMs: number;
+  stale: boolean;
+  modelRequest: {
+    eventId: number;
+    startedAt: string;
+    elapsedMs: number;
+    progress: Record<string, unknown> | null;
+  } | null;
+  activeTool: Record<string, unknown> | null;
+  processes: LiveProcess[];
+}
+
+export interface LiveSnapshot {
+  generatedAt: string;
+  staleAfterMs: number;
+  runs: LiveRun[];
+}
+
 export interface CheckRow {
   check_id: string;
   work_item_id: string | null;
@@ -84,8 +122,8 @@ export interface FindingRow {
 }
 
 export const traceTypeGroups = {
-  lifecycle: ["phase_start", "phase_end", "agent_start", "agent_end", "agent_result", "session_attached"],
-  models: ["model_request", "model_response", "model_selected", "thinking_level", "turn_start", "turn_end"],
+  lifecycle: ["phase_start", "phase_end", "agent_start", "agent_end", "agent_result", "session_attached", "process_start", "process_end", "subagent_start", "subagent_end"],
+  models: ["model_request", "model_response", "model_progress", "model_heartbeat", "model_selected", "model_fallback", "thinking_level", "turn_start", "turn_end"],
   tools: ["tool_start", "tool_end"],
   logs: ["log", "error"],
 } as const;
