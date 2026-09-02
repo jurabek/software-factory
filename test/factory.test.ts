@@ -6,72 +6,21 @@ import { resolve } from "node:path";
 import { once } from "node:events";
 import { afterEach, describe, expect, it } from "vitest";
 import { stringify as stringifyYaml } from "yaml";
-import { loadFactoryConfig, resolveAgent } from "../src/config.js";
-import { SoftwareFactory } from "../src/controller.js";
-import { GhCliDelivery, type CommandRunner, type DeliveryRuntime } from "../src/github.js";
-import { ensureBackgroundVisualizer, isVisualizerHealthy } from "../src/background-visualizer.js";
-import { assertCommandAllowed, assertLocalRunnerAllowed, assertReadAllowed, assertWriteAllowed, PolicyError } from "../src/policy.js";
-import { loadRepositoryReviewerInstructions } from "../src/repository-reviewer.js";
-import { FakeAgentRuntime, type AgentRuntime } from "../src/runtime.js";
-import { CampaignStore, redact } from "../src/store.js";
-import { campaignBusRequest } from "../src/bus.js";
-import { startVisualizer } from "../src/server.js";
-import { buildPiSubagentCommand, parseCommandOptions, usesSubagentHarness } from "../src/harness/subagents.js";
+import { loadFactoryConfig, resolveAgent } from "../packages/core/src/config.js";
+import { SoftwareFactory } from "../packages/core/src/controller.js";
+import { assertCommandAllowed, assertLocalRunnerAllowed, assertReadAllowed, assertWriteAllowed, PolicyError } from "../packages/core/src/policy.js";
+import { loadRepositoryReviewerInstructions } from "../packages/core/src/repository-reviewer.js";
+import { FakeAgentRuntime, type AgentRuntime } from "../packages/core/src/runtime.js";
+import { CampaignStore, redact } from "../packages/core/src/store.js";
+import { campaignBusRequest } from "../packages/core/src/bus.js";
+import { startVisualizer } from "../packages/ui/src/server.js";
+import { buildPiSubagentCommand, parseCommandOptions, usesSubagentHarness } from "../packages/core/src/harness/subagents.js";
 
 const roots: string[] = [];
 
 afterEach(() => {
   while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true });
 });
-
-class FakeGhRunner implements CommandRunner {
-  readonly calls: string[] = [];
-  pullRequestBody = "";
-  headSha = "";
-  branch = "";
-
-  run(command: string, args: string[], options: { cwd?: string; input?: string; allowFailure?: boolean } = {}) {
-    this.calls.push(`${command} ${args.slice(0, 2).join(" ")}`.trim());
-    if (command === "git") {
-      const stdout = execFileSync(command, args, { cwd: options.cwd, encoding: "utf8" });
-      if (args[0] === "rev-parse" && args[1] === "HEAD") this.headSha = stdout.trim();
-      return { stdout, stderr: "", status: 0 };
-    }
-    if (args[0] === "auth") return { stdout: "", stderr: "", status: 0 };
-    if (args[0] === "pr" && args[1] === "list") {
-      return { stdout: this.pullRequestBody ? JSON.stringify([this.pullRequest()]) : "[]", stderr: "", status: 0 };
-    }
-    if (args[0] === "pr" && args[1] === "create") {
-      this.pullRequestBody = options.input ?? "";
-      this.branch = args[args.indexOf("--head") + 1] ?? "";
-      return { stdout: "https://github.com/example/app/pull/42\n", stderr: "", status: 0 };
-    }
-    if (args[0] === "pr" && args[1] === "view") {
-      return { stdout: JSON.stringify(this.pullRequest()), stderr: "", status: 0 };
-    }
-    if (args[0] === "pr" && args[1] === "checks") {
-      return {
-        stdout: JSON.stringify([{ name: "test", state: "SUCCESS", bucket: "pass", link: "https://github.com/check/1", workflow: "CI" }]),
-        stderr: "",
-        status: 0,
-      };
-    }
-    throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
-  }
-
-  private pullRequest() {
-    return {
-      number: 42,
-      url: "https://github.com/example/app/pull/42",
-      isDraft: true,
-      headRefName: this.branch,
-      headRefOid: this.headSha,
-      baseRefName: "main",
-      title: "Deliver through gh [app]",
-      body: this.pullRequestBody,
-    };
-  }
-}
 
 function customConfigPath(value: Record<string, unknown>): string {
   const root = mkdtempSync(resolve(tmpdir(), "software-factory-config-"));
@@ -204,14 +153,12 @@ describe("factory config", () => {
       "authentication or authorization",
       "secrets or credentials",
       "data-store contract",
-      "destructive rollback",
     ]);
     expect(config.approvalRules).toEqual([
       { id: "multi-repository-plan", when: "more than one work item exists", approval: "plan" },
       { id: "break-glass", when: "a normally read-only repository write is requested", approval: "break-glass" },
     ]);
     expect(config.requiredReviewKinds).toEqual(["spec", "standards", "codeowners"]);
-    expect(config.delivery).toEqual({ provider: "local" });
     expect(config.defaults).not.toHaveProperty("profile");
     expect(config.defaults).not.toHaveProperty("repositories");
     expect(config).not.toHaveProperty("profile");
@@ -236,27 +183,10 @@ describe("factory config", () => {
     expect(config.riskSignals).toEqual([]);
     expect(config.approvalRules).toEqual([]);
     expect(config.requiredReviewKinds).toEqual(["spec", "standards"]);
-    expect(config.delivery).toEqual({ provider: "local" });
-    expect(() => loadFactoryConfig(customConfigPath({
-      defaults: { model: "x/y" },
-      delivery: { provider: "s3" },
-    }))).toThrow("delivery.provider must be local or github");
     expect(() => loadFactoryConfig(customConfigPath({
       defaults: { model: "x/y" },
       approval_rules: [{ id: "missing-when" }],
     }))).toThrow("approval_rules[0].when is required");
-  });
-
-  it("accepts github delivery and camelCase or snake_case fields", () => {
-    const config = loadFactoryConfig(customConfigPath({
-      defaults: { model: "x/y" },
-      riskSignals: ["payment flows"],
-      requiredReviewKinds: ["spec"],
-      delivery: { provider: "github" },
-    }));
-    expect(config.riskSignals).toEqual(["payment flows"]);
-    expect(config.requiredReviewKinds).toEqual(["spec"]);
-    expect(config.delivery).toEqual({ provider: "github" });
   });
 
   it("loads configured prompt_engineering files into Pi system and user prompts", async () => {
@@ -362,117 +292,6 @@ describe("local campaign", () => {
     } finally { store.close(); }
   });
 
-  it("opens draft pull requests and validates CI when GitHub delivery is enabled", async () => {
-    const { repository, workspace } = fixture();
-    const remote = resolve(repository, "../remote.git");
-    execFileSync("git", ["init", "--bare", remote]);
-    execFileSync("git", ["remote", "add", "origin", remote], { cwd: repository });
-    // gh operations use the github-style URL; real git pushes go to origin (local bare).
-    execFileSync("git", ["remote", "add", "github", "https://github.com/example/app.git"], { cwd: repository });
-    const fake = new FakeAgentRuntime((assignment) => {
-      if (assignment.role !== "builder") return {};
-      const content = "export const delivered = true;\n";
-      writeFileSync(resolve(assignment.worktree, "src/delivered.ts"), content);
-      return {
-        changedFiles: [{
-          path: "src/delivered.ts",
-          change: "added",
-          purpose: "deliver the requested fixture",
-          generated: false,
-          digest: createHash("sha256").update(content).digest("hex"),
-        }],
-      };
-    });
-    const runner = new FakeGhRunner();
-    const factory = await SoftwareFactory.create({
-      repositoryRoot: repository,
-      workspace,
-      runtime: fake,
-      delivery: new GhCliDelivery(runner),
-    });
-    const campaign = await factory.request({ text: "Deliver through gh", });
-    factory.approve(campaign.id, "plan");
-    const completed = await factory.advance(campaign.id);
-    expect(completed.state).toBe("implementation_complete");
-
-    const store = new CampaignStore(workspace, campaign.id);
-    try {
-      const [delivery] = store.deliveries();
-      expect(delivery).toMatchObject({
-        repositoryId: "repository",
-        draft: true,
-        ciStatus: "passed",
-        pullRequestUrl: "https://github.com/example/app/pull/42",
-      });
-      expect(delivery?.branch).toContain(`/r1/repository`);
-      expect(store.rows("events").some((event) => event.type === "delivery_updated")).toBe(true);
-    } finally { store.close(); }
-    expect(runner.calls).toContain("gh auth status");
-    expect(runner.calls).toContain("gh auth setup-git");
-    expect(runner.calls).toContain("gh pr create");
-    expect(runner.calls).toContain("gh pr checks");
-    expect(runner.pullRequestBody).toContain("## Review and test evidence");
-    expect(runner.pullRequestBody).toContain(`campaign=${campaign.id}`);
-  });
-
-  it("keeps a Campaign in validating_ci while gh reports pending checks", async () => {
-    const { repository, workspace } = fixture();
-    let passed = false;
-    const delivery: DeliveryRuntime = {
-      openDraftPullRequests({ request }) {
-        return request.workItems.map((item) => ({
-          workItemId: item.id, repositoryId: item.repositoryId, repositoryUrl: item.repositoryUrl,
-          baseBranch: item.baseBranch, branch: "software-factory/pending", headSha: item.baseSha!,
-          pullRequestNumber: 1, pullRequestUrl: "https://github.com/example/app/pull/1",
-          draft: true, ciStatus: "pending", checks: [], updatedAt: new Date().toISOString(),
-        }));
-      },
-      observeCi(_context, deliveries) {
-        return deliveries.map((item) => ({ ...item, ciStatus: passed ? "passed" : "pending" }));
-      },
-    };
-    const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime: "fake", delivery });
-    const campaign = await factory.request({ text: "Wait for CI", });
-    factory.approve(campaign.id, "plan");
-    expect((await factory.advance(campaign.id)).state).toBe("validating_ci");
-    passed = true;
-    expect((await factory.advance(campaign.id)).state).toBe("implementation_complete");
-  });
-
-  it("routes failed CI through Builder, Reviewer, and Tester before polling again", async () => {
-    const { repository, workspace } = fixture();
-    let observations = 0;
-    const delivery: DeliveryRuntime = {
-      openDraftPullRequests({ request }) {
-        return request.workItems.map((item) => ({
-          workItemId: item.id, repositoryId: item.repositoryId, repositoryUrl: item.repositoryUrl,
-          baseBranch: item.baseBranch, branch: "software-factory/repair", headSha: item.baseSha!,
-          pullRequestNumber: 2, pullRequestUrl: "https://github.com/example/app/pull/2",
-          draft: true, ciStatus: "pending", checks: [], updatedAt: new Date().toISOString(),
-        }));
-      },
-      observeCi(_context, deliveries) {
-        observations += 1;
-        return deliveries.map((item) => ({
-          ...item,
-          ciStatus: observations === 1 ? "failed" : "passed",
-          checks: observations === 1 ? [{ name: "unit", state: "FAILURE", bucket: "fail", link: null }] : [],
-        }));
-      },
-    };
-    const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime: "fake", delivery });
-    const campaign = await factory.request({ text: "Repair CI", });
-    factory.approve(campaign.id, "plan");
-    expect((await factory.advance(campaign.id)).state).toBe("implementation_complete");
-    const store = new CampaignStore(workspace, campaign.id);
-    try {
-      expect(store.results().map((result) => result.role)).toEqual([
-        "planner", "builder", "reviewer", "tester", "builder", "reviewer", "tester",
-      ]);
-      expect(store.campaign().repairCycles).toBe(1);
-    } finally { store.close(); }
-  });
-
   it("invalidates approvals and results after an amendment", async () => {
     const { repository, workspace } = fixture();
     const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime: "fake" });
@@ -510,7 +329,6 @@ describe("local campaign", () => {
         attempt: assignment.attempt,
         failureClass: "capability-missing",
         evidence: [{ kind: "fixture", reference: "missing capability", digest: null, classification: "internal" }],
-        waiverId: null,
       })),
     } : {});
     const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime });
@@ -584,20 +402,13 @@ describe("local campaign", () => {
     const server = startVisualizer({
       workspace,
       port: 0,
-      staticRoot: resolve(import.meta.dirname, "../apps/visualizer/dist"),
+      staticRoot: resolve(import.meta.dirname, "../packages/ui/dist/web"),
     });
     await once(server, "listening");
     try {
       const address = server.address();
       if (!address || typeof address === "string") throw new Error("missing server address");
       const base = `http://127.0.0.1:${address.port}`;
-      expect(await isVisualizerHealthy("127.0.0.1", address.port)).toBe(true);
-      expect(await ensureBackgroundVisualizer({
-        host: "127.0.0.1",
-        port: address.port,
-        packageRoot: repository,
-      })).toBe("already-running");
-      expect(await fetch(`${base}/api/health`).then((response) => response.json())).toMatchObject({ status: "ok", mode: "read-only" });
       expect(await fetch(`${base}/api/campaigns`).then((response) => response.json())).toHaveLength(1);
       const sessions = await fetch(
         `${base}/api/campaigns/${campaign.id}/sessions?types=log&role=planner`,

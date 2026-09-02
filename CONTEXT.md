@@ -5,11 +5,11 @@ The Software Factory coordinates bounded, evidence-backed repository changes fro
 ## Language
 
 **Feature Request**:
-The versioned, approval-bearing statement of a requested outcome, its work, checks, risk, and delivery constraints.
+The versioned, approval-bearing statement of a requested outcome, its local work, checks, and risk constraints.
 _Avoid_: Ticket, task, prompt
 
 **Campaign**:
-A tracked execution of a Feature Request through planning, building, review, testing, delivery, and completion.
+A tracked execution of a Feature Request through planning, building, review, local testing, and implementation completion.
 _Avoid_: Run, job, workflow
 
 **Campaign transition policy**:

@@ -2,11 +2,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { ContractValidator, digest } from "../src/contracts.js";
-import type { RepoContext } from "../src/context.js";
-import { FeatureRequestModule } from "../src/feature-request.js";
-import { CampaignStore } from "../src/store.js";
-import type { Campaign, WorkItem } from "../src/types.js";
+import { ContractValidator, digest } from "../packages/core/src/contracts.js";
+import type { RepoContext } from "../packages/core/src/context.js";
+import { FeatureRequestModule } from "../packages/core/src/feature-request.js";
+import { CampaignStore } from "../packages/core/src/store.js";
+import type { Campaign, WorkItem } from "../packages/core/src/types.js";
 
 const roots: string[] = [];
 const now = "2026-09-01T15:00:00.000Z";
@@ -46,7 +46,6 @@ function fixture() {
     riskDefaults: { highRiskSignals: ["authentication"], prohibitedEvidenceData: ["secrets"] },
     requiredReviewKinds: ["spec", "standards"],
     approvalRules: [],
-    deliveryProviders: [],
     evaluationScenarios: [],
   };
   const workItem: WorkItem = {
@@ -150,34 +149,4 @@ describe("Feature Request Module", () => {
     }
   });
 
-  it("owns waiver proposal and approval rules", () => {
-    const { module, store } = fixture();
-    try {
-      expect(() => module.proposeWaiver(
-        store,
-        "CHECK-unknown",
-        "https://example.test/issues/1",
-        "2026-09-02T15:00:00.000Z",
-        "Known failure",
-      )).toThrow("unknown check");
-
-      const request = module.proposeWaiver(
-        store,
-        "CHECK-app-unit",
-        "https://example.test/issues/1",
-        "2026-09-02T15:00:00.000Z",
-        "Known failure",
-      );
-      expect(request.waivers).toEqual([expect.objectContaining({
-        id: "WAIVER-app-unit-2",
-        checkId: "CHECK-app-unit",
-      })]);
-      expect(module.approve(store, "waiver", "reviewer")).toEqual({ startBuilding: false });
-      expect(store.hasApproval("waiver")).toBe(true);
-      expect(() => module.approve(store, "unsupported", "reviewer"))
-        .toThrow("unsupported local approval kind");
-    } finally {
-      store.close();
-    }
-  });
 });

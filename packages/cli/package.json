@@ -1,0 +1,20 @@
+{
+  "name": "@software-factory/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "bin": {
+    "swf": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@software-factory/core": "0.1.0",
+    "commander": "^15.0.0"
+  }
+}
