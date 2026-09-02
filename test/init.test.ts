@@ -1,8 +1,10 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { parse as parseYaml } from "yaml";
+import { loadFactoryConfig, resolveAgent } from "../packages/core/src/config.js";
 import { runDoctor } from "../packages/core/src/doctor.js";
 import {
   detectChecks,
@@ -196,12 +198,16 @@ describe("runInit", () => {
     expect(block.generated).toEqual(["dist/", "node_modules/"]);
     expect(block.protected).toEqual([]);
     expect(readFileSync(resolve(dir, ".gitignore"), "utf8")).toContain(".software-factory/");
+    expect(existsSync(resolve(dir, ".software-factory", "config.yaml"))).toBe(true);
+    expect(existsSync(resolve(dir, ".software-factory", "prompts", "planner", "system.md"))).toBe(true);
 
     const agentsBefore = readFileSync(resolve(dir, "AGENTS.md"), "utf8");
     const gitignoreBefore = readFileSync(resolve(dir, ".gitignore"), "utf8");
+    const configBefore = readFileSync(resolve(dir, ".software-factory", "config.yaml"), "utf8");
     await runInit({ cwd: dir });
     expect(readFileSync(resolve(dir, "AGENTS.md"), "utf8")).toBe(agentsBefore);
     expect(readFileSync(resolve(dir, ".gitignore"), "utf8")).toBe(gitignoreBefore);
+    expect(readFileSync(resolve(dir, ".software-factory", "config.yaml"), "utf8")).toBe(configBefore);
   });
 
   it("honors explicit answers for checks, protected, and generated paths", async () => {
@@ -211,7 +217,17 @@ describe("runInit", () => {
 
     const result = await runInit({
       cwd: dir,
-      answers: { checks: "+e2e: npm run e2e", protectedPaths: "src/vendor", generatedPaths: "coverage" },
+      answers: {
+        checks: "+e2e: npm run e2e",
+        protectedPaths: "src/vendor",
+        generatedPaths: "coverage",
+        models: {
+          planner: "test/planner",
+          builder: "test/builder",
+          reviewer: "test/reviewer",
+          tester: "test/tester",
+        },
+      },
     });
 
     expect(result.block.checks).toEqual([{ id: "e2e", command: "npm run e2e" }]);
@@ -219,6 +235,16 @@ describe("runInit", () => {
     expect(result.block.generated).toEqual(["coverage/"]);
     expect(result.gitignoreChanged).toBe(true);
     expect(detectGitContext(dir).branch).toBe("main");
+    const config = parseYaml(readFileSync(resolve(dir, ".software-factory", "config.yaml"), "utf8")) as {
+      agents: Array<{ name: string; model: string }>;
+    };
+    expect(Object.fromEntries(config.agents.map((agent) => [agent.name, agent.model]))).toMatchObject({
+      planner: "test/planner",
+      builder: "test/builder",
+      reviewer: "test/reviewer",
+      tester: "test/tester",
+    });
+    expect(resolveAgent(loadFactoryConfig(undefined, dir), "planner").model).toBe("test/planner");
   });
 });
 

@@ -1,13 +1,19 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { basename, resolve } from "node:path";
-import { createInterface } from "node:readline";
+import { basename, dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { autocomplete, cancel, isCancel, text } from "@clack/prompts";
+import { createAgentSessionServices, getAgentDir } from "@earendil-works/pi-coding-agent";
+import { parseDocument } from "yaml";
 import { writeAgentsBlock } from "./repo-block.js";
 import type { RepoBlock, RepoBlockCheck } from "./repo-block.js";
 import { doctorFailed, runDoctor } from "./doctor.js";
 import type { DoctorReport } from "./doctor.js";
+import type { AgentRole } from "./types.js";
 
 const GITIGNORE_LINE = ".software-factory/";
+const FACTORY_ROLES: readonly AgentRole[] = ["planner", "builder", "reviewer", "tester"];
+const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 export interface InitAnswers {
   /** check ids to keep / "none" / "+id: command" additions; empty = keep detected */
@@ -16,11 +22,15 @@ export interface InitAnswers {
   protectedPaths: string;
   /** comma-separated generated paths; empty = auto-proposed from .gitignore; "none" = none */
   generatedPaths: string;
+  /** Pi model selections by factory role. */
+  models: Partial<Record<AgentRole, string>>;
 }
 
 export interface InitOptions {
   cwd?: string;
   answers?: Partial<InitAnswers>;
+  /** Optional model catalog override, primarily for programmatic callers. */
+  availableModels?: string[];
   nonInteractive?: boolean;
 }
 
@@ -178,27 +188,59 @@ export function detectGitContext(cwd: string): { branch: string | null; remote: 
   return result;
 }
 
-interface Questioner {
-  ask(prompt: string): Promise<string>;
-  close(): void;
-}
-
-function interactiveQuestioner(): Questioner {
-  const rl = createInterface({ input: process.stdin, output: process.stderr });
-  return {
-    ask(prompt: string): Promise<string> {
-      return new Promise((resolveAnswer) => {
-        rl.question(prompt, (answer) => resolveAnswer(answer.trim()));
-      });
-    },
-    close: () => rl.close(),
-  };
+/** Return provider/id strings from built-in providers and loaded Pi extensions. */
+export async function availablePiModels(cwd = process.cwd()): Promise<string[]> {
+  const services = await createAgentSessionServices({
+    cwd: resolve(cwd),
+    agentDir: getAgentDir(),
+  });
+  const models = await services.modelRuntime.getAvailable();
+  return [...new Set(models.map((model) => `${model.provider}/${model.id}`))].sort();
 }
 
 /**
- * `swf init`: detect checks and proposed generated paths, ask at most three
- * questions (all with defaults; non-TTY = all defaults), write the AGENTS.md
- * block, add the `.software-factory/` gitignore entry, then run doctor.
+ * Install the packaged config and prompts into the repository, applying any
+ * per-role model choices while preserving YAML comments.
+ */
+export function installFactoryConfig(
+  cwd: string,
+  models: Partial<Record<AgentRole, string>> = {},
+): string {
+  const factoryDir = resolve(cwd, ".software-factory");
+  const configPath = resolve(factoryDir, "config.yaml");
+  const templatePath = resolve(packageRoot, "config.yaml");
+  mkdirSync(factoryDir, { recursive: true });
+
+  const source = existsSync(configPath)
+    ? readFileSync(configPath, "utf8")
+    : readFileSync(templatePath, "utf8");
+  const document = parseDocument(source);
+  const parsed = document.toJS() as { agents?: Array<{ name?: string }> };
+  for (const role of FACTORY_ROLES) {
+    const model = models[role]?.trim();
+    const index = parsed.agents?.findIndex((agent) => agent.name === role) ?? -1;
+    if (model && index >= 0) document.setIn(["agents", index, "model"], model);
+  }
+  const rendered = document.toString();
+  if (!existsSync(configPath) || readFileSync(configPath, "utf8") !== rendered) {
+    writeFileSync(configPath, rendered);
+  }
+
+  const promptsSource = resolve(packageRoot, "prompts");
+  if (existsSync(promptsSource)) {
+    cpSync(promptsSource, resolve(factoryDir, "prompts"), {
+      recursive: true,
+      force: false,
+      errorOnExist: false,
+    });
+  }
+  return configPath;
+}
+
+/**
+ * `swf init`: detect repository settings, select an available Pi model for
+ * each factory role, install the local config and prompts, write AGENTS.md,
+ * add the gitignore entry, then run doctor.
  */
 export async function runInit(options: InitOptions = {}): Promise<InitResult> {
   const cwd = resolve(options.cwd ?? process.cwd());
@@ -209,21 +251,45 @@ export async function runInit(options: InitOptions = {}): Promise<InitResult> {
   let checksAnswer = options.answers?.checks;
   let protectedAnswer = options.answers?.protectedPaths;
   let generatedAnswer = options.answers?.generatedPaths;
+  const selectedModels: Partial<Record<AgentRole, string>> = { ...options.answers?.models };
 
-  const questioner = nonInteractive ? null : interactiveQuestioner();
-  try {
-    if (questioner) {
-      const ids = detected.length > 0 ? detected.map((check) => check.id).join(", ") : "none detected";
-      checksAnswer = await questioner.ask(
-        `Checks to run: ${ids}. Keep? (Enter=keep, "none", ids to keep, or "+id: command" to add) `,
-      );
-      protectedAnswer = await questioner.ask("Paths builders must never touch? (comma-separated; Enter=none) ");
-      generatedAnswer = await questioner.ask(
-        `Generated/build outputs? (comma-separated; Enter=${proposed.length > 0 ? `proposed: ${proposed.join(", ")}` : "none"}) `,
-      );
+  if (!nonInteractive) {
+    const ids = detected.length > 0 ? detected.map((check) => check.id).join(", ") : "none detected";
+    if (checksAnswer === undefined) {
+      checksAnswer = promptValue(await text({
+        message: `Checks to run: ${ids}`,
+        placeholder: 'Enter=keep, "none", ids, or "+id: command"',
+        defaultValue: "",
+      }));
     }
-  } finally {
-    questioner?.close();
+    if (protectedAnswer === undefined) {
+      protectedAnswer = promptValue(await text({
+        message: "Paths builders must never touch?",
+        placeholder: "Comma-separated; Enter=none",
+        defaultValue: "",
+      }));
+    }
+    if (generatedAnswer === undefined) {
+      generatedAnswer = promptValue(await text({
+        message: "Generated/build outputs?",
+        placeholder: proposed.length > 0 ? proposed.join(", ") : "Enter=none",
+        defaultValue: "",
+      }));
+    }
+
+    const models = options.availableModels ?? await availablePiModels(cwd);
+    if (models.length === 0) {
+      throw new Error("No available Pi models found. Configure a Pi provider, then run swf init again.");
+    }
+    const modelOptions = models.map((model) => ({ value: model, label: model }));
+    for (const role of FACTORY_ROLES) {
+      if (selectedModels[role]) continue;
+      selectedModels[role] = promptValue(await autocomplete({
+        message: `Model for ${role}`,
+        options: modelOptions,
+        maxItems: 12,
+      }));
+    }
   }
 
   const checks = resolveChecksAnswer(detected, checksAnswer);
@@ -231,12 +297,14 @@ export async function runInit(options: InitOptions = {}): Promise<InitResult> {
   const generatedPaths = resolvePathsAnswer(generatedAnswer, proposed);
   const block: RepoBlock = { checks, generated: generatedPaths, protected: protectedPaths };
 
+  const configPath = installFactoryConfig(cwd, selectedModels);
   writeAgentsBlock(resolve(cwd, "AGENTS.md"), block);
   const gitignoreChanged = ensureGitignoreEntry(cwd);
 
   const context = detectGitContext(cwd);
   console.log(`Initialized Software Factory in ${cwd}`);
   console.log(`Repository: ${basename(cwd)}${context.branch ? ` (branch ${context.branch})` : ""}${context.remote ? `, remote ${context.remote}` : ""}`);
+  console.log(`Config: ${configPath}`);
   console.log(`AGENTS.md block: ${checks.length} check(s), ${generatedPaths.length} generated path(s), ${protectedPaths.length} protected path(s)`);
   if (gitignoreChanged) console.log("Added .software-factory/ to .gitignore");
 
@@ -246,6 +314,14 @@ export async function runInit(options: InitOptions = {}): Promise<InitResult> {
     throw new Error("swf init finished but doctor found missing requirements; see report above");
   }
   return { cwd, block, gitignoreChanged, doctor };
+}
+
+function promptValue<T>(value: T | symbol): T {
+  if (isCancel(value)) {
+    cancel("Software Factory initialization canceled");
+    throw new Error("Software Factory initialization canceled");
+  }
+  return value;
 }
 
 function printDoctor(report: DoctorReport): void {

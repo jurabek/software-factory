@@ -98,12 +98,24 @@ export function gitRemoteUrl(cwd: string): string | null {
     const remotes = execFileSync("git", ["remote"], { cwd, encoding: "utf8" }).trim().split("\n").filter(Boolean);
     const remote = remotes[0];
     if (!remote) return null;
-    const url = execFileSync("git", ["remote", "get-url", remote], { cwd, encoding: "utf8" }).trim();
+    // Read the configured value directly: `git remote get-url` applies global
+    // `url.*.insteadOf` rewrites, which may inject credentials.
+    const url = execFileSync("git", ["config", "--get", `remote.${remote}.url`], { cwd, encoding: "utf8" }).trim();
     if (!url) return null;
     // Local filesystem remotes must still satisfy the Feature Request uri format.
-    return /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(url) ? url : `file://${resolve(url)}`;
+    return /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(url) ? withoutUrlCredentials(url) : `file://${resolve(url)}`;
   } catch {
     return null;
+  }
+}
+
+export function withoutUrlCredentials(value: string): string {
+  try {
+    const url = new URL(value);
+    if (!url.username && !url.password) return value;
+    return `${url.protocol}//${url.host}${url.pathname}${url.search}${url.hash}`;
+  } catch {
+    return value;
   }
 }
 

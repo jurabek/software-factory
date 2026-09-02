@@ -120,6 +120,15 @@ describe("repo context resolution", () => {
     expect(gitRemoteUrl(repo)).toBe("file:///srv/example/app.git");
     expect(resolveRepoContext(repo, loadFactoryConfig()).repositories[0]?.url).toBe("file:///srv/example/app.git");
   });
+
+  it("removes credentials from repository remote URLs", () => {
+    const repo = gitRepo("app");
+    blockRepo(repo);
+    execFileSync("git", ["remote", "add", "origin", "https://credential-value@example.test/org/app.git"], { cwd: repo });
+    expect(gitRemoteUrl(repo)).toBe("https://example.test/org/app.git");
+    expect(resolveRepoContext(repo, loadFactoryConfig()).repositories[0]?.url)
+      .toBe("https://example.test/org/app.git");
+  });
 });
 
 describe("prompt context injection", () => {

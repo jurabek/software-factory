@@ -20,6 +20,7 @@ export interface AgentSpec {
   name: AgentRole;
   codingAgent?: string;
   model?: string;
+  fallbackModel?: string;
   thinking?: ThinkingLevel;
   tools?: string[];
   color?: string;
@@ -31,6 +32,7 @@ export interface ResolvedAgent {
   name: AgentRole;
   codingAgent: string;
   model: string;
+  fallbackModel?: string;
   thinking: ThinkingLevel;
   tools: string[];
   promptEngineering: { system: string; user: string };
@@ -53,6 +55,10 @@ export interface FactoryConfig {
     tools: string[];
   };
   observability: { pollMs: number };
+  runtime: {
+    agentDeadlineMs: number;
+    emptyTurnRetries: number;
+  };
   riskSignals: string[];
   approvalRules: ApprovalRule[];
   requiredReviewKinds: string[];

@@ -2,16 +2,24 @@ import { randomInt } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { execFileSync } from "node:child_process";
+import { CampaignLock } from "./campaign-lock.js";
 import { loadFactoryConfig, resolveAgent } from "./config.js";
 import { ContractValidator, digest } from "./contracts.js";
 import { resolveRepoContext, type RepoContext } from "./context.js";
 import { FeatureRequestModule } from "./feature-request.js";
 import { assertWriteAllowed, type PolicyCommand } from "./policy.js";
 import { RepositoryManager, toWorkItem } from "./repositories.js";
-import { FakeAgentRuntime, PiAgentRuntime, type AgentRuntime, type Assignment } from "./runtime.js";
+import {
+  FakeAgentRuntime,
+  PiAgentRuntime,
+  visiblePeerSessions,
+  type AgentRuntime,
+  type Assignment,
+} from "./runtime.js";
 import { compileRolePrompt } from "./prompts.js";
 import {
   assertTransition,
+  canTransition,
   decideCampaignTransition,
   isTerminal,
   type CampaignAdvancementOutcome,
@@ -38,12 +46,12 @@ export class SoftwareFactory {
 
   static async create(options: FactoryOptions): Promise<SoftwareFactory> {
     mkdirSync(options.workspace, { recursive: true });
-    const config = options.config ?? loadFactoryConfig();
+    const config = options.config ?? loadFactoryConfig(undefined, options.repositoryRoot);
     return new SoftwareFactory({ ...options, config }, await ContractValidator.create());
   }
 
   get config(): FactoryConfig {
-    return this.options.config ?? loadFactoryConfig();
+    return this.options.config ?? loadFactoryConfig(undefined, this.options.repositoryRoot);
   }
 
   async request(input: { text: string; cwd?: string; repos?: string[]; requestedBy?: string }): Promise<Campaign> {
@@ -83,8 +91,16 @@ export class SoftwareFactory {
       const result = await this.executeAgent(store, this.assignment(store, context, request, "planner", null, 1, cwd));
       this.validator.result(result);
       store.saveResult(result);
-      await this.transition(store, result.status === "completed" ? "awaiting_plan_approval" : "blocked");
+      await this.transition(
+        store,
+        result.status === "completed" ? "awaiting_plan_approval" : "blocked",
+        result.status === "completed" ? null : "planning",
+        result.status === "completed" ? null : result.summary,
+      );
       return store.campaign();
+    } catch (error) {
+      this.blockOnError(store, error);
+      throw error;
     } finally {
       store.close();
     }
@@ -105,8 +121,18 @@ export class SoftwareFactory {
   }
 
   async advance(campaignId: string, target: FactoryState = "implementation_complete"): Promise<Campaign> {
-    const store = this.open(campaignId);
+    const lock = CampaignLock.acquire(resolve(this.options.workspace, campaignId), "advance");
+    let store: CampaignStore | undefined;
     try {
+      store = this.open(campaignId);
+      const staleRuns = store.failRunningAgents(
+        lock.recoveredStaleOwner
+          ? "agent run interrupted after stale campaign ownership"
+          : "agent run interrupted before campaign ownership was acquired",
+      );
+      if (staleRuns > 0) {
+        this.blockOnError(store, new Error(`${staleRuns} interrupted agent run${staleRuns === 1 ? "" : "s"} recovered`));
+      }
       await store.listenBus();
       const profile = this.pinnedProfile(store);
       const request = store.request();
@@ -136,7 +162,13 @@ export class SoftwareFactory {
         throw new Error(`local mode cannot advance state ${state}`);
       }
       return store.campaign();
-    } finally { store.close(); }
+    } catch (error) {
+      if (store) this.blockOnError(store, error);
+      throw error;
+    } finally {
+      store?.close();
+      lock.release();
+    }
   }
 
   pause(campaignId: string, reason: string): Campaign {
@@ -152,7 +184,9 @@ export class SoftwareFactory {
     const store = this.open(campaignId);
     try {
       const campaign = store.campaign();
-      if (campaign.state !== "paused" || !campaign.previousState) throw new Error("campaign is not resumable");
+      if (!["paused", "blocked"].includes(campaign.state) || !campaign.previousState) {
+        throw new Error("campaign is not resumable");
+      }
       this.transitionSync(store, campaign.previousState);
       return store.campaign();
     } finally { store.close(); }
@@ -259,11 +293,14 @@ export class SoftwareFactory {
   ): Assignment {
     const repository = workItem ? profile.repositories.find((item) => item.id === workItem.repositoryId) : undefined;
     const agent = resolveAgent(this.config, role);
+    const workerRunId = `${role}-${workItem?.id ?? "campaign"}-${attempt}`;
     const prompts = compileRolePrompt({
       role,
       request,
+      requestHash: store.campaign().requestHash,
       workItem,
-      peerSessions: store.sessionCatalog(),
+      workerRunId,
+      peerSessions: visiblePeerSessions(role, store.sessionCatalog(), workerRunId),
       factorySocket: store.socketPath,
       worktree,
       attempt,
@@ -285,6 +322,8 @@ export class SoftwareFactory {
       systemPrompt: prompts.system,
       prompt: prompts.user,
       agent,
+      deadlineMs: this.config.runtime.agentDeadlineMs,
+      emptyTurnRetries: this.config.runtime.emptyTurnRetries,
     };
   }
 
@@ -459,12 +498,26 @@ export class SoftwareFactory {
     }
   }
 
-  private async transition(store: CampaignStore, next: FactoryState): Promise<void> { this.transitionSync(store, next); }
+  private async transition(
+    store: CampaignStore,
+    next: FactoryState,
+    previous: FactoryState | null = null,
+    reason: string | null = null,
+  ): Promise<void> {
+    this.transitionSync(store, next, previous, reason);
+  }
 
   private transitionSync(store: CampaignStore, next: FactoryState, previous: FactoryState | null = null, reason: string | null = null): void {
     const current = store.campaign().state;
     assertTransition(current, next);
     store.setState(next, previous, reason);
+  }
+
+  private blockOnError(store: CampaignStore, error: unknown): void {
+    const current = store.campaign().state;
+    if (!canTransition(current, "blocked")) return;
+    const reason = error instanceof Error ? error.message : "unknown error";
+    this.transitionSync(store, "blocked", current, reason);
   }
 
   private applyAdvancementDecision(

@@ -1,11 +1,11 @@
-import { randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import {
-  createAgentSession,
-  DefaultResourceLoader,
+  createAgentSessionFromServices,
+  createAgentSessionServices,
   getAgentDir,
   ModelRuntime,
   resolveCliModel,
@@ -14,7 +14,7 @@ import {
   type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import type { AgentResult, AgentRole, Campaign, FeatureRequest, ResolvedAgent, WorkItem } from "./types.js";
+import type { AgentResult, AgentRole, Campaign, FeatureRequest, PeerSessionRef, ResolvedAgent, WorkItem } from "./types.js";
 import type { ContractValidator } from "./contracts.js";
 import type { CampaignStore } from "./store.js";
 import { campaignBusRequest } from "./bus.js";
@@ -23,6 +23,8 @@ import { createSubagentHarness, SUBAGENT_TOOL_NAMES, usesSubagentHarness } from 
 import { ingestSessionJsonl } from "./session-log.js";
 
 const executeFile = promisify(execFile);
+const MAX_PEER_SESSION_ROWS = 100;
+const MAX_PEER_SESSION_BYTES = 64 * 1024;
 
 export interface Assignment {
   campaign: Campaign;
@@ -35,12 +37,114 @@ export interface Assignment {
   systemPrompt: string;
   prompt: string;
   agent: ResolvedAgent;
+  deadlineMs: number;
+  emptyTurnRetries: number;
   runId?: string;
   traceParentId?: number;
 }
 
 export interface AgentRuntime {
   run(assignment: Assignment): Promise<AgentResult>;
+}
+
+export class AgentDeadlineError extends Error {
+  constructor(readonly deadlineMs: number) {
+    super(`agent session exceeded deadline of ${deadlineMs}ms`);
+    this.name = "AgentDeadlineError";
+  }
+}
+
+export class EmptyAgentResponseError extends Error {
+  constructor(readonly attempts: number) {
+    super(`agent returned ${attempts} consecutive empty responses`);
+    this.name = "EmptyAgentResponseError";
+  }
+}
+
+export class AgentExecutionGuard {
+  private readonly expiresAt: number;
+  private emptyTurns = 0;
+  private failureError: Error | undefined;
+  private failure = deferredFailure();
+
+  constructor(private readonly options: { deadlineMs: number; emptyTurnRetries: number }) {
+    this.expiresAt = Date.now() + options.deadlineMs;
+  }
+
+  get lastTurnWasEmpty(): boolean {
+    return this.emptyTurns > 0;
+  }
+
+  observeTurn(message: unknown, toolResultCount: number): void {
+    if (!message || typeof message !== "object" || (message as { role?: unknown }).role !== "assistant") return;
+    const empty = toolResultCount === 0 && contentText((message as { content?: unknown }).content).trim().length === 0;
+    this.emptyTurns = empty ? this.emptyTurns + 1 : 0;
+    if (this.emptyTurns > this.options.emptyTurnRetries) {
+      this.failureError = new EmptyAgentResponseError(this.emptyTurns);
+      this.failure.reject(this.failureError);
+    }
+  }
+
+  resetEmptyResponses(): void {
+    this.emptyTurns = 0;
+    this.failureError = undefined;
+    this.failure = deferredFailure();
+  }
+
+  async run(task: () => Promise<void>, abort: () => Promise<void>): Promise<void> {
+    const remaining = this.expiresAt - Date.now();
+    if (remaining <= 0) {
+      await abort();
+      throw new AgentDeadlineError(this.options.deadlineMs);
+    }
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        task(),
+        this.failure.promise,
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new AgentDeadlineError(this.options.deadlineMs)), remaining);
+        }),
+      ]);
+      if (this.failureError) throw this.failureError;
+    } catch (error) {
+      await abort();
+      throw error;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+}
+
+export async function runAgentPromptLoop(options: {
+  guard: AgentExecutionGuard;
+  initialPrompt: string;
+  emptyTurnRetries: number;
+  isSubmitted: () => boolean;
+  prompt: (text: string) => Promise<void>;
+  abort: () => Promise<void>;
+  useFallback?: (() => Promise<void>) | undefined;
+}): Promise<void> {
+  let prompt = options.initialPrompt;
+  let explicitEmptyRetries = 0;
+  let fallbackUsed = false;
+  while (!options.isSubmitted()) {
+    try {
+      await options.guard.run(() => options.prompt(prompt), options.abort);
+    } catch (error) {
+      if (!(error instanceof EmptyAgentResponseError) || fallbackUsed || !options.useFallback) throw error;
+      await options.useFallback();
+      fallbackUsed = true;
+      explicitEmptyRetries = 0;
+      options.guard.resetEmptyResponses();
+      prompt = "The previous model repeatedly returned empty responses. Continue the assignment and submit the required Agent Result.";
+      continue;
+    }
+    if (options.isSubmitted()) return;
+    if (!options.guard.lastTurnWasEmpty || explicitEmptyRetries >= options.emptyTurnRetries) return;
+    explicitEmptyRetries += 1;
+    prompt = "Your previous response was empty. Continue the assignment and submit the required Agent Result.";
+  }
 }
 
 export class PiAgentRuntime implements AgentRuntime {
@@ -65,6 +169,10 @@ export class PiAgentRuntime implements AgentRuntime {
     const toolStarts = new Map<string, { eventId: number; startedAt: number }>();
     let modelRequest: { eventId: number; startedAt: number } | undefined;
     const liveSession: { id: string; file?: string | undefined } = { id: runId };
+    const guard = new AgentExecutionGuard({
+      deadlineMs: assignment.deadlineMs,
+      emptyTurnRetries: assignment.emptyTurnRetries,
+    });
     const sessionDir = resolve(this.store.campaignDir, "sessions", `${assignment.role}-${assignment.workItem?.id ?? "campaign"}-${assignment.attempt}`);
     mkdirSync(sessionDir, { recursive: true });
     const extensionFactories: Array<(pi: ExtensionAPI) => void> = [];
@@ -75,9 +183,12 @@ export class PiAgentRuntime implements AgentRuntime {
         description: "Submit the complete schema-valid Agent Result JSON as the final action.",
         parameters: Type.Object({ json: Type.String() }),
         async execute(_id, params) {
-          const parsed = JSON.parse(params.json) as unknown;
-          validatorResult(validator, parsed);
-          submitted = parsed as AgentResult;
+          const bound = bindAgentResultIdentity(JSON.parse(params.json), assignment, runId, liveSession.id);
+          if (assignment.role === "builder") {
+            bound.changedFiles = builderChangedFiles(assignment, bound.changedFiles);
+          }
+          validatorResult(validator, bound);
+          submitted = bound;
           return { content: [{ type: "text", text: "Agent Result accepted" }], details: {}, terminate: true };
         },
       });
@@ -87,7 +198,8 @@ export class PiAgentRuntime implements AgentRuntime {
         description: "List prior factory Pi sessions from campaign WAL via the Unix socket.",
         parameters: Type.Object({}),
         async execute() {
-          const sessions = await campaignBusRequest(store.socketPath, { type: "list_sessions" });
+          const catalog = await campaignBusRequest(store.socketPath, { type: "list_sessions" }) as PeerSessionRef[];
+          const sessions = visiblePeerSessions(assignment.role, catalog, runId, liveSession.id);
           return { content: [{ type: "text", text: JSON.stringify(sessions, null, 2) }], details: { sessions } };
         },
       });
@@ -101,13 +213,21 @@ export class PiAgentRuntime implements AgentRuntime {
           limit: Type.Optional(Type.Number()),
         }),
         async execute(_id, params) {
+          const visible = visiblePeerSessions(assignment.role, store.sessionCatalog(), runId, liveSession.id);
+          if (!visible.some((session) => session.sessionId === params.sessionId)) {
+            throw new Error(`peer session ${params.sessionId} is not available to ${assignment.role}`);
+          }
           const entries = await campaignBusRequest(store.socketPath, {
             type: "read_session",
             sessionId: params.sessionId,
             ...(params.after !== undefined ? { after: params.after } : {}),
-            ...(params.limit !== undefined ? { limit: params.limit } : {}),
+            limit: Math.min(Math.max(params.limit ?? MAX_PEER_SESSION_ROWS, 1), MAX_PEER_SESSION_ROWS),
+          }) as Array<Record<string, unknown>>;
+          const payload = boundedPeerSessionPayload(entries, {
+            maxRows: MAX_PEER_SESSION_ROWS,
+            maxBytes: MAX_PEER_SESSION_BYTES,
           });
-          return { content: [{ type: "text", text: JSON.stringify(entries, null, 2) }], details: { entries } };
+          return { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }], details: payload };
         },
       });
       if (assignment.role === "builder" || assignment.role === "tester") {
@@ -175,6 +295,7 @@ export class PiAgentRuntime implements AgentRuntime {
         trace("turn_start", { turnIndex: event.turnIndex });
       });
       pi.on("turn_end", (event) => {
+        guard.observeTurn(event.message, event.toolResults.length);
         ingestSessionJsonl(store, {
           sessionId: liveSession.id,
           runId,
@@ -227,8 +348,9 @@ export class PiAgentRuntime implements AgentRuntime {
       });
     };
     extensionFactories.push(extension);
+    let subagentHarness: ReturnType<typeof createSubagentHarness> | undefined;
     if (usesSubagentHarness(assignment.role)) {
-      extensionFactories.push(createSubagentHarness({
+      subagentHarness = createSubagentHarness({
         store,
         runId,
         role: assignment.role,
@@ -238,15 +360,17 @@ export class PiAgentRuntime implements AgentRuntime {
         defaultModel: assignment.agent.model,
         defaultThinking: assignment.agent.thinking,
         onEvent: (type, payload) => { trace(type, payload); },
-      }));
+      });
+      extensionFactories.push(subagentHarness.extension);
     }
-    const loader = new DefaultResourceLoader({
+    const services = await createAgentSessionServices({
       cwd: assignment.worktree,
       agentDir: getAgentDir(),
-      extensionFactories,
-      systemPromptOverride: (base) => [base, assignment.systemPrompt].filter(Boolean).join("\n\n"),
+      resourceLoaderOptions: {
+        extensionFactories,
+        systemPromptOverride: (base) => [base, assignment.systemPrompt].filter(Boolean).join("\n\n"),
+      },
     });
-    await loader.reload();
     const tools = [
       ...assignment.agent.tools,
       "submit_agent_result",
@@ -255,14 +379,12 @@ export class PiAgentRuntime implements AgentRuntime {
       ...(usesSubagentHarness(assignment.role) ? SUBAGENT_TOOL_NAMES : []),
       ...(assignment.role === "builder" || assignment.role === "tester" ? ["run_local_command"] : []),
     ];
-    const { model, thinkingLevel, modelRuntime } = await resolveConfiguredModel(assignment.agent);
-    const { session } = await createAgentSession({
-      cwd: assignment.worktree,
+    const { model, thinkingLevel } = resolveConfiguredModel(assignment.agent, services.modelRuntime);
+    const { session } = await createAgentSessionFromServices({
+      services,
       tools,
       model,
       thinkingLevel,
-      modelRuntime,
-      resourceLoader: loader,
       sessionManager: SessionManager.create(sessionDir),
     });
     const sessionMeta = {
@@ -284,8 +406,29 @@ export class PiAgentRuntime implements AgentRuntime {
     });
     ingestSessionJsonl(store, sessionMeta, session.sessionFile);
     try {
-      await session.prompt(assignment.prompt);
+      const fallbackModel = assignment.agent.fallbackModel;
+      await runAgentPromptLoop({
+        guard,
+        initialPrompt: assignment.prompt,
+        emptyTurnRetries: assignment.emptyTurnRetries,
+        isSubmitted: () => Boolean(submitted),
+        prompt: (prompt) => session.prompt(prompt),
+        abort: () => session.abort(),
+        useFallback: fallbackModel ? async () => {
+          const fallback = resolveConfiguredModel(
+            { ...assignment.agent, model: fallbackModel },
+            services.modelRuntime,
+          );
+          await session.setModel(fallback.model);
+          trace("model_fallback", {
+            from: assignment.agent.model,
+            to: fallbackModel,
+            reason: "repeated empty responses",
+          });
+        } : undefined,
+      });
     } finally {
+      subagentHarness?.terminateAll();
       ingestSessionJsonl(store, sessionMeta, session.sessionFile);
       session.dispose();
     }
@@ -294,12 +437,10 @@ export class PiAgentRuntime implements AgentRuntime {
   }
 }
 
-async function resolveConfiguredModel(agent: ResolvedAgent): Promise<{
+function resolveConfiguredModel(agent: ResolvedAgent, modelRuntime: ModelRuntime): {
   model: NonNullable<CreateAgentSessionOptions["model"]>;
   thinkingLevel: NonNullable<CreateAgentSessionOptions["thinkingLevel"]>;
-  modelRuntime: ModelRuntime;
-}> {
-  const modelRuntime = await ModelRuntime.create();
+} {
   const resolved = resolveCliModel({
     cliModel: agent.model,
     cliThinking: agent.thinking as NonNullable<CreateAgentSessionOptions["thinkingLevel"]>,
@@ -311,7 +452,6 @@ async function resolveConfiguredModel(agent: ResolvedAgent): Promise<{
   return {
     model: resolved.model,
     thinkingLevel: resolved.thinkingLevel ?? agent.thinking as NonNullable<CreateAgentSessionOptions["thinkingLevel"]>,
-    modelRuntime,
   };
 }
 
@@ -347,6 +487,14 @@ function contentText(content: unknown): string {
   }).filter(Boolean).join("\n");
 }
 
+function deferredFailure(): { promise: Promise<never>; reject: (error: Error) => void } {
+  let reject!: (error: Error) => void;
+  const promise = new Promise<never>((_resolve, rejectPromise) => {
+    reject = rejectPromise;
+  });
+  return { promise, reject };
+}
+
 function resultSummary(result: unknown): unknown {
   if (!result || typeof result !== "object") return String(result ?? "");
   const value = result as Record<string, unknown>;
@@ -359,6 +507,137 @@ function resultSummary(result: unknown): unknown {
 
 function validatorResult(validator: ContractValidator, value: unknown): asserts value is AgentResult {
   validator.result(value);
+}
+
+export function bindAgentResultIdentity(
+  value: unknown,
+  assignment: Assignment,
+  runId: string,
+  piSessionId: string,
+): Record<string, unknown> {
+  const result = value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+  return {
+    ...result,
+    campaignId: assignment.campaign.id,
+    requestRevision: assignment.request.revision,
+    requestHash: assignment.campaign.requestHash,
+    profile: assignment.request.profile,
+    workItemId: assignment.workItem?.id ?? null,
+    role: assignment.role,
+    workerRunId: runId,
+    piSessionId,
+  };
+}
+
+export function builderChangedFiles(assignment: Assignment, reported: unknown): unknown[] {
+  if (!assignment.workItem?.baseSha) return Array.isArray(reported) ? reported : [];
+  const purposes = new Map(
+    (Array.isArray(reported) ? reported : [])
+      .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item))
+      .filter((item) => typeof item.path === "string" && typeof item.purpose === "string")
+      .map((item) => [String(item.path), String(item.purpose)]),
+  );
+  const changes = new Map<string, "added" | "modified" | "deleted" | "renamed">();
+  const fields = execFileSync("git", ["diff", "--name-status", "-z", "--find-renames", assignment.workItem.baseSha], {
+    cwd: assignment.worktree,
+    encoding: "utf8",
+  }).split("\0");
+  for (let index = 0; index < fields.length - 1;) {
+    const status = fields[index++]!;
+    const code = status[0];
+    if (code === "R" || code === "C") {
+      index += 1;
+      const path = fields[index++]!;
+      changes.set(path, "renamed");
+    } else {
+      const path = fields[index++]!;
+      changes.set(path, code === "A" ? "added" : code === "D" ? "deleted" : "modified");
+    }
+  }
+  const untracked = execFileSync("git", ["ls-files", "--others", "--exclude-standard", "-z"], {
+    cwd: assignment.worktree,
+    encoding: "utf8",
+  }).split("\0").filter(Boolean);
+  for (const path of untracked) changes.set(path, "added");
+  return [...changes].sort(([left], [right]) => left.localeCompare(right)).map(([path, change]) => {
+    const absolute = resolve(assignment.worktree, path);
+    const content = existsSync(absolute) ? readFileSync(absolute) : Buffer.alloc(0);
+    return {
+      path,
+      change,
+      purpose: purposes.get(path) ?? "Changed in builder worktree",
+      generated: false,
+      digest: createHash("sha256").update(content).digest("hex"),
+    };
+  });
+}
+
+const visibleRoles: Record<AgentRole, readonly AgentRole[]> = {
+  planner: ["planner"],
+  builder: ["planner", "builder", "reviewer", "tester"],
+  reviewer: ["planner", "builder"],
+  tester: ["planner", "builder", "reviewer"],
+};
+
+export function visiblePeerSessions(
+  role: AgentRole,
+  catalog: PeerSessionRef[],
+  currentRunId?: string,
+  currentSessionId?: string,
+): PeerSessionRef[] {
+  return catalog.filter((session) =>
+    visibleRoles[role].includes(session.role as AgentRole) &&
+    session.runId !== currentRunId &&
+    session.sessionId !== currentSessionId,
+  );
+}
+
+export function boundedPeerSessionPayload(
+  rows: Array<Record<string, unknown>>,
+  limits: { maxRows: number; maxBytes: number },
+): { entries: Array<Record<string, unknown>>; rowCount: number; truncated: boolean } {
+  const candidates = rows.slice(0, Math.max(0, limits.maxRows)).map(sanitizePeerSessionRow);
+  const entries: Array<Record<string, unknown>> = [];
+  let truncated = rows.length > candidates.length;
+  for (const row of candidates) {
+    const next = [...entries, row];
+    const payload = { entries: next, rowCount: next.length, truncated: truncated || next.length < rows.length };
+    if (Buffer.byteLength(JSON.stringify(payload), "utf8") > limits.maxBytes) {
+      truncated = true;
+      break;
+    }
+    entries.push(row);
+  }
+  return { entries, rowCount: entries.length, truncated: truncated || entries.length < rows.length };
+}
+
+function sanitizePeerSessionRow(row: Record<string, unknown>): Record<string, unknown> {
+  if (typeof row.entry !== "string") return row;
+  try {
+    const entry = JSON.parse(row.entry) as unknown;
+    if (!containsPeerSessionTool(entry)) return row;
+    return {
+      ...row,
+      entry: JSON.stringify({
+        type: "tool_result",
+        toolName: "read_peer_session",
+        content: "[nested peer-session payload omitted]",
+      }),
+    };
+  } catch {
+    return row;
+  }
+}
+
+function containsPeerSessionTool(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(containsPeerSessionTool);
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  if (record.toolName === "read_peer_session" || record.toolName === "list_peer_sessions" ||
+      record.name === "read_peer_session" || record.name === "list_peer_sessions") return true;
+  return Object.values(record).some(containsPeerSessionTool);
 }
 
 export type FakeBehavior = (assignment: Assignment) => Partial<Pick<AgentResult, "status" | "findings" | "checks" | "changedFiles" | "summary">>;

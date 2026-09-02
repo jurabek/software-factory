@@ -240,18 +240,60 @@ export class CampaignStore {
 
   startAgent(runId: string, role: string, workItemId: string | null, sessionId: string, attempt: number): number {
     const now = new Date().toISOString();
-    this.db.prepare(`INSERT OR REPLACE INTO agent_runs VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(
-      runId, role, workItemId, sessionId, "running", null, now, null,
-    );
-    this.db.prepare(`INSERT OR REPLACE INTO phases VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-      runId, role, role, workItemId, "running", attempt, now, null, null,
-    );
+    const active = this.db.prepare(`SELECT 1 FROM agent_runs WHERE id=? AND status='running'`).get(runId);
+    if (active) throw new Error(`agent run ${runId} is already running`);
+    this.db.prepare(`
+      INSERT INTO agent_runs VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        role=excluded.role, work_item_id=excluded.work_item_id, session_id=excluded.session_id,
+        status=excluded.status, model=excluded.model, started_at=excluded.started_at, completed_at=NULL
+    `).run(runId, role, workItemId, sessionId, "running", null, now, null);
+    this.db.prepare(`
+      INSERT INTO phases VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        kind=excluded.kind, role=excluded.role, work_item_id=excluded.work_item_id,
+        status=excluded.status, attempt=excluded.attempt, started_at=excluded.started_at,
+        completed_at=NULL, error=NULL
+    `).run(runId, role, role, workItemId, "running", attempt, now, null, null);
     const phaseId = this.event("phase_start", {
       runId, role, workItemId, attempt, phase: role,
     });
     return this.event("agent_start", {
       runId, role, workItemId, attempt, sessionId,
     }, phaseId);
+  }
+
+  failRunningAgents(reason: string): number {
+    const runs = this.db.prepare(
+      `SELECT id, role, work_item_id FROM agent_runs WHERE status='running'`,
+    ).all() as Row[];
+    if (runs.length === 0) return 0;
+    const now = new Date().toISOString();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.db.prepare(
+        `UPDATE agent_runs SET status='failed', completed_at=? WHERE status='running'`,
+      ).run(now);
+      this.db.prepare(
+        `UPDATE phases SET status='failed', completed_at=?, error=? WHERE status='running'`,
+      ).run(now, reason);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+    for (const row of runs) {
+      const metadata = {
+        runId: String(row.id),
+        role: String(row.role),
+        workItemId: row.work_item_id ? String(row.work_item_id) : null,
+        status: "failed",
+        error: reason,
+      };
+      this.event("agent_end", metadata);
+      this.event("phase_end", metadata);
+    }
+    return runs.length;
   }
 
   finishAgent(runId: string, status: string, error: string | null = null, sessionId?: string): void {
@@ -425,9 +467,15 @@ export class CampaignStore {
 const sensitiveKey = /^(authorization|token|secret|password|credentials|api[_-]?key)$/i;
 const bearer = /Bearer\s+[A-Za-z0-9._~+/-]+=*/gi;
 const longDigitRun = /\b\d{8,18}\b/g;
+const urlUserInfo = /\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+(?::[^\s/@]*)?@/gi;
 
 export function redact(value: unknown): unknown {
-  if (typeof value === "string") return value.replace(bearer, "Bearer [REDACTED]").replace(longDigitRun, "[REDACTED-NUMBER]");
+  if (typeof value === "string") {
+    return value
+      .replace(urlUserInfo, "$1")
+      .replace(bearer, "Bearer [REDACTED]")
+      .replace(longDigitRun, "[REDACTED-NUMBER]");
+  }
   if (Array.isArray(value)) return value.map(redact);
   if (value && typeof value === "object") {
     return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [
