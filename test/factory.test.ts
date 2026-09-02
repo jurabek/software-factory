@@ -181,8 +181,9 @@ describe("subagent harness", () => {
         return true;
       },
     });
+    let harness: ReturnType<typeof createSubagentHarness> | undefined;
     try {
-      const harness = createSubagentHarness({
+      harness = createSubagentHarness({
         store,
         runId: "reviewer-WI-1",
         role: "reviewer",
@@ -209,6 +210,93 @@ describe("subagent harness", () => {
       harness.terminateAll();
       expect(killed).toBe(true);
     } finally {
+      store.close();
+    }
+  });
+
+  it("reports each subagent LLM call without prompt or response content", async () => {
+    const { repository, workspace } = fixture();
+    const store = new CampaignStore(workspace, "SF-2026-9999");
+    const tools = new Map<string, { execute: (...args: any[]) => Promise<unknown> }>();
+    const events: Array<{ type: string; payload: Record<string, unknown>; parentId?: number }> = [];
+    const child = Object.assign(new EventEmitter(), {
+      stdout: Object.assign(new EventEmitter(), { setEncoding() {} }),
+      stderr: Object.assign(new EventEmitter(), { setEncoding() {} }),
+      kill() {
+        return true;
+      },
+    });
+    let harness: ReturnType<typeof createSubagentHarness> | undefined;
+    try {
+      harness = createSubagentHarness({
+        store,
+        runId: "reviewer-WI-1",
+        role: "reviewer",
+        workItemId: "WI-1",
+        worktree: repository,
+        sessionDir: resolve(workspace, "sessions"),
+        spawnProcess: (() => child) as unknown as typeof spawn,
+        onEvent(type, payload, parentId) {
+          events.push({ type, payload, ...(parentId === undefined ? {} : { parentId }) });
+          return events.length + 100;
+        },
+      });
+      harness.extension({
+        registerTool(tool: { name: string; execute: (...args: any[]) => Promise<unknown> }) {
+          tools.set(tool.name, tool);
+        },
+        on() {},
+        getThinkingLevel: () => "high",
+        sendMessage() {},
+      } as any);
+      await tools.get("subagent_create")!.execute(
+        "tool-1",
+        { task: "inspect model calls", thinking: "high" },
+        undefined,
+        undefined,
+        { model: { provider: "test", id: "model" } },
+      );
+      child.stdout.emit("data", [
+        JSON.stringify({ type: "turn_start", turnIndex: 2 }),
+        JSON.stringify({
+          type: "message_end",
+          message: {
+            role: "assistant",
+            provider: "test",
+            model: "model",
+            stopReason: "stop",
+            usage: { input: 123, output: 45 },
+            content: [{ type: "text", text: "secret response" }],
+          },
+        }),
+        "",
+      ].join("\n"));
+
+      expect(events.map((event) => event.type)).toEqual([
+        "subagent_start",
+        "model_request",
+        "model_response",
+      ]);
+      expect(events[1]?.payload).toMatchObject({
+        source: "subagent",
+        subagentId: 1,
+        model: "test/model",
+        thinking: "high",
+        turnIndex: 2,
+      });
+      expect(events[2]).toMatchObject({
+        type: "model_response",
+        parentId: 102,
+        payload: {
+          source: "subagent",
+          subagentId: 1,
+          status: "stop",
+          usage: { input: 123, output: 45 },
+        },
+      });
+      expect(JSON.stringify(events)).not.toContain("secret response");
+    } finally {
+      harness?.terminateAll();
       store.close();
     }
   });

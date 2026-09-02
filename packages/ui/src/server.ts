@@ -14,8 +14,8 @@ const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const traceTypes = new Set([
   "phase_start", "phase_end", "agent_start", "agent_end", "agent_result",
   "session_attached", "turn_start", "turn_end", "model_request",
-  "model_response", "model_selected", "thinking_level", "tool_start",
-  "tool_end", "log", "error",
+  "model_response", "model_selected", "model_fallback", "thinking_level",
+  "subagent_start", "subagent_end", "tool_start", "tool_end", "log", "error",
 ]);
 const mime: Record<string, string> = {
   ".html": "text/html; charset=utf-8",

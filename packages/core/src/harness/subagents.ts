@@ -39,6 +39,7 @@ interface SubState {
   task: string;
   textChunks: string[];
   toolCount: number;
+  modelRequest?: { eventId?: number; startedAt: number } | undefined;
   elapsed: number;
   sessionFile: string;
   sessionId: string;
@@ -57,7 +58,7 @@ export interface SubagentHarnessOptions {
   sessionDir: string;
   defaultModel?: string;
   defaultThinking?: string;
-  onEvent?: (type: string, payload: Record<string, unknown>) => void;
+  onEvent?: (type: string, payload: Record<string, unknown>, parentId?: number) => number | void;
   spawnProcess?: typeof spawn;
 }
 
@@ -178,7 +179,47 @@ export function createSubagentHarness(options: SubagentHarnessOptions): Subagent
     function processLine(state: SubState, line: string): void {
       if (!line.trim()) return;
       try {
-        const event = JSON.parse(line) as { type?: string };
+        const event = JSON.parse(line) as {
+          type?: string;
+          turnIndex?: number;
+          message?: {
+            role?: string;
+            provider?: string;
+            model?: string;
+            stopReason?: string;
+            usage?: unknown;
+          };
+        };
+        if (event.type === "turn_start") {
+          const eventId = options.onEvent?.("model_request", {
+            source: "subagent",
+            subagentId: state.id,
+            sessionId: state.sessionId,
+            model: state.model,
+            thinking: state.thinking,
+            turnIndex: event.turnIndex ?? null,
+            turnCount: state.turnCount,
+          });
+          state.modelRequest = {
+            startedAt: Date.now(),
+            ...(typeof eventId === "number" ? { eventId } : {}),
+          };
+        }
+        if (event.type === "message_end" && event.message?.role === "assistant") {
+          const request = state.modelRequest;
+          options.onEvent?.("model_response", {
+            source: "subagent",
+            subagentId: state.id,
+            sessionId: state.sessionId,
+            model: event.message.model ?? state.model,
+            provider: event.message.provider ?? null,
+            status: event.message.stopReason ?? "complete",
+            durationMs: request ? Date.now() - request.startedAt : null,
+            usage: event.message.usage ?? null,
+            turnCount: state.turnCount,
+          }, request?.eventId);
+          state.modelRequest = undefined;
+        }
         if (event.type === "tool_execution_start") state.toolCount += 1;
         if (event.type === "message_update") {
           const delta = (event as { assistantMessageEvent?: { type?: string; delta?: string } }).assistantMessageEvent;
@@ -321,6 +362,7 @@ export function createSubagentHarness(options: SubagentHarnessOptions): Subagent
         state.task = args.prompt;
         state.textChunks = [];
         state.elapsed = 0;
+        state.modelRequest = undefined;
         state.turnCount += 1;
         spawnAgent(state, args.prompt, ctx, { model: args.model, thinking: args.thinking });
         return {

@@ -26,7 +26,7 @@ function toggle(id: number) {
 function iconFor(type: string) {
   if (type.startsWith("tool_")) return Terminal;
   if (type.startsWith("model_") || type.startsWith("turn_") || type === "thinking_level") return BrainCircuit;
-  if (type.startsWith("agent_") || type === "session_attached") return Bot;
+  if (type.startsWith("agent_") || type.startsWith("subagent_") || type === "session_attached") return Bot;
   return Box;
 }
 
