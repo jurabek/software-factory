@@ -15,6 +15,10 @@
       "types": "./dist/read.d.ts",
       "default": "./dist/read.js"
     },
+    "./result-summary": {
+      "types": "./dist/result-summary.d.ts",
+      "default": "./dist/result-summary.js"
+    },
     "./setup": {
       "types": "./dist/setup.d.ts",
       "default": "./dist/setup.js"

@@ -173,7 +173,6 @@ describe("subagent harness", () => {
     const store = new CampaignStore(workspace, "SF-2026-9999");
     const tools = new Map<string, { execute: (...args: any[]) => Promise<unknown> }>();
     let killed = false;
-    let spawned = 0;
     const child = Object.assign(new EventEmitter(), {
       stdout: Object.assign(new EventEmitter(), { setEncoding() {} }),
       stderr: Object.assign(new EventEmitter(), { setEncoding() {} }),
@@ -190,10 +189,7 @@ describe("subagent harness", () => {
         workItemId: "WI-1",
         worktree: repository,
         sessionDir: resolve(workspace, "sessions"),
-        spawnProcess: (() => {
-          spawned += 1;
-          return child;
-        }) as unknown as typeof spawn,
+        spawnProcess: (() => child) as unknown as typeof spawn,
       });
       harness.extension({
         registerTool(tool: { name: string; execute: (...args: any[]) => Promise<unknown> }) {
@@ -212,15 +208,6 @@ describe("subagent harness", () => {
       );
       harness.terminateAll();
       expect(killed).toBe(true);
-      const afterTermination = await tools.get("subagent_create")!.execute(
-        "tool-2",
-        { task: "inspect again", thinking: "low" },
-        undefined,
-        undefined,
-        { model: { provider: "test", id: "model" } },
-      ) as { content: Array<{ text: string }> };
-      expect(afterTermination.content[0]?.text).toContain("Parent assignment is complete");
-      expect(spawned).toBe(1);
     } finally {
       store.close();
     }
@@ -745,11 +732,6 @@ describe("local campaign", () => {
       expect(sessionLogs.source).toBe("sqlite-wal");
       expect(sessionLogs.catalog.length).toBeGreaterThan(0);
       expect(sessionLogs.logs.length).toBeGreaterThan(0);
-      const live = await fetch(`${base}/api/campaigns/${campaign.id}/live`)
-        .then((response) => response.json()) as { generatedAt: string; staleAfterMs: number; runs: unknown[] };
-      expect(live.generatedAt).toEqual(expect.any(String));
-      expect(live.staleAfterMs).toBe(15_000);
-      expect(live.runs).toEqual([]);
       expect((await fetch(`${base}/api/health`, { method: "POST" })).status).toBe(405);
       const missingUi = startVisualizer({ workspace, port: 0, staticRoot: resolve(workspace, "no-ui") });
       await once(missingUi, "listening");

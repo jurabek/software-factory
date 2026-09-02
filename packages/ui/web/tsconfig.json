@@ -3,6 +3,9 @@
     "target": "ES2023",
     "module": "ESNext",
     "moduleResolution": "Bundler",
+    "paths": {
+      "@software-factory/core/result-summary": ["../../core/dist/result-summary.d.ts"]
+    },
     "lib": ["ES2023", "DOM"],
     "strict": true,
     "skipLibCheck": true,

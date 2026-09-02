@@ -3,7 +3,6 @@ import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { appendRawSdkEvent } from "../raw-events.js";
 import { ingestSessionJsonl } from "../session-log.js";
 import type { CampaignStore } from "../store.js";
 import type { AgentRole } from "../types.js";
@@ -42,13 +41,11 @@ interface SubState {
   toolCount: number;
   elapsed: number;
   sessionFile: string;
-  rawEventFile: string;
   sessionId: string;
   turnCount: number;
   model: string;
   thinking: string;
   proc?: ChildProcess | undefined;
-  processId?: number | undefined;
 }
 
 export interface SubagentHarnessOptions {
@@ -182,7 +179,6 @@ export function createSubagentHarness(options: SubagentHarnessOptions): Subagent
       if (!line.trim()) return;
       try {
         const event = JSON.parse(line) as { type?: string };
-        appendRawSdkEvent(state.rawEventFile, event.type ?? "unknown", event);
         if (event.type === "tool_execution_start") state.toolCount += 1;
         if (event.type === "message_update") {
           const delta = (event as { assistantMessageEvent?: { type?: string; delta?: string } }).assistantMessageEvent;
@@ -232,18 +228,8 @@ export function createSubagentHarness(options: SubagentHarnessOptions): Subagent
         env: process.env,
       });
       state.proc = proc;
-      if (proc.pid !== undefined) {
-        state.processId = options.store.startProcess(
-          options.runId,
-          "subagent",
-          `${options.role}-subagent-${state.id}`,
-          proc.pid,
-          `${command} --model ${state.model}`,
-        );
-      }
       const startTime = Date.now();
       let buffer = "";
-      let finished = false;
       proc.stdout?.setEncoding("utf8");
       proc.stdout?.on("data", (chunk: string) => {
         buffer += chunk;
@@ -256,13 +242,10 @@ export function createSubagentHarness(options: SubagentHarnessOptions): Subagent
         if (chunk.trim()) state.textChunks.push(chunk);
       });
       const finish = (status: "done" | "error"): void => {
-        if (finished) return;
-        finished = true;
         if (buffer.trim()) processLine(state, buffer);
         state.elapsed = Date.now() - startTime;
         state.status = status;
         state.proc = undefined;
-        if (state.processId !== undefined) options.store.finishProcess(state.processId);
         persist(state);
         const result = state.textChunks.join("");
         options.onEvent?.("subagent_end", {
@@ -295,9 +278,6 @@ export function createSubagentHarness(options: SubagentHarnessOptions): Subagent
         thinking: thinkingSchema,
       }),
       async execute(_id, args, _signal, _onUpdate, ctx) {
-        if (shuttingDown) {
-          return { content: [{ type: "text", text: "Error: Parent assignment is complete; no new subagents may be started." }], details: {} };
-        }
         const id = nextId;
         nextId += 1;
         const sessionFile = resolve(subDir, `subagent-${id}-${Date.now()}.jsonl`);
@@ -309,7 +289,6 @@ export function createSubagentHarness(options: SubagentHarnessOptions): Subagent
           toolCount: 0,
           elapsed: 0,
           sessionFile,
-          rawEventFile: resolve(subDir, `subagent-${id}-raw-events.jsonl`),
           sessionId: `subagent-${options.runId}-${id}`,
           turnCount: 1,
           model: "",
@@ -335,9 +314,6 @@ export function createSubagentHarness(options: SubagentHarnessOptions): Subagent
         thinking: thinkingSchema,
       }),
       async execute(_id, args, _signal, _onUpdate, ctx) {
-        if (shuttingDown) {
-          return { content: [{ type: "text", text: "Error: Parent assignment is complete; subagents cannot be continued." }], details: {} };
-        }
         const state = agents.get(args.id);
         if (!state) return { content: [{ type: "text", text: `Error: No subagent #${args.id} found.` }], details: {} };
         if (state.status === "running") return { content: [{ type: "text", text: `Error: Subagent #${args.id} is still running.` }], details: {} };
