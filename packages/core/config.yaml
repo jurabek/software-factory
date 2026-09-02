@@ -56,6 +56,7 @@ agents:
 
   - name: builder
     model: cursor/gpt-5.6-luna
+    thinking: medium
     color: "#22d3ee"
     purpose: Implement the plan exactly; report every changed file in the envelope.
     prompt_engineering:
@@ -71,7 +72,7 @@ agents:
 
   - name: reviewer
     model: cursor/gpt-5.6-luna
-    thinking: high
+    thinking: low
     color: "#fb7185"
     purpose: Confirm that what was built is what was asked for; change nothing.
     prompt_engineering:
@@ -85,6 +86,7 @@ agents:
 
   - name: tester
     model: cursor/gpt-5.6-luna
+    thinking: low
     color: "#34d399"
     purpose: Run the required checks and report evidence; change nothing.
     prompt_engineering:
