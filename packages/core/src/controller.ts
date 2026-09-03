@@ -10,7 +10,6 @@ import { FeatureRequestModule } from "./feature-request.js";
 import { assertWriteAllowed, type PolicyCommand } from "./policy.js";
 import { RepositoryManager, toWorkItem } from "./repositories.js";
 import {
-  FakeAgentRuntime,
   PiAgentRuntime,
   visiblePeerSessions,
   type AgentRuntime,
@@ -30,7 +29,7 @@ import type { Campaign, FactoryConfig, FactoryState, FeatureRequest, WorkItem } 
 export interface FactoryOptions {
   workspace: string;
   repositoryRoot: string;
-  runtime?: "fake" | "pi" | AgentRuntime;
+  runtime?: "pi" | AgentRuntime;
   config?: FactoryConfig;
 }
 
@@ -140,19 +139,14 @@ export class SoftwareFactory {
         const state = store.campaign().state;
         if (state === target || isTerminal(state) || ["blocked", "paused"].includes(state)) break;
         if (state === "awaiting_plan_approval") throw new Error("plan approval is required");
-        if (["building", "repairing_review", "repairing_test"].includes(state)) {
+        if (["building", "repairing_review"].includes(state)) {
           await this.runBuilders(store, profile, request, state !== "building");
           this.applyAdvancementDecision(store, request, "builder_completed");
           continue;
         }
-        if (["reviewing", "re_reviewing", "re_reviewing_after_test"].includes(state)) {
+        if (["reviewing", "re_reviewing"].includes(state)) {
           const blocked = await this.runReviewers(store, profile, request);
           this.applyAdvancementDecision(store, request, blocked ? "review_blocked" : "review_passed");
-          continue;
-        }
-        if (["testing", "re_testing"].includes(state)) {
-          const failed = await this.runTester(store, profile, request);
-          this.applyAdvancementDecision(store, request, failed ? "test_failed" : "test_passed");
           continue;
         }
         if (state === "awaiting_human_review") {
@@ -275,16 +269,11 @@ export class SoftwareFactory {
       if (result.status === "completed" && result.workItemId) store.resolveFindings(result.workItemId);
       store.saveResult(result);
     }
-    return results.some((result) => result.status === "changes_requested" || result.findings.some((finding) => finding.blocking));
-  }
-
-  private async runTester(store: CampaignStore, profile: RepoContext, request: FeatureRequest): Promise<boolean> {
-    const result = await this.executeAgent(store, this.assignment(
-      store, profile, request, "tester", null, store.campaign().repairCycles + 1, this.options.repositoryRoot,
-    ));
-    this.validator.result(result);
-    store.saveResult(result);
-    return result.status !== "completed" || result.checks.some((check) => check.required && check.status !== "passed");
+    return results.some((result) =>
+      result.status !== "completed" ||
+      result.findings.some((finding) => finding.blocking) ||
+      result.checks.some((check) => check.required && check.status !== "passed"),
+    );
   }
 
   private assignment(
@@ -314,7 +303,7 @@ export class SoftwareFactory {
         role, worktree,
         writePaths: workItem?.writePaths ?? [],
         generatedPaths: repository?.generatedPaths ?? [],
-        commands: role === "builder" || role === "tester"
+        commands: role === "builder" || role === "reviewer"
           ? this.policyCommands(store, profile, request, workItem, worktree)
           : [],
         allowedHosts: [],
@@ -364,7 +353,7 @@ export class SoftwareFactory {
 
   private runtime(store: CampaignStore): AgentRuntime {
     if (typeof this.options.runtime === "object") return this.options.runtime;
-    return this.options.runtime === "pi" ? new PiAgentRuntime(this.validator, store) : new FakeAgentRuntime();
+    return new PiAgentRuntime(this.validator, store);
   }
 
   private async executeAgent(store: CampaignStore, assignment: Assignment) {
@@ -491,10 +480,15 @@ export class SoftwareFactory {
         if (JSON.stringify(actual) !== JSON.stringify(reported)) throw new Error("agent changed-file claims do not match the worktree diff");
       }
     }
-    if (result.role === "tester") {
-      const required = assignment.request.requiredChecks.filter((check) => check.required);
+    if (result.role === "reviewer") {
+      const required = assignment.request.requiredChecks.filter((check) =>
+        check.required && check.workItem === assignment.workItem?.id,
+      );
       const outcomes = new Map(result.checks.map((check) => [check.checkId, check]));
-      if (required.some((check) => !outcomes.has(check.id))) throw new Error("tester omitted a required check");
+      if (required.some((check) => !outcomes.has(check.id))) throw new Error("reviewer omitted a required check");
+      if (required.some((check) => outcomes.get(check.id)?.required !== true)) {
+        throw new Error("reviewer misclassified a required check");
+      }
     }
   }
 

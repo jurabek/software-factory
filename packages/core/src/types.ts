@@ -1,13 +1,11 @@
 export const factoryStates = [
   "received", "planning", "awaiting_plan_approval", "building", "reviewing",
-  "repairing_review", "re_reviewing", "testing", "repairing_test",
-  "re_reviewing_after_test", "re_testing",
-  "awaiting_human_review", "implementation_complete",
+  "repairing_review", "re_reviewing", "awaiting_human_review", "implementation_complete",
   "blocked", "paused", "failed", "aborting", "aborted",
 ] as const;
 
 export type FactoryState = (typeof factoryStates)[number];
-export type AgentRole = "planner" | "builder" | "reviewer" | "tester";
+export type AgentRole = "planner" | "builder" | "reviewer";
 export type CheckStatus = "passed" | "failed" | "deferred";
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 

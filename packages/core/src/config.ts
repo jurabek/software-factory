@@ -5,7 +5,7 @@ import { parse as parseYaml } from "yaml";
 import type { AgentRole, ApprovalRule, FactoryConfig, PromptEngineering, ResolvedAgent } from "./types.js";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const factoryRoles: readonly AgentRole[] = ["planner", "builder", "reviewer", "tester"];
+const factoryRoles: readonly AgentRole[] = ["planner", "builder", "reviewer"];
 const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 const factoryTools = new Set([
   "read", "grep", "find", "ls", "edit", "write",
@@ -116,7 +116,7 @@ function approvalRulesField(value: unknown, source: string): ApprovalRule[] {
 function normalizeAgent(value: unknown, label: string): FactoryConfig["agents"][number] {
   const raw = asRecord(value, label);
   const name = requiredString(raw.name, `${label}.name`);
-  if (!factoryRoles.includes(name as AgentRole)) throw new Error(`${label}.name must be planner, builder, reviewer, or tester`);
+  if (!factoryRoles.includes(name as AgentRole)) throw new Error(`${label}.name must be planner, builder, or reviewer`);
   return {
     name: name as AgentRole,
     ...(raw.coding_agent || raw.codingAgent ? { codingAgent: stringField(raw.coding_agent ?? raw.codingAgent, "pi") } : {}),
