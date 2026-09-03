@@ -9,7 +9,7 @@ The versioned, approval-bearing statement of a requested outcome, its local work
 _Avoid_: Ticket, task, prompt
 
 **Campaign**:
-A tracked execution of a Feature Request through planning, building, review, local testing, and implementation completion.
+A tracked execution of a Feature Request through planning, building, independent review and required-check execution, and implementation completion.
 _Avoid_: Run, job, workflow
 
 **Campaign transition policy**:
