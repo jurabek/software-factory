@@ -225,7 +225,6 @@ describe("runInit", () => {
           planner: "test/planner",
           builder: "test/builder",
           reviewer: "test/reviewer",
-          tester: "test/tester",
         },
       },
     });
@@ -242,7 +241,6 @@ describe("runInit", () => {
       planner: "test/planner",
       builder: "test/builder",
       reviewer: "test/reviewer",
-      tester: "test/tester",
     });
     expect(resolveAgent(loadFactoryConfig(undefined, dir), "planner").model).toBe("test/planner");
   });

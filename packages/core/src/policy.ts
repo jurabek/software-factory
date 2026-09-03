@@ -75,7 +75,7 @@ const localRunners = new Set([
 ]);
 
 export function assertCommandAllowed(grant: PolicyGrant, commandId: string): PolicyCommand {
-  if (grant.role !== "builder" && grant.role !== "tester") {
+  if (grant.role !== "builder" && grant.role !== "reviewer") {
     throw new PolicyError("ROLE_COMMAND_DENIED", grant.role);
   }
   const command = grant.commands.find((candidate) => candidate.id === commandId);
@@ -84,7 +84,7 @@ export function assertCommandAllowed(grant: PolicyGrant, commandId: string): Pol
 }
 
 export function assertLocalRunnerAllowed(grant: PolicyGrant, argv: readonly string[]): readonly [string, ...string[]] {
-  if (grant.role !== "builder" && grant.role !== "tester") {
+  if (grant.role !== "builder" && grant.role !== "reviewer") {
     throw new PolicyError("ROLE_COMMAND_DENIED", grant.role);
   }
   const runner = argv[0];

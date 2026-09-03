@@ -34,7 +34,7 @@ export class FeatureRequestModule {
         workItem: workItem.id,
         kind: check.id,
         required: true,
-        executor: "tester",
+        executor: "reviewer",
         deferTo: null,
       }));
     });
