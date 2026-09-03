@@ -36,6 +36,7 @@ func main() {
 		os.Exit(1)
 	}
 }
+
 func run() error {
 	level := slog.LevelInfo
 	_ = level.UnmarshalText([]byte(strings.ToUpper(envOrDefault("LOG_LEVEL", "INFO"))))
@@ -124,12 +125,13 @@ func factoryRoot() (string, error) {
 	}
 	return filepath.Join(home, ".software-factory"), nil
 }
+
 func bootstrap(root string) error {
 	for _, dir := range []string{root, filepath.Join(root, "prompts"), filepath.Join(root, "campaigns")} {
-		if err := os.MkdirAll(dir, 0700); err != nil {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return err
 		}
-		if err := os.Chmod(dir, 0700); err != nil {
+		if err := os.Chmod(dir, 0o700); err != nil {
 			return err
 		}
 	}
@@ -140,7 +142,7 @@ func bootstrap(root string) error {
 	prompts := map[string][2]string{"planner": {"You are the read-only Planner. Return only the required planner JSON envelope.", "Feature request:\n{{.Request}}\n\nInspect {{.Repository}} and produce concrete steps with expected_files and acceptance_criteria."}, "builder": {"You are the Builder. Implement the approved plan. Return only the required builder JSON envelope.", "Feature request:\n{{.Request}}\n\nApproved plan:\n{{.Plan}}\n\nImplement it. Do not commit, push, merge, or deploy."}, "reviewer": {"You are the read-only Reviewer. Return only the required reviewer JSON envelope.", "Feature request:\n{{.Request}}\n\nApproved plan:\n{{.Plan}}\n\nChecks:\n{{.Checks}}\n\nGit-derived changed files:\n{{.ChangedFiles}}"}}
 	for role, body := range prompts {
 		dir := filepath.Join(root, "prompts", role)
-		if err := os.MkdirAll(dir, 0700); err != nil {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return err
 		}
 		if err := createIfMissing(filepath.Join(dir, "system.md"), []byte(body[0])); err != nil {
@@ -152,8 +154,9 @@ func bootstrap(root string) error {
 	}
 	return nil
 }
+
 func createIfMissing(path string, data []byte) error {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if errors.Is(err, os.ErrExist) {
 		return nil
 	}
@@ -170,7 +173,7 @@ func createIfMissing(path string, data []byte) error {
 type fileLock struct{ *os.File }
 
 func acquireLock(path string) (*fileLock, error) {
-	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0600)
+	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return nil, err
 	}
@@ -188,6 +191,7 @@ func acquireLock(path string) (*fileLock, error) {
 	}
 	return &fileLock{file}, nil
 }
+
 func envOrDefault(name, fallback string) string {
 	if value := os.Getenv(name); value != "" {
 		return value
@@ -207,6 +211,7 @@ func (handler spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	http.ServeFileFS(w, r, handler.files, path)
 }
+
 func staticSecurityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -215,6 +220,7 @@ func staticSecurityHeaders(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
+
 func requestLog(logger *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		started := time.Now()
