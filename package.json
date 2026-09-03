@@ -3,24 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "workspaces": [
-    "packages/*"
-  ],
-  "engines": {
-    "node": ">=24"
-  },
+  "workspaces": ["web"],
+  "engines": { "node": ">=24" },
   "scripts": {
-    "build": "npm run build --workspace @software-factory/core && npm run build --workspace @software-factory/cli && npm run build --workspace @software-factory/ui",
-    "typecheck": "npm run build --workspace @software-factory/core && npm run typecheck --workspaces --if-present && tsc -p tsconfig.json --noEmit",
-    "test": "vitest run",
-    "dev": "tsx packages/cli/src/cli.ts",
-    "dev:ui": "tsx packages/ui/src/cli.ts"
-  },
-  "devDependencies": {
-    "@biomejs/biome": "^2.2.2",
-    "@types/node": "^26.4.0",
-    "tsx": "^4.23.13",
-    "typescript": "^6.0.3",
-    "vitest": "^4.1.11"
+    "build": "npm --prefix web run build",
+    "typecheck": "npm --prefix web run typecheck",
+    "test": "go test ./..."
   }
 }
