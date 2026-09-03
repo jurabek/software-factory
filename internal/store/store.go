@@ -34,7 +34,7 @@ create index if not exists phases_campaign_sequence on phases(campaign_id, seque
 type DB struct{ *sql.DB }
 
 func Open(path string) (*DB, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("create database directory: %w", err)
 	}
 	db, err := sql.Open("sqlite", path+"?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)&_pragma=busy_timeout(5000)")
@@ -45,7 +45,7 @@ func Open(path string) (*DB, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate database: %w", err)
 	}
-	if err := os.Chmod(path, 0600); err != nil {
+	if err := os.Chmod(path, 0o600); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("secure database: %w", err)
 	}
@@ -287,6 +287,7 @@ func (db *DB) StartProcess(ctx context.Context, campaignID, phaseID, kind, name 
 	}
 	return result.LastInsertId()
 }
+
 func (db *DB) EndProcess(ctx context.Context, campaignID string, pid, exitCode int) error {
 	_, err := db.ExecContext(ctx, `update processes set status=case when ?=0 then 'ended' else 'failed' end,exit_code=?,ended_at=? where campaign_id=? and pid=? and status='running'`, exitCode, exitCode, now(), campaignID, pid)
 	return wrap("end process", err)
@@ -334,10 +335,10 @@ func (db *DB) AppendEvent(ctx context.Context, campaignDir string, event Event) 
 	if err != nil {
 		return 0, err
 	}
-	if err := os.MkdirAll(campaignDir, 0700); err != nil {
+	if err := os.MkdirAll(campaignDir, 0o700); err != nil {
 		return 0, err
 	}
-	file, err := os.OpenFile(filepath.Join(campaignDir, "events.jsonl"), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0600)
+	file, err := os.OpenFile(filepath.Join(campaignDir, "events.jsonl"), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
 	if err != nil {
 		return 0, fmt.Errorf("open event trace: %w", err)
 	}
@@ -425,6 +426,7 @@ func nullIfEmpty(value string) any {
 	}
 	return value
 }
+
 func wrap(action string, err error) error {
 	if err == nil {
 		return nil
