@@ -2,10 +2,14 @@
 <!-- software-factory:start -->
 ```yaml
 checks:
-  - id: unit
-    command: npm test
+  - id: go-test
+    command: go test ./...
+  - id: go-race
+    command: go test -race ./...
   - id: typecheck
     command: npm run typecheck
+  - id: build
+    command: npm run build
 generated:
   - .workspace/
   - dist/
