@@ -7,7 +7,8 @@ import { loadFactoryConfig } from "../packages/core/src/config.js";
 import { SoftwareFactory } from "../packages/core/src/controller.js";
 import { gitBranch, gitRemoteUrl, resolveRepoContext } from "../packages/core/src/context.js";
 import { writeAgentsBlock } from "../packages/core/src/repo-block.js";
-import { FakeAgentRuntime, type AgentRuntime } from "../packages/core/src/runtime.js";
+import type { AgentRuntime } from "../packages/core/src/runtime.js";
+import { StubAgentRuntime } from "./stub-agent-runtime.js";
 
 const roots: string[] = [];
 
@@ -137,12 +138,12 @@ describe("prompt context injection", () => {
     blockRepo(repository);
     const workspace = mkdtempSync(resolve(tmpdir(), "swf-prompts-"));
     roots.push(workspace);
-    const fake = new FakeAgentRuntime();
+    const stub = new StubAgentRuntime();
     const assignments: Array<{ role: string; user: string }> = [];
     const runtime: AgentRuntime = {
       async run(assignment) {
         assignments.push({ role: assignment.role, user: assignment.prompt });
-        return fake.run(assignment);
+        return stub.run(assignment);
       },
     };
     const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime });
@@ -166,12 +167,12 @@ describe("prompt context injection", () => {
     blockRepo(lib);
     const workspace = mkdtempSync(resolve(tmpdir(), "swf-context-grants-"));
     roots.push(workspace);
-    const fake = new FakeAgentRuntime();
-    let testerCommands: Array<{ id: string; command: string; cwd: string }> = [];
+    const stub = new StubAgentRuntime();
+    const reviewerCommands: Array<{ id: string; command: string; cwd: string }> = [];
     const runtime: AgentRuntime = {
       async run(assignment) {
-        if (assignment.role === "tester") testerCommands = assignment.grant.commands;
-        return fake.run(assignment);
+        if (assignment.role === "reviewer") reviewerCommands.push(...assignment.grant.commands);
+        return stub.run(assignment);
       },
     };
     const factory = await SoftwareFactory.create({ repositoryRoot: app, workspace, runtime });
@@ -186,12 +187,12 @@ describe("prompt context injection", () => {
       "CHECK-lib-unit",
       "CHECK-lib-typecheck",
     ]);
-    expect(testerCommands.map(({ id, command }) => ({ id, command }))).toEqual([
+    expect(reviewerCommands.map(({ id, command }) => ({ id, command }))).toEqual([
       { id: "CHECK-app-unit", command: "npm test" },
       { id: "CHECK-app-typecheck", command: "npm run typecheck" },
       { id: "CHECK-lib-unit", command: "npm test" },
       { id: "CHECK-lib-typecheck", command: "npm run typecheck" },
     ]);
-    expect(testerCommands.every((command) => command.cwd.includes("/worktrees/"))).toBe(true);
+    expect(reviewerCommands.every((command) => command.cwd.includes("/worktrees/"))).toBe(true);
   });
 });

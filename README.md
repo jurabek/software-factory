@@ -1,8 +1,9 @@
 # Software Factory
 
 A local-only coding workflow built around Pi. `swf` coordinates a Feature
-Request through Planner, Builder, Reviewer, and Tester agents in isolated Git
-worktrees. `swf-ui` visualizes Campaign state from local SQLite files.
+Request through Planner, Builder, and Reviewer agents in isolated Git
+worktrees. Reviewers independently run all required repository checks. `swf-ui`
+visualizes Campaign state from local SQLite files.
 
 The factory does not open pull requests, poll remote checks, deploy, or call a
 remote Software Factory server. Pi can still use its normal tools, including
@@ -46,12 +47,6 @@ swf status SF-2026-1234 --verbose
 Repository checks and protected/generated paths live in the marked
 Software Factory block in `AGENTS.md`. Campaign data lives under
 `.software-factory/workspace/`.
-
-For deterministic orchestration tests without model calls:
-
-```bash
-SOFTWARE_FACTORY_RUNTIME=fake swf request "demo"
-```
 
 ## Run the UI
 

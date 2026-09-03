@@ -91,9 +91,7 @@ program.command("run <campaign-id>")
   .action(async (campaignId, options) => print(await (await createFactory()).advance(campaignId, options.until as FactoryState)));
 
 program.command("review <campaign-id>")
-  .action(async (campaignId) => print(await (await createFactory()).advance(campaignId, "testing")));
-program.command("test <campaign-id>")
-  .action(async (campaignId) => print(await (await createFactory()).advance(campaignId, "implementation_complete")));
+  .action(async (campaignId) => print(await (await createFactory()).advance(campaignId, "awaiting_human_review")));
 
 program.command("status <campaign-id>")
   .option("--verbose")
@@ -171,7 +169,6 @@ async function createFactory(cwd: string = process.cwd()): Promise<SoftwareFacto
   return SoftwareFactory.create({
     workspace: campaignWorkspace(cwd),
     repositoryRoot: cwd,
-    runtime: process.env.SOFTWARE_FACTORY_RUNTIME === "fake" ? "fake" : "pi",
   });
 }
 

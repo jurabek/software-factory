@@ -16,7 +16,7 @@
 
 Unix socket: `{{factory_socket}}`
 
-Use `list_peer_sessions` and `read_peer_session` to load planner, builder, reviewer, and tester Pi JSONL from WAL.
+Use `list_peer_sessions` and `read_peer_session` to load planner, builder, and reviewer Pi JSONL from WAL.
 
 ```json
 {{peer_sessions}}

@@ -12,7 +12,7 @@ import type { DoctorReport } from "./doctor.js";
 import type { AgentRole } from "./types.js";
 
 const GITIGNORE_LINE = ".software-factory/";
-const FACTORY_ROLES: readonly AgentRole[] = ["planner", "builder", "reviewer", "tester"];
+const FACTORY_ROLES: readonly AgentRole[] = ["planner", "builder", "reviewer"];
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 export interface InitAnswers {

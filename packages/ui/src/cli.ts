@@ -38,7 +38,7 @@ const program = new Command()
         control: {
           actor: "local-developer",
           approvePlan: async (campaignId: string, actor: string) =>
-            (await SoftwareFactory.create({ workspace, repositoryRoot: cwd, runtime: "pi" }))
+            (await SoftwareFactory.create({ workspace, repositoryRoot: cwd }))
               .approve(campaignId, "plan", actor),
         },
       } : {}),

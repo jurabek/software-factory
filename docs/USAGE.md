@@ -28,8 +28,8 @@ swf run "$CAMPAIGN_ID"
 The local state sequence is:
 
 ```text
-planning → plan approval → building → reviewing → testing
-         → bounded review/test repair → implementation_complete
+planning → plan approval → building → reviewing
+         → bounded review repair → implementation_complete
 ```
 
 Use `--repos ../api,../web` to include sibling local Git repositories. Every
@@ -91,15 +91,6 @@ Only one `swf run` process may advance a Campaign at a time. If an owner is
 interrupted, the next run marks its stale worker failed and blocks the
 Campaign; use `swf resume CAMPAIGN_ID` after inspecting the failure.
 
-For deterministic controller tests:
-
-```bash
-SOFTWARE_FACTORY_RUNTIME=fake swf request "demo"
-```
-
-The fake runtime proves orchestration behavior only; it does not implement
-product code.
-
 ## Visualizer
 
 `swf` never builds, probes, or starts the visualizer. Build the workspace and
@@ -116,8 +107,9 @@ swf-ui --control
 Without `--control`, all data routes are read-only. Control mode enables only
 local plan approval using a per-process token.
 
-The UI polls Campaign SQLite databases in WAL mode and shows agent phases,
-checks, findings, and redacted session events. It does not expose prompt
+The Reviewer independently runs every required repository check. The UI polls
+Campaign SQLite databases in WAL mode and shows agent phases, checks, findings,
+and redacted session events. It does not expose prompt
 bodies.
 
 ## Local-only constraints

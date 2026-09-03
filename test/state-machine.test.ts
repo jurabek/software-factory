@@ -14,17 +14,10 @@ describe("campaign transition policy", () => {
   it.each([
     ["building", "builder_completed", "reviewing"],
     ["repairing_review", "builder_completed", "re_reviewing"],
-    ["repairing_test", "builder_completed", "re_reviewing_after_test"],
-    ["reviewing", "review_passed", "testing"],
-    ["re_reviewing", "review_passed", "testing"],
-    ["re_reviewing_after_test", "review_passed", "re_testing"],
+    ["reviewing", "review_passed", "awaiting_human_review"],
+    ["re_reviewing", "review_passed", "awaiting_human_review"],
     ["reviewing", "review_blocked", "repairing_review"],
     ["re_reviewing", "review_blocked", "repairing_review"],
-    ["re_reviewing_after_test", "review_blocked", "repairing_test"],
-    ["testing", "test_failed", "repairing_test"],
-    ["re_testing", "test_failed", "repairing_test"],
-    ["testing", "test_passed", "awaiting_human_review"],
-    ["re_testing", "test_passed", "awaiting_human_review"],
     ["awaiting_human_review", "human_review_completed", "implementation_complete"],
   ] satisfies Array<[FactoryState, CampaignAdvancementOutcome, FactoryState]>)(
     "maps %s + %s to %s",
@@ -36,8 +29,6 @@ describe("campaign transition policy", () => {
   it.each([
     ["reviewing", "review_blocked"],
     ["re_reviewing", "review_blocked"],
-    ["testing", "test_failed"],
-    ["re_testing", "test_failed"],
   ] satisfies Array<[FactoryState, CampaignAdvancementOutcome]>)(
     "fails %s + %s when repair budget is exhausted",
     (state, outcome) => {
@@ -47,7 +38,7 @@ describe("campaign transition policy", () => {
   );
 
   it("rejects invalid outcomes", () => {
-    expect(() => decideCampaignTransition("reviewing", "test_passed", policy))
+    expect(() => decideCampaignTransition("reviewing", "builder_completed", policy))
       .toThrow(CampaignTransitionDecisionError);
   });
 
@@ -55,6 +46,6 @@ describe("campaign transition policy", () => {
     expect(canTransition("building", "paused")).toBe(true);
     expect(canTransition("paused", "building")).toBe(true);
     expect(isTerminal("implementation_complete")).toBe(true);
-    expect(isTerminal("testing")).toBe(false);
+    expect(isTerminal("reviewing")).toBe(false);
   });
 });

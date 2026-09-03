@@ -17,7 +17,6 @@ import {
   AgentExecutionGuard,
   boundedPeerSessionPayload,
   EmptyAgentResponseError,
-  FakeAgentRuntime,
   runAgentPromptLoop,
   visiblePeerSessions,
   type AgentRuntime,
@@ -32,6 +31,7 @@ import {
   parseCommandOptions,
   usesSubagentHarness,
 } from "../packages/core/src/harness/subagents.js";
+import { StubAgentRuntime } from "./stub-agent-runtime.js";
 
 const roots: string[] = [];
 
@@ -99,6 +99,11 @@ describe("policy", () => {
       command: "npm test",
       cwd: repository,
     });
+    expect(assertCommandAllowed({ ...builder, role: "reviewer" }, "CHECK-app-unit")).toMatchObject({
+      id: "CHECK-app-unit",
+    });
+    expect(() => assertCommandAllowed({ ...builder, role: "planner" }, "CHECK-app-unit"))
+      .toThrow("ROLE_COMMAND_DENIED");
     expect(() => assertCommandAllowed(builder, "CHECK-other")).toThrow("COMMAND_DENIED");
     expect(assertLocalRunnerAllowed(builder, ["just", "test"])).toEqual(["just", "test"]);
     expect(() => assertLocalRunnerAllowed(builder, ["rm", "-rf", "/"])).toThrow("COMMAND_DENIED");
@@ -324,7 +329,6 @@ describe("factory config", () => {
     });
     expect(resolveAgent(config, "builder")).toMatchObject({ model: "cursor/gpt-5.6-luna" });
     expect(resolveAgent(config, "reviewer")).toMatchObject({ model: "cursor/gpt-5.6-luna" });
-    expect(resolveAgent(config, "tester")).toMatchObject({ model: "cursor/gpt-5.6-luna" });
     expect(resolveAgent(config, "builder").tools).toEqual(expect.arrayContaining(["edit", "write"]));
     expect(resolveAgent(config, "reviewer").tools).not.toContain("write");
     expect(resolveAgent(config, "planner").promptEngineering.system).toMatch(/prompts\/planner\/system\.md$/);
@@ -349,6 +353,10 @@ describe("factory config", () => {
       defaults: { model: "x/y" },
       approval_rules: [{ id: "missing-when" }],
     }))).toThrow("approval_rules[0].when is required");
+    expect(() => loadFactoryConfig(customConfigPath({
+      defaults: { model: "x/y" },
+      agents: [{ name: "unsupported" }],
+    }))).toThrow("name must be planner, builder, or reviewer");
   });
 
   it("bounds an agent session by deadline and consecutive empty turns", async () => {
@@ -409,12 +417,12 @@ describe("factory config", () => {
       "      system: planner-system.md",
       "      user: planner-user.md",
     ].join("\n"));
-    const fake = new FakeAgentRuntime();
+    const stub = new StubAgentRuntime();
     const assignments: Array<{ role: string; system: string; user: string }> = [];
     const runtime: AgentRuntime = {
       async run(assignment) {
         assignments.push({ role: assignment.role, system: assignment.systemPrompt, user: assignment.prompt });
-        return fake.run(assignment);
+        return stub.run(assignment);
       },
     };
     const factory = await SoftwareFactory.create({
@@ -436,7 +444,7 @@ describe("factory config", () => {
 describe("local campaign", () => {
   it("compiles role-specific prompts with prior-agent handoffs", async () => {
     const { repository, workspace } = fixture();
-    const fake = new FakeAgentRuntime();
+    const stub = new StubAgentRuntime();
     const assignments: Array<{ role: string; system: string; user: string }> = [];
     const runtime: AgentRuntime = {
       async run(assignment) {
@@ -445,7 +453,7 @@ describe("local campaign", () => {
           system: assignment.systemPrompt,
           user: assignment.prompt,
         });
-        return fake.run(assignment);
+        return stub.run(assignment);
       },
     };
     const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime });
@@ -454,7 +462,7 @@ describe("local campaign", () => {
     await factory.advance(campaign.id);
 
     expect(assignments.map((assignment) => assignment.role))
-      .toEqual(["planner", "builder", "reviewer", "tester"]);
+      .toEqual(["planner", "builder", "reviewer"]);
     expect(assignments.find((assignment) => assignment.role === "planner")?.system)
       .toContain("Turn the approved feature request");
     expect(assignments.find((assignment) => assignment.role === "planner")?.system)
@@ -464,22 +472,22 @@ describe("local campaign", () => {
     expect(assignments.find((assignment) => assignment.role === "builder")?.user)
       .toContain("read_peer_session");
     expect(assignments.find((assignment) => assignment.role === "builder")?.user)
-      .toMatch(/fake-/);
+      .toMatch(/stub-/);
     expect(assignments.find((assignment) => assignment.role === "builder")?.user)
       .not.toContain("planner fixture completed");
     expect(assignments.find((assignment) => assignment.role === "reviewer")?.system)
       .toContain("repository's own reviewer check/test instructions");
-    expect(assignments.find((assignment) => assignment.role === "tester")?.user)
-      .toContain("Run each required check ID");
-    expect(assignments.find((assignment) => assignment.role === "tester")?.user)
+    expect(assignments.find((assignment) => assignment.role === "reviewer")?.user)
+      .toContain("Run every required check");
+    expect(assignments.find((assignment) => assignment.role === "reviewer")?.user)
       .toContain("Effective risk signals:");
     expect(assignments.find((assignment) => assignment.role === "reviewer")?.user)
       .toContain("@prompts/reviewer");
   });
 
-  it("runs Planner, Builder, Reviewer, and Tester through implementation_complete", async () => {
+  it("runs Planner, Builder, and Reviewer through implementation_complete", async () => {
     const { repository, workspace } = fixture();
-    const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime: "fake" });
+    const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime: new StubAgentRuntime() });
     const created = await factory.request({ text: "Add feature mapping", });
     expect(created.state).toBe("awaiting_plan_approval");
     expect(() => factory.inspect(created.id)).not.toThrow();
@@ -489,8 +497,8 @@ describe("local campaign", () => {
 
     const store = new CampaignStore(workspace, created.id);
     try {
-      expect(store.results().map((result) => result.role)).toEqual(["planner", "builder", "reviewer", "tester"]);
-      expect(store.sessionCatalog().map((session) => session.role)).toEqual(["planner", "builder", "reviewer", "tester"]);
+      expect(store.results().map((result) => result.role)).toEqual(["planner", "builder", "reviewer"]);
+      expect(store.sessionCatalog().map((session) => session.role)).toEqual(["planner", "builder", "reviewer"]);
       expect(store.sessionLogs().length).toBeGreaterThan(0);
       expect(store.rows("checks").every((check) => check.status === "passed")).toBe(true);
       expect(store.rows("events").some((event) => event.type === "state_changed")).toBe(true);
@@ -499,7 +507,7 @@ describe("local campaign", () => {
 
   it("invalidates approvals and results after an amendment", async () => {
     const { repository, workspace } = fixture();
-    const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime: "fake" });
+    const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime: new StubAgentRuntime() });
     const campaign = await factory.request({ text: "Original outcome", });
     factory.approve(campaign.id, "plan");
     const amended = factory.amend(campaign.id, "/businessOutcome", "Amended outcome");
@@ -513,10 +521,10 @@ describe("local campaign", () => {
 
   it("rejects stale agent results before persistence or advancement", async () => {
     const { repository, workspace } = fixture();
-    const fake = new FakeAgentRuntime();
+    const stub = new StubAgentRuntime();
     const staleRuntime: AgentRuntime = {
       async run(assignment) {
-        return { ...await fake.run(assignment), requestHash: "0".repeat(64) };
+        return { ...await stub.run(assignment), requestHash: "0".repeat(64) };
       },
     };
     const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime: staleRuntime });
@@ -526,12 +534,12 @@ describe("local campaign", () => {
 
   it("binds submitted identity fields to the active assignment", async () => {
     const { repository, workspace } = fixture();
-    const fake = new FakeAgentRuntime();
+    const stub = new StubAgentRuntime();
     let captured: Assignment | undefined;
     const runtime: AgentRuntime = {
       async run(assignment) {
         captured = assignment;
-        return fake.run(assignment);
+        return stub.run(assignment);
       },
     };
     const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime });
@@ -542,7 +550,7 @@ describe("local campaign", () => {
       requestRevision: 99,
       requestHash: "0".repeat(64),
       profile: { id: "wrong", version: "wrong", digest: "0".repeat(64) },
-      role: "tester",
+      role: "builder",
       workItemId: "WI-wrong-1",
       workerRunId: "wrong",
       piSessionId: "wrong",
@@ -561,12 +569,12 @@ describe("local campaign", () => {
 
   it("persists timed-out agent runs as failed and resumes from the failed phase", async () => {
     const { repository, workspace } = fixture();
-    const fake = new FakeAgentRuntime();
+    const stub = new StubAgentRuntime();
     let failBuilder = true;
     const runtime: AgentRuntime = {
       async run(assignment) {
         if (assignment.role === "builder" && failBuilder) throw new AgentDeadlineError(25);
-        return fake.run(assignment);
+        return stub.run(assignment);
       },
     };
     const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime });
@@ -598,7 +606,7 @@ describe("local campaign", () => {
 
   it("allows only one active advancement and releases ownership afterward", async () => {
     const { repository, workspace } = fixture();
-    const fake = new FakeAgentRuntime();
+    const stub = new StubAgentRuntime();
     let releaseBuilder!: () => void;
     let builderStarted!: () => void;
     const release = new Promise<void>((resolveRelease) => { releaseBuilder = resolveRelease; });
@@ -609,7 +617,7 @@ describe("local campaign", () => {
           builderStarted();
           await release;
         }
-        return fake.run(assignment);
+        return stub.run(assignment);
       },
     };
     const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime });
@@ -626,7 +634,7 @@ describe("local campaign", () => {
 
   it("recovers stale advancement ownership and stale running rows", async () => {
     const { repository, workspace } = fixture();
-    const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime: "fake" });
+    const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime: new StubAgentRuntime() });
     const campaign = await factory.request({ text: "Recover stale campaign ownership" });
     factory.approve(campaign.id, "plan");
     const store = new CampaignStore(workspace, campaign.id);
@@ -668,7 +676,7 @@ describe("local campaign", () => {
 
   it("derives builder changed-file evidence from the complete worktree diff", async () => {
     const { repository, workspace } = fixture();
-    const fake = new FakeAgentRuntime();
+    const stub = new StubAgentRuntime();
     let changedFiles: unknown[] = [];
     const runtime: AgentRuntime = {
       async run(assignment) {
@@ -677,7 +685,7 @@ describe("local campaign", () => {
           writeFileSync(resolve(assignment.worktree, "src/new.ts"), "export const added = true;\n");
           changedFiles = builderChangedFiles(assignment, []);
         }
-        return fake.run(assignment);
+        return stub.run(assignment);
       },
     };
     const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime });
@@ -692,7 +700,7 @@ describe("local campaign", () => {
 
   it("does not certify required deferred checks", async () => {
     const { repository, workspace } = fixture();
-    const runtime = new FakeAgentRuntime((assignment) => assignment.role === "tester" ? {
+    const runtime = new StubAgentRuntime((assignment) => assignment.role === "reviewer" ? {
       checks: assignment.request.requiredChecks.map((check) => ({
         checkId: check.id,
         status: "deferred",
@@ -711,7 +719,7 @@ describe("local campaign", () => {
 
   it("uses and verifies the pinned profile snapshot on resume", async () => {
     const { repository, workspace } = fixture();
-    const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime: "fake" });
+    const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime: new StubAgentRuntime() });
     const campaign = await factory.request({ text: "Pinned profile", });
     factory.approve(campaign.id, "plan");
     const profilePath = resolve(workspace, campaign.id, "profiles/resolved.json");
@@ -723,7 +731,7 @@ describe("local campaign", () => {
 
   it("redacts long digit runs before request persistence", async () => {
     const { repository, workspace } = fixture();
-    const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime: "fake" });
+    const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime: new StubAgentRuntime() });
     const campaign = await factory.request({ text: "Lookup record 123456789", });
     const inspected = factory.inspect(campaign.id);
     expect(inspected.request.businessOutcome).toContain("[REDACTED-NUMBER]");
@@ -733,7 +741,7 @@ describe("local campaign", () => {
 
   it("mirrors session JSONL into WAL and serves it over the Unix socket", async () => {
     const { repository, workspace } = fixture();
-    const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime: "fake" });
+    const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime: new StubAgentRuntime() });
     const campaign = await factory.request({ text: "Session bus", });
     const writer = new CampaignStore(workspace, campaign.id);
     try {
@@ -771,7 +779,6 @@ describe("local campaign", () => {
       { sessionId: "planner-1", runId: "planner-campaign-1", role: "planner", workItemId: null, attempt: 1, sessionFile: null },
       { sessionId: "builder-1", runId: "builder-WI-1", role: "builder", workItemId: "WI-1", attempt: 1, sessionFile: null },
       { sessionId: "reviewer-1", runId: "reviewer-WI-1", role: "reviewer", workItemId: "WI-1", attempt: 1, sessionFile: null },
-      { sessionId: "tester-1", runId: "tester-campaign-1", role: "tester", workItemId: null, attempt: 1, sessionFile: null },
     ];
     expect(visiblePeerSessions("reviewer", catalog, "reviewer-WI-1", "reviewer-1")
       .map((session) => session.sessionId)).toEqual(["planner-1", "builder-1"]);
@@ -791,7 +798,7 @@ describe("local campaign", () => {
 
   it("serves campaign data through a GET-only visualizer API", async () => {
     const { repository, workspace } = fixture();
-    const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime: "fake" });
+    const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime: new StubAgentRuntime() });
     const campaign = await factory.request({ text: "Observable campaign", });
     const server = startVisualizer({
       workspace,
@@ -839,7 +846,7 @@ describe("local campaign", () => {
 
   it("allows one-click plan approval only in explicit local control mode", async () => {
     const { repository, workspace } = fixture();
-    const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime: "fake" });
+    const factory = await SoftwareFactory.create({ repositoryRoot: repository, workspace, runtime: new StubAgentRuntime() });
     const campaign = await factory.request({ text: "Approve in the UI", });
     const server = startVisualizer({
       workspace,

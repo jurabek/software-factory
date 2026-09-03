@@ -71,8 +71,7 @@
       "enum": [
         "planner",
         "builder",
-        "reviewer",
-        "tester"
+        "reviewer"
       ]
     },
     "workerRunId": {
@@ -711,7 +710,6 @@
             "planner",
             "builder",
             "reviewer",
-            "tester",
             "controller"
           ]
         },

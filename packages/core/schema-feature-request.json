@@ -669,7 +669,7 @@
         "executor": {
           "enum": [
             "sandbox",
-            "tester",
+            "reviewer",
             "human"
           ]
         },

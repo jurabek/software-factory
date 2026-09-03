@@ -6,7 +6,7 @@ import { isRunning } from "../types";
 defineProps<{ campaigns: Campaign[]; loading: boolean }>();
 defineEmits<{ open: [campaign: Campaign] }>();
 
-const phases = ["planning", "building", "reviewing", "testing", "implementation_complete"];
+const phases = ["planning", "building", "reviewing", "implementation_complete"];
 
 function phaseState(campaign: Campaign, phase: string): string {
   const order = phases.indexOf(phase);

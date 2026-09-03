@@ -34,10 +34,10 @@ never part of the read interface.
 
 ## Local-only lifecycle
 
-Campaigns move through planning, explicit plan approval, building, review,
-testing, bounded review/test repair, and `implementation_complete`. Pausing,
-resuming, aborting, blocking, and repair-budget failure are local lifecycle
-controls.
+Campaigns move through planning, explicit plan approval, building, review with
+independent required-check execution, bounded review repair, and
+`implementation_complete`. Pausing, resuming, aborting, blocking, and
+repair-budget failure are local lifecycle controls.
 
 There is no package or transition policy for pull requests, remote checks,
 deployment, release, rollout, or rollback.
