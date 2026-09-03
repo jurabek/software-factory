@@ -74,24 +74,10 @@ agents:
     model: cursor/gpt-5.6-luna
     thinking: low
     color: "#fb7185"
-    purpose: Confirm that what was built is what was asked for; change nothing.
+    purpose: Review the implementation and independently run every required check; change nothing.
     prompt_engineering:
       system: prompts/reviewer/system.md
       user: prompts/reviewer/user.md
-    tools:
-      - read
-      - grep
-      - find
-      - ls
-
-  - name: tester
-    model: cursor/gpt-5.6-luna
-    thinking: low
-    color: "#34d399"
-    purpose: Run the required checks and report evidence; change nothing.
-    prompt_engineering:
-      system: prompts/tester/system.md
-      user: prompts/tester/user.md
     tools:
       - read
       - grep

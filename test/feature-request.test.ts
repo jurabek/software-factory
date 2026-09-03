@@ -100,6 +100,7 @@ describe("Feature Request Module", () => {
           id: "CHECK-app-unit",
           workItem: "WI-app-1",
           kind: "unit",
+          executor: "reviewer",
         }],
       });
       expect(created.request.security.requiredReviews).toEqual(["spec", "standards"]);

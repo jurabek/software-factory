@@ -15,9 +15,9 @@ npm run build
 npm link --workspace @software-factory/cli
 npm link --workspace @software-factory/ui
 
-SOFTWARE_FACTORY_RUNTIME=fake swf request "smoke test"
+swf request "smoke test"
 swf approve SF-YYYY-NNNN
-SOFTWARE_FACTORY_RUNTIME=fake swf run SF-YYYY-NNNN
+swf run SF-YYYY-NNNN
 swf status SF-YYYY-NNNN
 
 swf-ui
