@@ -1,65 +1,46 @@
 # Software Factory
 
-A local-only coding workflow built around Pi. `swf` coordinates a Feature
-Request through Planner, Builder, and Reviewer agents in isolated Git
-worktrees. Reviewers independently run all required repository checks. `swf-ui`
-visualizes Campaign state from local SQLite files.
+Software Factory is a loopback-only Go service that coordinates one repository through Planner, Builder, deterministic checks, and Reviewer using the installed `pi` command.
 
-The factory does not open pull requests, poll remote checks, deploy, or call a
-remote Software Factory server. Pi can still use its normal tools, including
-`gh`, when the user explicitly asks it to.
+## Prerequisites
 
-## Packages
+- Go
+- Git
+- GitHub CLI (`gh`) for GitHub repositories
+- Pi with authenticated providers
+- Node.js only for UI development
 
-- `@software-factory/core`: Campaign orchestration, local Git worktrees,
-  repository checks, Pi runtime, persistence, and the read model.
-- `@software-factory/cli`: the `swf` executable.
-- `@software-factory/ui`: the `swf-ui` executable, loopback server, and Vue UI.
-
-Dependencies point inward: CLI and UI depend on core; core never imports an
-executable package, and `swf` never starts the UI.
-
-## Install
-
-Node.js 24 or later is required.
+## Run
 
 ```bash
-npm install
+go run main.go
+```
+
+Open `http://127.0.0.1:8080`. `PORT` changes the port. `SOFTWARE_FACTORY_DIR` changes the default `~/.software-factory` state directory. `PI_PATH` selects Pi. The first run generates `config.yaml` and editable prompts without replacing existing files.
+
+The server binds only to loopback. Mutations require the random token obtained by the same-origin UI from `/api/v1/control`. Campaign workspaces, SQLite WAL state, JSONL traces, prompts, and Pi sessions remain under the factory directory until explicit deletion.
+
+## API example
+
+`curl` is an API client, not a product CLI.
+
+```bash
+TOKEN=$(curl -s http://127.0.0.1:8080/api/v1/control | jq -r .token)
+curl -s -X POST http://127.0.0.1:8080/api/v1/campaigns \
+  -H "X-Software-Factory-Token: $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"request":"Implement feature X","repository":{"type":"local","path":"/absolute/repository"}}'
+```
+
+Creating a draft does not access the repository. `POST /api/v1/campaigns/{id}/start` creates its isolated worktree or GitHub clone. Plan approval uses `POST /api/v1/campaigns/{id}/approve`.
+
+The factory never commits, pushes, merges, deploys, or cleans up automatically.
+
+## Checks
+
+```bash
+go test ./...
+go test -race ./...
 npm run typecheck
-npm test
 npm run build
-npm link --workspace @software-factory/cli
-npm link --workspace @software-factory/ui
 ```
-
-## Run a Campaign
-
-From a local Git repository:
-
-```bash
-swf init
-swf request "implement X"
-swf approve SF-2026-1234
-swf run SF-2026-1234
-swf status SF-2026-1234 --verbose
-```
-
-Repository checks and protected/generated paths live in the marked
-Software Factory block in `AGENTS.md`. Campaign data lives under
-`.software-factory/workspace/`.
-
-## Run the UI
-
-Build once, then start the visualizer explicitly:
-
-```bash
-swf-ui
-swf-ui --port 4180
-swf-ui --control
-```
-
-The server binds to loopback only and runs in the foreground. It is read-only
-unless `--control` is supplied; control mode adds only token-protected local
-plan approval.
-
-See [`docs/USAGE.md`](docs/USAGE.md) for the command reference.
