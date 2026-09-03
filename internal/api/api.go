@@ -41,6 +41,7 @@ func New(db *store.DB, service *factory.Service, cfg config.Config, problems []s
 	}
 	return &Server{db: db, factory: service, config: cfg, validationErrors: problems, loadError: loadErr, models: models, token: token}, nil
 }
+
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/health", s.health)
@@ -74,6 +75,7 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	}
 	write(w, http.StatusOK, map[string]any{"status": status, "errors": problems})
 }
+
 func (s *Server) configRead(w http.ResponseWriter, _ *http.Request) {
 	problems := append([]string{}, s.validationErrors...)
 	if s.loadError != nil {
@@ -81,6 +83,7 @@ func (s *Server) configRead(w http.ResponseWriter, _ *http.Request) {
 	}
 	write(w, http.StatusOK, map[string]any{"config": s.config, "errors": problems})
 }
+
 func (s *Server) modelsRead(w http.ResponseWriter, r *http.Request) {
 	models, err := s.models(r.Context())
 	if err != nil {
@@ -89,9 +92,11 @@ func (s *Server) modelsRead(w http.ResponseWriter, r *http.Request) {
 	}
 	write(w, http.StatusOK, map[string]any{"models": models})
 }
+
 func (s *Server) control(w http.ResponseWriter, _ *http.Request) {
 	write(w, http.StatusOK, map[string]any{"enabled": true, "token": s.token})
 }
+
 func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	if !s.ready(w) {
 		return
@@ -108,6 +113,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	}
 	write(w, http.StatusCreated, campaign)
 }
+
 func (s *Server) campaigns(w http.ResponseWriter, r *http.Request) {
 	values, err := s.db.Campaigns(r.Context())
 	if err != nil {
@@ -116,6 +122,7 @@ func (s *Server) campaigns(w http.ResponseWriter, r *http.Request) {
 	}
 	write(w, http.StatusOK, values)
 }
+
 func (s *Server) campaign(w http.ResponseWriter, r *http.Request) {
 	value, err := s.db.Campaign(r.Context(), r.PathValue("id"))
 	if err != nil {
@@ -124,6 +131,7 @@ func (s *Server) campaign(w http.ResponseWriter, r *http.Request) {
 	}
 	write(w, http.StatusOK, value)
 }
+
 func (s *Server) command(w http.ResponseWriter, r *http.Request) {
 	if !s.ready(w) {
 		return
@@ -155,6 +163,7 @@ func (s *Server) command(w http.ResponseWriter, r *http.Request) {
 	}
 	write(w, http.StatusAccepted, map[string]any{"accepted": true})
 }
+
 func (s *Server) delete(w http.ResponseWriter, r *http.Request) {
 	if err := s.factory.Delete(r.Context(), r.PathValue("id")); err != nil {
 		storeError(w, err)
@@ -162,6 +171,7 @@ func (s *Server) delete(w http.ResponseWriter, r *http.Request) {
 	}
 	write(w, http.StatusOK, map[string]any{"deleted": true})
 }
+
 func (s *Server) phases(w http.ResponseWriter, r *http.Request) {
 	if !s.exists(w, r) {
 		return
@@ -173,6 +183,7 @@ func (s *Server) phases(w http.ResponseWriter, r *http.Request) {
 	}
 	write(w, http.StatusOK, values)
 }
+
 func (s *Server) checks(w http.ResponseWriter, r *http.Request) {
 	if !s.exists(w, r) {
 		return
@@ -184,6 +195,7 @@ func (s *Server) checks(w http.ResponseWriter, r *http.Request) {
 	}
 	write(w, http.StatusOK, values)
 }
+
 func (s *Server) results(w http.ResponseWriter, r *http.Request) {
 	if !s.exists(w, r) {
 		return
@@ -195,6 +207,7 @@ func (s *Server) results(w http.ResponseWriter, r *http.Request) {
 	}
 	write(w, http.StatusOK, values)
 }
+
 func (s *Server) diff(w http.ResponseWriter, r *http.Request) {
 	value, err := s.factory.Diff(r.Context(), r.PathValue("id"))
 	if err != nil {
@@ -203,6 +216,7 @@ func (s *Server) diff(w http.ResponseWriter, r *http.Request) {
 	}
 	write(w, http.StatusOK, value)
 }
+
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	if !s.exists(w, r) {
 		return
@@ -282,6 +296,7 @@ func (s *Server) exists(w http.ResponseWriter, r *http.Request) bool {
 	}
 	return true
 }
+
 func (s *Server) mutation(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		provided := r.Header.Get("X-Software-Factory-Token")
@@ -296,6 +311,7 @@ func (s *Server) mutation(next http.HandlerFunc) http.HandlerFunc {
 		next(w, r)
 	}
 }
+
 func (s *Server) ready(w http.ResponseWriter) bool {
 	if s.loadError != nil || len(s.validationErrors) > 0 {
 		fail(w, http.StatusUnprocessableEntity, "configuration_invalid", "factory configuration is invalid")
@@ -303,6 +319,7 @@ func (s *Server) ready(w http.ResponseWriter) bool {
 	}
 	return true
 }
+
 func sameOrigin(origin string, r *http.Request) bool {
 	parsed, err := url.Parse(origin)
 	if err != nil {
@@ -310,6 +327,7 @@ func sameOrigin(origin string, r *http.Request) bool {
 	}
 	return parsed.Host == r.Host && (parsed.Scheme == "http" || parsed.Scheme == "https")
 }
+
 func headers(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -321,6 +339,7 @@ func headers(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
+
 func decode[T any](r *http.Request) (T, error) {
 	var value T
 	decoder := json.NewDecoder(r.Body)
@@ -337,17 +356,21 @@ func decode[T any](r *http.Request) (T, error) {
 	}
 	return value, nil
 }
+
 func write(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
 }
+
 func fail(w http.ResponseWriter, status int, code, message string) {
 	write(w, status, APIError{Code: code, Message: message})
 }
+
 func internal(w http.ResponseWriter, err error) {
 	fail(w, http.StatusInternalServerError, "internal_error", err.Error())
 }
+
 func storeError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, store.ErrNotFound):
@@ -358,6 +381,7 @@ func storeError(w http.ResponseWriter, err error) {
 		internal(w, err)
 	}
 }
+
 func newToken() (string, error) {
 	var value [32]byte
 	if _, err := rand.Read(value[:]); err != nil {

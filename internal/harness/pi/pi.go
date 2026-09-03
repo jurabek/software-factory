@@ -123,7 +123,7 @@ func ensureOutputPaths(request harness.Request) error {
 		if path == "" || path == "." {
 			continue
 		}
-		if err := os.MkdirAll(path, 0700); err != nil {
+		if err := os.MkdirAll(path, 0o700); err != nil {
 			return fmt.Errorf("create pi output directory: %w", err)
 		}
 	}
@@ -220,7 +220,7 @@ func openRaw(path string) (*os.File, error) {
 	if path == "" {
 		return nil, nil
 	}
-	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 }
 
 func terminateGroup(pid int) {
@@ -308,6 +308,7 @@ func floatValue(values map[string]any, keys ...string) float64 {
 	value, _ := firstValue(values, keys...).(float64)
 	return value
 }
+
 func intValue(values map[string]any, keys ...string) int {
 	switch value := firstValue(values, keys...).(type) {
 	case float64:

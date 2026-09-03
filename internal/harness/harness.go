@@ -15,13 +15,15 @@ type Event struct {
 	Type, Name string
 	Payload    map[string]any
 }
-type EventSink func(context.Context, Event) error
-type Cost struct{ Input, Output, CacheRead, CacheWrite, Reasoning, Total float64 }
-type Usage struct {
-	Input, Output, CacheRead, CacheWrite, Reasoning, TotalTokens int
-	Cost                                                         float64
-	Costs                                                        Cost
-}
+type (
+	EventSink func(context.Context, Event) error
+	Cost      struct{ Input, Output, CacheRead, CacheWrite, Reasoning, Total float64 }
+	Usage     struct {
+		Input, Output, CacheRead, CacheWrite, Reasoning, TotalTokens int
+		Cost                                                         float64
+		Costs                                                        Cost
+	}
+)
 type Result struct {
 	Text                         string
 	ExitCode                     int

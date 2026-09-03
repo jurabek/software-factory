@@ -56,6 +56,7 @@ func object(text string) ([]byte, error) {
 	}
 	return []byte(trimmed[start : end+1]), nil
 }
+
 func decodeExact(text string, target any, required, allowed []string) (map[string]json.RawMessage, error) {
 	body, err := object(text)
 	if err != nil {
@@ -101,6 +102,7 @@ func validateCommon(value Common) error {
 	}
 	return nil
 }
+
 func ValidatePlan(text string) (Plan, error) {
 	var value Plan
 	fields := append(append([]string{}, commonFields...), "steps")
@@ -122,6 +124,7 @@ func ValidatePlan(text string) (Plan, error) {
 	}
 	return value, nil
 }
+
 func ValidateBuild(text string) (Build, error) {
 	var value Build
 	fields := append(append([]string{}, commonFields...), "changed_files", "commit_message")
@@ -136,6 +139,7 @@ func ValidateBuild(text string) (Build, error) {
 	}
 	return value, nil
 }
+
 func ValidateReview(text string) (Review, error) {
 	var value Review
 	fields := append(append([]string{}, commonFields...), "approved", "findings", "blocking")

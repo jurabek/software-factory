@@ -76,6 +76,7 @@ func resolve(c Config) Config {
 	}
 	return c
 }
+
 func validate(c Config, base string) []string {
 	var problems []string
 	if c.Defaults.CodingAgent != "pi" {
