@@ -115,6 +115,7 @@ func ChecksFromAgents(path string) ([]Check, bool, error) {
 	checks, _, _, found, err := directivesFromAgents(path)
 	return checks, found, err
 }
+
 func directivesFromAgents(path string) ([]Check, []string, []string, bool, error) {
 	body, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
@@ -163,10 +164,12 @@ func DetectProfile(root string) ([]Check, []string, []string, error) {
 	checks, err := detectChecks(root)
 	return checks, nil, nil, err
 }
+
 func DetectChecks(root string) ([]Check, error) {
 	checks, _, _, err := DetectProfile(root)
 	return checks, err
 }
+
 func detectChecks(root string) ([]Check, error) {
 	var checks []Check
 	if body, err := os.ReadFile(filepath.Join(root, "package.json")); err == nil {
@@ -223,6 +226,7 @@ func Diff(ctx context.Context, runner Runner, root string) (string, error) {
 	}
 	return string(output), nil
 }
+
 func MatchesPath(path string, patterns []string) bool {
 	path = filepath.ToSlash(path)
 	for _, pattern := range patterns {
@@ -233,6 +237,7 @@ func MatchesPath(path string, patterns []string) bool {
 	}
 	return false
 }
+
 func validateRelativePath(path string) error {
 	if path == "" || filepath.IsAbs(path) {
 		return fmt.Errorf("repository path must be relative: %q", path)
