@@ -95,6 +95,7 @@ func (s *Service) Start(ctx context.Context, id string) error {
 	s.launch(id, s.prepareAndPlan)
 	return nil
 }
+
 func (s *Service) Approve(ctx context.Context, id, actor string) error {
 	campaign, err := s.db.Campaign(ctx, id)
 	if err != nil {
@@ -117,6 +118,7 @@ func (s *Service) Approve(ctx context.Context, id, actor string) error {
 	s.launch(id, s.buildCheckReview)
 	return nil
 }
+
 func (s *Service) Pause(ctx context.Context, id string) error {
 	campaign, err := s.db.Campaign(ctx, id)
 	if err != nil {
@@ -129,6 +131,7 @@ func (s *Service) Pause(ctx context.Context, id string) error {
 	s.stop(id)
 	return s.db.Transition(ctx, id, campaign.State, string(Paused), campaign.ActivePhase, "")
 }
+
 func (s *Service) Abort(ctx context.Context, id string) error {
 	campaign, err := s.db.Campaign(ctx, id)
 	if err != nil {
@@ -140,6 +143,7 @@ func (s *Service) Abort(ctx context.Context, id string) error {
 	s.stop(id)
 	return s.db.Transition(ctx, id, campaign.State, string(Aborted), campaign.ActivePhase, "")
 }
+
 func (s *Service) Resume(ctx context.Context, id string) error {
 	campaign, err := s.db.Campaign(ctx, id)
 	if err != nil {
@@ -165,6 +169,7 @@ func (s *Service) Resume(ctx context.Context, id string) error {
 	}
 	return nil
 }
+
 func (s *Service) Delete(ctx context.Context, id string) error {
 	campaign, err := s.db.Campaign(ctx, id)
 	if err != nil {
@@ -181,6 +186,7 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	}
 	return s.db.DeleteCampaign(ctx, id)
 }
+
 func (s *Service) Diff(ctx context.Context, id string) (Diff, error) {
 	campaign, err := s.db.Campaign(ctx, id)
 	if err != nil {
@@ -212,6 +218,7 @@ func (s *Service) launch(id string, run func(context.Context, string) error) {
 		}
 	}()
 }
+
 func (s *Service) Shutdown(ctx context.Context) {
 	s.mu.Lock()
 	ids := make([]string, 0, len(s.cancel))
@@ -227,6 +234,7 @@ func (s *Service) Shutdown(ctx context.Context) {
 		}
 	}
 }
+
 func (s *Service) stop(id string) {
 	s.mu.Lock()
 	cancel := s.cancel[id]
@@ -261,7 +269,7 @@ func (s *Service) prepareAndPlan(ctx context.Context, id string) error {
 	}
 	profile.Root = workspace
 	encoded, _ := json.MarshalIndent(profile, "", "  ")
-	if err = os.WriteFile(filepath.Join(s.campaignDir(id), "repository-profile.json"), encoded, 0600); err != nil {
+	if err = os.WriteFile(filepath.Join(s.campaignDir(id), "repository-profile.json"), encoded, 0o600); err != nil {
 		s.failPhase(ctx, phase, err)
 		return err
 	}
@@ -270,7 +278,7 @@ func (s *Service) prepareAndPlan(ctx context.Context, id string) error {
 		s.failPhase(ctx, phase, err)
 		return err
 	}
-	if err = os.WriteFile(filepath.Join(s.campaignDir(id), "config-snapshot.yaml"), snapshot, 0600); err != nil {
+	if err = os.WriteFile(filepath.Join(s.campaignDir(id), "config-snapshot.yaml"), snapshot, 0o600); err != nil {
 		s.failPhase(ctx, phase, err)
 		return err
 	}
@@ -485,13 +493,13 @@ func (s *Service) renderPrompts(agent config.Agent, data map[string]any) (string
 		return "", "", err
 	}
 	audit := filepath.Join(s.campaignDir(dataCampaign(data)), "prompts", agent.Name)
-	if err = os.MkdirAll(audit, 0700); err != nil {
+	if err = os.MkdirAll(audit, 0o700); err != nil {
 		return "", "", err
 	}
-	if err = os.WriteFile(filepath.Join(audit, "system.md"), []byte(system), 0600); err != nil {
+	if err = os.WriteFile(filepath.Join(audit, "system.md"), []byte(system), 0o600); err != nil {
 		return "", "", err
 	}
-	if err = os.WriteFile(filepath.Join(audit, "user.md"), []byte(user), 0600); err != nil {
+	if err = os.WriteFile(filepath.Join(audit, "user.md"), []byte(user), 0o600); err != nil {
 		return "", "", err
 	}
 	return system, user, nil
@@ -502,10 +510,10 @@ func (s *Service) runChecks(ctx context.Context, campaign store.Campaign, phase 
 	for _, spec := range checks {
 		started := time.Now()
 		artifact := filepath.Join(s.campaignDir(campaign.ID), "checks", spec.ID+".log")
-		if err := os.MkdirAll(filepath.Dir(artifact), 0700); err != nil {
+		if err := os.MkdirAll(filepath.Dir(artifact), 0o700); err != nil {
 			return err
 		}
-		file, err := os.OpenFile(artifact, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
+		file, err := os.OpenFile(artifact, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 		if err != nil {
 			return err
 		}
@@ -567,6 +575,7 @@ func (s *Service) beginPhase(ctx context.Context, campaignID, name, kind, owner,
 	_ = s.trace(ctx, campaignID, phase.ID, "phase_start", name, map[string]any{"owner": owner, "kind": kind})
 	return phase, nil
 }
+
 func (s *Service) endPhase(ctx context.Context, phase store.Phase, status string, cause error) error {
 	message := ""
 	if cause != nil {
@@ -577,9 +586,11 @@ func (s *Service) endPhase(ctx context.Context, phase store.Phase, status string
 	}
 	return s.trace(ctx, phase.CampaignID, phase.ID, "phase_end", phase.Name, map[string]any{"status": status, "error": message})
 }
+
 func (s *Service) failPhase(ctx context.Context, phase store.Phase, cause error) {
 	_ = s.endPhase(context.Background(), phase, "failed", cause)
 }
+
 func (s *Service) eventSink(campaignID, phaseID string) harness.EventSink {
 	return func(ctx context.Context, event harness.Event) error {
 		pid := payloadInt(event.Payload, "pid")
@@ -592,10 +603,12 @@ func (s *Service) eventSink(campaignID, phaseID string) harness.EventSink {
 		return s.trace(ctx, campaignID, phaseID, event.Type, event.Name, event.Payload)
 	}
 }
+
 func (s *Service) trace(ctx context.Context, campaignID, phaseID, eventType, name string, payload any) error {
 	_, err := s.db.AppendEvent(ctx, s.campaignDir(campaignID), store.Event{ID: randomID(), CampaignID: campaignID, PhaseID: phaseID, Type: eventType, Name: name, Payload: payload, StartedAt: time.Now().UTC()})
 	return err
 }
+
 func (s *Service) agent(role string) (config.Agent, bool) {
 	for _, agent := range s.config.Agents {
 		if agent.Name == role {
@@ -613,11 +626,13 @@ func campaignID() (string, error) {
 	}
 	return "SF-" + time.Now().UTC().Format("20060102") + "-" + hex.EncodeToString(bytes[:]), nil
 }
+
 func randomID() string {
 	var bytes [12]byte
 	_, _ = rand.Read(bytes[:])
 	return hex.EncodeToString(bytes[:])
 }
+
 func readProfile(dir string) (factorygit.Profile, error) {
 	body, err := os.ReadFile(filepath.Join(dir, "repository-profile.json"))
 	if err != nil {
@@ -627,6 +642,7 @@ func readProfile(dir string) (factorygit.Profile, error) {
 	err = json.Unmarshal(body, &profile)
 	return profile, err
 }
+
 func isActive(state State) bool {
 	return state == Preparing || state == Planning || state == AwaitingApproval || state == Building || state == Checking || state == Reviewing
 }
@@ -655,6 +671,7 @@ func payloadInt(payload map[string]any, key string) int {
 		return 0
 	}
 }
+
 func sameStrings(left, right []string) bool {
 	sort.Strings(left)
 	sort.Strings(right)
