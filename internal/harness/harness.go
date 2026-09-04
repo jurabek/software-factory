@@ -7,9 +7,16 @@ type Model struct {
 	ContextWindow int
 }
 type Request struct {
-	CWD, Prompt, SystemPrompt, Model, Thinking, SessionID, SessionDirectory, RawOutputPath string
-	Tools                                                                                  []string
-	DeadlineMS                                                                             int
+	CWD,
+	Prompt,
+	SystemPrompt,
+	Model,
+	Thinking,
+	SessionID,
+	SessionDirectory,
+	RawOutputPath string
+	Tools      []string
+	DeadlineMS int
 }
 type Event struct {
 	Type, Name string
