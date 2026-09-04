@@ -1,0 +1,28 @@
+defaults:
+  coding_agent: pi
+  model: cursor/gpt-5.6-luna
+  thinking: medium
+  tools: [read, grep, find, ls]
+observability:
+  poll_ms: 500
+runtime:
+  agent_deadline_ms: 1800000
+  empty_turn_retries: 2
+  json_fix_attempts: 2
+agents:
+  - name: planner
+    model: cursor/gpt-5.6-sol
+    thinking: high
+    color: "#a78bfa"
+    purpose: Turn a request into a plan the builder can implement without asking questions.
+    prompt_engineering: {system: prompts/planner/system.md, user: prompts/planner/user.md}
+  - name: builder
+    color: "#22d3ee"
+    purpose: Implement the approved plan exactly and report every changed file.
+    prompt_engineering: {system: prompts/builder/system.md, user: prompts/builder/user.md}
+    tools: [read, grep, find, ls, edit, write]
+  - name: reviewer
+    thinking: low
+    color: "#fb7185"
+    purpose: Review the implementation without changing files.
+    prompt_engineering: {system: prompts/reviewer/system.md, user: prompts/reviewer/user.md}
