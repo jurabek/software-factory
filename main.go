@@ -5,6 +5,7 @@ import (
 	"embed"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -30,7 +32,42 @@ var frontend embed.FS
 //go:embed templates
 var defaultTemplates embed.FS
 
-const defaultPort = "8080"
+//go:embed swagger.yaml
+var swaggerSpec []byte
+
+const (
+	defaultPort = "8080"
+	swaggerUI   = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Software Factory API</title>
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5.32.15/swagger-ui.css">
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://unpkg.com/swagger-ui-dist@5.32.15/swagger-ui-bundle.js"></script>
+  <script>
+    window.onload = function () {
+      const ui = SwaggerUIBundle({
+        url: "/swagger.yaml",
+        dom_id: "#swagger-ui",
+        deepLinking: true,
+        displayRequestDuration: true,
+        persistAuthorization: true,
+        tryItOutEnabled: true
+      });
+      fetch("/api/v1/control", {cache: "no-store"})
+        .then(function (response) { return response.json(); })
+        .then(function (control) {
+          if (control.token) ui.preauthorizeApiKey("MutationToken", control.token);
+        });
+    };
+  </script>
+</body>
+</html>`
+)
 
 func main() {
 	if err := run(); err != nil {
@@ -93,6 +130,9 @@ func run() error {
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/api/v1/", apiServer.Handler())
+	mux.HandleFunc("GET /swagger.yaml", serveSwaggerSpec)
+	mux.HandleFunc("GET /docs", serveSwaggerUI)
+	mux.HandleFunc("GET /docs/", serveSwaggerUI)
 	mux.Handle("/", spaHandler{files: staticFS})
 	address := "127.0.0.1:" + envOrDefault("PORT", defaultPort)
 	server := &http.Server{
@@ -215,6 +255,16 @@ func envOrDefault(name, fallback string) string {
 	return fallback
 }
 
+func serveSwaggerSpec(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/yaml")
+	_, _ = w.Write(swaggerSpec)
+}
+
+func serveSwaggerUI(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = io.WriteString(w, swaggerUI)
+}
+
 type spaHandler struct{ files fs.FS }
 
 func (handler spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -232,7 +282,11 @@ func staticSecurityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'")
+		policy := "default-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'"
+		if r.URL.Path == "/docs" || strings.HasPrefix(r.URL.Path, "/docs/") {
+			policy = "default-src 'self'; connect-src 'self'; img-src 'self' data:; script-src 'self' 'unsafe-inline' https://unpkg.com; style-src 'self' 'unsafe-inline' https://unpkg.com"
+		}
+		w.Header().Set("Content-Security-Policy", policy)
 		next.ServeHTTP(w, r)
 	})
 }

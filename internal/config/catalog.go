@@ -31,27 +31,52 @@ func Catalog(ctx context.Context, runner CommandRunner, piPath string) ([]Model,
 	var models []Model
 	scanner := bufio.NewScanner(strings.NewReader(string(out)))
 	for scanner.Scan() {
-		fields := strings.Fields(scanner.Text())
-		if len(fields) == 0 || !strings.Contains(fields[0], "/") {
-			continue
+		if model, ok := parseCatalogRow(strings.Fields(scanner.Text())); ok {
+			models = append(models, model)
 		}
-		parts := strings.SplitN(fields[0], "/", 2)
-		window := 0
-		for _, field := range fields[1:] {
-			normalized := strings.TrimSuffix(strings.ToLower(strings.ReplaceAll(field, ",", "")), "k")
-			if value, parseErr := strconv.Atoi(normalized); parseErr == nil {
-				if strings.HasSuffix(strings.ToLower(field), "k") {
-					value *= 1000
-				}
-				window = value
-			}
-		}
-		models = append(models, Model{Provider: parts[0], ID: parts[1], ContextWindow: window})
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("read model catalog: %w", err)
 	}
 	return models, nil
+}
+
+func parseCatalogRow(fields []string) (Model, bool) {
+	if len(fields) < 2 || fields[0] == "provider" {
+		return Model{}, false
+	}
+
+	provider, id, contextIndex := fields[0], fields[1], 2
+	if strings.Contains(fields[0], "/") {
+		parts := strings.SplitN(fields[0], "/", 2)
+		provider, id, contextIndex = parts[0], parts[1], 1
+	}
+	if provider == "" || id == "" {
+		return Model{}, false
+	}
+
+	window := 0
+	if contextIndex < len(fields) {
+		window = parseTokenCount(fields[contextIndex])
+	}
+	return Model{Provider: provider, ID: id, ContextWindow: window}, true
+}
+
+func parseTokenCount(field string) int {
+	normalized := strings.ToUpper(strings.ReplaceAll(field, ",", ""))
+	multiplier := 1.0
+	if strings.HasSuffix(normalized, "K") {
+		normalized = strings.TrimSuffix(normalized, "K")
+		multiplier = 1_000
+	} else if strings.HasSuffix(normalized, "M") {
+		normalized = strings.TrimSuffix(normalized, "M")
+		multiplier = 1_000_000
+	}
+	value, err := strconv.ParseFloat(normalized, 64)
+	if err != nil {
+		return 0
+	}
+	return int(value*multiplier + 0.5)
 }
 
 func ResolveModel(pattern string, models []Model) (Model, error) {
