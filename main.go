@@ -12,7 +12,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
@@ -28,6 +27,9 @@ import (
 //go:embed web/dist/*
 var frontend embed.FS
 
+//go:embed templates
+var defaultTemplates embed.FS
+
 const defaultPort = "8080"
 
 func main() {
@@ -39,9 +41,9 @@ func main() {
 
 func run() error {
 	level := slog.LevelInfo
-	_ = level.UnmarshalText([]byte(strings.ToUpper(envOrDefault("LOG_LEVEL", "INFO"))))
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 	slog.SetDefault(logger)
+
 	root, err := factoryRoot()
 	if err != nil {
 		return err
@@ -93,7 +95,11 @@ func run() error {
 	mux.Handle("/api/v1/", apiServer.Handler())
 	mux.Handle("/", spaHandler{files: staticFS})
 	address := "127.0.0.1:" + envOrDefault("PORT", defaultPort)
-	server := &http.Server{Addr: address, Handler: requestLog(logger, staticSecurityHeaders(mux)), ReadHeaderTimeout: 5 * time.Second}
+	server := &http.Server{
+		Addr:              address,
+		Handler:           requestLog(logger, staticSecurityHeaders(mux)),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	done := make(chan error, 1)
@@ -127,7 +133,7 @@ func factoryRoot() (string, error) {
 }
 
 func bootstrap(root string) error {
-	for _, dir := range []string{root, filepath.Join(root, "prompts"), filepath.Join(root, "campaigns")} {
+	for _, dir := range []string{root, filepath.Join(root, "campaigns")} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return err
 		}
@@ -135,24 +141,34 @@ func bootstrap(root string) error {
 			return err
 		}
 	}
-	configData := []byte("defaults:\n  coding_agent: pi\n  model: cursor/gpt-5.6-luna\n  thinking: medium\n  tools: [read, grep, find, ls]\nobservability:\n  poll_ms: 500\nruntime:\n  agent_deadline_ms: 1800000\n  empty_turn_retries: 2\n  json_fix_attempts: 2\nagents:\n  - name: planner\n    model: cursor/gpt-5.6-sol\n    thinking: high\n    color: \"#a78bfa\"\n    purpose: Turn a request into a plan the builder can implement without asking questions.\n    prompt_engineering: {system: prompts/planner/system.md, user: prompts/planner/user.md}\n  - name: builder\n    color: \"#22d3ee\"\n    purpose: Implement the approved plan exactly and report every changed file.\n    prompt_engineering: {system: prompts/builder/system.md, user: prompts/builder/user.md}\n    tools: [read, grep, find, ls, edit, write]\n  - name: reviewer\n    thinking: low\n    color: \"#fb7185\"\n    purpose: Review the implementation without changing files.\n    prompt_engineering: {system: prompts/reviewer/system.md, user: prompts/reviewer/user.md}\n")
-	if err := createIfMissing(filepath.Join(root, "config.yaml"), configData); err != nil {
-		return err
-	}
-	prompts := map[string][2]string{"planner": {"You are the read-only Planner. Return only the required planner JSON envelope.", "Feature request:\n{{.Request}}\n\nInspect {{.Repository}} and produce concrete steps with expected_files and acceptance_criteria."}, "builder": {"You are the Builder. Implement the approved plan. Return only the required builder JSON envelope.", "Feature request:\n{{.Request}}\n\nApproved plan:\n{{.Plan}}\n\nImplement it. Do not commit, push, merge, or deploy."}, "reviewer": {"You are the read-only Reviewer. Return only the required reviewer JSON envelope.", "Feature request:\n{{.Request}}\n\nApproved plan:\n{{.Plan}}\n\nChecks:\n{{.Checks}}\n\nGit-derived changed files:\n{{.ChangedFiles}}"}}
-	for role, body := range prompts {
-		dir := filepath.Join(root, "prompts", role)
-		if err := os.MkdirAll(dir, 0o700); err != nil {
+	return installTemplates(root)
+}
+
+func installTemplates(root string) error {
+	return fs.WalkDir(defaultTemplates, "templates", func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relative, err := filepath.Rel("templates", path)
+		if err != nil {
 			return err
 		}
-		if err := createIfMissing(filepath.Join(dir, "system.md"), []byte(body[0])); err != nil {
+		if relative == "." {
+			return nil
+		}
+		destination := filepath.Join(root, filepath.FromSlash(relative))
+		if entry.IsDir() {
+			if err = os.MkdirAll(destination, 0o700); err != nil {
+				return err
+			}
+			return os.Chmod(destination, 0o700)
+		}
+		data, err := defaultTemplates.ReadFile(path)
+		if err != nil {
 			return err
 		}
-		if err := createIfMissing(filepath.Join(dir, "user.md"), []byte(body[1])); err != nil {
-			return err
-		}
-	}
-	return nil
+		return createIfMissing(destination, data)
+	})
 }
 
 func createIfMissing(path string, data []byte) error {
