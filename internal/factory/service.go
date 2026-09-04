@@ -253,6 +253,15 @@ func (s *Service) prepareAndPlan(ctx context.Context, id string) error {
 	if campaign.State == string(Planning) && campaign.WorkspacePath != "" {
 		return s.plan(ctx, campaign)
 	}
+	snapshot, err := os.ReadFile(s.configPath)
+	if err != nil {
+		return err
+	}
+	if _, problems, parseErr := config.Parse(snapshot, filepath.Dir(s.configPath)); parseErr != nil {
+		return parseErr
+	} else if len(problems) > 0 {
+		return fmt.Errorf("invalid config: %s", strings.Join(problems, "; "))
+	}
 	phase, err := s.beginPhase(ctx, id, "prepare", "git", "factory", "Prepare repository")
 	if err != nil {
 		return err
@@ -270,11 +279,6 @@ func (s *Service) prepareAndPlan(ctx context.Context, id string) error {
 	profile.Root = workspace
 	encoded, _ := json.MarshalIndent(profile, "", "  ")
 	if err = os.WriteFile(filepath.Join(s.campaignDir(id), "repository-profile.json"), encoded, 0o600); err != nil {
-		s.failPhase(ctx, phase, err)
-		return err
-	}
-	snapshot, err := os.ReadFile(s.configPath)
-	if err != nil {
 		s.failPhase(ctx, phase, err)
 		return err
 	}
@@ -427,13 +431,17 @@ func (s *Service) buildCheckReview(ctx context.Context, id string) error {
 type validator func(string) (any, error)
 
 func (s *Service) runRole(ctx context.Context, campaign store.Campaign, phase store.Phase, role string, data map[string]any, validate validator) (string, error) {
-	agent, ok := s.agent(role)
+	campaignConfig, err := s.campaignConfig(campaign)
+	if err != nil {
+		return "", err
+	}
+	agent, ok := agentForRole(campaignConfig, role)
 	if !ok {
 		return "", fmt.Errorf("agent %s not configured", role)
 	}
-	adapter, ok := s.harnesses.Get(s.config.Defaults.CodingAgent)
+	adapter, ok := s.harnesses.Get(campaignConfig.Defaults.CodingAgent)
 	if !ok {
-		return "", fmt.Errorf("harness %s unavailable", s.config.Defaults.CodingAgent)
+		return "", fmt.Errorf("harness %s unavailable", campaignConfig.Defaults.CodingAgent)
 	}
 	systemPrompt, userPrompt, err := s.renderPrompts(agent, data)
 	if err != nil {
@@ -442,8 +450,8 @@ func (s *Service) runRole(ctx context.Context, campaign store.Campaign, phase st
 	sessionID := campaign.ID + "-" + role
 	sessionDir := filepath.Join(s.campaignDir(campaign.ID), "sessions", role, "pi")
 	rawPath := filepath.Join(s.campaignDir(campaign.ID), "sessions", role, "raw-output.jsonl")
-	request := harness.Request{CWD: campaign.WorkspacePath, Prompt: userPrompt, SystemPrompt: systemPrompt, Model: agent.Model, Thinking: agent.Thinking, Tools: agent.Tools, SessionID: sessionID, SessionDirectory: sessionDir, RawOutputPath: rawPath, DeadlineMS: s.config.Runtime.AgentDeadlineMS}
-	for attempt := 0; attempt <= s.config.Runtime.JSONFixAttempts; attempt++ {
+	request := harness.Request{CWD: campaign.WorkspacePath, Prompt: userPrompt, SystemPrompt: systemPrompt, Model: agent.Model, Thinking: agent.Thinking, Tools: agent.Tools, SessionID: sessionID, SessionDirectory: sessionDir, RawOutputPath: rawPath, DeadlineMS: campaignConfig.Runtime.AgentDeadlineMS}
+	for attempt := 0; attempt <= campaignConfig.Runtime.JSONFixAttempts; attempt++ {
 		if attempt > 0 {
 			request.Prompt = "Your previous final response was invalid. Return only the required " + role + " JSON object with every required field."
 		}
@@ -451,7 +459,7 @@ func (s *Service) runRole(ctx context.Context, campaign store.Campaign, phase st
 		if runErr != nil {
 			return "", runErr
 		}
-		_ = s.db.SaveAgentSession(ctx, campaign.ID, role, s.config.Defaults.CodingAgent, result.Provider, result.Model, agent.Thinking, agent.Color, sessionID, sessionDir, result.ContextTokens, result.ContextWindow, result.Usage, result.Usage.Cost)
+		_ = s.db.SaveAgentSession(ctx, campaign.ID, role, campaignConfig.Defaults.CodingAgent, result.Provider, result.Model, agent.Thinking, agent.Color, sessionID, sessionDir, result.ContextTokens, result.ContextWindow, result.Usage, result.Usage.Cost)
 		_, validationErr := validate(result.Text)
 		valid := validationErr == nil
 		tail := result.Text
@@ -609,8 +617,22 @@ func (s *Service) trace(ctx context.Context, campaignID, phaseID, eventType, nam
 	return err
 }
 
-func (s *Service) agent(role string) (config.Agent, bool) {
-	for _, agent := range s.config.Agents {
+func (s *Service) campaignConfig(campaign store.Campaign) (config.Config, error) {
+	if campaign.ConfigSnapshot == "" {
+		return s.config, nil
+	}
+	configured, problems, err := config.Parse([]byte(campaign.ConfigSnapshot), filepath.Dir(s.configPath))
+	if err != nil {
+		return config.Config{}, err
+	}
+	if len(problems) > 0 {
+		return config.Config{}, fmt.Errorf("invalid campaign config: %s", strings.Join(problems, "; "))
+	}
+	return configured, nil
+}
+
+func agentForRole(configured config.Config, role string) (config.Agent, bool) {
+	for _, agent := range configured.Agents {
 		if agent.Name == role {
 			return agent, true
 		}
