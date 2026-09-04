@@ -24,6 +24,7 @@ type (
 		Costs                                                        Cost
 	}
 )
+
 type Result struct {
 	Text                         string
 	ExitCode                     int
