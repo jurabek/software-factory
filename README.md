@@ -16,7 +16,7 @@ Software Factory is a loopback-only Go service that coordinates one repository t
 go run main.go
 ```
 
-Open `http://127.0.0.1:8080`. `PORT` changes the port. `SOFTWARE_FACTORY_DIR` changes the default `~/.software-factory` state directory. `PI_PATH` selects Pi. The first run generates `config.yaml` and editable prompts without replacing existing files.
+Open `http://127.0.0.1:8080`. Interactive Swagger API documentation is available at `http://127.0.0.1:8080/docs`; its OpenAPI document is served at `/swagger.yaml`. `PORT` changes the port. `SOFTWARE_FACTORY_DIR` changes the default `~/.software-factory` state directory. `PI_PATH` selects Pi. The first run generates `config.yaml` and editable prompts without replacing existing files.
 
 The server binds only to loopback. Mutations require the random token obtained by the same-origin UI from `/api/v1/control`. Campaign workspaces, SQLite WAL state, JSONL traces, prompts, and Pi sessions remain under the factory directory until explicit deletion.
 
@@ -43,4 +43,5 @@ go test ./...
 go test -race ./...
 npm run typecheck
 npm run build
+npm run swagger:validate
 ```
