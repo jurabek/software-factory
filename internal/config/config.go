@@ -52,13 +52,17 @@ func Load(path string) (Config, []string, error) {
 	if err != nil {
 		return Config{}, nil, fmt.Errorf("read config: %w", err)
 	}
+	return Parse(data, filepath.Dir(path))
+}
+
+// Parse resolves and validates configuration data against its config directory.
+func Parse(data []byte, base string) (Config, []string, error) {
 	var raw Config
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return Config{}, nil, fmt.Errorf("parse config: %w", err)
 	}
 	resolved := resolve(raw)
-	errors := validate(resolved, filepath.Dir(path))
-	return resolved, errors, nil
+	return resolved, validate(resolved, base), nil
 }
 
 func resolve(c Config) Config {
