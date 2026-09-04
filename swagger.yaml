@@ -1,0 +1,774 @@
+swagger: "2.0"
+info:
+  title: Software Factory API
+  version: "1.0"
+  description: |
+    Loopback-only API for creating and controlling Software Factory campaigns.
+    Call GET /control, copy its token, then use Authorize to set the mutation token.
+basePath: /api/v1
+schemes:
+  - http
+consumes:
+  - application/json
+produces:
+  - application/json
+tags:
+  - name: System
+  - name: Campaigns
+securityDefinitions:
+  MutationToken:
+    type: apiKey
+    name: X-Software-Factory-Token
+    in: header
+paths:
+  /health:
+    get:
+      tags: [System]
+      operationId: getHealth
+      summary: Get service health
+      responses:
+        "200":
+          description: Current health and configuration errors
+          schema:
+            $ref: "#/definitions/Health"
+  /config:
+    get:
+      tags: [System]
+      operationId: getConfig
+      summary: Get resolved configuration
+      responses:
+        "200":
+          description: Resolved configuration and validation errors
+          schema:
+            $ref: "#/definitions/ConfigResponse"
+  /models:
+    get:
+      tags: [System]
+      operationId: getModels
+      summary: List available Pi models
+      responses:
+        "200":
+          description: Available models
+          schema:
+            $ref: "#/definitions/ModelsResponse"
+        "503":
+          $ref: "#/responses/ServiceUnavailable"
+  /control:
+    get:
+      tags: [System]
+      operationId: getControl
+      summary: Get the per-process mutation token
+      responses:
+        "200":
+          description: Control state and mutation token
+          schema:
+            $ref: "#/definitions/Control"
+  /campaigns:
+    get:
+      tags: [Campaigns]
+      operationId: listCampaigns
+      summary: List campaigns
+      responses:
+        "200":
+          description: Campaigns ordered newest first
+          schema:
+            type: array
+            items:
+              $ref: "#/definitions/Campaign"
+        "500":
+          $ref: "#/responses/InternalError"
+    post:
+      tags: [Campaigns]
+      operationId: createCampaign
+      summary: Create a campaign draft
+      security:
+        - MutationToken: []
+      parameters:
+        - in: body
+          name: campaign
+          required: true
+          schema:
+            $ref: "#/definitions/CreateCampaignRequest"
+      responses:
+        "201":
+          description: Campaign draft created
+          schema:
+            $ref: "#/definitions/Campaign"
+        "403":
+          $ref: "#/responses/Forbidden"
+        "422":
+          $ref: "#/responses/UnprocessableEntity"
+  /campaigns/{id}:
+    parameters:
+      - $ref: "#/parameters/CampaignID"
+    get:
+      tags: [Campaigns]
+      operationId: getCampaign
+      summary: Get a campaign
+      responses:
+        "200":
+          description: Campaign
+          schema:
+            $ref: "#/definitions/Campaign"
+        "404":
+          $ref: "#/responses/NotFound"
+        "500":
+          $ref: "#/responses/InternalError"
+    delete:
+      tags: [Campaigns]
+      operationId: deleteCampaign
+      summary: Delete an inactive campaign and its files
+      security:
+        - MutationToken: []
+      responses:
+        "200":
+          description: Campaign deleted
+          schema:
+            $ref: "#/definitions/DeletedResponse"
+        "403":
+          $ref: "#/responses/Forbidden"
+        "404":
+          $ref: "#/responses/NotFound"
+        "409":
+          $ref: "#/responses/Conflict"
+        "500":
+          $ref: "#/responses/InternalError"
+  /campaigns/{id}/start:
+    parameters:
+      - $ref: "#/parameters/CampaignID"
+    post:
+      tags: [Campaigns]
+      operationId: startCampaign
+      summary: Start repository preparation and planning
+      security:
+        - MutationToken: []
+      responses:
+        "202":
+          $ref: "#/responses/Accepted"
+        "403":
+          $ref: "#/responses/Forbidden"
+        "404":
+          $ref: "#/responses/NotFound"
+        "409":
+          $ref: "#/responses/Conflict"
+        "422":
+          $ref: "#/responses/UnprocessableEntity"
+  /campaigns/{id}/approve:
+    parameters:
+      - $ref: "#/parameters/CampaignID"
+    post:
+      tags: [Campaigns]
+      operationId: approveCampaign
+      summary: Approve the plan and continue the campaign
+      security:
+        - MutationToken: []
+      parameters:
+        - in: header
+          name: X-Software-Factory-Actor
+          type: string
+          required: false
+          default: local-user
+          description: Actor recorded with the approval
+      responses:
+        "202":
+          $ref: "#/responses/Accepted"
+        "403":
+          $ref: "#/responses/Forbidden"
+        "404":
+          $ref: "#/responses/NotFound"
+        "409":
+          $ref: "#/responses/Conflict"
+        "422":
+          $ref: "#/responses/UnprocessableEntity"
+  /campaigns/{id}/pause:
+    parameters:
+      - $ref: "#/parameters/CampaignID"
+    post:
+      tags: [Campaigns]
+      operationId: pauseCampaign
+      summary: Pause an active campaign
+      security:
+        - MutationToken: []
+      responses:
+        "202":
+          $ref: "#/responses/Accepted"
+        "403":
+          $ref: "#/responses/Forbidden"
+        "404":
+          $ref: "#/responses/NotFound"
+        "409":
+          $ref: "#/responses/Conflict"
+        "422":
+          $ref: "#/responses/UnprocessableEntity"
+  /campaigns/{id}/resume:
+    parameters:
+      - $ref: "#/parameters/CampaignID"
+    post:
+      tags: [Campaigns]
+      operationId: resumeCampaign
+      summary: Resume a paused or recoverable blocked campaign
+      security:
+        - MutationToken: []
+      responses:
+        "202":
+          $ref: "#/responses/Accepted"
+        "403":
+          $ref: "#/responses/Forbidden"
+        "404":
+          $ref: "#/responses/NotFound"
+        "409":
+          $ref: "#/responses/Conflict"
+        "422":
+          $ref: "#/responses/UnprocessableEntity"
+  /campaigns/{id}/abort:
+    parameters:
+      - $ref: "#/parameters/CampaignID"
+    post:
+      tags: [Campaigns]
+      operationId: abortCampaign
+      summary: Abort a campaign
+      security:
+        - MutationToken: []
+      responses:
+        "202":
+          $ref: "#/responses/Accepted"
+        "403":
+          $ref: "#/responses/Forbidden"
+        "404":
+          $ref: "#/responses/NotFound"
+        "409":
+          $ref: "#/responses/Conflict"
+        "422":
+          $ref: "#/responses/UnprocessableEntity"
+  /campaigns/{id}/phases:
+    parameters:
+      - $ref: "#/parameters/CampaignID"
+    get:
+      tags: [Campaigns]
+      operationId: listCampaignPhases
+      summary: List campaign phases
+      responses:
+        "200":
+          description: Campaign phases
+          schema:
+            type: array
+            items:
+              $ref: "#/definitions/Phase"
+        "404":
+          $ref: "#/responses/NotFound"
+        "500":
+          $ref: "#/responses/InternalError"
+  /campaigns/{id}/events:
+    parameters:
+      - $ref: "#/parameters/CampaignID"
+    get:
+      tags: [Campaigns]
+      operationId: listCampaignEvents
+      summary: List campaign events after a cursor
+      parameters:
+        - in: query
+          name: after
+          type: integer
+          format: int64
+          minimum: 0
+          default: 0
+        - in: query
+          name: limit
+          type: integer
+          minimum: 1
+          maximum: 1000
+          default: 250
+      responses:
+        "200":
+          description: Event page and next cursor
+          schema:
+            $ref: "#/definitions/EventsResponse"
+        "404":
+          $ref: "#/responses/NotFound"
+        "500":
+          $ref: "#/responses/InternalError"
+  /campaigns/{id}/events/stream:
+    parameters:
+      - $ref: "#/parameters/CampaignID"
+    get:
+      tags: [Campaigns]
+      operationId: streamCampaignEvents
+      summary: Stream campaign events using server-sent events
+      produces:
+        - text/event-stream
+      parameters:
+        - in: query
+          name: after
+          type: integer
+          format: int64
+          minimum: 0
+          default: 0
+        - in: header
+          name: Last-Event-ID
+          type: integer
+          format: int64
+          required: false
+      responses:
+        "200":
+          description: Server-sent event stream; each event uses the SQLite sequence as its id
+          schema:
+            type: string
+        "404":
+          description: Campaign not found
+          schema:
+            $ref: "#/definitions/APIError"
+        "500":
+          description: Streaming unavailable
+          schema:
+            $ref: "#/definitions/APIError"
+  /campaigns/{id}/results:
+    parameters:
+      - $ref: "#/parameters/CampaignID"
+    get:
+      tags: [Campaigns]
+      operationId: listCampaignResults
+      summary: List agent result envelopes
+      responses:
+        "200":
+          description: Agent result envelopes
+          schema:
+            type: array
+            items:
+              $ref: "#/definitions/Envelope"
+        "404":
+          $ref: "#/responses/NotFound"
+        "500":
+          $ref: "#/responses/InternalError"
+  /campaigns/{id}/checks:
+    parameters:
+      - $ref: "#/parameters/CampaignID"
+    get:
+      tags: [Campaigns]
+      operationId: listCampaignChecks
+      summary: List deterministic check results
+      responses:
+        "200":
+          description: Check results
+          schema:
+            type: array
+            items:
+              $ref: "#/definitions/Check"
+        "404":
+          $ref: "#/responses/NotFound"
+        "500":
+          $ref: "#/responses/InternalError"
+  /campaigns/{id}/diff:
+    parameters:
+      - $ref: "#/parameters/CampaignID"
+    get:
+      tags: [Campaigns]
+      operationId: getCampaignDiff
+      summary: Get changed files and the repository patch
+      responses:
+        "200":
+          description: Campaign workspace diff
+          schema:
+            $ref: "#/definitions/Diff"
+        "404":
+          $ref: "#/responses/NotFound"
+        "500":
+          $ref: "#/responses/InternalError"
+parameters:
+  CampaignID:
+    in: path
+    name: id
+    type: string
+    required: true
+    pattern: '^SF-[0-9]{8}-[a-f0-9]{8}$'
+    description: Campaign identifier
+responses:
+  Accepted:
+    description: Command accepted
+    schema:
+      $ref: "#/definitions/AcceptedResponse"
+  Forbidden:
+    description: Mutation token missing or invalid, or foreign origin rejected
+    schema:
+      $ref: "#/definitions/APIError"
+  NotFound:
+    description: Campaign not found
+    schema:
+      $ref: "#/definitions/APIError"
+  Conflict:
+    description: Campaign state does not allow the operation
+    schema:
+      $ref: "#/definitions/APIError"
+  UnprocessableEntity:
+    description: Invalid request, repository, or service configuration
+    schema:
+      $ref: "#/definitions/APIError"
+  ServiceUnavailable:
+    description: Pi model catalog unavailable
+    schema:
+      $ref: "#/definitions/APIError"
+  InternalError:
+    description: Internal server error
+    schema:
+      $ref: "#/definitions/APIError"
+definitions:
+  APIError:
+    type: object
+    required: [code, message]
+    properties:
+      code:
+        type: string
+      message:
+        type: string
+  Health:
+    type: object
+    required: [status, errors]
+    properties:
+      status:
+        type: string
+        enum: [ok, degraded]
+      errors:
+        type: array
+        items:
+          type: string
+  Control:
+    type: object
+    required: [enabled, token]
+    properties:
+      enabled:
+        type: boolean
+      token:
+        type: string
+        description: Per-process token required by mutation operations
+  Model:
+    type: object
+    required: [provider, id]
+    properties:
+      provider:
+        type: string
+      id:
+        type: string
+      context_window:
+        type: integer
+        minimum: 0
+  ModelsResponse:
+    type: object
+    required: [models]
+    properties:
+      models:
+        type: array
+        items:
+          $ref: "#/definitions/Model"
+  ConfigResponse:
+    type: object
+    required: [config, errors]
+    properties:
+      config:
+        $ref: "#/definitions/Config"
+      errors:
+        type: array
+        items:
+          type: string
+  Config:
+    type: object
+    required: [defaults, observability, runtime, agents]
+    properties:
+      defaults:
+        $ref: "#/definitions/Defaults"
+      observability:
+        $ref: "#/definitions/Observability"
+      runtime:
+        $ref: "#/definitions/Runtime"
+      agents:
+        type: array
+        items:
+          $ref: "#/definitions/Agent"
+  Defaults:
+    type: object
+    required: [coding_agent, model, thinking, tools]
+    properties:
+      coding_agent:
+        type: string
+        enum: [pi]
+      model:
+        type: string
+      thinking:
+        $ref: "#/definitions/Thinking"
+      tools:
+        type: array
+        items:
+          type: string
+  Observability:
+    type: object
+    required: [poll_ms]
+    properties:
+      poll_ms:
+        type: integer
+        minimum: 1
+  Runtime:
+    type: object
+    required: [agent_deadline_ms, empty_turn_retries, json_fix_attempts]
+    properties:
+      agent_deadline_ms:
+        type: integer
+        minimum: 1
+      empty_turn_retries:
+        type: integer
+        minimum: 0
+      json_fix_attempts:
+        type: integer
+        minimum: 0
+  Agent:
+    type: object
+    required: [name, model, thinking, color, purpose, prompt_engineering, tools]
+    properties:
+      name:
+        type: string
+        enum: [planner, builder, reviewer]
+      model:
+        type: string
+      thinking:
+        $ref: "#/definitions/Thinking"
+      color:
+        type: string
+      purpose:
+        type: string
+      prompt_engineering:
+        $ref: "#/definitions/PromptEngineering"
+      tools:
+        type: array
+        items:
+          type: string
+  Thinking:
+    type: string
+    enum: [off, minimal, low, medium, high, xhigh, max]
+  PromptEngineering:
+    type: object
+    required: [system, user]
+    properties:
+      system:
+        type: string
+      user:
+        type: string
+  Repository:
+    type: object
+    required: [type]
+    properties:
+      type:
+        type: string
+        enum: [local, github]
+      path:
+        type: string
+        description: Required absolute path when type is local
+      repo:
+        type: string
+        pattern: '^[^/]+/[^/]+$'
+        description: Required owner/repository when type is github
+  CreateCampaignRequest:
+    type: object
+    required: [request, repository]
+    properties:
+      request:
+        type: string
+        minLength: 1
+      repository:
+        $ref: "#/definitions/Repository"
+  Campaign:
+    type: object
+    required: [id, request, repository_type, repository_value, state, total_cost, created_at]
+    properties:
+      id:
+        type: string
+      request:
+        type: string
+      repository_type:
+        type: string
+        enum: [local, github]
+      repository_value:
+        type: string
+      submitted_path:
+        type: string
+      canonical_path:
+        type: string
+      workspace_path:
+        type: string
+      base_sha:
+        type: string
+      state:
+        type: string
+        enum: [draft, preparing, planning, awaiting_plan_approval, building, checking, reviewing, completed, blocked, paused, aborted]
+      previous_state:
+        type: string
+      active_phase:
+        type: string
+      error:
+        type: string
+      plan_digest:
+        type: string
+      approval_actor:
+        type: string
+      approval_at:
+        type: string
+        format: date-time
+      total_cost:
+        type: number
+        format: double
+      created_at:
+        type: string
+        format: date-time
+      started_at:
+        type: string
+        format: date-time
+      ended_at:
+        type: string
+        format: date-time
+  Phase:
+    type: object
+    required: [id, campaign_id, name, kind, owner, description, status, sequence, attempt, retries, started_at]
+    properties:
+      id:
+        type: string
+      campaign_id:
+        type: string
+      name:
+        type: string
+      kind:
+        type: string
+      owner:
+        type: string
+      description:
+        type: string
+      status:
+        type: string
+      error:
+        type: string
+      sequence:
+        type: integer
+      attempt:
+        type: integer
+      retries:
+        type: integer
+      started_at:
+        type: string
+        format: date-time
+      ended_at:
+        type: string
+        format: date-time
+  Event:
+    type: object
+    required: [sequence, id, campaign_id, type, payload, started_at]
+    properties:
+      sequence:
+        type: integer
+        format: int64
+      id:
+        type: string
+      campaign_id:
+        type: string
+      phase_id:
+        type: string
+      parent_event_id:
+        type: string
+      type:
+        type: string
+      name:
+        type: string
+      payload:
+        type: object
+      token_count:
+        type: integer
+      started_at:
+        type: string
+        format: date-time
+      ended_at:
+        type: string
+        format: date-time
+  EventsResponse:
+    type: object
+    required: [events, cursor]
+    properties:
+      events:
+        type: array
+        items:
+          $ref: "#/definitions/Event"
+      cursor:
+        type: integer
+        format: int64
+  Envelope:
+    type: object
+    required: [id, campaign_id, phase_id, agent_role, output_type, payload, created_at, valid, attempt]
+    properties:
+      id:
+        type: string
+      campaign_id:
+        type: string
+      phase_id:
+        type: string
+      agent_role:
+        type: string
+        enum: [planner, builder, reviewer]
+      output_type:
+        type: string
+      payload:
+        type: string
+        description: JSON result envelope encoded as a string
+      created_at:
+        type: string
+        format: date-time
+      valid:
+        type: boolean
+      attempt:
+        type: integer
+  Check:
+    type: object
+    required: [id, campaign_id, phase_id, name, command, status, output, artifact_path, attempt, exit_code, duration_ms, started_at, ended_at]
+    properties:
+      id:
+        type: string
+      campaign_id:
+        type: string
+      phase_id:
+        type: string
+      name:
+        type: string
+      command:
+        type: string
+      status:
+        type: string
+      output:
+        type: string
+      artifact_path:
+        type: string
+      attempt:
+        type: integer
+      exit_code:
+        type: integer
+      duration_ms:
+        type: integer
+      started_at:
+        type: string
+        format: date-time
+      ended_at:
+        type: string
+        format: date-time
+  Diff:
+    type: object
+    required: [files, patch]
+    properties:
+      files:
+        type: array
+        items:
+          type: string
+      patch:
+        type: string
+  AcceptedResponse:
+    type: object
+    required: [accepted]
+    properties:
+      accepted:
+        type: boolean
+  DeletedResponse:
+    type: object
+    required: [deleted]
+    properties:
+      deleted:
+        type: boolean
