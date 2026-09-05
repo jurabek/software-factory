@@ -11,10 +11,10 @@ runtime:
   json_fix_attempts: 2
 agents:
   - name: planner
-    model: cursor/gpt-5.6-sol
+    model: codex-gpt-5.6-sol
     thinking: high
     color: "#a78bfa"
-    purpose: Turn a request into a plan the builder can implement without asking questions.
+    purpose: Turn a request into a plan, identifying unresolved user decisions in questions before approval.
     prompt_engineering: {system: prompts/planner/system.md, user: prompts/planner/user.md}
   - name: builder
     color: "#22d3ee"
