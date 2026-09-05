@@ -44,16 +44,33 @@
   .task-composer--create h1 { margin: 0 0 3.5rem; text-align: center; font-size: clamp(1.7rem, 3vw, 2.5rem); font-weight: 500; }
   .composer-prompt { display: block; border-left: 2px solid var(--ui-accent); background: var(--ui-surface-raised); }
   .composer-prompt textarea { width: 100%; min-height: 11rem; padding: 1.5rem 2rem; resize: vertical; border: 0; color: var(--ui-text); background: transparent; font-size: 1rem; outline: none; }
-  .repository-inputs { padding: .75rem 1rem; border-top: 1px solid var(--ui-border); background: var(--ui-surface-raised); }
-  .agent-inputs { display: grid; grid-template-columns: 10rem minmax(0, 1fr) 10rem; gap: .45rem; padding: .75rem 1rem; border-top: 1px solid var(--ui-border); background: var(--ui-surface-raised); }
-  .agent-inputs label { display: flex; flex-direction: column; gap: .3rem; color: var(--ui-text-subtle); text-transform: uppercase; letter-spacing: .08em; font-size: .66rem; }
-  .agent-inputs select, .agent-inputs input { min-width: 0; padding: .42rem .55rem; border: 1px solid var(--ui-border); color: var(--ui-text); background: var(--ui-canvas); text-transform: none; letter-spacing: normal; font-size: .78rem; }
   .agent-inputs__error { grid-column: 1 / -1; color: var(--ui-danger); text-transform: none; letter-spacing: normal; }
   .repository-input { display: grid; grid-template-columns: 1.6rem 9rem 6rem minmax(12rem, 1fr) 1.8rem; gap: .45rem; margin-bottom: .45rem; }
   .repository-input input, .repository-input select { min-width: 0; padding: .42rem .55rem; border: 1px solid var(--ui-border); background: var(--ui-canvas); }
   .primary-selector { border: 0; color: var(--ui-warning); background: transparent; }
-  .composer-footer { min-height: 3.2rem; display: flex; gap: 1rem; align-items: center; padding: .55rem; border-top: 1px solid var(--ui-border); background: var(--ui-surface-raised); color: var(--ui-text-subtle); font-size: .72rem; }
+  .composer-footer { position: relative; min-height: 3.2rem; display: flex; gap: .7rem; align-items: center; padding: .45rem .55rem; border-top: 1px solid var(--ui-border); background: var(--ui-surface-raised); color: var(--ui-text-subtle); font-size: .72rem; }
   .composer-footer .button { margin-left: auto; }
+  .compact-control { position: relative; min-width: 0; }
+  .compact-control summary { min-height: 2.25rem; display: flex; gap: .55rem; align-items: center; padding: .45rem .6rem; border: 1px solid transparent; color: var(--ui-text-muted); cursor: pointer; list-style: none; }
+  .compact-control summary::-webkit-details-marker { display: none; }
+  .compact-control summary:hover, .compact-control[open] summary { border-color: var(--ui-border-strong); color: var(--ui-text); background: var(--ui-surface-selected); }
+  .compact-control summary strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+  .repository-control { max-width: min(30rem, 40%); }
+  .repository-control summary strong { direction: rtl; text-align: left; }
+  .agent-control { max-width: min(27rem, 38%); margin-left: auto; }
+  .agent-control summary { color: var(--ui-accent); letter-spacing: .04em; }
+  .compact-popover { position: absolute; z-index: 20; bottom: calc(100% + .55rem); border: 1px solid var(--ui-border-strong); background: var(--ui-surface-overlay); box-shadow: var(--ui-shadow); }
+  .compact-popover > header, .compact-popover h2 { margin: 0; padding: .55rem .75rem; color: var(--ui-text-subtle); text-transform: uppercase; letter-spacing: .09em; font-size: .66rem; font-weight: 500; }
+  .directory-popover { left: 0; width: min(52rem, calc(100vw - var(--ui-task-rail) - 7rem)); padding-bottom: .45rem; }
+  .directory-popover .repository-input { padding: 0 .55rem; }
+  .directory-popover h2 { border-top: 1px solid var(--ui-border); }
+  .directory-popover > .text-button { margin-left: .75rem; }
+  .recent-directory { width: 100%; display: flex; gap: .65rem; align-items: center; padding: .65rem 1rem; border: 0; border-left: 2px solid transparent; color: var(--ui-text-muted); background: transparent; text-align: left; }
+  .recent-directory:hover { border-left-color: var(--ui-accent); color: var(--ui-text); background: var(--ui-surface-selected); }
+  .agent-popover { right: 0; width: min(42rem, calc(100vw - var(--ui-task-rail) - 7rem)); display: grid; grid-template-columns: 9rem minmax(14rem, 1fr) 9rem; gap: .5rem; padding: .75rem; }
+  .agent-popover label { min-width: 0; display: flex; flex-direction: column; gap: .35rem; color: var(--ui-text-subtle); text-transform: uppercase; letter-spacing: .08em; font-size: .66rem; }
+  .agent-popover select, .agent-popover input { min-width: 0; height: 2.35rem; padding: .42rem .55rem; border: 1px solid var(--ui-border); color: var(--ui-text); background: var(--ui-canvas); text-transform: none; letter-spacing: normal; font-size: .78rem; }
+  .repository-count { white-space: nowrap; }
   .task-header { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 1rem; margin: 1rem; padding: 1.3rem; border: 1px solid var(--ui-border); background: var(--ui-surface-raised); }
   .task-header__title p { margin: 0 0 .65rem; color: var(--ui-text-subtle); text-transform: uppercase; letter-spacing: .09em; font-size: .7rem; }
   .task-header__title p span { margin-left: .5rem; color: var(--ui-text-muted); }
@@ -74,6 +91,8 @@
   @media (max-width: 76rem) {
     :root { --ui-task-rail: 18rem; --ui-context-rail: 16rem; }
     .task-facts { grid-template-columns: 1fr 1fr; }
+    .repository-count { display: none; }
+    .repository-control, .agent-control { max-width: 32%; }
   }
   @media (max-width: 62rem) {
     .task-shell[data-context-rail="open"] { grid-template-columns: var(--ui-task-rail) minmax(30rem, 1fr); }
