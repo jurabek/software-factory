@@ -1,5 +1,6 @@
 export interface Task {
   id: string;
+  parent_task_id?: string;
   request: string;
   workspace_path: string;
   selected_branch_id?: string;
@@ -70,6 +71,9 @@ export interface CreateTaskInput {
   coding_agent?: string;
   model?: string;
   thinking?: string;
+}
+export interface CreateSessionInput {
+  request: string;
 }
 export const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type ThinkingLevel = (typeof thinkingLevels)[number];

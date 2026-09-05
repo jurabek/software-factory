@@ -7,7 +7,7 @@ import ContextComposer from "./components/ContextComposer.vue";
 import CreateTaskForm from "./components/CreateTaskForm.vue";
 import SessionLog from "./components/SessionLog.vue";
 import TaskRail from "./components/TaskRail.vue";
-import type { ArtifactView, Branch, Check, CreateTaskInput, Diff, Envelope, Health, Phase, Task, TraceEvent } from "./types";
+import type { ArtifactView, Branch, Check, CreateSessionInput, CreateTaskInput, Diff, Envelope, Health, Phase, Task, TraceEvent } from "./types";
 
 const eventMemoryLimit = 1_000;
 const refreshIntervalMilliseconds = 5_000;
@@ -15,6 +15,10 @@ const tasks = ref<Task[]>([]);
 const selectedId = ref(routeTaskID());
 const creating = ref(location.hash === "#/new" || !selectedId.value);
 const selected = computed(() => tasks.value.find((task) => task.id === selectedId.value));
+const selectedRoot = computed(() => {
+  if (!selected.value?.parent_task_id) return selected.value;
+  return tasks.value.find((task) => task.id === selected.value?.parent_task_id);
+});
 const health = ref<Health>({ status: "loading", errors: [] });
 const phases = ref<Phase[]>([]);
 const branches = ref<Branch[]>([]);
@@ -27,6 +31,8 @@ const selectedArtifact = ref<ArtifactView>();
 const selectedQuote = ref("");
 const composer = ref<{ setText: (text: string) => void }>();
 const pendingMessage = ref("");
+const creatingSession = ref(false);
+const sessionRequest = ref("");
 
 const selectedBranch = computed(() => branches.value.find((branch) => branch.id === selected.value?.selected_branch_id) ?? branches.value[0]);
 const expectedHead = computed(() => selectedBranch.value?.head_attempt_id ?? "");
@@ -56,13 +62,24 @@ let stream: EventSource | undefined;
 const visibleEvents = computed(() => selectedPhase.value ? events.value.filter((event) => event.phase_id === selectedPhase.value) : events.value);
 
 function routeTaskID(): string {
+  const sessionMatch = location.hash.match(/^#\/tasks\/[^/]+\/sessions\/([^/]+)/);
+  if (sessionMatch) return decodeURIComponent(sessionMatch[1]);
   const match = location.hash.match(/^#\/tasks\/([^/]+)/);
   return match ? decodeURIComponent(match[1]) : "";
 }
 
-function openTask(id: string) { location.hash = `#/tasks/${encodeURIComponent(id)}`; }
+function openTask(id: string) {
+  const task = tasks.value.find((candidate) => candidate.id === id);
+  const rootID = task?.parent_task_id || id;
+  location.hash = `#/tasks/${encodeURIComponent(rootID)}/sessions/${encodeURIComponent(id)}`;
+}
 function openCreate() { location.hash = "#/new"; }
-function route() { selectedId.value = routeTaskID(); creating.value = location.hash === "#/new" || !selectedId.value; }
+function route() {
+  selectedId.value = routeTaskID();
+  creating.value = location.hash === "#/new" || !selectedId.value;
+  creatingSession.value = false;
+  sessionRequest.value = "";
+}
 
 async function refreshOverview() {
   try {
@@ -138,6 +155,21 @@ async function createTask(value: CreateTaskInput) {
   finally { busy.value = false; }
 }
 
+async function createSession() {
+  if (!selectedRoot.value) return;
+  const value: CreateSessionInput = { request: sessionRequest.value.trim() };
+  if (!value.request) return;
+  busy.value = true;
+  try {
+    const session = await api.createSession(selectedRoot.value.id, value);
+    sessionRequest.value = "";
+    creatingSession.value = false;
+    await refreshOverview();
+    openTask(session.id);
+  } catch (cause) { error.value = errorMessage(cause); }
+  finally { busy.value = false; }
+}
+
 async function command(name: string) {
   if (!selected.value) return;
   busy.value = true;
@@ -180,8 +212,14 @@ async function composerSend(value: { message: string; action: string }) {
 
 async function removeTask() {
   if (!selected.value) return;
+  const rootID = selected.value.parent_task_id;
   busy.value = true;
-  try { await api.remove(selected.value.id); await refreshOverview(); openCreate(); }
+  try {
+    await api.remove(selected.value.id);
+    await refreshOverview();
+    if (rootID) openTask(rootID);
+    else openCreate();
+  }
   catch (cause) { error.value = errorMessage(cause); }
   finally { busy.value = false; }
 }
@@ -204,11 +242,17 @@ onUnmounted(() => { window.removeEventListener("hashchange", route); clearInterv
     <TaskRail :tasks="tasks" :selected-id="selectedId" @select="openTask" @create="openCreate" />
     <CreateTaskForm v-if="creating || !selected" :disabled="busy || health.status !== 'ok'" @submit="createTask" />
     <main v-else class="task-workspace">
-      <header class="workspace-breadcrumb"><button type="button" @click="openCreate">Tasks</button><b>›</b><strong>{{ selected.request }}</strong><span class="health-state" :data-state="health.status">● {{ health.status }}</span></header>
+      <header class="workspace-breadcrumb"><button type="button" @click="openCreate">Tasks</button><b>›</b><strong>{{ selectedRoot?.request }}</strong><b>›</b><strong>{{ selected.request }}</strong><span class="health-state" :data-state="health.status">● {{ health.status }}</span></header>
+      <form v-if="creatingSession" class="session-creator" @submit.prevent="createSession">
+        <label for="session-request">New session</label>
+        <textarea id="session-request" v-model="sessionRequest" autofocus required placeholder="What should this session do?" />
+        <div><button class="text-button" type="button" @click="creatingSession = false; sessionRequest = ''">Cancel</button><button class="button button--accent" type="submit" :disabled="busy || !sessionRequest.trim()">Create session</button></div>
+      </form>
       <section class="task-header">
-        <div class="task-header__title"><p>Task <span>{{ selected.id }}</span></p><h1>{{ selected.request }}</h1></div>
+        <div class="task-header__title"><p>Session <span>{{ selected.id }}</span></p><h1>{{ selected.request }}</h1></div>
         <div class="task-header__actions">
           <span class="state-badge" :data-state="selected.state">{{ selected.state.replaceAll('_', ' ') }}</span>
+          <button class="button button--accent" type="button" :disabled="busy || health.status !== 'ok'" @click="creatingSession = !creatingSession">New session</button>
           <button v-if="['preparing','planning','building','checking','reviewing'].includes(selected.state)" class="button" type="button" @click="command('pause')">Pause</button>
           <button v-if="!['completed','aborted'].includes(selected.state)" class="button" type="button" @click="command('abort')">Abort</button>
           <button v-else class="button" type="button" @click="removeTask">Delete</button>

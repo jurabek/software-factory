@@ -1,4 +1,4 @@
-import type { Anchor, Branch, Task, Check, ConfigResponse, Control, CreateTaskInput, Diff, Envelope, HarnessesResponse, Health, InterventionResult, ModelsResponse, Phase, ServerArtifact, TraceEvent } from "./types";
+import type { Anchor, Branch, Task, Check, ConfigResponse, Control, CreateSessionInput, CreateTaskInput, Diff, Envelope, HarnessesResponse, Health, InterventionResult, ModelsResponse, Phase, ServerArtifact, TraceEvent } from "./types";
 
 type EventQuery = { after?: number; limit?: number; tail?: number };
 
@@ -23,6 +23,8 @@ export const api = {
   tasks: () => request<Task[]>("/tasks"),
   task: (id: string) => request<Task>(`/tasks/${encodeURIComponent(id)}`),
   create: (body: CreateTaskInput) => request<Task>("/tasks", { method: "POST", body: JSON.stringify(body) }),
+  sessions: (id: string) => request<Task[]>(`/tasks/${encodeURIComponent(id)}/sessions`),
+  createSession: (id: string, body: CreateSessionInput) => request<Task>(`/tasks/${encodeURIComponent(id)}/sessions`, { method: "POST", body: JSON.stringify(body) }),
   command: (id: string, command: string) => request<{ accepted: boolean }>(`/tasks/${encodeURIComponent(id)}/${command}`, { method: "POST" }),
   feedback: (id: string, feedback: string, currentPlanDigest?: string) => request<{ accepted: boolean }>(`/tasks/${encodeURIComponent(id)}/feedback`, { method: "POST", body: JSON.stringify({ feedback, ...(currentPlanDigest ? { current_plan_digest: currentPlanDigest } : {}) }) }),
   intervene: (id: string, body: { target: { event_id?: string; artifact_id?: string; attempt_id?: string; anchor?: Anchor }; intent: string; message: string; expected_branch_head?: string; idempotency_key: string }) => request<InterventionResult>(`/tasks/${encodeURIComponent(id)}/interventions`, { method: "POST", body: JSON.stringify(body) }),

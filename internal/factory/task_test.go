@@ -2,6 +2,7 @@ package factory
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -60,6 +61,106 @@ func TestCreateTaskRequiresOnePrimaryRepository(t *testing.T) {
 	_, err = service.Create(context.Background(), CreateRequest{Request: "change", Repositories: []Repository{{Name: "one", Type: "github", Repo: "owner/one", Primary: true}, {Name: "two", Type: "github", Repo: "owner/two", Primary: true}}})
 	if err == nil {
 		t.Fatal("expected primary repository validation error")
+	}
+}
+
+func TestCreateSessionInheritsTaskConfiguration(t *testing.T) {
+	root := t.TempDir()
+	db, err := store.Open(filepath.Join(root, "factory.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	service := NewService(root, db, config.Config{}, "", nil, nil)
+	task, err := service.Create(context.Background(), CreateRequest{
+		Request:      "Add task sessions",
+		Repositories: []Repository{{Name: "app", Type: "github", Repo: "owner/app", Primary: true}},
+		CodingAgent:  "pi",
+		Model:        "provider/model",
+		Thinking:     "high",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	session, err := service.CreateSession(context.Background(), task.ID, CreateSessionRequest{Request: "Review the API"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.ParentTaskID != task.ID {
+		t.Fatalf("parent task = %q, want %q", session.ParentTaskID, task.ID)
+	}
+	if session.Request != "Review the API" || session.State != string(Draft) {
+		t.Fatalf("session = %#v", session)
+	}
+	if session.CodingAgent != task.CodingAgent || session.Model != task.Model || session.Thinking != task.Thinking {
+		t.Fatalf("session agent configuration = %#v, task = %#v", session, task)
+	}
+	if len(session.Repositories) != 1 || session.Repositories[0].SourceValue != "owner/app" || session.Repositories[0].TaskID != session.ID {
+		t.Fatalf("session repositories = %#v", session.Repositories)
+	}
+
+	sessions, err := db.TaskSessions(context.Background(), task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 2 || sessions[0].ID != task.ID || sessions[1].ID != session.ID {
+		t.Fatalf("sessions = %#v", sessions)
+	}
+}
+
+func TestCreateSessionUsesRootForNestedSessionRequest(t *testing.T) {
+	root := t.TempDir()
+	db, err := store.Open(filepath.Join(root, "factory.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	service := NewService(root, db, config.Config{}, "", nil, nil)
+	task, err := service.Create(context.Background(), CreateRequest{Request: "Task", Repositories: []Repository{{Type: "github", Repo: "owner/app"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := service.CreateSession(context.Background(), task.ID, CreateSessionRequest{Request: "First session"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.CreateSession(context.Background(), first.ID, CreateSessionRequest{Request: "Second session"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.ParentTaskID != task.ID {
+		t.Fatalf("parent task = %q, want root %q", second.ParentTaskID, task.ID)
+	}
+}
+
+func TestDeleteRootTaskDeletesAllSessionWorkspaces(t *testing.T) {
+	root := t.TempDir()
+	db, err := store.Open(filepath.Join(root, "factory.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	service := NewService(root, db, config.Config{}, "", nil, nil)
+	task, err := service.Create(context.Background(), CreateRequest{Request: "Task", Repositories: []Repository{{Type: "github", Repo: "owner/app"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := service.CreateSession(context.Background(), task.ID, CreateSessionRequest{Request: "Session"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err = service.Delete(context.Background(), task.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, workspace := range []string{task.WorkspacePath, session.WorkspacePath} {
+		if _, statErr := os.Stat(workspace); !os.IsNotExist(statErr) {
+			t.Fatalf("workspace %q still exists: %v", workspace, statErr)
+		}
+	}
+	if _, err = db.Task(context.Background(), session.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("child session lookup error = %v, want not found", err)
 	}
 }
 
