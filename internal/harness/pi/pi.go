@@ -58,9 +58,6 @@ func (h Harness) Run(parent context.Context, request harness.Request, sink harne
 	}
 	provider, model := splitModel(request.Model)
 	args := []string{"-p", "--mode", "json", "--provider", provider, "--model", model, "--thinking", request.Thinking, "--session-id", request.SessionID, "--session-dir", request.SessionDirectory, "--system-prompt", request.SystemPrompt, "--approve"}
-	if len(request.Tools) > 0 {
-		args = append(args, "--tools", strings.Join(request.Tools, ","))
-	}
 	args = append(args, request.Prompt)
 
 	cmd := exec.Command(h.Path, args...)

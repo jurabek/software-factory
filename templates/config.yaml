@@ -1,8 +1,7 @@
 defaults:
   coding_agent: pi
-  model: cursor/gpt-5.6-luna
+  model: codex/gpt-5.6-luna
   thinking: medium
-  tools: [read, grep, find, ls]
 observability:
   poll_ms: 500
 runtime:
@@ -11,7 +10,6 @@ runtime:
   json_fix_attempts: 2
 agents:
   - name: planner
-    model: codex-gpt-5.6-sol
     thinking: high
     color: "#a78bfa"
     purpose: Turn a request into a plan, identifying unresolved user decisions in questions before approval.
@@ -20,7 +18,6 @@ agents:
     color: "#22d3ee"
     purpose: Implement the approved plan exactly and report every changed file.
     prompt_engineering: {system: prompts/builder/system.md, user: prompts/builder/user.md}
-    tools: [read, grep, find, ls, edit, write]
   - name: reviewer
     thinking: low
     color: "#fb7185"
