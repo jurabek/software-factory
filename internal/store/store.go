@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -27,6 +28,7 @@ create table if not exists envelopes (id text primary key, campaign_id text not 
 create table if not exists checks (id text not null, campaign_id text not null references campaigns(id) on delete cascade, phase_id text, name text not null, command text not null, attempt integer not null, status text not null, exit_code integer, output text, artifact_path text, duration_ms integer, started_at text, ended_at text, primary key (campaign_id, id, attempt));
 create table if not exists processes (id integer primary key autoincrement, campaign_id text not null references campaigns(id) on delete cascade, phase_id text, kind text not null, name text not null, pid integer not null, display_command text not null, status text not null, exit_code integer, started_at text not null, ended_at text);
 create table if not exists agent_sessions (campaign_id text not null references campaigns(id) on delete cascade, role text not null, harness text not null, provider text, model text, thinking text, color text, pi_session_id text not null, session_directory text not null, context_tokens integer, context_window integer, usage_json text, cost real, created_at text not null, last_used_at text not null, primary key(campaign_id, role));
+create table if not exists feedback (id text primary key, campaign_id text not null references campaigns(id) on delete cascade, actor text not null, plan_digest text not null, text text not null, created_at text not null);
 create index if not exists events_campaign_cursor on events(campaign_id, sequence);
 create index if not exists phases_campaign_sequence on phases(campaign_id, sequence);
 `
@@ -119,6 +121,15 @@ type Check struct {
 	DurationMS   int    `json:"duration_ms"`
 	StartedAt    string `json:"started_at"`
 	EndedAt      string `json:"ended_at"`
+}
+
+type Feedback struct {
+	ID         string `json:"id"`
+	CampaignID string `json:"campaign_id"`
+	Actor      string `json:"actor"`
+	PlanDigest string `json:"plan_digest"`
+	Text       string `json:"text"`
+	CreatedAt  string `json:"created_at"`
 }
 
 type Envelope struct {
@@ -251,6 +262,10 @@ func (db *DB) SaveAgentSession(ctx context.Context, campaignID, role, harnessNam
 
 func (db *DB) SaveEnvelope(ctx context.Context, id, campaignID, phaseID, role, outputType, payload string, valid bool, attempt int) error {
 	_, err := db.ExecContext(ctx, `insert into envelopes(id,campaign_id,phase_id,agent_role,output_type,payload_json,valid,attempt,created_at) values(?,?,?,?,?,?,?,?,?)`, id, campaignID, phaseID, role, outputType, payload, valid, attempt, now())
+	if err == nil && valid && role == "planner" {
+		digest := fmt.Sprintf("%x", sha256.Sum256([]byte(payload)))
+		_, err = db.ExecContext(ctx, `update campaigns set plan_digest=?,approval_actor=null,approval_at=null where id=?`, digest, campaignID)
+	}
 	return wrap("save envelope", err)
 }
 
@@ -356,14 +371,33 @@ func AppendEvent(ctx context.Context, db *sql.DB, campaignDir string, event Even
 }
 
 func (db *DB) Events(ctx context.Context, campaignID string, after int64, limit int) ([]Event, error) {
-	if limit <= 0 || limit > 1000 {
-		limit = 250
-	}
+	limit = eventLimit(limit)
 	rows, err := db.QueryContext(ctx, `select sequence,id,campaign_id,coalesce(phase_id,''),coalesce(parent_event_id,''),type,coalesce(name,''),payload_json,token_count,started_at,ended_at from events where campaign_id=? and sequence>? order by sequence limit ?`, campaignID, after, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+	return scanEvents(rows)
+}
+
+func (db *DB) RecentEvents(ctx context.Context, campaignID string, limit int) ([]Event, error) {
+	limit = eventLimit(limit)
+	rows, err := db.QueryContext(ctx, `select sequence,id,campaign_id,phase_id,parent_event_id,type,name,payload_json,token_count,started_at,ended_at from (select sequence,id,campaign_id,coalesce(phase_id,'') as phase_id,coalesce(parent_event_id,'') as parent_event_id,type,coalesce(name,'') as name,payload_json,token_count,started_at,ended_at from events where campaign_id=? order by sequence desc limit ?) order by sequence`, campaignID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanEvents(rows)
+}
+
+func eventLimit(limit int) int {
+	if limit <= 0 || limit > 1000 {
+		return 250
+	}
+	return limit
+}
+
+func scanEvents(rows *sql.Rows) ([]Event, error) {
 	values := make([]Event, 0)
 	for rows.Next() {
 		var event Event
@@ -372,13 +406,37 @@ func (db *DB) Events(ctx context.Context, campaignID string, after int64, limit 
 		if err := rows.Scan(&event.Sequence, &event.ID, &event.CampaignID, &event.PhaseID, &event.ParentEventID, &event.Type, &event.Name, &payload, &event.TokenCount, &started, &ended); err != nil {
 			return nil, err
 		}
-		_ = json.Unmarshal([]byte(payload), &event.Payload)
+		if err := json.Unmarshal([]byte(payload), &event.Payload); err != nil {
+			return nil, fmt.Errorf("decode event payload: %w", err)
+		}
 		event.StartedAt, _ = time.Parse(time.RFC3339Nano, started)
 		if ended.Valid {
 			value, _ := time.Parse(time.RFC3339Nano, ended.String)
 			event.EndedAt = &value
 		}
 		values = append(values, event)
+	}
+	return values, rows.Err()
+}
+
+func (db *DB) SaveFeedback(ctx context.Context, feedback Feedback) error {
+	_, err := db.ExecContext(ctx, `insert into feedback(id,campaign_id,actor,plan_digest,text,created_at) values(?,?,?,?,?,?)`, feedback.ID, feedback.CampaignID, feedback.Actor, feedback.PlanDigest, feedback.Text, feedback.CreatedAt)
+	return wrap("save feedback", err)
+}
+
+func (db *DB) Feedback(ctx context.Context, campaignID string) ([]Feedback, error) {
+	rows, err := db.QueryContext(ctx, `select id,campaign_id,actor,plan_digest,text,created_at from feedback where campaign_id=? order by created_at`, campaignID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	values := make([]Feedback, 0)
+	for rows.Next() {
+		var value Feedback
+		if err := rows.Scan(&value.ID, &value.CampaignID, &value.Actor, &value.PlanDigest, &value.Text, &value.CreatedAt); err != nil {
+			return nil, err
+		}
+		values = append(values, value)
 	}
 	return values, rows.Err()
 }
