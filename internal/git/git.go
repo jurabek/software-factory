@@ -104,9 +104,6 @@ func profile(workspace, sourceType, source, sha string) (Profile, error) {
 	if err != nil {
 		return Profile{}, err
 	}
-	if len(checks) == 0 {
-		return Profile{}, fmt.Errorf("no deterministic checks declared or detected")
-	}
 	instructions := findAgentInstructions(workspace)
 	return Profile{Root: workspace, SourceType: sourceType, Source: source, BaseSHA: sha, Checks: checks, Generated: generated, Protected: protected, Instructions: instructions}, nil
 }

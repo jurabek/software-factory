@@ -11,32 +11,32 @@ TOKEN=$(curl -s http://127.0.0.1:8080/api/v1/control | jq -r .token)
 Create and start a local draft:
 
 ```bash
-CAMPAIGN_ID=$(curl -s -X POST http://127.0.0.1:8080/api/v1/campaigns \
+TASK_ID=$(curl -s -X POST http://127.0.0.1:8080/api/v1/tasks \
   -H "X-Software-Factory-Token: $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"request":"Implement feature X","repository":{"type":"local","path":"/absolute/repository"}}' | jq -r .id)
-curl -s -X POST "http://127.0.0.1:8080/api/v1/campaigns/$CAMPAIGN_ID/start" -H "X-Software-Factory-Token: $TOKEN"
+  -d '{"request":"Implement feature X","repositories":[{"type":"local","path":"/absolute/repository","primary":true}]}' | jq -r .id)
+curl -s -X POST "http://127.0.0.1:8080/api/v1/tasks/$TASK_ID/start" -H "X-Software-Factory-Token: $TOKEN"
 ```
 
-For GitHub, use `{"type":"github","repo":"owner/repository"}`. Repository access starts only after the Start request.
+For GitHub, use `{"type":"github","repo":"owner/repository"}` inside `repositories`. Add more entries for a multi-repository Task and mark exactly one `primary`; repository access starts only after Start.
 
-Read routes include campaigns, phases, events, results, checks, and diff. Live events use `/api/v1/campaigns/{id}/events/stream`; reconnect with `Last-Event-ID` or `?after=`. Mutation routes are `start`, `approve`, `pause`, `resume`, `abort`, and `feedback`; inactive Campaigns support `DELETE`.
+Read routes include Tasks, attempts, events, results, checks, interventions, and repository diffs. Live events use `/api/v1/tasks/{id}/events/stream`; reconnect with `Last-Event-ID` or `?after=`. Mutation routes are `start`, `approve`, `pause`, `resume`, `abort`, `feedback`, and `interventions`; inactive Tasks support `DELETE`.
 
 Planner results always include `questions`. If questions remain, answer them while awaiting approval:
 
 ```bash
-curl -s -X POST "http://127.0.0.1:8080/api/v1/campaigns/$CAMPAIGN_ID/feedback" \
+curl -s -X POST "http://127.0.0.1:8080/api/v1/tasks/$TASK_ID/feedback" \
   -H "X-Software-Factory-Token: $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"feedback":"Use PostgreSQL and retain the public API.","current_plan_digest":"DIGEST_FROM_CAMPAIGN"}'
+  -d '{"feedback":"Use PostgreSQL and retain the public API.","current_plan_digest":"DIGEST_FROM_TASK"}'
 ```
 
 After the revised plan has an empty `questions` array, approve it:
 
 ```bash
-curl -s -X POST "http://127.0.0.1:8080/api/v1/campaigns/$CAMPAIGN_ID/approve" -H "X-Software-Factory-Token: $TOKEN"
+curl -s -X POST "http://127.0.0.1:8080/api/v1/tasks/$TASK_ID/approve" -H "X-Software-Factory-Token: $TOKEN"
 ```
 
-The Planner revision reuses its Campaign session and approval binds to the latest digest.
+The Planner revision reuses its Task session and approval binds to the latest digest.
 
-Campaign state and normalized events are stored in SQLite WAL and mirrored to campaign JSONL traces. Prompt audit copies and Pi sessions remain private beneath the factory directory. Do not expose that directory with a static server.
+Task state and normalized events are stored in SQLite WAL and mirrored to task JSONL traces. Prompt audit copies and Pi sessions remain private beneath the factory directory. Do not expose that directory with a static server.
 
 `curl` examples demonstrate the HTTP API; curl is not a Software Factory CLI.

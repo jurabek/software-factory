@@ -26,7 +26,8 @@ type Server struct {
 	config           config.Config
 	validationErrors []string
 	loadError        error
-	models           func(context.Context) ([]config.Model, error)
+	harnesses        []string
+	models           func(context.Context, string) ([]config.Model, error)
 	token            string
 }
 type APIError struct {
@@ -34,32 +35,44 @@ type APIError struct {
 	Message string `json:"message"`
 }
 
-func New(db *store.DB, service *factory.Service, cfg config.Config, problems []string, loadErr error, models func(context.Context) ([]config.Model, error)) (*Server, error) {
+func New(db *store.DB, service *factory.Service, cfg config.Config, problems []string, loadErr error, harnesses []string, models func(context.Context, string) ([]config.Model, error)) (*Server, error) {
 	token, err := newToken()
 	if err != nil {
 		return nil, err
 	}
-	return &Server{db: db, factory: service, config: cfg, validationErrors: problems, loadError: loadErr, models: models, token: token}, nil
+	if harnesses == nil {
+		harnesses = []string{"pi"}
+	}
+	if models == nil {
+		models = func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil }
+	}
+	return &Server{db: db, factory: service, config: cfg, validationErrors: problems, loadError: loadErr, harnesses: harnesses, models: models, token: token}, nil
 }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/health", s.health)
 	mux.HandleFunc("GET /api/v1/config", s.configRead)
+	mux.HandleFunc("GET /api/v1/harnesses", s.harnessesRead)
 	mux.HandleFunc("GET /api/v1/models", s.modelsRead)
 	mux.HandleFunc("GET /api/v1/control", s.control)
-	mux.HandleFunc("POST /api/v1/campaigns", s.mutation(s.create))
-	mux.HandleFunc("GET /api/v1/campaigns", s.campaigns)
-	mux.HandleFunc("GET /api/v1/campaigns/{id}", s.campaign)
-	mux.HandleFunc("POST /api/v1/campaigns/{id}/{command}", s.mutation(s.command))
-	mux.HandleFunc("POST /api/v1/campaigns/{id}/feedback", s.mutation(s.feedback))
-	mux.HandleFunc("DELETE /api/v1/campaigns/{id}", s.mutation(s.delete))
-	mux.HandleFunc("GET /api/v1/campaigns/{id}/phases", s.phases)
-	mux.HandleFunc("GET /api/v1/campaigns/{id}/events", s.events)
-	mux.HandleFunc("GET /api/v1/campaigns/{id}/events/stream", s.stream)
-	mux.HandleFunc("GET /api/v1/campaigns/{id}/results", s.results)
-	mux.HandleFunc("GET /api/v1/campaigns/{id}/checks", s.checks)
-	mux.HandleFunc("GET /api/v1/campaigns/{id}/diff", s.diff)
+	mux.HandleFunc("POST /api/v1/tasks", s.mutation(s.create))
+	mux.HandleFunc("GET /api/v1/tasks", s.tasks)
+	mux.HandleFunc("GET /api/v1/tasks/{id}", s.task)
+	mux.HandleFunc("POST /api/v1/tasks/{id}/{command}", s.mutation(s.command))
+	mux.HandleFunc("POST /api/v1/tasks/{id}/feedback", s.mutation(s.feedback))
+	mux.HandleFunc("POST /api/v1/tasks/{id}/interventions", s.mutation(s.createIntervention))
+	mux.HandleFunc("GET /api/v1/tasks/{id}/interventions", s.interventions)
+	mux.HandleFunc("DELETE /api/v1/tasks/{id}", s.mutation(s.delete))
+	mux.HandleFunc("GET /api/v1/tasks/{id}/attempts", s.attempts)
+	mux.HandleFunc("GET /api/v1/tasks/{id}/attempts/{attemptID}", s.attempt)
+	mux.HandleFunc("GET /api/v1/tasks/{id}/branches", s.branches)
+	mux.HandleFunc("GET /api/v1/tasks/{id}/artifacts", s.artifacts)
+	mux.HandleFunc("GET /api/v1/tasks/{id}/events", s.events)
+	mux.HandleFunc("GET /api/v1/tasks/{id}/events/stream", s.stream)
+	mux.HandleFunc("GET /api/v1/tasks/{id}/results", s.results)
+	mux.HandleFunc("GET /api/v1/tasks/{id}/checks", s.checks)
+	mux.HandleFunc("GET /api/v1/tasks/{id}/diff", s.diff)
 	return headers(mux)
 }
 
@@ -70,7 +83,7 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 		status = "degraded"
 		problems = append(problems, s.loadError.Error())
 	}
-	if _, err := s.models(r.Context()); err != nil {
+	if _, err := s.models(r.Context(), s.defaultHarness()); err != nil {
 		status = "degraded"
 		problems = append(problems, err.Error())
 	}
@@ -85,13 +98,42 @@ func (s *Server) configRead(w http.ResponseWriter, _ *http.Request) {
 	write(w, http.StatusOK, map[string]any{"config": s.config, "errors": problems})
 }
 
+func (s *Server) harnessesRead(w http.ResponseWriter, _ *http.Request) {
+	write(w, http.StatusOK, map[string]any{"harnesses": s.harnesses})
+}
+
+func (s *Server) defaultHarness() string {
+	if s.config.Defaults.CodingAgent != "" {
+		return s.config.Defaults.CodingAgent
+	}
+	if len(s.harnesses) > 0 {
+		return s.harnesses[0]
+	}
+	return "pi"
+}
+
 func (s *Server) modelsRead(w http.ResponseWriter, r *http.Request) {
-	models, err := s.models(r.Context())
+	harness := strings.TrimSpace(r.URL.Query().Get("harness"))
+	if harness == "" {
+		harness = s.defaultHarness()
+	}
+	known := false
+	for _, name := range s.harnesses {
+		if name == harness {
+			known = true
+			break
+		}
+	}
+	if !known {
+		fail(w, http.StatusUnprocessableEntity, "unknown_harness", "harness "+harness+" is not available")
+		return
+	}
+	models, err := s.models(r.Context(), harness)
 	if err != nil {
 		fail(w, http.StatusServiceUnavailable, "models_unavailable", err.Error())
 		return
 	}
-	write(w, http.StatusOK, map[string]any{"models": models})
+	write(w, http.StatusOK, map[string]any{"harness": harness, "models": models})
 }
 
 func (s *Server) control(w http.ResponseWriter, _ *http.Request) {
@@ -107,16 +149,16 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusUnprocessableEntity, "invalid_request", err.Error())
 		return
 	}
-	campaign, err := s.factory.Create(r.Context(), request)
+	task, err := s.factory.Create(r.Context(), request)
 	if err != nil {
-		fail(w, http.StatusUnprocessableEntity, "invalid_repository", err.Error())
+		fail(w, http.StatusUnprocessableEntity, "invalid_task", err.Error())
 		return
 	}
-	write(w, http.StatusCreated, campaign)
+	write(w, http.StatusCreated, task)
 }
 
-func (s *Server) campaigns(w http.ResponseWriter, r *http.Request) {
-	values, err := s.db.Campaigns(r.Context())
+func (s *Server) tasks(w http.ResponseWriter, r *http.Request) {
+	values, err := s.db.Tasks(r.Context())
 	if err != nil {
 		internal(w, err)
 		return
@@ -124,8 +166,8 @@ func (s *Server) campaigns(w http.ResponseWriter, r *http.Request) {
 	write(w, http.StatusOK, values)
 }
 
-func (s *Server) campaign(w http.ResponseWriter, r *http.Request) {
-	value, err := s.db.Campaign(r.Context(), r.PathValue("id"))
+func (s *Server) task(w http.ResponseWriter, r *http.Request) {
+	value, err := s.db.Task(r.Context(), r.PathValue("id"))
 	if err != nil {
 		storeError(w, err)
 		return
@@ -199,6 +241,36 @@ func (s *Server) feedback(w http.ResponseWriter, r *http.Request) {
 	write(w, http.StatusAccepted, map[string]any{"accepted": true})
 }
 
+func (s *Server) createIntervention(w http.ResponseWriter, r *http.Request) {
+	request, err := decode[factory.InterveneRequest](r)
+	if err != nil {
+		fail(w, http.StatusUnprocessableEntity, "invalid_request", err.Error())
+		return
+	}
+	actor := r.Header.Get("X-Software-Factory-Actor")
+	if actor == "" {
+		actor = "local-user"
+	}
+	value, err := s.factory.Intervene(r.Context(), r.PathValue("id"), actor, request)
+	if err != nil {
+		storeError(w, err)
+		return
+	}
+	write(w, http.StatusAccepted, value)
+}
+
+func (s *Server) interventions(w http.ResponseWriter, r *http.Request) {
+	if !s.exists(w, r) {
+		return
+	}
+	values, err := s.db.Interventions(r.Context(), r.PathValue("id"))
+	if err != nil {
+		internal(w, err)
+		return
+	}
+	write(w, http.StatusOK, values)
+}
+
 func (s *Server) delete(w http.ResponseWriter, r *http.Request) {
 	if err := s.factory.Delete(r.Context(), r.PathValue("id")); err != nil {
 		storeError(w, err)
@@ -207,11 +279,44 @@ func (s *Server) delete(w http.ResponseWriter, r *http.Request) {
 	write(w, http.StatusOK, map[string]any{"deleted": true})
 }
 
-func (s *Server) phases(w http.ResponseWriter, r *http.Request) {
+func (s *Server) attempts(w http.ResponseWriter, r *http.Request) {
 	if !s.exists(w, r) {
 		return
 	}
 	values, err := s.db.Phases(r.Context(), r.PathValue("id"))
+	if err != nil {
+		internal(w, err)
+		return
+	}
+	write(w, http.StatusOK, values)
+}
+
+func (s *Server) attempt(w http.ResponseWriter, r *http.Request) {
+	value, err := s.db.PhaseByID(r.Context(), r.PathValue("id"), r.PathValue("attemptID"))
+	if err != nil {
+		storeError(w, err)
+		return
+	}
+	write(w, http.StatusOK, value)
+}
+
+func (s *Server) branches(w http.ResponseWriter, r *http.Request) {
+	if !s.exists(w, r) {
+		return
+	}
+	values, err := s.db.Branches(r.Context(), r.PathValue("id"))
+	if err != nil {
+		internal(w, err)
+		return
+	}
+	write(w, http.StatusOK, values)
+}
+
+func (s *Server) artifacts(w http.ResponseWriter, r *http.Request) {
+	if !s.exists(w, r) {
+		return
+	}
+	values, err := s.db.Artifacts(r.Context(), r.PathValue("id"))
 	if err != nil {
 		internal(w, err)
 		return
@@ -332,7 +437,7 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) exists(w http.ResponseWriter, r *http.Request) bool {
-	if _, err := s.db.Campaign(r.Context(), r.PathValue("id")); err != nil {
+	if _, err := s.db.Task(r.Context(), r.PathValue("id")); err != nil {
 		storeError(w, err)
 		return false
 	}
@@ -416,12 +521,48 @@ func internal(w http.ResponseWriter, err error) {
 func storeError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, store.ErrNotFound):
-		fail(w, http.StatusNotFound, "not_found", "campaign not found")
+		fail(w, http.StatusNotFound, "not_found", "task not found")
+	case errors.Is(err, store.ErrStaleBranch):
+		fail(w, http.StatusConflict, "stale_branch", "selected branch head is stale; refresh lineage and reselect the action")
+	case errors.Is(err, store.ErrStaleAnchor):
+		fail(w, http.StatusConflict, "stale_anchor", "artifact anchor is stale; reselect the source content")
 	case errors.Is(err, store.ErrConflict):
-		fail(w, http.StatusConflict, "invalid_state", "campaign state does not allow this operation")
+		fail(w, http.StatusConflict, "invalid_state", "task state does not allow this operation")
+	case errors.Is(err, factory.ErrStalePlan):
+		fail(w, http.StatusConflict, "stale_plan", err.Error())
+	case errors.Is(err, factory.ErrInvalidFeedback):
+		fail(w, http.StatusUnprocessableEntity, "invalid_feedback", err.Error())
 	default:
+		if err != nil && (containsInvalid(err.Error())) {
+			fail(w, http.StatusUnprocessableEntity, "invalid_request", err.Error())
+			return
+		}
 		internal(w, err)
 	}
+}
+
+func containsInvalid(message string) bool {
+	for _, prefix := range []string{"intent ", "message is required", "idempotency_key is required", "target accepts", "anchor ", "unknown anchor", "delivery is rejected", "intent is required"} {
+		if len(message) >= len(prefix) && message[:len(prefix)] == prefix {
+			return true
+		}
+		if len(prefix) > 0 && containsSubstring(message, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsSubstring(haystack, needle string) bool {
+	if needle == "" {
+		return true
+	}
+	for index := 0; index+len(needle) <= len(haystack); index++ {
+		if haystack[index:index+len(needle)] == needle {
+			return true
+		}
+	}
+	return false
 }
 
 func newToken() (string, error) {
