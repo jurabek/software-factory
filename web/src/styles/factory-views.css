@@ -1,0 +1,37 @@
+@layer views {
+  .task-workspace { padding-bottom: 11rem; }
+  .attempt-table { margin: 0 1rem 1rem; }
+  .attempt-table > header, .attempt-table > button { width: 100%; display: grid; grid-template-columns: 10rem minmax(11rem, 1fr) 8rem minmax(10rem, 1fr); gap: 1rem; align-items: center; padding: .72rem 1rem; border: 0; border-bottom: 1px solid var(--ui-border); background: transparent; text-align: left; }
+  .attempt-table > header { color: var(--ui-text-subtle); text-transform: uppercase; letter-spacing: .08em; font-size: .68rem; }
+  .attempt-table > button:hover, .attempt-table > button.selected { background: var(--ui-surface-raised); }
+  .attempt-table strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+  .attempt-table small { overflow: hidden; color: var(--ui-text-subtle); text-overflow: ellipsis; white-space: nowrap; }
+  .attempt-status { color: var(--ui-text-muted); font-size: .72rem; }
+  .workspace-empty { min-height: 15rem; display: flex; flex-direction: column; gap: .5rem; align-items: center; justify-content: center; color: var(--ui-text-subtle); }
+  .workspace-empty strong { color: var(--ui-text-muted); font-size: 1rem; }
+  .session-log-panel { margin: 1rem; border: 1px solid var(--ui-border); background: #12101a; }
+  .panel-head { display: flex; gap: 1rem; align-items: center; padding: .65rem .8rem; border-bottom: 1px solid var(--ui-border); background: var(--ui-surface-raised); }
+  .panel-head > div { margin-right: auto; }
+  .panel-head h2, .panel-head p { margin: 0; }
+  .panel-head h2 { font-size: .8rem; font-weight: 500; }
+  .panel-head p { color: var(--ui-text-subtle); font-size: .65rem; }
+  .auto-scroll, .source-chip { color: var(--ui-text-subtle); font-size: .65rem; }
+  .icon-toggle { border: 1px solid var(--ui-border); color: var(--ui-text-subtle); background: transparent; font-size: .65rem; }
+  .session-log { max-height: 21rem; overflow: auto; }
+  .log-event { width: 100%; display: grid; grid-template-columns: 1rem 5rem 1.5rem 7rem minmax(8rem, 12rem) 1fr; gap: .5rem; padding: .45rem .65rem; border: 0; border-bottom: 1px solid #252130; color: var(--ui-text-muted); background: transparent; text-align: left; font-size: .68rem; }
+  .log-event:hover, .log-event.open { background: var(--ui-surface-raised); }
+  .log-time, .log-icon, .log-run, .expand { color: var(--ui-text-subtle); }
+  .log-type { color: var(--ui-accent); }
+  .log-run, .log-message { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .log-event pre, .payload-hidden { grid-column: 2 / -1; max-height: 16rem; margin: .5rem 0; padding: .75rem; overflow: auto; border: 1px solid var(--ui-border); color: var(--ui-text-muted); background: var(--ui-canvas); white-space: pre-wrap; }
+  .event-tool_start .log-type, .event-tool_end .log-type { color: var(--ui-cyan); }
+  .event-error .log-type, .event-error .log-message { color: var(--ui-danger); }
+  .event-agent_end .log-type, .event-phase_end .log-type { color: var(--ui-success); }
+  .event-window-note, .empty-state { margin: 0; padding: .7rem; color: var(--ui-text-subtle); text-align: center; font-size: .68rem; }
+  .context-composer { position: absolute; z-index: 10; right: 1rem; bottom: 1rem; left: 1rem; border: 1px solid var(--ui-border); border-left: 2px solid var(--ui-accent); background: var(--ui-surface-raised); box-shadow: 0 -12px 35px rgb(12 10 18 / 45%); }
+  .context-composer > header { display: flex; justify-content: space-between; padding: .55rem .8rem; border-bottom: 1px solid var(--ui-border); color: var(--ui-text-subtle); font-size: .68rem; text-transform: uppercase; }
+  .context-composer select { border: 0; color: var(--ui-accent); background: transparent; }
+  .context-composer textarea { width: 100%; min-height: 5rem; padding: .9rem; resize: vertical; border: 0; outline: 0; color: var(--ui-text); background: transparent; }
+  .context-composer footer { display: flex; align-items: center; padding: .5rem .7rem; border-top: 1px solid var(--ui-border); color: var(--ui-text-subtle); font-size: .65rem; }
+  .context-composer footer button { margin-left: auto; }
+}

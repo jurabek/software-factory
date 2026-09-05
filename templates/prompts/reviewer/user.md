@@ -1,4 +1,4 @@
-Feature request:
+Task request:
 {{.Request}}
 
 Approved plan:
@@ -9,3 +9,5 @@ Checks:
 
 Git-derived changed files:
 {{.ChangedFiles}}
+
+Changed files are qualified by Task Workspace repository name.

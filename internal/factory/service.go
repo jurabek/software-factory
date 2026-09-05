@@ -23,12 +23,13 @@ import (
 	factorygit "github.com/jurabek/software-factory/internal/git"
 	"github.com/jurabek/software-factory/internal/harness"
 	"github.com/jurabek/software-factory/internal/store"
+	"gopkg.in/yaml.v3"
 )
 
 const maxCapturedOutput = 64 << 10
 
 var (
-	ErrStalePlan = errors.New("plan digest is stale")
+	ErrStalePlan       = errors.New("plan digest is stale")
 	ErrInvalidFeedback = errors.New("feedback is required")
 )
 
@@ -44,69 +45,164 @@ type Service struct {
 }
 
 type Repository struct {
-	Type string `json:"type"`
-	Path string `json:"path,omitempty"`
-	Repo string `json:"repo,omitempty"`
+	Name    string `json:"name,omitempty"`
+	Type    string `json:"type"`
+	Path    string `json:"path,omitempty"`
+	Repo    string `json:"repo,omitempty"`
+	Primary bool   `json:"primary,omitempty"`
 }
 type CreateRequest struct {
-	Request    string     `json:"request"`
-	Repository Repository `json:"repository"`
+	Request      string       `json:"request"`
+	Repositories []Repository `json:"repositories"`
+	CodingAgent  string       `json:"coding_agent,omitempty"`
+	Model        string       `json:"model,omitempty"`
+	Thinking     string       `json:"thinking,omitempty"`
+}
+type InterventionRequest struct {
+	TargetType     string `json:"target_type"`
+	TargetID       string `json:"target_id"`
+	Message        string `json:"message"`
+	IdempotencyKey string `json:"idempotency_key"`
 }
 type Diff struct {
-	Files []string `json:"files"`
-	Patch string   `json:"patch"`
+	Repositories []RepositoryDiff `json:"repositories"`
+}
+type RepositoryDiff struct {
+	RepositoryID string   `json:"repository_id"`
+	Name         string   `json:"name"`
+	Files        []string `json:"files"`
+	Patch        string   `json:"patch"`
 }
 
 func NewService(root string, db *store.DB, cfg config.Config, configPath string, harnesses harness.Registry, gitRunner factorygit.Runner) *Service {
 	return &Service{root: root, db: db, config: cfg, configPath: configPath, harnesses: harnesses, git: gitRunner, cancel: map[string]context.CancelFunc{}}
 }
 
-func (s *Service) Create(ctx context.Context, request CreateRequest) (store.Campaign, error) {
+func (s *Service) Create(ctx context.Context, request CreateRequest) (store.Task, error) {
 	request.Request = strings.TrimSpace(request.Request)
 	if request.Request == "" {
-		return store.Campaign{}, fmt.Errorf("feature request is required")
+		return store.Task{}, fmt.Errorf("task description is required")
 	}
-	var value, submitted string
-	switch request.Repository.Type {
-	case "local":
-		if !filepath.IsAbs(request.Repository.Path) {
-			return store.Campaign{}, fmt.Errorf("local repository path must be absolute")
-		}
-		value = request.Repository.Path
-		submitted = value
-	case "github":
-		if !strings.Contains(request.Repository.Repo, "/") {
-			return store.Campaign{}, fmt.Errorf("github repository must be owner/repository")
-		}
-		value = request.Repository.Repo
-	default:
-		return store.Campaign{}, fmt.Errorf("repository type must be local or github")
+	if len(request.Repositories) == 0 {
+		return store.Task{}, fmt.Errorf("at least one repository is required")
 	}
-	id, err := campaignID()
+	request.CodingAgent = strings.TrimSpace(request.CodingAgent)
+	request.Model = strings.TrimSpace(request.Model)
+	request.Thinking = strings.TrimSpace(request.Thinking)
+	if request.CodingAgent != "" && !config.IsValidHarness(request.CodingAgent) {
+		return store.Task{}, fmt.Errorf("coding_agent must be pi or codex")
+	}
+	if request.Thinking != "" && !config.IsValidThinking(request.Thinking) {
+		return store.Task{}, fmt.Errorf("thinking is invalid")
+	}
+	if request.CodingAgent != "" {
+		if _, ok := s.harnesses.Get(request.CodingAgent); !ok && s.harnesses != nil {
+			return store.Task{}, fmt.Errorf("harness %s unavailable", request.CodingAgent)
+		}
+	}
+	id, err := taskID()
 	if err != nil {
-		return store.Campaign{}, err
+		return store.Task{}, err
 	}
-	campaign := store.Campaign{ID: id, Request: request.Request, RepositoryType: request.Repository.Type, RepositoryValue: value, SubmittedPath: submitted, State: string(Draft), CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
-	if err := s.db.CreateCampaign(ctx, campaign); err != nil {
-		return store.Campaign{}, err
+	createdAt := time.Now().UTC().Format(time.RFC3339Nano)
+	repositories, err := taskRepositories(id, request.Repositories, createdAt)
+	if err != nil {
+		return store.Task{}, err
 	}
-	return campaign, nil
+	workspace := s.taskDir(id)
+	for _, directory := range []string{workspace, filepath.Join(workspace, "workspace", "repositories"), filepath.Join(workspace, "attempts"), filepath.Join(workspace, "snapshots"), filepath.Join(workspace, "artifacts"), filepath.Join(workspace, "sessions"), filepath.Join(workspace, "workspace", "snapshots"), filepath.Join(workspace, "workspace", "branches"), filepath.Join(workspace, "workspace", "attempts")} {
+		if err = os.MkdirAll(directory, 0o700); err != nil {
+			_ = os.RemoveAll(workspace)
+			return store.Task{}, fmt.Errorf("create task workspace: %w", err)
+		}
+	}
+	task := store.Task{ID: id, Request: request.Request, WorkspacePath: workspace, Repositories: repositories, State: string(Draft), CreatedAt: createdAt, CodingAgent: request.CodingAgent, Model: request.Model, Thinking: request.Thinking}
+	metadata, err := json.MarshalIndent(task, "", "  ")
+	if err != nil {
+		_ = os.RemoveAll(workspace)
+		return store.Task{}, fmt.Errorf("encode task metadata: %w", err)
+	}
+	if err = os.WriteFile(filepath.Join(workspace, "task.json"), metadata, 0o600); err != nil {
+		_ = os.RemoveAll(workspace)
+		return store.Task{}, fmt.Errorf("write task metadata: %w", err)
+	}
+	if err := s.db.CreateTask(ctx, task); err != nil {
+		_ = os.RemoveAll(workspace)
+		return store.Task{}, err
+	}
+	return task, nil
 }
 
 func (s *Service) Start(ctx context.Context, id string) error {
 	if err := s.db.Claim(ctx, id, string(Draft), string(Preparing)); err != nil {
 		return err
 	}
+	if err := s.ensureBranch(ctx, id, ""); err != nil {
+		return err
+	}
 	s.launch(id, s.prepareAndPlan)
 	return nil
 }
 
-func (s *Service) Approve(ctx context.Context, id, actor string) error {
-	campaign, err := s.db.Campaign(ctx, id)
+func (s *Service) ensureBranch(ctx context.Context, taskID, parent string) error {
+	task, err := s.db.Task(ctx, taskID)
 	if err != nil {
 		return err
 	}
-	if campaign.State != string(AwaitingApproval) {
+	if task.SelectedBranchID != "" {
+		return nil
+	}
+	branches, err := s.db.Branches(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	if len(branches) > 0 {
+		return s.db.SelectBranch(ctx, taskID, branches[0].ID)
+	}
+	branch := store.Branch{ID: randomID(), TaskID: taskID, ParentBranchID: parent, Status: "active", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err = s.db.CreateBranch(ctx, branch); err != nil {
+		return err
+	}
+	return s.db.SelectBranch(ctx, taskID, branch.ID)
+}
+
+func (s *Service) Comment(ctx context.Context, taskID, actor string, request InterventionRequest) (store.Intervention, error) {
+	request.Message = strings.TrimSpace(request.Message)
+	request.IdempotencyKey = strings.TrimSpace(request.IdempotencyKey)
+	if request.Message == "" {
+		return store.Intervention{}, fmt.Errorf("message is required")
+	}
+	if request.IdempotencyKey == "" {
+		return store.Intervention{}, fmt.Errorf("idempotency_key is required")
+	}
+	switch request.TargetType {
+	case "task", "attempt", "event", "artifact":
+	default:
+		return store.Intervention{}, fmt.Errorf("target_type must be task, attempt, event, or artifact")
+	}
+	if strings.TrimSpace(request.TargetID) == "" {
+		return store.Intervention{}, fmt.Errorf("target_id is required")
+	}
+	if _, err := s.db.Task(ctx, taskID); err != nil {
+		return store.Intervention{}, err
+	}
+	value := store.Intervention{ID: randomID(), TaskID: taskID, TargetType: request.TargetType, TargetID: request.TargetID, Actor: actor, Intent: "comment", Text: request.Message, Delivery: "applied", IdempotencyKey: request.IdempotencyKey, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	stored, created, err := s.db.SaveIntervention(ctx, value)
+	if err != nil {
+		return store.Intervention{}, err
+	}
+	if created {
+		_ = s.trace(ctx, taskID, "", "intervention", "Comment", map[string]any{"intervention_id": stored.ID, "target_type": stored.TargetType, "target_id": stored.TargetID, "message": stored.Text})
+	}
+	return stored, nil
+}
+
+func (s *Service) Approve(ctx context.Context, id, actor string) error {
+	task, err := s.db.Task(ctx, id)
+	if err != nil {
+		return err
+	}
+	if task.State != string(AwaitingApproval) {
 		return store.ErrConflict
 	}
 	payload, err := s.db.ValidEnvelope(ctx, id, "planner")
@@ -130,74 +226,99 @@ func (s *Service) Approve(ctx context.Context, id, actor string) error {
 
 func (s *Service) Feedback(ctx context.Context, id, actor, text, digest string) error {
 	text = strings.TrimSpace(text)
-	if text == "" { return ErrInvalidFeedback }
-	campaign, err := s.db.Campaign(ctx, id)
-	if err != nil { return err }
-	if campaign.State != string(AwaitingApproval) { return store.ErrConflict }
+	if text == "" {
+		return ErrInvalidFeedback
+	}
+	task, err := s.db.Task(ctx, id)
+	if err != nil {
+		return err
+	}
+	if task.State != string(AwaitingApproval) {
+		return store.ErrConflict
+	}
 	payload, err := s.db.ValidEnvelope(ctx, id, "planner")
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	current := fmt.Sprintf("%x", sha256.Sum256([]byte(payload)))
-	if digest != "" && digest != current { return ErrStalePlan }
-	if err = s.db.SaveFeedback(ctx, store.Feedback{ID: randomID(), CampaignID: id, Actor: actor, PlanDigest: current, Text: text, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil { return err }
-	if err = s.trace(ctx, id, "", "plan_feedback", "Planner feedback", map[string]any{"actor": actor, "plan_digest": current, "feedback": text}); err != nil { return err }
-	if err = s.db.Transition(ctx, id, string(AwaitingApproval), string(Planning), "", ""); err != nil { return err }
+	if digest != "" && digest != current {
+		return ErrStalePlan
+	}
+	if err = s.db.SaveFeedback(ctx, store.Feedback{ID: randomID(), TaskID: id, Actor: actor, PlanDigest: current, Text: text, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		return err
+	}
+	if err = s.trace(ctx, id, "", "plan_feedback", "Planner feedback", map[string]any{"actor": actor, "plan_digest": current, "feedback": text}); err != nil {
+		return err
+	}
+	if err = s.db.Transition(ctx, id, string(AwaitingApproval), string(Planning), "", ""); err != nil {
+		return err
+	}
 	s.launch(id, s.revisePlan)
 	return nil
 }
 
 func (s *Service) revisePlan(ctx context.Context, id string) error {
-	campaign, err := s.db.Campaign(ctx, id)
-	if err != nil { return err }
-	payload, err := s.db.ValidEnvelope(ctx, id, "planner")
-	if err != nil { return err }
-	feedback, err := s.db.Feedback(ctx, id)
-	if err != nil || len(feedback) == 0 { return fmt.Errorf("feedback not found") }
-	return s.plan(ctx, campaign, map[string]any{"CurrentPlan": payload, "Questions": mustPlanQuestions(payload), "Feedback": feedback[len(feedback)-1].Text})
-}
-
-func mustPlanQuestions(payload string) []string { plan, _ := ValidatePlan(payload); return plan.Questions }
-
-func (s *Service) Pause(ctx context.Context, id string) error {
-	campaign, err := s.db.Campaign(ctx, id)
+	task, err := s.db.Task(ctx, id)
 	if err != nil {
 		return err
 	}
-	state := State(campaign.State)
+	payload, err := s.db.ValidEnvelope(ctx, id, "planner")
+	if err != nil {
+		return err
+	}
+	feedback, err := s.db.Feedback(ctx, id)
+	if err != nil || len(feedback) == 0 {
+		return fmt.Errorf("feedback not found")
+	}
+	return s.plan(ctx, task, map[string]any{"CurrentPlan": payload, "Questions": mustPlanQuestions(payload), "Feedback": feedback[len(feedback)-1].Text})
+}
+
+func mustPlanQuestions(payload string) []string {
+	plan, _ := ValidatePlan(payload)
+	return plan.Questions
+}
+
+func (s *Service) Pause(ctx context.Context, id string) error {
+	task, err := s.db.Task(ctx, id)
+	if err != nil {
+		return err
+	}
+	state := State(task.State)
 	if !CanTransition(state, Paused) {
 		return store.ErrConflict
 	}
 	s.stop(id)
-	return s.db.Transition(ctx, id, campaign.State, string(Paused), campaign.ActivePhase, "")
+	return s.db.Transition(ctx, id, task.State, string(Paused), task.ActivePhase, "")
 }
 
 func (s *Service) Abort(ctx context.Context, id string) error {
-	campaign, err := s.db.Campaign(ctx, id)
+	task, err := s.db.Task(ctx, id)
 	if err != nil {
 		return err
 	}
-	if !CanTransition(State(campaign.State), Aborted) {
+	if !CanTransition(State(task.State), Aborted) {
 		return store.ErrConflict
 	}
 	s.stop(id)
-	return s.db.Transition(ctx, id, campaign.State, string(Aborted), campaign.ActivePhase, "")
+	return s.db.Transition(ctx, id, task.State, string(Aborted), task.ActivePhase, "")
 }
 
 func (s *Service) Resume(ctx context.Context, id string) error {
-	campaign, err := s.db.Campaign(ctx, id)
+	task, err := s.db.Task(ctx, id)
 	if err != nil {
 		return err
 	}
-	if campaign.State != string(Paused) && campaign.State != string(Blocked) {
+	if task.State != string(Paused) && task.State != string(Blocked) {
 		return store.ErrConflict
 	}
-	target := State(campaign.PreviousState)
+	target := State(task.PreviousState)
 	if target == AwaitingApproval || target == Draft || target == "" {
 		return store.ErrConflict
 	}
-	if !CanTransition(State(campaign.State), target) {
+	if !CanTransition(State(task.State), target) {
 		return store.ErrConflict
 	}
-	if err := s.db.Transition(ctx, id, campaign.State, string(target), campaign.ActivePhase, ""); err != nil {
+	if err := s.db.Transition(ctx, id, task.State, string(target), task.ActivePhase, ""); err != nil {
 		return err
 	}
 	if target == Preparing || target == Planning {
@@ -209,36 +330,45 @@ func (s *Service) Resume(ctx context.Context, id string) error {
 }
 
 func (s *Service) Delete(ctx context.Context, id string) error {
-	campaign, err := s.db.Campaign(ctx, id)
+	task, err := s.db.Task(ctx, id)
 	if err != nil {
 		return err
 	}
-	if isActive(State(campaign.State)) {
+	if isActive(State(task.State)) {
 		return store.ErrConflict
 	}
-	if campaign.RepositoryType == "local" && campaign.WorkspacePath != "" {
-		_, _ = s.git.Run(ctx, "git", "-C", campaign.CanonicalPath, "worktree", "remove", "--force", campaign.WorkspacePath)
+	for _, repository := range task.Repositories {
+		if repository.SourceType == "local" && repository.WorkingPath != "" {
+			_, _ = s.git.Run(ctx, "git", "-C", repository.CanonicalPath, "worktree", "remove", "--force", repository.WorkingPath)
+		}
 	}
-	if err := os.RemoveAll(s.campaignDir(id)); err != nil {
-		return fmt.Errorf("remove campaign files: %w", err)
+	if err := os.RemoveAll(s.taskDir(id)); err != nil {
+		return fmt.Errorf("remove task files: %w", err)
 	}
-	return s.db.DeleteCampaign(ctx, id)
+	return s.db.DeleteTask(ctx, id)
 }
 
 func (s *Service) Diff(ctx context.Context, id string) (Diff, error) {
-	campaign, err := s.db.Campaign(ctx, id)
+	task, err := s.db.Task(ctx, id)
 	if err != nil {
 		return Diff{}, err
 	}
-	if campaign.WorkspacePath == "" {
-		return Diff{}, nil
+	result := Diff{Repositories: make([]RepositoryDiff, 0, len(task.Repositories))}
+	for _, repository := range task.Repositories {
+		if repository.WorkingPath == "" {
+			continue
+		}
+		files, diffErr := factorygit.ChangedFiles(ctx, s.git, repository.WorkingPath)
+		if diffErr != nil {
+			return Diff{}, diffErr
+		}
+		patch, diffErr := factorygit.Diff(ctx, s.git, repository.WorkingPath)
+		if diffErr != nil {
+			return Diff{}, diffErr
+		}
+		result.Repositories = append(result.Repositories, RepositoryDiff{RepositoryID: repository.ID, Name: repository.Name, Files: files, Patch: patch})
 	}
-	files, err := factorygit.ChangedFiles(ctx, s.git, campaign.WorkspacePath)
-	if err != nil {
-		return Diff{}, err
-	}
-	patch, err := factorygit.Diff(ctx, s.git, campaign.WorkspacePath)
-	return Diff{Files: files, Patch: patch}, err
+	return result, nil
 }
 
 func (s *Service) launch(id string, run func(context.Context, string) error) {
@@ -249,9 +379,9 @@ func (s *Service) launch(id string, run func(context.Context, string) error) {
 	go func() {
 		defer func() { s.mu.Lock(); delete(s.cancel, id); s.mu.Unlock() }()
 		if err := run(ctx, id); err != nil && !errors.Is(err, context.Canceled) {
-			campaign, getErr := s.db.Campaign(context.Background(), id)
-			if getErr == nil && campaign.State != string(Paused) && campaign.State != string(Aborted) && campaign.State != string(Blocked) {
-				_ = s.db.Transition(context.Background(), id, campaign.State, string(Blocked), campaign.ActivePhase, err.Error())
+			task, getErr := s.db.Task(context.Background(), id)
+			if getErr == nil && task.State != string(Paused) && task.State != string(Aborted) && task.State != string(Blocked) {
+				_ = s.db.Transition(context.Background(), id, task.State, string(Blocked), task.ActivePhase, err.Error())
 			}
 		}
 	}()
@@ -266,9 +396,9 @@ func (s *Service) Shutdown(ctx context.Context) {
 	}
 	s.mu.Unlock()
 	for _, id := range ids {
-		campaign, err := s.db.Campaign(ctx, id)
-		if err == nil && isActive(State(campaign.State)) {
-			_ = s.db.Transition(ctx, id, campaign.State, string(Blocked), campaign.ActivePhase, "server shutting down")
+		task, err := s.db.Task(ctx, id)
+		if err == nil && isActive(State(task.State)) {
+			_ = s.db.Transition(ctx, id, task.State, string(Blocked), task.ActivePhase, "server shutting down")
 		}
 	}
 }
@@ -283,52 +413,92 @@ func (s *Service) stop(id string) {
 }
 
 func (s *Service) prepareAndPlan(ctx context.Context, id string) error {
-	campaign, err := s.db.Campaign(ctx, id)
+	task, err := s.db.Task(ctx, id)
 	if err != nil {
 		return err
 	}
-	workspace := filepath.Join(s.campaignDir(id), "repository")
-	if campaign.State == string(Planning) && campaign.WorkspacePath != "" {
-		return s.plan(ctx, campaign, nil)
+	if task.State == string(Planning) && task.PrimaryRepositoryPath != "" {
+		return s.plan(ctx, task, nil)
 	}
 	snapshot, err := os.ReadFile(s.configPath)
 	if err != nil {
 		return err
 	}
-	if _, problems, parseErr := config.Parse(snapshot, filepath.Dir(s.configPath)); parseErr != nil {
+	configured, problems, parseErr := config.Parse(snapshot, filepath.Dir(s.configPath))
+	if parseErr != nil {
 		return parseErr
-	} else if len(problems) > 0 {
+	}
+	if len(problems) > 0 {
 		return fmt.Errorf("invalid config: %s", strings.Join(problems, "; "))
+	}
+	configured = config.ApplyTaskOverrides(configured, task.CodingAgent, task.Model, task.Thinking)
+	if problems := validateTaskConfig(configured, s.harnesses); len(problems) > 0 {
+		return fmt.Errorf("invalid task config: %s", strings.Join(problems, "; "))
+	}
+	if task.CodingAgent != "" || task.Model != "" || task.Thinking != "" {
+		overridden, marshalErr := yaml.Marshal(configured)
+		if marshalErr != nil {
+			return fmt.Errorf("encode task config: %w", marshalErr)
+		}
+		snapshot = overridden
 	}
 	phase, err := s.beginPhase(ctx, id, "prepare", "git", "factory", "Prepare repository")
 	if err != nil {
 		return err
 	}
-	var profile factorygit.Profile
-	if campaign.RepositoryType == "local" {
-		profile, err = factorygit.PrepareLocal(ctx, s.git, campaign.RepositoryValue, workspace)
-	} else {
-		profile, err = factorygit.PrepareGitHub(ctx, s.git, campaign.RepositoryValue, workspace)
+	primaryPath := ""
+	for _, repository := range task.Repositories {
+		workingPath := filepath.Join(task.WorkspacePath, "workspace", "repositories", repository.Name)
+		profile, prepareErr := s.prepareRepository(ctx, repository, workingPath)
+		if prepareErr != nil {
+			s.failPhase(ctx, phase, prepareErr)
+			return prepareErr
+		}
+		if repository.Primary && len(profile.Checks) == 0 {
+			prepareErr = fmt.Errorf("primary repository has no deterministic checks declared or detected")
+			s.failPhase(ctx, phase, prepareErr)
+			return prepareErr
+		}
+		canonical := profile.Root
+		if repository.SourceType == "local" {
+			canonical, _, prepareErr = factorygit.ResolveRoot(ctx, s.git, repository.SourceValue)
+		}
+		if prepareErr != nil {
+			s.failPhase(ctx, phase, prepareErr)
+			return prepareErr
+		}
+		repository.CanonicalPath, repository.WorkingPath, repository.BaseSHA = canonical, workingPath, profile.BaseSHA
+		if err = s.db.SetRepositoryPrepared(ctx, repository); err != nil {
+			s.failPhase(ctx, phase, err)
+			return err
+		}
+		if err = writeRepositoryProfile(task.WorkspacePath, repository.Name, profile); err != nil {
+			s.failPhase(ctx, phase, err)
+			return err
+		}
+		if repository.Primary {
+			primaryPath = workingPath
+			encoded, encodeErr := json.MarshalIndent(profile, "", "  ")
+			if encodeErr != nil {
+				s.failPhase(ctx, phase, encodeErr)
+				return encodeErr
+			}
+			if err = os.WriteFile(filepath.Join(task.WorkspacePath, "repository-profile.json"), encoded, 0o600); err != nil {
+				s.failPhase(ctx, phase, err)
+				return err
+			}
+		}
 	}
-	if err != nil {
+	if primaryPath == "" {
+		err = fmt.Errorf("primary repository is missing")
 		s.failPhase(ctx, phase, err)
 		return err
 	}
-	profile.Root = workspace
-	encoded, _ := json.MarshalIndent(profile, "", "  ")
-	if err = os.WriteFile(filepath.Join(s.campaignDir(id), "repository-profile.json"), encoded, 0o600); err != nil {
+	if err = os.WriteFile(filepath.Join(s.taskDir(id), "config-snapshot.yaml"), snapshot, 0o600); err != nil {
 		s.failPhase(ctx, phase, err)
 		return err
 	}
-	if err = os.WriteFile(filepath.Join(s.campaignDir(id), "config-snapshot.yaml"), snapshot, 0o600); err != nil {
-		s.failPhase(ctx, phase, err)
-		return err
-	}
-	canonical := profile.Root
-	if campaign.RepositoryType == "local" {
-		canonical, _, _ = factorygit.ResolveRoot(ctx, s.git, campaign.RepositoryValue)
-	}
-	if err = s.db.SetPrepared(ctx, id, canonical, workspace, profile.BaseSHA, string(snapshot)); err != nil {
+	if err = s.db.SetPrepared(ctx, id, primaryPath, string(snapshot)); err != nil {
 		return err
 	}
 	if err = s.endPhase(ctx, phase, "success", nil); err != nil {
@@ -337,30 +507,32 @@ func (s *Service) prepareAndPlan(ctx context.Context, id string) error {
 	if err = s.db.Transition(ctx, id, string(Preparing), string(Planning), "", ""); err != nil {
 		return err
 	}
-	campaign, err = s.db.Campaign(ctx, id)
+	task, err = s.db.Task(ctx, id)
 	if err != nil {
 		return err
 	}
-	return s.plan(ctx, campaign, nil)
+	return s.plan(ctx, task, nil)
 }
 
-func (s *Service) plan(ctx context.Context, campaign store.Campaign, revision map[string]any) error {
-	before, err := factorygit.ChangedFiles(ctx, s.git, campaign.WorkspacePath)
+func (s *Service) plan(ctx context.Context, task store.Task, revision map[string]any) error {
+	before, err := taskChangedFiles(ctx, s.git, task.Repositories)
 	if err != nil {
 		return err
 	}
-	phase, err := s.beginPhase(ctx, campaign.ID, "planning", "agent", "planner", "Create implementation plan")
+	phase, err := s.beginPhase(ctx, task.ID, "planning", "agent", "planner", "Create implementation plan")
 	if err != nil {
 		return err
 	}
-	data := map[string]any{"CampaignID": campaign.ID, "Request": campaign.Request, "Repository": campaign.WorkspacePath}
-	for key, value := range revision { data[key] = value }
-	payload, err := s.runRole(ctx, campaign, phase, "planner", data, func(text string) (any, error) { return ValidatePlan(text) })
+	data := map[string]any{"TaskID": task.ID, "Request": task.Request, "Repository": task.PrimaryRepositoryPath, "Repositories": task.Repositories, "Workspace": task.WorkspacePath}
+	for key, value := range revision {
+		data[key] = value
+	}
+	payload, err := s.runRole(ctx, task, phase, "planner", data, func(text string) (any, error) { return ValidatePlan(text) })
 	if err != nil {
 		s.failPhase(ctx, phase, err)
 		return err
 	}
-	after, err := factorygit.ChangedFiles(ctx, s.git, campaign.WorkspacePath)
+	after, err := taskChangedFiles(ctx, s.git, task.Repositories)
 	if err != nil {
 		return err
 	}
@@ -373,15 +545,15 @@ func (s *Service) plan(ctx context.Context, campaign store.Campaign, revision ma
 		return err
 	}
 	_ = payload
-	return s.db.Transition(ctx, campaign.ID, string(Planning), string(AwaitingApproval), "", "")
+	return s.db.Transition(ctx, task.ID, string(Planning), string(AwaitingApproval), "", "")
 }
 
 func (s *Service) buildCheckReview(ctx context.Context, id string) error {
-	campaign, err := s.db.Campaign(ctx, id)
+	task, err := s.db.Task(ctx, id)
 	if err != nil {
 		return err
 	}
-	profile, err := readProfile(s.campaignDir(id))
+	profiles, err := readTaskProfiles(task)
 	if err != nil {
 		return err
 	}
@@ -389,25 +561,27 @@ func (s *Service) buildCheckReview(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	if campaign.State == string(Building) {
+	if task.State == string(Building) {
 		phase, beginErr := s.beginPhase(ctx, id, "building", "agent", "builder", "Implement approved plan")
 		if beginErr != nil {
 			return beginErr
 		}
-		_, err = s.runRole(ctx, campaign, phase, "builder", map[string]any{"CampaignID": campaign.ID, "Request": campaign.Request, "Plan": plan}, func(text string) (any, error) { return ValidateBuild(text) })
+		_, err = s.runRole(ctx, task, phase, "builder", map[string]any{"TaskID": task.ID, "Request": task.Request, "Plan": plan}, func(text string) (any, error) { return ValidateBuild(text) })
 		if err != nil {
 			s.failPhase(ctx, phase, err)
 			return err
 		}
-		files, diffErr := factorygit.ChangedFiles(ctx, s.git, campaign.WorkspacePath)
-		if diffErr != nil {
-			return diffErr
-		}
-		for _, file := range files {
-			if factorygit.MatchesPath(file, profile.Protected) {
-				err = fmt.Errorf("builder changed protected path %s", file)
-				s.failPhase(ctx, phase, err)
-				return err
+		for _, repository := range task.Repositories {
+			files, diffErr := factorygit.ChangedFiles(ctx, s.git, repository.WorkingPath)
+			if diffErr != nil {
+				return diffErr
+			}
+			for _, file := range files {
+				if factorygit.MatchesPath(file, profiles[repository.Name].Protected) {
+					err = fmt.Errorf("builder changed protected path %s/%s", repository.Name, file)
+					s.failPhase(ctx, phase, err)
+					return err
+				}
 			}
 		}
 		if err = s.endPhase(ctx, phase, "success", nil); err != nil {
@@ -417,15 +591,17 @@ func (s *Service) buildCheckReview(ctx context.Context, id string) error {
 			return err
 		}
 	}
-	campaign, _ = s.db.Campaign(ctx, id)
-	if campaign.State == string(Checking) {
+	task, _ = s.db.Task(ctx, id)
+	if task.State == string(Checking) {
 		phase, beginErr := s.beginPhase(ctx, id, "checks", "check", "factory", "Run deterministic checks")
 		if beginErr != nil {
 			return beginErr
 		}
-		if err = s.runChecks(ctx, campaign, phase, profile.Checks); err != nil {
-			s.failPhase(ctx, phase, err)
-			return err
+		for _, repository := range task.Repositories {
+			if err = s.runChecks(ctx, task, phase, repository, profiles[repository.Name].Checks); err != nil {
+				s.failPhase(ctx, phase, err)
+				return err
+			}
 		}
 		if err = s.endPhase(ctx, phase, "success", nil); err != nil {
 			return err
@@ -434,8 +610,8 @@ func (s *Service) buildCheckReview(ctx context.Context, id string) error {
 			return err
 		}
 	}
-	campaign, _ = s.db.Campaign(ctx, id)
-	before, err := factorygit.ChangedFiles(ctx, s.git, campaign.WorkspacePath)
+	task, _ = s.db.Task(ctx, id)
+	before, err := taskChangedFiles(ctx, s.git, task.Repositories)
 	if err != nil {
 		return err
 	}
@@ -444,8 +620,8 @@ func (s *Service) buildCheckReview(ctx context.Context, id string) error {
 		return err
 	}
 	checks, _ := s.db.Checks(ctx, id)
-	files, _ := factorygit.ChangedFiles(ctx, s.git, campaign.WorkspacePath)
-	reviewPayload, err := s.runRole(ctx, campaign, phase, "reviewer", map[string]any{"CampaignID": campaign.ID, "Request": campaign.Request, "Plan": plan, "Checks": checks, "ChangedFiles": files}, func(text string) (any, error) { return ValidateReview(text) })
+	files, _ := taskChangedFiles(ctx, s.git, task.Repositories)
+	reviewPayload, err := s.runRole(ctx, task, phase, "reviewer", map[string]any{"TaskID": task.ID, "Request": task.Request, "Plan": plan, "Checks": checks, "ChangedFiles": files}, func(text string) (any, error) { return ValidateReview(text) })
 	if err != nil {
 		s.failPhase(ctx, phase, err)
 		return err
@@ -456,7 +632,7 @@ func (s *Service) buildCheckReview(ctx context.Context, id string) error {
 		s.failPhase(ctx, phase, err)
 		return err
 	}
-	after, _ := factorygit.ChangedFiles(ctx, s.git, campaign.WorkspacePath)
+	after, _ := taskChangedFiles(ctx, s.git, task.Repositories)
 	if !sameStrings(before, after) {
 		err = fmt.Errorf("reviewer modified repository")
 		s.failPhase(ctx, phase, err)
@@ -470,36 +646,36 @@ func (s *Service) buildCheckReview(ctx context.Context, id string) error {
 
 type validator func(string) (any, error)
 
-func (s *Service) runRole(ctx context.Context, campaign store.Campaign, phase store.Phase, role string, data map[string]any, validate validator) (string, error) {
-	campaignConfig, err := s.campaignConfig(campaign)
+func (s *Service) runRole(ctx context.Context, task store.Task, phase store.Phase, role string, data map[string]any, validate validator) (string, error) {
+	taskConfig, err := s.taskConfig(task)
 	if err != nil {
 		return "", err
 	}
-	agent, ok := agentForRole(campaignConfig, role)
+	agent, ok := agentForRole(taskConfig, role)
 	if !ok {
 		return "", fmt.Errorf("agent %s not configured", role)
 	}
-	adapter, ok := s.harnesses.Get(campaignConfig.Defaults.CodingAgent)
+	adapter, ok := s.harnesses.Get(taskConfig.Defaults.CodingAgent)
 	if !ok {
-		return "", fmt.Errorf("harness %s unavailable", campaignConfig.Defaults.CodingAgent)
+		return "", fmt.Errorf("harness %s unavailable", taskConfig.Defaults.CodingAgent)
 	}
 	systemPrompt, userPrompt, err := s.renderPrompts(agent, data)
 	if err != nil {
 		return "", err
 	}
-	sessionID := campaign.ID + "-" + role
-	sessionDir := filepath.Join(s.campaignDir(campaign.ID), "sessions", role, "pi")
-	rawPath := filepath.Join(s.campaignDir(campaign.ID), "sessions", role, "raw-output.jsonl")
-	request := harness.Request{CWD: campaign.WorkspacePath, Prompt: userPrompt, SystemPrompt: systemPrompt, Model: agent.Model, Thinking: agent.Thinking, Tools: agent.Tools, SessionID: sessionID, SessionDirectory: sessionDir, RawOutputPath: rawPath, DeadlineMS: campaignConfig.Runtime.AgentDeadlineMS}
-	for attempt := 0; attempt <= campaignConfig.Runtime.JSONFixAttempts; attempt++ {
+	sessionID := task.ID + "-" + role
+	sessionDir := filepath.Join(s.taskDir(task.ID), "sessions", role, "pi")
+	rawPath := filepath.Join(s.taskDir(task.ID), "sessions", role, "raw-output.jsonl")
+	request := harness.Request{CWD: task.PrimaryRepositoryPath, Prompt: userPrompt, SystemPrompt: systemPrompt, Model: agent.Model, Thinking: agent.Thinking, SessionID: sessionID, SessionDirectory: sessionDir, RawOutputPath: rawPath, DeadlineMS: taskConfig.Runtime.AgentDeadlineMS}
+	for attempt := 0; attempt <= taskConfig.Runtime.JSONFixAttempts; attempt++ {
 		if attempt > 0 {
 			request.Prompt = "Your previous final response was invalid. Return only the required " + role + " JSON object with every required field."
 		}
-		result, runErr := adapter.Run(ctx, request, s.eventSink(campaign.ID, phase.ID))
+		result, runErr := adapter.Run(ctx, request, s.eventSink(task.ID, phase.ID))
 		if runErr != nil {
 			return "", runErr
 		}
-		_ = s.db.SaveAgentSession(ctx, campaign.ID, role, campaignConfig.Defaults.CodingAgent, result.Provider, result.Model, agent.Thinking, agent.Color, sessionID, sessionDir, result.ContextTokens, result.ContextWindow, result.Usage, result.Usage.Cost)
+		_ = s.db.SaveAgentSession(ctx, task.ID, role, taskConfig.Defaults.CodingAgent, result.Provider, result.Model, agent.Thinking, agent.Color, sessionID, sessionDir, result.ContextTokens, result.ContextWindow, result.Usage, result.Usage.Cost)
 		_, validationErr := validate(result.Text)
 		valid := validationErr == nil
 		tail := result.Text
@@ -507,8 +683,10 @@ func (s *Service) runRole(ctx context.Context, campaign store.Campaign, phase st
 			tail = tail[len(tail)-maxCapturedOutput:]
 		}
 		stored := tail
-		if valid { stored = result.Text }
-		_ = s.db.SaveEnvelope(ctx, randomID(), campaign.ID, phase.ID, role, role, stored, valid, attempt+1)
+		if valid {
+			stored = result.Text
+		}
+		_ = s.db.SaveEnvelope(ctx, randomID(), task.ID, phase.ID, role, role, stored, valid, attempt+1)
 		if valid {
 			return result.Text, nil
 		}
@@ -542,7 +720,7 @@ func (s *Service) renderPrompts(agent config.Agent, data map[string]any) (string
 	if err != nil {
 		return "", "", err
 	}
-	audit := filepath.Join(s.campaignDir(dataCampaign(data)), "prompts", agent.Name)
+	audit := filepath.Join(s.taskDir(dataTask(data)), "prompts", agent.Name)
 	if err = os.MkdirAll(audit, 0o700); err != nil {
 		return "", "", err
 	}
@@ -554,12 +732,13 @@ func (s *Service) renderPrompts(agent config.Agent, data map[string]any) (string
 	}
 	return system, user, nil
 }
-func dataCampaign(data map[string]any) string { return fmt.Sprint(data["CampaignID"]) }
+func dataTask(data map[string]any) string { return fmt.Sprint(data["TaskID"]) }
 
-func (s *Service) runChecks(ctx context.Context, campaign store.Campaign, phase store.Phase, checks []factorygit.Check) error {
+func (s *Service) runChecks(ctx context.Context, task store.Task, phase store.Phase, repository store.TaskRepository, checks []factorygit.Check) error {
 	for _, spec := range checks {
 		started := time.Now()
-		artifact := filepath.Join(s.campaignDir(campaign.ID), "checks", spec.ID+".log")
+		checkID := repository.Name + ":" + spec.ID
+		artifact := filepath.Join(s.taskDir(task.ID), "checks", repository.Name, spec.ID+".log")
 		if err := os.MkdirAll(filepath.Dir(artifact), 0o700); err != nil {
 			return err
 		}
@@ -569,7 +748,7 @@ func (s *Service) runChecks(ctx context.Context, campaign store.Campaign, phase 
 		}
 		tail := &tailCapture{limit: maxCapturedOutput}
 		cmd := exec.Command("/bin/sh", "-c", spec.Command)
-		cmd.Dir = campaign.WorkspacePath
+		cmd.Dir = repository.WorkingPath
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		cmd.Stdout = io.MultiWriter(file, tail)
 		cmd.Stderr = io.MultiWriter(file, tail)
@@ -577,7 +756,7 @@ func (s *Service) runChecks(ctx context.Context, campaign store.Campaign, phase 
 			file.Close()
 			return fmt.Errorf("start check %s: %w", spec.ID, err)
 		}
-		_, _ = s.db.StartProcess(ctx, campaign.ID, phase.ID, "check", spec.ID, cmd.Process.Pid, "/bin/sh -c "+spec.Command)
+		_, _ = s.db.StartProcess(ctx, task.ID, phase.ID, "check", checkID, cmd.Process.Pid, "/bin/sh -c "+spec.Command)
 		done := make(chan struct{})
 		go func(pid int) {
 			select {
@@ -601,9 +780,9 @@ func (s *Service) runChecks(ctx context.Context, campaign store.Campaign, phase 
 				exit = value.ExitCode()
 			}
 		}
-		_ = s.db.EndProcess(context.Background(), campaign.ID, cmd.Process.Pid, exit)
+		_ = s.db.EndProcess(context.Background(), task.ID, cmd.Process.Pid, exit)
 		ended := time.Now()
-		_ = s.db.SaveCheck(context.Background(), store.Check{ID: spec.ID, CampaignID: campaign.ID, PhaseID: phase.ID, Name: spec.ID, Command: spec.Command, Attempt: 1, Status: status, ExitCode: exit, Output: tail.String(), ArtifactPath: artifact, DurationMS: int(ended.Sub(started).Milliseconds()), StartedAt: started.UTC().Format(time.RFC3339Nano), EndedAt: ended.UTC().Format(time.RFC3339Nano)})
+		_ = s.db.SaveCheck(context.Background(), store.Check{ID: checkID, TaskID: task.ID, PhaseID: phase.ID, Name: checkID, Command: spec.Command, Attempt: 1, Status: status, ExitCode: exit, Output: tail.String(), ArtifactPath: artifact, DurationMS: int(ended.Sub(started).Milliseconds()), StartedAt: started.UTC().Format(time.RFC3339Nano), EndedAt: ended.UTC().Format(time.RFC3339Nano)})
 		if err != nil {
 			return fmt.Errorf("check %s failed: %w", spec.ID, err)
 		}
@@ -611,19 +790,42 @@ func (s *Service) runChecks(ctx context.Context, campaign store.Campaign, phase 
 	return nil
 }
 
-func (s *Service) beginPhase(ctx context.Context, campaignID, name, kind, owner, description string) (store.Phase, error) {
-	phases, err := s.db.Phases(ctx, campaignID)
+func (s *Service) beginPhase(ctx context.Context, taskID, name, kind, owner, description string) (store.Phase, error) {
+	phases, err := s.db.Phases(ctx, taskID)
 	if err != nil {
 		return store.Phase{}, err
 	}
-	phase := store.Phase{ID: randomID(), CampaignID: campaignID, Sequence: len(phases) + 1, Name: name, Kind: kind, Owner: owner, Description: description, Status: "running", Attempt: 1}
+	_ = s.ensureBranch(ctx, taskID, "")
+	task, _ := s.db.Task(ctx, taskID)
+	definitionID := s.ensureDefinition(ctx, taskID, name, kind, owner)
+	inputSnapshot := ""
+	if snapshot, captureErr := s.CaptureSnapshot(ctx, store.Task{ID: taskID, WorkspacePath: s.taskDir(taskID)}); captureErr == nil {
+		inputSnapshot = snapshot.Digest
+	}
+	phase := store.Phase{ID: randomID(), TaskID: taskID, Sequence: len(phases) + 1, Name: name, Kind: kind, Owner: owner, Description: description, Status: "running", Attempt: 1, BranchID: task.SelectedBranchID, DefinitionID: definitionID, InputSnapshot: inputSnapshot}
 	if err = s.db.AddPhase(ctx, phase); err != nil {
 		return store.Phase{}, err
 	}
-	campaign, _ := s.db.Campaign(ctx, campaignID)
-	_ = s.db.Transition(ctx, campaignID, campaign.State, campaign.State, phase.ID, "")
-	_ = s.trace(ctx, campaignID, phase.ID, "phase_start", name, map[string]any{"owner": owner, "kind": kind})
+	if phase.BranchID != "" {
+		_ = s.db.SetBranchHead(ctx, taskID, phase.BranchID, phase.ID)
+	}
+	_ = s.db.Transition(ctx, taskID, task.State, task.State, phase.ID, "")
+	_ = s.traceBranch(ctx, taskID, phase, "phase_start", name, map[string]any{"owner": owner, "kind": kind, "input_snapshot": inputSnapshot})
 	return phase, nil
+}
+
+func (s *Service) ensureDefinition(ctx context.Context, taskID, key, executor, owner string) string {
+	existing, err := s.db.LatestDefinition(ctx, taskID, key)
+	if err == nil {
+		return existing.ID
+	}
+	definition := store.PhaseDefinition{ID: randomID(), TaskID: taskID, PhaseKey: key, Revision: 1, Executor: executor, Owner: owner, Spec: "{}"}
+	definition.Digest = planDigest(key, 1, "{}")
+	definition.CreatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	if err = s.db.CreateDefinition(ctx, definition); err != nil {
+		return ""
+	}
+	return definition.ID
 }
 
 func (s *Service) endPhase(ctx context.Context, phase store.Phase, status string, cause error) error {
@@ -631,46 +833,114 @@ func (s *Service) endPhase(ctx context.Context, phase store.Phase, status string
 	if cause != nil {
 		message = cause.Error()
 	}
+	outputSnapshot := phase.InputSnapshot
+	if task, taskErr := s.db.Task(ctx, phase.TaskID); taskErr == nil {
+		if snapshot, captureErr := s.CaptureSnapshot(ctx, task); captureErr == nil {
+			if status == "success" && (phase.Kind == "agent" || phase.Kind == "check" || phase.Kind == "git") {
+				outputSnapshot = snapshot.Digest
+			} else if status != "success" {
+				outputSnapshot = snapshot.Digest
+			}
+		}
+	}
+	if outputSnapshot != "" && outputSnapshot != phase.InputSnapshot {
+		_, _ = s.db.ExecContext(context.Background(), `update phases set output_snapshot=? where id=?`, outputSnapshot, phase.ID)
+		phase.OutputSnapshot = outputSnapshot
+	} else if phase.InputSnapshot != "" {
+		_, _ = s.db.ExecContext(context.Background(), `update phases set output_snapshot=? where id=?`, phase.InputSnapshot, phase.ID)
+		phase.OutputSnapshot = phase.InputSnapshot
+	}
 	if err := s.db.EndPhase(ctx, phase.ID, status, message); err != nil {
 		return err
 	}
-	return s.trace(ctx, phase.CampaignID, phase.ID, "phase_end", phase.Name, map[string]any{"status": status, "error": message})
+	return s.traceBranch(ctx, phase.TaskID, phase, "phase_end", phase.Name, map[string]any{"status": status, "error": message, "output_snapshot": phase.OutputSnapshot})
+}
+
+func (s *Service) traceBranch(ctx context.Context, taskID string, phase store.Phase, eventType, name string, payload map[string]any) error {
+	actions := AvailableActions(&phase, "")
+	_, err := s.db.AppendEvent(ctx, s.taskDir(taskID), store.Event{ID: randomID(), TaskID: taskID, PhaseID: phase.ID, AttemptID: phase.ID, BranchID: phase.BranchID, Type: eventType, Name: name, Payload: payload, AvailableActions: actions, StartedAt: time.Now().UTC()})
+	return err
 }
 
 func (s *Service) failPhase(ctx context.Context, phase store.Phase, cause error) {
 	_ = s.endPhase(context.Background(), phase, "failed", cause)
 }
 
-func (s *Service) eventSink(campaignID, phaseID string) harness.EventSink {
+func (s *Service) eventSink(taskID, phaseID string) harness.EventSink {
 	return func(ctx context.Context, event harness.Event) error {
 		pid := payloadInt(event.Payload, "pid")
 		if event.Type == "process_start" {
-			_, _ = s.db.StartProcess(ctx, campaignID, phaseID, "pi", event.Name, pid, fmt.Sprint(event.Payload["command"]))
+			_, _ = s.db.StartProcess(ctx, taskID, phaseID, "pi", event.Name, pid, fmt.Sprint(event.Payload["command"]))
 		}
 		if event.Type == "process_end" {
-			_ = s.db.EndProcess(ctx, campaignID, pid, payloadInt(event.Payload, "exit_code"))
+			_ = s.db.EndProcess(ctx, taskID, pid, payloadInt(event.Payload, "exit_code"))
 		}
-		return s.trace(ctx, campaignID, phaseID, event.Type, event.Name, event.Payload)
+		return s.trace(ctx, taskID, phaseID, event.Type, event.Name, event.Payload)
 	}
 }
 
-func (s *Service) trace(ctx context.Context, campaignID, phaseID, eventType, name string, payload any) error {
-	_, err := s.db.AppendEvent(ctx, s.campaignDir(campaignID), store.Event{ID: randomID(), CampaignID: campaignID, PhaseID: phaseID, Type: eventType, Name: name, Payload: payload, StartedAt: time.Now().UTC()})
+func (s *Service) trace(ctx context.Context, taskID, phaseID, eventType, name string, payload any) error {
+	attemptID, branchID := phaseID, ""
+	var actions []string
+	if phaseID != "" {
+		if phase, err := s.db.PhaseByID(ctx, taskID, phaseID); err == nil {
+			attemptID = phase.ID
+			branchID = phase.BranchID
+			if task, taskErr := s.db.Task(ctx, taskID); taskErr == nil {
+				actions = AvailableActions(&phase, task.State)
+			} else {
+				actions = AvailableActions(&phase, "")
+			}
+		}
+	}
+	_, err := s.db.AppendEvent(ctx, s.taskDir(taskID), store.Event{ID: randomID(), TaskID: taskID, PhaseID: phaseID, AttemptID: attemptID, BranchID: branchID, Type: eventType, Name: name, Payload: payload, AvailableActions: actions, StartedAt: time.Now().UTC()})
 	return err
 }
 
-func (s *Service) campaignConfig(campaign store.Campaign) (config.Config, error) {
-	if campaign.ConfigSnapshot == "" {
+func (s *Service) taskConfig(task store.Task) (config.Config, error) {
+	if task.ConfigSnapshot == "" {
 		return s.config, nil
 	}
-	configured, problems, err := config.Parse([]byte(campaign.ConfigSnapshot), filepath.Dir(s.configPath))
+	configured, problems, err := config.Parse([]byte(task.ConfigSnapshot), filepath.Dir(s.configPath))
 	if err != nil {
 		return config.Config{}, err
 	}
 	if len(problems) > 0 {
-		return config.Config{}, fmt.Errorf("invalid campaign config: %s", strings.Join(problems, "; "))
+		return config.Config{}, fmt.Errorf("invalid task config: %s", strings.Join(problems, "; "))
 	}
 	return configured, nil
+}
+
+func validateTaskConfig(configured config.Config, harnesses harness.Registry) []string {
+	var problems []string
+	if !config.IsValidHarness(configured.Defaults.CodingAgent) {
+		problems = append(problems, "defaults.coding_agent must be pi or codex")
+	} else if harnesses != nil {
+		if _, ok := harnesses.Get(configured.Defaults.CodingAgent); !ok {
+			problems = append(problems, "harness "+configured.Defaults.CodingAgent+" unavailable")
+		}
+	}
+	if !config.IsValidThinking(configured.Defaults.Thinking) {
+		problems = append(problems, "defaults.thinking is invalid")
+	}
+	for _, role := range []string{"planner", "builder", "reviewer"} {
+		found := false
+		for _, a := range configured.Agents {
+			if a.Name == role {
+				found = true
+				if !config.IsValidThinking(a.Thinking) {
+					problems = append(problems, role+" thinking is invalid")
+				}
+				if a.Model == "" {
+					problems = append(problems, role+" model is required")
+				}
+			}
+		}
+		if !found {
+			problems = append(problems, "missing agent: "+role)
+		}
+	}
+	return problems
 }
 
 func agentForRole(configured config.Config, role string) (config.Agent, bool) {
@@ -681,9 +951,71 @@ func agentForRole(configured config.Config, role string) (config.Agent, bool) {
 	}
 	return config.Agent{}, false
 }
-func (s *Service) campaignDir(id string) string { return filepath.Join(s.root, "campaigns", id) }
+func (s *Service) taskDir(id string) string { return filepath.Join(s.root, "tasks", id) }
 
-func campaignID() (string, error) {
+func taskRepositories(taskID string, inputs []Repository, createdAt string) ([]store.TaskRepository, error) {
+	values := make([]store.TaskRepository, 0, len(inputs))
+	seen := make(map[string]bool, len(inputs))
+	primaryCount := 0
+	for index, input := range inputs {
+		name, source, submitted, err := normalizeRepository(input)
+		if err != nil {
+			return nil, err
+		}
+		if seen[name] {
+			return nil, fmt.Errorf("repository name %q is duplicated", name)
+		}
+		seen[name] = true
+		primary := input.Primary
+		if len(inputs) == 1 || index == 0 && !hasExplicitPrimary(inputs) {
+			primary = true
+		}
+		if primary {
+			primaryCount++
+		}
+		values = append(values, store.TaskRepository{ID: randomID(), TaskID: taskID, Name: name, SourceType: input.Type, SourceValue: source, SubmittedPath: submitted, Primary: primary, CreatedAt: createdAt})
+	}
+	if primaryCount != 1 {
+		return nil, fmt.Errorf("repositories require exactly one primary")
+	}
+	return values, nil
+}
+
+func normalizeRepository(input Repository) (name, source, submitted string, err error) {
+	switch input.Type {
+	case "local":
+		if !filepath.IsAbs(input.Path) {
+			return "", "", "", fmt.Errorf("local repository path must be absolute")
+		}
+		source, submitted = input.Path, input.Path
+	case "github":
+		if parts := strings.Split(input.Repo, "/"); len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			return "", "", "", fmt.Errorf("github repository must be owner/repository")
+		}
+		source = input.Repo
+	default:
+		return "", "", "", fmt.Errorf("repository type must be local or github")
+	}
+	name = strings.TrimSpace(input.Name)
+	if name == "" {
+		name = strings.TrimSuffix(filepath.Base(source), ".git")
+	}
+	if name == "." || name == ".." || name == "" || strings.ContainsAny(name, `/\\`) {
+		return "", "", "", fmt.Errorf("repository name must be one path segment")
+	}
+	return name, source, submitted, nil
+}
+
+func hasExplicitPrimary(repositories []Repository) bool {
+	for _, repository := range repositories {
+		if repository.Primary {
+			return true
+		}
+	}
+	return false
+}
+
+func taskID() (string, error) {
 	var bytes [4]byte
 	if _, err := rand.Read(bytes[:]); err != nil {
 		return "", err
@@ -697,14 +1029,59 @@ func randomID() string {
 	return hex.EncodeToString(bytes[:])
 }
 
-func readProfile(dir string) (factorygit.Profile, error) {
-	body, err := os.ReadFile(filepath.Join(dir, "repository-profile.json"))
-	if err != nil {
-		return factorygit.Profile{}, err
+func readTaskProfiles(task store.Task) (map[string]factorygit.Profile, error) {
+	profiles := make(map[string]factorygit.Profile, len(task.Repositories))
+	for _, repository := range task.Repositories {
+		body, err := os.ReadFile(filepath.Join(task.WorkspacePath, "repository-profiles", repository.Name+".json"))
+		if err != nil {
+			return nil, fmt.Errorf("read repository profile %s: %w", repository.Name, err)
+		}
+		var profile factorygit.Profile
+		if err = json.Unmarshal(body, &profile); err != nil {
+			return nil, fmt.Errorf("decode repository profile %s: %w", repository.Name, err)
+		}
+		profiles[repository.Name] = profile
 	}
-	var profile factorygit.Profile
-	err = json.Unmarshal(body, &profile)
-	return profile, err
+	return profiles, nil
+}
+
+func (s *Service) prepareRepository(ctx context.Context, repository store.TaskRepository, destination string) (factorygit.Profile, error) {
+	if repository.SourceType == "local" {
+		return factorygit.PrepareLocal(ctx, s.git, repository.SourceValue, destination)
+	}
+	return factorygit.PrepareGitHub(ctx, s.git, repository.SourceValue, destination)
+}
+
+func writeRepositoryProfile(taskWorkspace, name string, profile factorygit.Profile) error {
+	encoded, err := json.MarshalIndent(profile, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode repository profile: %w", err)
+	}
+	directory := filepath.Join(taskWorkspace, "repository-profiles")
+	if err = os.MkdirAll(directory, 0o700); err != nil {
+		return fmt.Errorf("create repository profile directory: %w", err)
+	}
+	if err = os.WriteFile(filepath.Join(directory, name+".json"), encoded, 0o600); err != nil {
+		return fmt.Errorf("write repository profile: %w", err)
+	}
+	return nil
+}
+
+func taskChangedFiles(ctx context.Context, runner factorygit.Runner, repositories []store.TaskRepository) ([]string, error) {
+	var changed []string
+	for _, repository := range repositories {
+		if repository.WorkingPath == "" {
+			continue
+		}
+		files, err := factorygit.ChangedFiles(ctx, runner, repository.WorkingPath)
+		if err != nil {
+			return nil, err
+		}
+		for _, file := range files {
+			changed = append(changed, repository.Name+"/"+file)
+		}
+	}
+	return changed, nil
 }
 
 func isActive(state State) bool {

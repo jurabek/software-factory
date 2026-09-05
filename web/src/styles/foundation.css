@@ -1,0 +1,12 @@
+@layer base {
+  * { box-sizing: border-box; }
+  html, body, #app { width: 100%; min-height: 100%; margin: 0; }
+  body { min-width: 48rem; color: var(--ui-text); background: var(--ui-canvas); font: 14px/1.45 var(--ui-font-mono); }
+  button, input, textarea, select { color: inherit; font: inherit; }
+  button { cursor: pointer; }
+  button:disabled { cursor: not-allowed; opacity: .45; }
+  button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 1px solid var(--ui-focus-ring); outline-offset: 2px; }
+  kbd { padding: .12rem .36rem; border: 1px solid var(--ui-border-strong); border-radius: .25rem; color: var(--ui-text-muted); background: #24202f; font: .78rem var(--ui-font-mono); }
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; } }
+}

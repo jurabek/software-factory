@@ -71,7 +71,7 @@ onUnmounted(() => cancelAnimationFrame(scrollFrame));
     <header class="panel-head">
       <div>
         <h2>Session WAL</h2>
-        <p>Live events from every factory phase</p>
+        <p>Live events from every Task attempt</p>
       </div>
       <label class="auto-scroll">
         <input v-model="autoScroll" type="checkbox" />

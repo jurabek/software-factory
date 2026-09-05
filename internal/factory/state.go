@@ -34,7 +34,7 @@ func CanTransition(from, to State) bool { return transitions[from][to] }
 
 func Transition(from, to State) error {
 	if !CanTransition(from, to) {
-		return fmt.Errorf("invalid campaign transition %q to %q", from, to)
+		return fmt.Errorf("invalid task transition %q to %q", from, to)
 	}
 	return nil
 }

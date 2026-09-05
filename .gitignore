@@ -5,3 +5,4 @@ dist
 node_modules
 web/node_modules
 .software-factory/
+/.software-factory

@@ -1,0 +1,738 @@
+= Retriable Execution and Task Workspace Plan
+:toc:
+:toclevels: 3
+
+== Status
+
+Proposed architecture and implementation plan for making every Task phase reconstructable, addressable from its events or artifacts, safely executable again, and operable from one persistent Task workspace.
+
+UI references:
+
+* `/home/jurabek/Pictures/screenshot-2026-09-05_18-13-20.png` for Task creation inside the persistent shell.
+* `/home/jurabek/Pictures/screenshot-2026-09-05_18-19-10.png` for the selected Task workspace and right-side graph.
+* `/home/jurabek/Pictures/screenshot-2026-09-05_18-19-31.png` for the session timeline, contextual rail, and bottom composer.
+
+This is a clean break. Existing `~/.software-factory` data, databases, workspaces, and sessions are deleted. No migration or compatibility path is required.
+
+== Decisions
+
+* Retrying work in a completed Task reopens the same Task.
+* A message sent to a running Agent defaults to steering delivery.
+* The UI accepts a message only. It cannot override role configuration, except for agent, model, and thinking level selected at Task creation.
+* Every Task receives a private Task Workspace when created.
+* Workspace snapshots remain until explicit Task deletion.
+* The UI uses `Task`; legacy Campaign naming is removed with the clean break.
+* The desktop shell has a persistent Task rail, central Task workspace, and contextual Artifact rail/viewer.
+* A user may act from any displayed state, Event, Attempt, or Artifact when transition policy permits.
+* A state-changing action creates an Intervention and a new attempt or branch. Historical state is never edited in place.
+* Artifact messages anchor to immutable source coordinates, not rendered DOM positions.
+* Reusable visuals live behind a framework-neutral CSS interface; Vue is an adapter at that seam.
+
+== Terminology
+
+Phase Definition:: An immutable, versioned description of work, its executor, inputs, dependencies, and acceptance policy.
+
+Phase Attempt:: One execution of one Phase Definition revision.
+
+Event:: An immutable observation emitted by a Phase Attempt. An Event is an addressable anchor, not an executable unit.
+
+Artifact:: A versioned output from an attempt, such as a plan, repository snapshot, check result, diff, or review result.
+
+Artifact Anchor:: An immutable Artifact digest plus a canonical text range, source line range, JSON pointer, or whole-block coordinate. It identifies the selected content independently of its rendered HTML.
+
+Intervention:: A persisted human message anchored to an Event, Artifact, or Phase Attempt.
+
+Execution Branch:: An immutable lineage of attempts. Retrying or revising historical work creates a new branch from the selected attempt.
+
+Agent Session:: The harness conversation used by an Agent attempt. It is not a workflow step.
+
+Task Workspace:: The private filesystem root created for one Task. It owns that Task's repository materializations, attempts, snapshots, sessions, and artifacts.
+
+Workspace Snapshot:: A content-addressed repository state used as an attempt input or produced as an attempt output.
+
+== Guarantees
+
+The factory guarantees reconstructable inputs and safe re-execution. It does not guarantee byte-identical Agent output because model providers and external tools may be nondeterministic.
+
+Every attempt records:
+
+* Phase Definition ID, revision, and digest
+* input Workspace Snapshot digest
+* dependency Artifact IDs and digests
+* exact rendered system and user prompts
+* accepted Interventions and delivery order
+* harness name and version
+* provider and model IDs
+* thinking level
+* harness name and version (agents use all available harness tools)
+* Pi version and Agent Session coordinates
+* working directory, command arguments, relevant environment, and timeout
+* start and end timestamps, status, error, usage, and cost
+* output Workspace Snapshot and Artifact digests
+
+History is append-only:
+
+. A Phase Attempt is never reset or overwritten.
+. A Phase Definition revision is never edited after execution starts.
+. An Event and Intervention are never rewritten.
+. Every retry creates a new Phase Attempt.
+. Every revision creates a new Phase Definition revision and attempt.
+. Superseded downstream attempts remain inspectable.
+. A Task is deleted only through its explicit delete operation.
+
+== Execution operations
+
+=== Comment
+
+Persist the Intervention without scheduling work. Available for every Event, Artifact, and Phase Attempt.
+
+=== Steer
+
+Deliver a message to a running Agent after its current assistant turn and tool calls finish. Steering is the default when the selected Event belongs to the currently running Agent attempt.
+
+The Intervention must be committed before delivery to the harness. Delivery status is recorded as `queued`, `delivered`, `applied`, or `failed`.
+
+=== Follow up
+
+Deliver a message after the running Agent settles. This remains an explicit secondary action rather than the default.
+
+=== Retry exact
+
+Create a new attempt from the selected attempt's input Workspace Snapshot, using the same Phase Definition revision and captured inputs. Partial output from the selected attempt is not included.
+
+=== Revise and retry
+
+Create a new Phase Definition revision from the selected attempt's input Workspace Snapshot. The user message is appended as an instruction amendment. Factory-owned Agent configuration remains unchanged.
+
+=== Continue repair
+
+Create a configured Builder repair phase from the selected attempt's output Workspace Snapshot. This preserves partial repository changes and supplies the failure evidence plus user message to the Builder.
+
+A deterministic check is never converted into an Agent verdict. After repair, the unchanged check definition runs again. Downstream review also runs again.
+
+== Event addressing
+
+The UI may attach a message to any displayed Event. The server resolves:
+
+[source,text]
+----
+Event -> Phase Attempt -> Phase Definition -> Execution Branch
+----
+
+The selected Event provides context and lineage. The operation always applies to its owning attempt or artifact, never to a raw stream record in isolation.
+
+Each Event response includes server-computed available actions. The UI does not duplicate transition policy.
+
+Examples:
+
+* Running Agent event: `comment`, `steer`, `follow_up`
+* Failed Agent event: `comment`, `retry`, `revise`, `repair`
+* Failed check event: `comment`, `retry`, `repair`
+* Successful historical event: `comment`, `retry`, `revise`
+* Plan-with-questions artifact: `comment`, `revise`
+* Completed Task event: `comment`, `retry`, `revise`, `repair` when applicable
+
+== Branch and Task behavior
+
+A Task has one selected branch head. Task state is a projection of that branch.
+
+Creating a Task creates its secure Task Workspace before returning success. Task creation and workspace allocation are one coordinated operation: a database failure removes the new workspace, while a workspace failure prevents the Task record. The Task response includes `workspace_path`. Repository preparation materializes isolated repository state beneath this workspace before the first executable phase.
+
+When an Intervention retries historical work:
+
+. Resolve the target attempt and its input or output snapshot.
+. Create a child Execution Branch.
+. Persist the Intervention and queued attempt atomically.
+. Select the child branch as the Task head.
+. Mark affected downstream attempts as superseded on the new branch without changing their historical records.
+. Recompute Task state from the new head.
+. Execute the new attempt and required downstream phases.
+
+Retrying a completed Task reopens that Task. Its prior completed branch and completion evidence remain immutable and visible. The Task's current `ended_at` is cleared, while completion history remains on the prior branch. The one-active-Task rule is enforced before reopening.
+
+A new upstream result invalidates downstream work on the selected branch. The transition policy schedules downstream phases in dependency order. No previous result is silently reused as fresh acceptance evidence.
+
+== Workspace snapshots
+
+Each attempt uses an isolated workspace materialized from an immutable Workspace Snapshot.
+
+[source,text]
+----
+tasks/<task-id>/
+  task.json
+  events.jsonl
+  workspace/
+    snapshots/<digest>/
+    branches/<branch-id>/
+    attempts/<attempt-id>/
+      repository/
+      inputs.json
+      events.jsonl
+      artifacts/
+      sessions/
+----
+
+Snapshots preserve repository-relative paths, file contents, executable modes, symlinks, tracked files, and relevant untracked files. Git metadata is not part of snapshot content.
+
+Snapshot rules:
+
+* Retry exact materializes the selected attempt's input snapshot.
+* Revise and retry materializes the selected attempt's input snapshot.
+* Continue repair materializes the selected attempt's output snapshot.
+* Successful repository-changing attempts produce a new output snapshot.
+* Read-only attempts reference the unchanged input snapshot.
+* Snapshot identity is a content digest.
+* Snapshots and attempt workspaces remain until Task deletion.
+
+== Planner feedback
+
+Planner questions use the generic Intervention path rather than a Planner-only feedback mechanism.
+
+[source,text]
+----
+Planner attempt 1
+  -> Plan artifact v1 with unresolved questions
+  -> User message anchored to the plan artifact or its completion Event
+  -> Planner definition revision 2
+  -> Planner attempt 2
+  -> Plan artifact v2
+  -> Approval bound to the v2 digest
+----
+
+The revised attempt receives the prior plan, unresolved questions, and Intervention explicitly. Agent Session context is supporting evidence, not the sole source of revision input.
+
+Approval remains unavailable while the selected plan has unresolved questions.
+
+== Failed-step repair
+
+[source,text]
+----
+Check attempt 1 fails
+  -> User sends repair instruction
+  -> Builder repair attempt starts from the failed output snapshot
+  -> Check attempt 2 executes the unchanged check definition
+  -> Reviewer executes against the repaired branch
+----
+
+For an Agent failure:
+
+* Retry exact discards partial output and starts from the input snapshot.
+* Revise and retry discards partial output and adds the message to a new definition revision.
+* Continue repair keeps partial output and asks the configured Builder to repair it.
+
+The user supplies only the message. Factory policy chooses the configured Agent role and immutable Task configuration.
+
+== Harness seam
+
+The Harness module owns Agent process interaction behind a small interface:
+
+[source,go]
+----
+type Harness interface {
+    Start(context.Context, AttemptRequest, EventSink) (Execution, error)
+}
+
+type Execution interface {
+    Send(context.Context, Message) error
+    Wait(context.Context) (Result, error)
+    Abort(context.Context) error
+}
+----
+
+`AttemptRequest` contains the immutable attempt inputs and Agent Session starting coordinate. `Message` contains persisted Intervention identity, text, and delivery mode.
+
+The Pi adapter runs the installed `pi` command in RPC mode. RPC provides:
+
+* steering and follow-up delivery
+* abort support
+* streamed lifecycle and tool events
+* append-only session entries with durable entry IDs
+* session tree inspection and branching
+
+Each Agent attempt records its base session entry ID and resulting leaf entry ID. Revised attempts branch from the recorded base coordinate instead of appending to a contaminated active path.
+
+Harness-specific RPC details do not leak into factory orchestration or HTTP handlers.
+
+== Transition policy
+
+The transition-policy module decides available operations and downstream scheduling from durable facts.
+
+Inputs:
+
+* Task state and selected branch
+* target Phase Definition and Attempt
+* target Event or Artifact
+* attempt status and executor kind
+* dependency and acceptance state
+* active process state
+* Intervention intent
+
+Outputs:
+
+* accepted or rejected command
+* branch operation
+* snapshot starting point
+* Phase Definition revision, when required
+* next queued attempts
+* projected Task state
+
+Required checks remain mandatory. No Intervention waives a required check, protected-path violation, malformed envelope, or inconsistent review verdict.
+
+== HTTP interface
+
+All UI and HTTP resources use `tasks`; legacy resource naming is not retained as an alias.
+
+=== Create a Task
+
+[source,http]
+----
+POST /api/v1/tasks
+----
+
+Task creation allocates the Task Workspace and returns its `workspace_path`. A successful response always identifies an existing private workspace.
+
+=== Submit an Intervention
+
+[source,http]
+----
+POST /api/v1/tasks/{task-id}/interventions
+----
+
+[source,json]
+----
+{
+  "target": {
+    "artifact_id": "artifact-id",
+    "anchor": {
+      "kind": "text_range",
+      "start": 418,
+      "end": 449,
+      "quote": "Proposed End State Architecture"
+    }
+  },
+  "intent": "revise",
+  "message": "This section must cover Task drafts.",
+  "expected_branch_head": "attempt-id",
+  "idempotency_key": "client-generated-id"
+}
+----
+
+`target` accepts exactly one of `event_id`, `artifact_id`, or `attempt_id`. An Artifact target may include one canonical `anchor`. The server verifies that the Artifact digest and quoted content still match before accepting the Intervention; stale anchors return `409 stale_anchor`.
+
+`intent` accepts:
+
+* `comment`
+* `steer`
+* `follow_up`
+* `retry`
+* `revise`
+* `repair`
+
+`delivery` defaults to `steer` for a running Agent and is rejected when it does not apply. Non-comment execution intents require a non-empty message except exact retry.
+
+The response contains the persisted Intervention, normalized target and anchor, chosen policy action, branch ID, and queued attempt ID when execution is scheduled.
+
+=== Reads
+
+Add:
+
+* `GET /tasks/{id}/branches`
+* `GET /tasks/{id}/attempts`
+* `GET /tasks/{id}/attempts/{attempt-id}`
+* `GET /tasks/{id}/artifacts`
+* `GET /tasks/{id}/interventions`
+
+Events include `attempt_id`, optional `artifact_id`, available actions, and branch lineage.
+
+=== Concurrency
+
+Mutation requests require:
+
+* mutation token
+* same-origin validation
+* client-generated idempotency key
+* expected selected branch head
+
+A stale head returns `409 stale_branch`. Reusing an idempotency key returns the original result without creating duplicate attempts.
+
+Persisting the Intervention, creating its branch, queuing its attempt, and selecting the new branch occur in one database transaction.
+
+== Persistence model
+
+Replace the database schema outright with:
+
+tasks:: Task identity, Task Workspace path, selected branch, projected state, repository source, timestamps, usage, and cost.
+
+branches:: Parent branch, fork attempt, selected head attempt, status, and timestamps.
+
+phase_definitions:: Stable phase key, revision, executor kind, owner, specification JSON, digest, and parent revision.
+
+phase_attempts:: Definition revision, branch, attempt number, snapshots, status, error, process, Agent Session coordinates, usage, and timestamps.
+
+interventions:: Target coordinates, optional canonical Artifact Anchor, actor, intent, text, delivery state, idempotency key, expected branch head, and timestamps.
+
+artifacts:: Attempt output type, digest, metadata, storage path, and timestamps.
+
+events:: Sequence cursor, attempt and artifact coordinates, parent Event, type, payload, and timestamps.
+
+processes:: Attempt process identity, kind, PID, command, status, exit code, and timestamps.
+
+agent_sessions:: Attempt and role, harness, provider, model, settings, session path, base entry, result leaf, usage, and cost.
+
+workspace_snapshots:: Digest, manifest, storage path, size, and timestamps.
+
+Foreign keys cascade only during explicit Task deletion. Historical branch records are otherwise immutable.
+
+== Recovery
+
+On restart:
+
+. Mark running processes ended or failed after identity-safe recovery.
+. Mark their attempts `interrupted`.
+. Preserve their last output snapshot when safely capturable.
+. Move the selected branch and Task to `blocked`.
+. Offer retry, revise, or repair actions based on the interrupted attempt.
+. Never resume automatically.
+
+Queued but unstarted attempts remain queued only when no external process began. The user explicitly resumes execution.
+
+== Unified UI
+
+=== Workspace composition
+
+[source,text]
+----
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ brand / Task breadcrumb                                      health         │
+├──────────────────┬──────────────────────────────────────┬───────────────────┤
+│ TASKS            │ Task header + lifecycle actions      │ ARTIFACTS/SUMMARY │
+│                  ├──────────────────────────────────────┤                   │
+│ selected Task    │ phase/attempt state graph            │ Artifact versions │
+│ Task             │ Event and Intervention timeline      │ and current item  │
+│ Task             │ selected Artifact viewer/composer    │                   │
+│                  │                                      │                   │
+│ + New Task       │ message/action area                  │                   │
+└──────────────────┴──────────────────────────────────────┴───────────────────┘
+----
+
+The left Task rail and center workspace are persistent. The right rail is contextual: it lists Artifacts and summary data for the selected branch and collapses when unused. Opening an Artifact makes its viewer the primary center content while preserving Task and Artifact navigation.
+
+=== Task rail and create state
+
+* Use a fixed desktop width around `18rem`, a one-pixel divider, a scrollable Task list, and a bottom-pinned `New Task` action.
+* Show the Task request as the primary label and repository plus projected state as compact secondary metadata.
+* Mark selection with `aria-current="page"`, a stronger surface, and a narrow accent edge.
+* Encode state with text and an indicator; color is never the only cue.
+* Keep server order, selected row, and rail scroll stable across polling refreshes.
+* Selecting a Task updates the hash route and loads its selected branch without a full page reload.
+* With no selection, retain the shell and rail while the center displays Task creation.
+* Creating a Task retains local/GitHub source selection, health gating, validation, and automatic selection of the created Task.
+
+=== Task workspace
+
+The compact Task header contains request, Task ID, projected state, duration, checks, repository, branch, and attempt. Lifecycle actions remain visible only when permitted by the server.
+
+The center scroll region can display:
+
+* phase and attempt state graph
+* Event and Intervention timeline
+* Session WAL
+* selected Artifact
+* repository and Workspace Snapshot metadata
+* plan, check, diff, and review evidence
+
+Long code, paths, payloads, diffs, and rendered diagrams scroll within their owning pane and never widen the shell.
+
+=== Artifact rail and viewer
+
+The Artifact experience follows the second reference:
+
+* Top-level `Artifacts` and `Summary` modes occupy the contextual rail/viewer area. Auto-advance is a toggle, not a separate data model.
+* The Artifact picker groups immutable versions by type, Phase Definition, attempt, and branch.
+* The viewer offers `Rendered` and `Raw` modes for renderable text Artifacts.
+* The header exposes copy, comment, and fullscreen controls. Download appears only when the Artifact has a downloadable representation.
+* Rendered Markdown, AsciiDoc, JSON, diffs, logs, and diagrams use safe type-specific renderers. Raw content remains available as the source of truth.
+* Switching version or branch never mutates the Artifact or silently moves an existing anchor.
+* Auto-advance follows newly selected-branch Artifacts only while enabled. Manual historical selection disables following until explicitly resumed.
+
+=== Anchored contextual composer
+
+Selecting Artifact text, a rendered block, an Event row, or a state-graph node opens a compact composer adjacent to the target, like the second reference. The selected source range or node remains visibly highlighted while the composer is open.
+
+The composer shows:
+
+* immutable target label and digest
+* phase, attempt, branch, and definition revision
+* input/output Workspace Snapshot identity
+* server-provided valid actions
+* concise consequence preview
+* message field
+* default action and Send control
+
+Artifact text selection is converted to an Artifact Anchor before opening the composer. Supported anchor kinds are:
+
+* `text_range`: UTF-8 source offsets plus exact quote
+* `line_range`: source line start/end plus exact quote
+* `json_pointer`: RFC 6901 pointer plus value digest
+* `block`: renderer block identity plus source range
+
+Rendered DOM paths, pixel positions, and client-only node indexes are never persisted. If selection cannot map to canonical source, the composer targets the whole Artifact and states that reduced precision.
+
+Submitting a comment stores the anchor without scheduling work. Submitting a state-changing action stores the same anchor as instruction context, then creates the policy-selected definition revision, attempt, or branch.
+
+=== State-changing actions
+
+The UI never directly writes a Task or Attempt status. It renders server-provided `available_actions`; selecting one previews the append-only transition before submission.
+
+[cols="1,2,2",options="header"]
+|===
+|Selected state/target
+|Typical actions
+|Visible result
+
+|Draft Task
+|start, comment
+|First branch and queued preparation attempt
+
+|Running Agent Attempt
+|comment, steer, follow-up, pause, abort
+|Delivery status beside the anchored Intervention
+
+|Running deterministic Attempt
+|comment, pause, abort
+|No Agent steering action
+
+|Failed or interrupted Agent Attempt
+|comment, retry exact, revise and retry, continue repair
+|New branch/attempt and explicit input or output snapshot source
+
+|Failed deterministic check
+|comment, retry exact, continue repair
+|New check attempt or Builder repair followed by the unchanged check
+
+|Successful historical Attempt or Artifact
+|comment, retry exact, revise and retry
+|Child branch; replaced downstream work shown as superseded
+
+|Completed Task
+|comment, retry exact, revise and retry, continue repair when applicable
+|Reopened Task after active-slot validation; completed branch retained
+|===
+
+The table documents expected policy categories only. The transition-policy module remains authoritative and may remove invalid actions. The composer does not infer actions from status strings.
+
+After submission, the UI:
+
+. Keeps the old Attempt and Artifact visible as immutable history.
+. Adds the Intervention at its anchor with `queued`, `delivered`, `applied`, or `failed` state.
+. Draws the new child branch and queued Attempt in the state graph.
+. Selects the new branch only after the server transaction succeeds.
+. Marks invalidated downstream Attempts as superseded on that branch.
+. Moves live focus to the new Attempt while preserving a route back to the source anchor.
+
+A stale branch or anchor leaves the composer text intact, refreshes lineage, and requires the user to reselect the action. A completed-Task retry warns that the Task will reopen and consume the single active-Task slot.
+
+=== Trace and lineage presentation
+
+Every Attempt and relevant Artifact displays:
+
+* attempt number and definition revision
+* selected branch and parent branch
+* current, historical, or superseded state
+* Intervention anchor and delivery state
+* input and output Workspace Snapshot links
+* retry source: input for retry/revise, output for repair
+
+The state graph uses nodes for Attempts and edges for dependency or branch lineage. Choosing a node opens the same composer interface as Event and Artifact targets, ensuring every displayed state uses one interaction model.
+
+=== Responsive and accessible behavior
+
+* Wide screens show Task rail, workspace, and contextual Artifact rail.
+* Medium screens collapse the Artifact rail into a tab while keeping the Task rail visible.
+* Narrow screens expose Task and Artifact rails as separate accessible overlays; neither relies on hover.
+* Overlay dismissal supports Escape, focus return, and background scroll locking.
+* Keyboard order follows top bar, Task navigation, workspace header, workspace content, then contextual rail.
+* Selection, state, focus, hover, disabled, live, historical, and superseded treatments remain distinguishable without color alone.
+* Dynamic status and Intervention delivery updates use appropriately scoped live regions.
+* Motion respects `prefers-reduced-motion`.
+
+== Framework-neutral style seam
+
+The style system is a deep module. Its interface is a small set of semantic CSS custom properties, classes, data attributes, ARIA states, and documented DOM relationships. Vue is one adapter at this seam; another framework can emit the same markup contract and reuse the implementation unchanged.
+
+=== CSS organization
+
+[source,text]
+----
+web/src/styles/
+  index.css          import order and cascade layers
+  tokens.css         semantic color, type, space, geometry, shadow, motion
+  foundation.css     reset, document defaults, focus, reduced motion
+  primitives.css     button, badge, panel, tabs, field, popover, scroll region
+  task-shell.css     three-pane shell, Task rail, workspace, responsive rails
+  artifact-view.css  Artifact picker, rendered/raw viewer, anchors, composer
+  factory-views.css  state graph, trace, Session WAL, checks, diff adaptations
+----
+
+`web/src/main.ts` imports only `styles/index.css`. Styles are plain CSS without SFC syntax, CSS-in-JS values, generated class names, or framework selectors.
+
+[source,css]
+----
+@layer reset, tokens, base, primitives, patterns, views, utilities;
+----
+
+Token groups:
+
+* Surfaces: `--ui-canvas`, `--ui-surface`, `--ui-surface-raised`, `--ui-surface-selected`, `--ui-surface-overlay`.
+* Content: `--ui-text`, `--ui-text-muted`, `--ui-text-subtle`, `--ui-text-on-accent`.
+* Dividers: `--ui-border`, `--ui-border-strong`, `--ui-focus-ring`, `--ui-anchor-highlight`.
+* State: `--ui-state-running`, `--ui-state-success`, `--ui-state-warning`, `--ui-state-danger`, `--ui-state-paused`, `--ui-state-superseded`.
+* Typography: `--ui-font-sans`, `--ui-font-mono`, size and line-height steps.
+* Geometry: space steps, rail widths, control/header heights, radii, and anchored-composer width.
+* Motion: duration and easing tokens with reduced-motion overrides.
+
+Pattern files consume role-based tokens and avoid raw theme colors. Runtime layout values are limited to genuinely data-driven geometry such as graph coordinates, phase duration, and composer placement.
+
+=== Markup interface
+
+[source,html]
+----
+<div class="task-shell" data-artifact-rail="open">
+  <aside class="task-rail" aria-label="Tasks">...</aside>
+  <main class="task-workspace">...</main>
+  <aside class="artifact-rail" aria-label="Artifacts">...</aside>
+</div>
+
+<button class="task-row" aria-current="page" data-state="building">...</button>
+<article class="artifact-view" data-mode="rendered">...</article>
+<form class="context-composer" data-intent="revise">...</form>
+----
+
+Classes express visual roles, `data-*` attributes express finite variants, and ARIA expresses interaction state. Selectors do not depend on Vue internals or accidental nesting. A pattern owns its complete appearance behind one primary class rather than requiring callers to assemble long utility lists.
+
+== UI module plan
+
+=== Style module
+
+Files:
+
+* Add the files under `web/src/styles/` described above.
+* Update `web/src/main.ts` to import `styles/index.css`.
+* Remove `web/src/style.css` after its final live selector is migrated.
+
+Acceptance:
+
+* Styles can be imported by plain HTML without Vue tooling.
+* No Vue template contains scoped styles or presentation objects except data-driven geometry.
+* Every interactive primitive has focus-visible, disabled, and reduced-motion behavior.
+
+=== Persistent shell and Task navigation modules
+
+Files:
+
+* Add `web/src/components/TaskRail.vue`.
+* Add `web/src/components/CreateTaskForm.vue`.
+* Add `web/src/components/TaskWorkspaceHeader.vue` when header complexity warrants extraction.
+* Update `web/src/App.vue`.
+
+The Task rail accepts Task rows plus selected ID and emits selection/create intent. It does not own routing or fetches. The create module emits validated Task input; `App.vue` owns HTTP calls, refresh, errors, route selection, stream lifecycle, and stale-response protection.
+
+Acceptance:
+
+* The Task rail remains present across empty, loading, selected, failed, and completed states.
+* Direct hash navigation, back/forward, rapid switching, and selected-Task deletion resolve correctly.
+* Creating a Task sends the clean-break `/tasks` payload and selects the returned Task.
+
+=== Artifact workspace modules
+
+Files:
+
+* Add `web/src/components/ArtifactRail.vue`.
+* Add `web/src/components/ArtifactViewer.vue`.
+* Add `web/src/components/ContextComposer.vue`.
+* Add `web/src/components/AttemptGraph.vue`.
+* Update `web/src/components/SessionLog.vue`.
+* Update `web/src/api.ts` and `web/src/types.ts` for Tasks, branches, attempts, artifacts, anchors, Interventions, and available actions.
+
+The Artifact viewer owns safe rendering and source-to-anchor mapping behind one interface. The contextual composer accepts a normalized target, anchor, available actions, consequence preview, and expected branch head; it emits one Intervention request. It does not encode transition policy.
+
+Acceptance:
+
+* Rendered/raw switching preserves Artifact version and scroll where possible.
+* Text and block selections produce verified canonical anchors.
+* Every Event, Attempt node, and Artifact opens the same composer interface.
+* A successful state-changing submission displays the new branch/Attempt without removing historical context.
+* Stale branch and stale anchor responses preserve unsent message text.
+
+=== Existing detail adaptation
+
+Apply shared panel, tab, control, state, and scroll primitives to Session WAL, repository data, plan, checks, diffs, reviews, Events, and errors. Preserve event expansion, payload visibility, auto-scroll, phase filtering, live reconnect, and all permitted lifecycle actions.
+
+Acceptance:
+
+* No existing detail or lifecycle capability is lost.
+* Long content stays inside its pane.
+* Server-provided state and available actions are presented without client policy duplication.
+
+== Delivery dependencies
+
+[source,text]
+----
+Task schema + Workspace Snapshots
+  -> Phase Definitions + Attempts + Branches
+    -> transition policy
+      -> Task/Artifact/Intervention HTTP interface
+        -> web types and HTTP adapter
+          -> Task shell + Artifact viewer
+            -> canonical selection anchors
+              -> contextual composer + state graph actions
+----
+
+The Task rail may be built once the clean-break Task read interface is stable. Artifact selection depends on immutable Artifact identity. The composer depends on verified anchors and server-provided actions. State-changing UI acceptance cannot complete until branch creation, snapshot selection, idempotency, and stale-head handling are implemented and tested.
+
+== Clean-break rollout
+
+. Stop the server.
+. Delete `~/.software-factory`, or the configured `SOFTWARE_FACTORY_DIR`.
+. Replace the schema and filesystem layout without migrations.
+. Replace Planner-only feedback with generic Interventions.
+. Introduce Phase Definitions, Attempts, Branches, Artifacts, and Workspace Snapshots.
+. Change orchestration from linear resume logic to branch-aware transition policy.
+. Change the Pi adapter from one-shot JSON mode to RPC execution.
+. Add Event-, Attempt-, and Artifact-addressable Intervention endpoints, including canonical Artifact Anchors.
+. Add the framework-neutral CSS interface and persistent three-pane Task shell.
+. Add Artifact rendered/raw viewing, anchored contextual composer, and attempt state graph.
+. Connect every displayed state to server-provided actions and branch-aware refresh.
+. Add retry, revision, repair, recovery, Task Workspace, anchor, UI state, and completed-Task reopening tests.
+
+Startup against an incompatible state layout returns `state_incompatible` with instructions to delete the configured factory directory. It never partially upgrades or silently deletes state.
+
+== Acceptance scenarios
+
+. Planner returns unresolved questions; a message revises the plan and approval binds to the revised digest.
+. A running Agent receives a steering message after the current tool turn.
+. Duplicate Intervention submission creates one Intervention and one attempt.
+. A stale branch-head request returns `409` without side effects.
+. Exact retry starts from the original input snapshot.
+. Repair retry starts from the failed output snapshot.
+. A failed deterministic check invokes Builder repair, then reruns the unchanged check.
+. Retrying an earlier phase preserves old downstream attempts as superseded history.
+. Creating a Task creates its private workspace before returning success.
+. A workspace allocation failure leaves no Task record.
+. Retrying a completed Task reopens it while preserving its completed branch.
+. A second active Task prevents reopening until the active slot is free.
+. Restart marks active work interrupted and requires an explicit retry, revision, or repair.
+. Task deletion removes its Task Workspace, branches, attempts, sessions, artifacts, snapshots, and events.
+. The persistent left rail switches Tasks without unloading the shell or losing its scroll position.
+. The Artifact rail switches immutable versions and branches; rendered/raw modes show the same source Artifact.
+. Selecting rendered text creates a verified canonical Artifact Anchor and opens the adjacent composer.
+. Selecting an Event row or Attempt state node opens the same composer with server-provided actions.
+. Commenting preserves state; retry, revise, and repair create the correct append-only branch/Attempt.
+. Historical and superseded Attempts remain visible after a state-changing action.
+. A stale Artifact Anchor or branch head preserves composer text and creates no Intervention or Attempt.
+. Wide, medium, and narrow layouts keep Task navigation, Artifact navigation, and workspace controls keyboard-accessible.
+. `npm run typecheck`, `npm run build`, `go test ./...`, and `go test -race ./...` pass.
+
+== Unresolved questions
+
+None.

@@ -21,8 +21,8 @@ type PlanStep struct {
 }
 type Plan struct {
 	Common
-	Steps    []PlanStep `json:"steps"`
-	Questions []string  `json:"questions"`
+	Steps     []PlanStep `json:"steps"`
+	Questions []string   `json:"questions"`
 }
 type Build struct {
 	Common

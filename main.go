@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -104,11 +105,36 @@ func run() error {
 	configPath := filepath.Join(root, "config.yaml")
 	configured, problems, loadErr := config.Load(configPath)
 	piPath := envOrDefault("PI_PATH", "pi")
-	catalog := func(ctx context.Context) ([]config.Model, error) {
-		return config.Catalog(ctx, config.OSRunner{}, piPath)
+	registry := harness.Registry{"pi": piharness.Harness{Path: piPath}}
+	harnessNames := make([]string, 0, len(registry))
+	for name := range registry {
+		harnessNames = append(harnessNames, name)
+	}
+	sort.Strings(harnessNames)
+	catalog := func(ctx context.Context, harnessName string) ([]config.Model, error) {
+		if harnessName == "" || harnessName == "pi" {
+			return config.Catalog(ctx, config.OSRunner{}, piPath)
+		}
+		adapter, ok := registry.Get(harnessName)
+		if !ok {
+			return nil, fmt.Errorf("harness %s unavailable", harnessName)
+		}
+		models, err := adapter.Models(ctx)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]config.Model, 0, len(models))
+		for _, m := range models {
+			out = append(out, config.Model{Provider: m.Provider, ID: m.ID, ContextWindow: m.ContextWindow})
+		}
+		return out, nil
 	}
 	if loadErr == nil {
-		if models, modelErr := catalog(context.Background()); modelErr != nil {
+		harnessForValidation := configured.Defaults.CodingAgent
+		if harnessForValidation == "" {
+			harnessForValidation = "pi"
+		}
+		if models, modelErr := catalog(context.Background(), harnessForValidation); modelErr != nil {
 			problems = append(problems, modelErr.Error())
 		} else {
 			for _, agent := range configured.Agents {
@@ -118,9 +144,8 @@ func run() error {
 			}
 		}
 	}
-	registry := harness.Registry{"pi": piharness.Harness{Path: piPath}}
 	service := factory.NewService(root, db, configured, configPath, registry, factorygit.OSRunner{})
-	apiServer, err := api.New(db, service, configured, problems, loadErr, catalog)
+	apiServer, err := api.New(db, service, configured, problems, loadErr, harnessNames, catalog)
 	if err != nil {
 		return err
 	}
@@ -173,7 +198,7 @@ func factoryRoot() (string, error) {
 }
 
 func bootstrap(root string) error {
-	for _, dir := range []string{root, filepath.Join(root, "campaigns")} {
+	for _, dir := range []string{root, filepath.Join(root, "tasks")} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return err
 		}

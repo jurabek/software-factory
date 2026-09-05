@@ -3,7 +3,7 @@ info:
   title: Software Factory API
   version: "1.0"
   description: |
-    Loopback-only API for creating and controlling Software Factory campaigns.
+    Loopback-only API for creating and controlling Software Factory tasks.
     Call GET /control, copy its token, then use Authorize to set the mutation token.
 basePath: /api/v1
 schemes:
@@ -14,7 +14,7 @@ produces:
   - application/json
 tags:
   - name: System
-  - name: Campaigns
+  - name: Tasks
 securityDefinitions:
   MutationToken:
     type: apiKey
@@ -41,11 +41,27 @@ paths:
           description: Resolved configuration and validation errors
           schema:
             $ref: "#/definitions/ConfigResponse"
+  /harnesses:
+    get:
+      tags: [System]
+      operationId: getHarnesses
+      summary: List available coding agents
+      responses:
+        "200":
+          description: Available harnesses
+          schema:
+            $ref: "#/definitions/HarnessesResponse"
   /models:
     get:
       tags: [System]
       operationId: getModels
-      summary: List available Pi models
+      summary: List available models for a harness
+      parameters:
+        - in: query
+          name: harness
+          type: string
+          required: false
+          description: Harness name (default pi)
       responses:
         "200":
           description: Available models
@@ -63,66 +79,66 @@ paths:
           description: Control state and mutation token
           schema:
             $ref: "#/definitions/Control"
-  /campaigns:
+  /tasks:
     get:
-      tags: [Campaigns]
-      operationId: listCampaigns
-      summary: List campaigns
+      tags: [Tasks]
+      operationId: listTasks
+      summary: List tasks
       responses:
         "200":
-          description: Campaigns ordered newest first
+          description: Tasks ordered newest first
           schema:
             type: array
             items:
-              $ref: "#/definitions/Campaign"
+              $ref: "#/definitions/Task"
         "500":
           $ref: "#/responses/InternalError"
     post:
-      tags: [Campaigns]
-      operationId: createCampaign
-      summary: Create a campaign draft
+      tags: [Tasks]
+      operationId: createTask
+      summary: Create a task draft
       security:
         - MutationToken: []
       parameters:
         - in: body
-          name: campaign
+          name: task
           required: true
           schema:
-            $ref: "#/definitions/CreateCampaignRequest"
+            $ref: "#/definitions/CreateTaskRequest"
       responses:
         "201":
-          description: Campaign draft created
+          description: Task draft created
           schema:
-            $ref: "#/definitions/Campaign"
+            $ref: "#/definitions/Task"
         "403":
           $ref: "#/responses/Forbidden"
         "422":
           $ref: "#/responses/UnprocessableEntity"
-  /campaigns/{id}:
+  /tasks/{id}:
     parameters:
-      - $ref: "#/parameters/CampaignID"
+      - $ref: "#/parameters/TaskID"
     get:
-      tags: [Campaigns]
-      operationId: getCampaign
-      summary: Get a campaign
+      tags: [Tasks]
+      operationId: getTask
+      summary: Get a task
       responses:
         "200":
-          description: Campaign
+          description: Task
           schema:
-            $ref: "#/definitions/Campaign"
+            $ref: "#/definitions/Task"
         "404":
           $ref: "#/responses/NotFound"
         "500":
           $ref: "#/responses/InternalError"
     delete:
-      tags: [Campaigns]
-      operationId: deleteCampaign
-      summary: Delete an inactive campaign and its files
+      tags: [Tasks]
+      operationId: deleteTask
+      summary: Delete an inactive task and its files
       security:
         - MutationToken: []
       responses:
         "200":
-          description: Campaign deleted
+          description: Task deleted
           schema:
             $ref: "#/definitions/DeletedResponse"
         "403":
@@ -133,12 +149,12 @@ paths:
           $ref: "#/responses/Conflict"
         "500":
           $ref: "#/responses/InternalError"
-  /campaigns/{id}/start:
+  /tasks/{id}/start:
     parameters:
-      - $ref: "#/parameters/CampaignID"
+      - $ref: "#/parameters/TaskID"
     post:
-      tags: [Campaigns]
-      operationId: startCampaign
+      tags: [Tasks]
+      operationId: startTask
       summary: Start repository preparation and planning
       security:
         - MutationToken: []
@@ -153,13 +169,13 @@ paths:
           $ref: "#/responses/Conflict"
         "422":
           $ref: "#/responses/UnprocessableEntity"
-  /campaigns/{id}/approve:
+  /tasks/{id}/approve:
     parameters:
-      - $ref: "#/parameters/CampaignID"
+      - $ref: "#/parameters/TaskID"
     post:
-      tags: [Campaigns]
-      operationId: approveCampaign
-      summary: Approve the plan and continue the campaign
+      tags: [Tasks]
+      operationId: approveTask
+      summary: Approve the plan and continue the task
       security:
         - MutationToken: []
       parameters:
@@ -180,76 +196,128 @@ paths:
           $ref: "#/responses/Conflict"
         "422":
           $ref: "#/responses/UnprocessableEntity"
-  /campaigns/{id}/pause:
+  /tasks/{id}/feedback:
     parameters:
-      - $ref: "#/parameters/CampaignID"
+      - $ref: "#/parameters/TaskID"
     post:
-      tags: [Campaigns]
-      operationId: pauseCampaign
-      summary: Pause an active campaign
+      tags: [Tasks]
+      operationId: reviseTaskPlan
+      summary: Answer Planner questions and revise the plan
       security:
         - MutationToken: []
+      parameters:
+        - in: body
+          name: feedback
+          required: true
+          schema:
+            $ref: "#/definitions/FeedbackRequest"
       responses:
         "202":
           $ref: "#/responses/Accepted"
-        "403":
-          $ref: "#/responses/Forbidden"
-        "404":
-          $ref: "#/responses/NotFound"
         "409":
           $ref: "#/responses/Conflict"
         "422":
           $ref: "#/responses/UnprocessableEntity"
-  /campaigns/{id}/resume:
+  /tasks/{id}/interventions:
     parameters:
-      - $ref: "#/parameters/CampaignID"
-    post:
-      tags: [Campaigns]
-      operationId: resumeCampaign
-      summary: Resume a paused or recoverable blocked campaign
-      security:
-        - MutationToken: []
-      responses:
-        "202":
-          $ref: "#/responses/Accepted"
-        "403":
-          $ref: "#/responses/Forbidden"
-        "404":
-          $ref: "#/responses/NotFound"
-        "409":
-          $ref: "#/responses/Conflict"
-        "422":
-          $ref: "#/responses/UnprocessableEntity"
-  /campaigns/{id}/abort:
-    parameters:
-      - $ref: "#/parameters/CampaignID"
-    post:
-      tags: [Campaigns]
-      operationId: abortCampaign
-      summary: Abort a campaign
-      security:
-        - MutationToken: []
-      responses:
-        "202":
-          $ref: "#/responses/Accepted"
-        "403":
-          $ref: "#/responses/Forbidden"
-        "404":
-          $ref: "#/responses/NotFound"
-        "409":
-          $ref: "#/responses/Conflict"
-        "422":
-          $ref: "#/responses/UnprocessableEntity"
-  /campaigns/{id}/phases:
-    parameters:
-      - $ref: "#/parameters/CampaignID"
+      - $ref: "#/parameters/TaskID"
     get:
-      tags: [Campaigns]
-      operationId: listCampaignPhases
-      summary: List campaign phases
+      tags: [Tasks]
+      operationId: listTaskInterventions
       responses:
         "200":
-          description: Campaign phases
+          description: Persisted Task interventions
+          schema:
+            type: array
+            items:
+              $ref: "#/definitions/Intervention"
+    post:
+      tags: [Tasks]
+      operationId: commentOnTaskHistory
+      summary: Add an idempotent comment to a Task, Attempt, Event, or Artifact
+      security:
+        - MutationToken: []
+      parameters:
+        - in: body
+          name: intervention
+          required: true
+          schema:
+            $ref: "#/definitions/InterventionRequest"
+      responses:
+        "202":
+          description: Intervention persisted
+          schema:
+            $ref: "#/definitions/Intervention"
+  /tasks/{id}/pause:
+    parameters:
+      - $ref: "#/parameters/TaskID"
+    post:
+      tags: [Tasks]
+      operationId: pauseTask
+      summary: Pause an active task
+      security:
+        - MutationToken: []
+      responses:
+        "202":
+          $ref: "#/responses/Accepted"
+        "403":
+          $ref: "#/responses/Forbidden"
+        "404":
+          $ref: "#/responses/NotFound"
+        "409":
+          $ref: "#/responses/Conflict"
+        "422":
+          $ref: "#/responses/UnprocessableEntity"
+  /tasks/{id}/resume:
+    parameters:
+      - $ref: "#/parameters/TaskID"
+    post:
+      tags: [Tasks]
+      operationId: resumeTask
+      summary: Resume a paused or recoverable blocked task
+      security:
+        - MutationToken: []
+      responses:
+        "202":
+          $ref: "#/responses/Accepted"
+        "403":
+          $ref: "#/responses/Forbidden"
+        "404":
+          $ref: "#/responses/NotFound"
+        "409":
+          $ref: "#/responses/Conflict"
+        "422":
+          $ref: "#/responses/UnprocessableEntity"
+  /tasks/{id}/abort:
+    parameters:
+      - $ref: "#/parameters/TaskID"
+    post:
+      tags: [Tasks]
+      operationId: abortTask
+      summary: Abort a task
+      security:
+        - MutationToken: []
+      responses:
+        "202":
+          $ref: "#/responses/Accepted"
+        "403":
+          $ref: "#/responses/Forbidden"
+        "404":
+          $ref: "#/responses/NotFound"
+        "409":
+          $ref: "#/responses/Conflict"
+        "422":
+          $ref: "#/responses/UnprocessableEntity"
+  /tasks/{id}/attempts:
+    parameters:
+      - $ref: "#/parameters/TaskID"
+    get:
+      tags: [Tasks]
+      operationId: listTaskAttempts
+      summary: List Task attempts
+      responses:
+        "200":
+          description: Task attempts
           schema:
             type: array
             items:
@@ -258,13 +326,13 @@ paths:
           $ref: "#/responses/NotFound"
         "500":
           $ref: "#/responses/InternalError"
-  /campaigns/{id}/events:
+  /tasks/{id}/events:
     parameters:
-      - $ref: "#/parameters/CampaignID"
+      - $ref: "#/parameters/TaskID"
     get:
-      tags: [Campaigns]
-      operationId: listCampaignEvents
-      summary: List campaign events after a cursor or read the newest event tail
+      tags: [Tasks]
+      operationId: listTaskEvents
+      summary: List task events after a cursor or read the newest event tail
       parameters:
         - in: query
           name: after
@@ -295,13 +363,13 @@ paths:
           $ref: "#/responses/NotFound"
         "500":
           $ref: "#/responses/InternalError"
-  /campaigns/{id}/events/stream:
+  /tasks/{id}/events/stream:
     parameters:
-      - $ref: "#/parameters/CampaignID"
+      - $ref: "#/parameters/TaskID"
     get:
-      tags: [Campaigns]
-      operationId: streamCampaignEvents
-      summary: Stream campaign events using server-sent events
+      tags: [Tasks]
+      operationId: streamTaskEvents
+      summary: Stream task events using server-sent events
       produces:
         - text/event-stream
       parameters:
@@ -322,19 +390,19 @@ paths:
           schema:
             type: string
         "404":
-          description: Campaign not found
+          description: Task not found
           schema:
             $ref: "#/definitions/APIError"
         "500":
           description: Streaming unavailable
           schema:
             $ref: "#/definitions/APIError"
-  /campaigns/{id}/results:
+  /tasks/{id}/results:
     parameters:
-      - $ref: "#/parameters/CampaignID"
+      - $ref: "#/parameters/TaskID"
     get:
-      tags: [Campaigns]
-      operationId: listCampaignResults
+      tags: [Tasks]
+      operationId: listTaskResults
       summary: List agent result envelopes
       responses:
         "200":
@@ -347,12 +415,12 @@ paths:
           $ref: "#/responses/NotFound"
         "500":
           $ref: "#/responses/InternalError"
-  /campaigns/{id}/checks:
+  /tasks/{id}/checks:
     parameters:
-      - $ref: "#/parameters/CampaignID"
+      - $ref: "#/parameters/TaskID"
     get:
-      tags: [Campaigns]
-      operationId: listCampaignChecks
+      tags: [Tasks]
+      operationId: listTaskChecks
       summary: List deterministic check results
       responses:
         "200":
@@ -365,16 +433,16 @@ paths:
           $ref: "#/responses/NotFound"
         "500":
           $ref: "#/responses/InternalError"
-  /campaigns/{id}/diff:
+  /tasks/{id}/diff:
     parameters:
-      - $ref: "#/parameters/CampaignID"
+      - $ref: "#/parameters/TaskID"
     get:
-      tags: [Campaigns]
-      operationId: getCampaignDiff
+      tags: [Tasks]
+      operationId: getTaskDiff
       summary: Get changed files and the repository patch
       responses:
         "200":
-          description: Campaign workspace diff
+          description: Task workspace diff
           schema:
             $ref: "#/definitions/Diff"
         "404":
@@ -382,13 +450,13 @@ paths:
         "500":
           $ref: "#/responses/InternalError"
 parameters:
-  CampaignID:
+  TaskID:
     in: path
     name: id
     type: string
     required: true
     pattern: '^SF-[0-9]{8}-[a-f0-9]{8}$'
-    description: Campaign identifier
+    description: Task identifier
 responses:
   Accepted:
     description: Command accepted
@@ -399,11 +467,11 @@ responses:
     schema:
       $ref: "#/definitions/APIError"
   NotFound:
-    description: Campaign not found
+    description: Task not found
     schema:
       $ref: "#/definitions/APIError"
   Conflict:
-    description: Campaign state does not allow the operation
+    description: Task state does not allow the operation
     schema:
       $ref: "#/definitions/APIError"
   UnprocessableEntity:
@@ -460,12 +528,22 @@ definitions:
         minimum: 0
   ModelsResponse:
     type: object
-    required: [models]
+    required: [harness, models]
     properties:
+      harness:
+        type: string
       models:
         type: array
         items:
           $ref: "#/definitions/Model"
+  HarnessesResponse:
+    type: object
+    required: [harnesses]
+    properties:
+      harnesses:
+        type: array
+        items:
+          type: string
   ConfigResponse:
     type: object
     required: [config, errors]
@@ -492,19 +570,15 @@ definitions:
           $ref: "#/definitions/Agent"
   Defaults:
     type: object
-    required: [coding_agent, model, thinking, tools]
+    required: [coding_agent, model, thinking]
     properties:
       coding_agent:
         type: string
-        enum: [pi]
+        enum: [pi, codex]
       model:
         type: string
       thinking:
         $ref: "#/definitions/Thinking"
-      tools:
-        type: array
-        items:
-          type: string
   Observability:
     type: object
     required: [poll_ms]
@@ -527,7 +601,7 @@ definitions:
         minimum: 0
   Agent:
     type: object
-    required: [name, model, thinking, color, purpose, prompt_engineering, tools]
+    required: [name, model, thinking, color, purpose, prompt_engineering]
     properties:
       name:
         type: string
@@ -542,10 +616,6 @@ definitions:
         type: string
       prompt_engineering:
         $ref: "#/definitions/PromptEngineering"
-      tools:
-        type: array
-        items:
-          type: string
   Thinking:
     type: string
     enum: [off, minimal, low, medium, high, xhigh, max]
@@ -564,6 +634,9 @@ definitions:
       type:
         type: string
         enum: [local, github]
+      name:
+        type: string
+        description: Unique repository name inside the Task Workspace
       path:
         type: string
         description: Required absolute path when type is local
@@ -571,36 +644,46 @@ definitions:
         type: string
         pattern: '^[^/]+/[^/]+$'
         description: Required owner/repository when type is github
-  CreateCampaignRequest:
+      primary:
+        type: boolean
+        description: Exactly one repository must be primary
+  CreateTaskRequest:
     type: object
-    required: [request, repository]
+    required: [request, repositories]
     properties:
       request:
         type: string
         minLength: 1
-      repository:
-        $ref: "#/definitions/Repository"
-  Campaign:
+      repositories:
+        type: array
+        minItems: 1
+        items:
+          $ref: "#/definitions/Repository"
+      coding_agent:
+        type: string
+        enum: [pi, codex]
+        description: Coding agent harness for the task (defaults to server config)
+      model:
+        type: string
+        description: Model ID or provider/model pattern applied to all roles
+      thinking:
+        $ref: "#/definitions/Thinking"
+  Task:
     type: object
-    required: [id, request, repository_type, repository_value, state, total_cost, created_at]
+    required: [id, request, workspace_path, repositories, state, total_cost, created_at]
     properties:
       id:
         type: string
       request:
         type: string
-      repository_type:
-        type: string
-        enum: [local, github]
-      repository_value:
-        type: string
-      submitted_path:
-        type: string
-      canonical_path:
-        type: string
       workspace_path:
         type: string
-      base_sha:
+      primary_repository_path:
         type: string
+      repositories:
+        type: array
+        items:
+          $ref: "#/definitions/TaskRepository"
       state:
         type: string
         enum: [draft, preparing, planning, awaiting_plan_approval, building, checking, reviewing, completed, blocked, paused, aborted]
@@ -620,6 +703,12 @@ definitions:
       total_cost:
         type: number
         format: double
+      coding_agent:
+        type: string
+      model:
+        type: string
+      thinking:
+        type: string
       created_at:
         type: string
         format: date-time
@@ -631,11 +720,11 @@ definitions:
         format: date-time
   Phase:
     type: object
-    required: [id, campaign_id, name, kind, owner, description, status, sequence, attempt, retries, started_at]
+    required: [id, task_id, name, kind, owner, description, status, sequence, attempt, retries, started_at]
     properties:
       id:
         type: string
-      campaign_id:
+      task_id:
         type: string
       name:
         type: string
@@ -663,14 +752,14 @@ definitions:
         format: date-time
   Event:
     type: object
-    required: [sequence, id, campaign_id, type, payload, started_at]
+    required: [sequence, id, task_id, type, payload, started_at]
     properties:
       sequence:
         type: integer
         format: int64
       id:
         type: string
-      campaign_id:
+      task_id:
         type: string
       phase_id:
         type: string
@@ -703,11 +792,11 @@ definitions:
         format: int64
   Envelope:
     type: object
-    required: [id, campaign_id, phase_id, agent_role, output_type, payload, created_at, valid, attempt]
+    required: [id, task_id, phase_id, agent_role, output_type, payload, created_at, valid, attempt]
     properties:
       id:
         type: string
-      campaign_id:
+      task_id:
         type: string
       phase_id:
         type: string
@@ -728,11 +817,11 @@ definitions:
         type: integer
   Check:
     type: object
-    required: [id, campaign_id, phase_id, name, command, status, output, artifact_path, attempt, exit_code, duration_ms, started_at, ended_at]
+    required: [id, task_id, phase_id, name, command, status, output, artifact_path, attempt, exit_code, duration_ms, started_at, ended_at]
     properties:
       id:
         type: string
-      campaign_id:
+      task_id:
         type: string
       phase_id:
         type: string
@@ -760,14 +849,66 @@ definitions:
         format: date-time
   Diff:
     type: object
-    required: [files, patch]
+    required: [repositories]
     properties:
-      files:
+      repositories:
         type: array
         items:
-          type: string
+          $ref: "#/definitions/RepositoryDiff"
+  TaskRepository:
+    type: object
+    required: [id, task_id, name, source_type, source_value, primary, created_at]
+    properties:
+      id: {type: string}
+      task_id: {type: string}
+      name: {type: string}
+      source_type: {type: string, enum: [local, github]}
+      source_value: {type: string}
+      submitted_path: {type: string}
+      canonical_path: {type: string}
+      working_path: {type: string}
+      base_sha: {type: string}
+      primary: {type: boolean}
+      created_at: {type: string, format: date-time}
+  RepositoryDiff:
+    type: object
+    required: [repository_id, name, files, patch]
+    properties:
+      repository_id: {type: string}
+      name: {type: string}
+      files:
+        type: array
+        items: {type: string}
       patch:
         type: string
+  FeedbackRequest:
+    type: object
+    required: [feedback]
+    properties:
+      feedback: {type: string}
+      current_plan_digest: {type: string}
+  InterventionRequest:
+    type: object
+    required: [target_type, target_id, message, idempotency_key]
+    properties:
+      target_type: {type: string, enum: [task, attempt, event, artifact]}
+      target_id: {type: string}
+      message: {type: string}
+      idempotency_key: {type: string}
+  Intervention:
+    type: object
+    required: [id, task_id, target_type, target_id, actor, intent, text, delivery, idempotency_key, created_at]
+    properties:
+      id: {type: string}
+      task_id: {type: string}
+      target_type: {type: string}
+      target_id: {type: string}
+      actor: {type: string}
+      intent: {type: string}
+      text: {type: string}
+      delivery: {type: string}
+      idempotency_key: {type: string}
+      created_at: {type: string, format: date-time}
   AcceptedResponse:
     type: object
     required: [accepted]

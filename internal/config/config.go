@@ -11,6 +11,45 @@ import (
 
 var validThinking = map[string]bool{"off": true, "minimal": true, "low": true, "medium": true, "high": true, "xhigh": true, "max": true}
 
+// validHarnesses lists registered coding agents. Only pi is implemented today;
+// codex is reserved so task creation can offer it once its adapter lands.
+var validHarnesses = map[string]bool{"pi": true, "codex": true}
+
+// IsValidThinking reports whether level is an accepted thinking level.
+func IsValidThinking(level string) bool { return validThinking[level] }
+
+// ThinkingLevels returns accepted thinking levels in UI order.
+func ThinkingLevels() []string { return []string{"off", "minimal", "low", "medium", "high", "xhigh", "max"} }
+
+// IsValidHarness reports whether name is a known coding agent.
+func IsValidHarness(name string) bool { return validHarnesses[name] }
+
+// HarnessNames returns known coding agents in UI order.
+func HarnessNames() []string { return []string{"pi", "codex"} }
+
+// ApplyTaskOverrides returns c with task-level agent/model/thinking applied.
+// Empty overrides leave the corresponding field unchanged. A non-empty model
+// or thinking override applies to defaults and every role so one task-level
+// selection drives planner, builder, and reviewer together.
+func ApplyTaskOverrides(c Config, codingAgent, model, thinking string) Config {
+	if codingAgent != "" {
+		c.Defaults.CodingAgent = codingAgent
+	}
+	if model != "" {
+		c.Defaults.Model = model
+		for i := range c.Agents {
+			c.Agents[i].Model = model
+		}
+	}
+	if thinking != "" {
+		c.Defaults.Thinking = thinking
+		for i := range c.Agents {
+			c.Agents[i].Thinking = thinking
+		}
+	}
+	return c
+}
+
 // Config is the resolved factory configuration.
 type Config struct {
 	Defaults      Defaults      `yaml:"defaults" json:"defaults"`
@@ -19,10 +58,9 @@ type Config struct {
 	Agents        []Agent       `yaml:"agents" json:"agents"`
 }
 type Defaults struct {
-	CodingAgent string   `yaml:"coding_agent" json:"coding_agent"`
-	Model       string   `yaml:"model" json:"model"`
-	Thinking    string   `yaml:"thinking" json:"thinking"`
-	Tools       []string `yaml:"tools" json:"tools"`
+	CodingAgent string `yaml:"coding_agent" json:"coding_agent"`
+	Model       string `yaml:"model" json:"model"`
+	Thinking    string `yaml:"thinking" json:"thinking"`
 }
 type Observability struct {
 	PollMS int `yaml:"poll_ms" json:"poll_ms"`
@@ -39,7 +77,6 @@ type Agent struct {
 	Color             string            `yaml:"color" json:"color"`
 	Purpose           string            `yaml:"purpose" json:"purpose"`
 	PromptEngineering PromptEngineering `yaml:"prompt_engineering" json:"prompt_engineering"`
-	Tools             []string          `yaml:"tools" json:"tools"`
 }
 type PromptEngineering struct {
 	System string `yaml:"system" json:"system"`
@@ -74,17 +111,14 @@ func resolve(c Config) Config {
 		if a.Thinking == "" {
 			a.Thinking = c.Defaults.Thinking
 		}
-		if len(a.Tools) == 0 {
-			a.Tools = append([]string(nil), c.Defaults.Tools...)
-		}
 	}
 	return c
 }
 
 func validate(c Config, base string) []string {
 	var problems []string
-	if c.Defaults.CodingAgent != "pi" {
-		problems = append(problems, "defaults.coding_agent must be pi")
+	if !validHarnesses[c.Defaults.CodingAgent] {
+		problems = append(problems, "defaults.coding_agent must be pi or codex")
 	}
 	if !validThinking[c.Defaults.Thinking] {
 		problems = append(problems, "defaults.thinking is invalid")
@@ -112,9 +146,6 @@ func validate(c Config, base string) []string {
 				}
 				if a.PromptEngineering.System == "" || a.PromptEngineering.User == "" {
 					problems = append(problems, role+" prompt paths are required")
-				}
-				if len(a.Tools) == 0 {
-					problems = append(problems, role+" tools are required")
 				}
 				for _, p := range []string{a.PromptEngineering.System, a.PromptEngineering.User} {
 					if p != "" {

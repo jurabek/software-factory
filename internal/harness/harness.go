@@ -15,7 +15,6 @@ type Request struct {
 	SessionID,
 	SessionDirectory,
 	RawOutputPath string
-	Tools      []string
 	DeadlineMS int
 }
 type Event struct {
