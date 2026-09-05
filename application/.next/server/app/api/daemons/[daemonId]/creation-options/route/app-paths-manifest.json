@@ -1,0 +1,3 @@
+{
+  "/api/daemons/[daemonId]/creation-options/route": "app/api/daemons/[daemonId]/creation-options/route.js"
+}
