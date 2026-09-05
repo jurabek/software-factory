@@ -149,6 +149,47 @@ paths:
           $ref: "#/responses/Conflict"
         "500":
           $ref: "#/responses/InternalError"
+  /tasks/{id}/sessions:
+    parameters:
+      - $ref: "#/parameters/TaskID"
+    get:
+      tags: [Tasks]
+      operationId: listTaskSessions
+      summary: List a task's sessions
+      responses:
+        "200":
+          description: Sessions ordered oldest first, including the initial session
+          schema:
+            type: array
+            items:
+              $ref: "#/definitions/Task"
+        "404":
+          $ref: "#/responses/NotFound"
+        "500":
+          $ref: "#/responses/InternalError"
+    post:
+      tags: [Tasks]
+      operationId: createTaskSession
+      summary: Create another session in a task
+      security:
+        - MutationToken: []
+      parameters:
+        - in: body
+          name: session
+          required: true
+          schema:
+            $ref: "#/definitions/CreateSessionRequest"
+      responses:
+        "201":
+          description: Session draft created
+          schema:
+            $ref: "#/definitions/Task"
+        "403":
+          $ref: "#/responses/Forbidden"
+        "404":
+          $ref: "#/responses/NotFound"
+        "422":
+          $ref: "#/responses/UnprocessableEntity"
   /tasks/{id}/start:
     parameters:
       - $ref: "#/parameters/TaskID"
@@ -668,12 +709,22 @@ definitions:
         description: Model ID or provider/model pattern applied to all roles
       thinking:
         $ref: "#/definitions/Thinking"
+  CreateSessionRequest:
+    type: object
+    required: [request]
+    properties:
+      request:
+        type: string
+        minLength: 1
   Task:
     type: object
     required: [id, request, workspace_path, repositories, state, total_cost, created_at]
     properties:
       id:
         type: string
+      parent_task_id:
+        type: string
+        description: Root task ID for additional sessions; absent on the initial session
       request:
         type: string
       workspace_path:

@@ -7,7 +7,14 @@
   .rail-search { display: flex; gap: .35rem; align-items: center; border: 0; color: var(--ui-accent); background: transparent; }
   .rail-label { display: flex; justify-content: space-between; margin: 0; padding: 1.25rem 1rem .6rem; color: var(--ui-text-subtle); text-transform: uppercase; letter-spacing: .08em; font-size: .74rem; }
   .task-list { min-height: 0; flex: 1; overflow: auto; padding: 0 .55rem; }
+  .task-group { margin-bottom: .35rem; }
+  .task-group__row { width: 100%; display: grid; grid-template-columns: .75rem minmax(0, 1fr) auto; gap: .5rem; align-items: start; padding: .72rem .45rem .5rem; border: 0; color: var(--ui-text-muted); background: transparent; text-align: left; }
+  .task-group__row:hover, .task-group[data-selected="true"] > .task-group__row { color: var(--ui-text); }
+  .task-group__chevron { color: var(--ui-accent); line-height: 1rem; }
+  .task-group__count { min-width: 1.35rem; padding: .1rem .28rem; border: 1px solid var(--ui-border); color: var(--ui-text-subtle); text-align: center; font-size: .65rem; }
+  .session-tree { position: relative; margin-left: .72rem; padding-left: .58rem; border-left: 1px solid var(--ui-border-strong); }
   .task-row { position: relative; width: 100%; display: grid; grid-template-columns: .55rem minmax(0, 1fr) auto; gap: .55rem; align-items: start; padding: .72rem .45rem; border: 0; border-right: 2px solid transparent; color: var(--ui-text-muted); background: transparent; text-align: left; }
+  .task-row--session { padding-top: .58rem; padding-bottom: .58rem; }
   .task-row:hover, .task-row[aria-current="page"] { color: var(--ui-text); background: var(--ui-surface-raised); }
   .task-row[aria-current="page"] { border-right-color: var(--ui-accent); }
   .task-row__state { width: .42rem; height: .42rem; margin-top: .32rem; border: 1px solid currentColor; border-radius: 50%; color: var(--ui-text-subtle); }
@@ -27,6 +34,11 @@
   .workspace-breadcrumb strong { overflow: hidden; color: var(--ui-text-muted); text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
   .workspace-breadcrumb .health-state { margin-left: auto; text-transform: uppercase; font-size: .68rem; }
   .workspace-breadcrumb .health-state[data-state="ok"] { color: var(--ui-success); }
+  .session-creator { display: grid; gap: .65rem; margin: 1rem 1rem 0; padding: 1rem; border: 1px solid var(--ui-accent); background: var(--ui-surface-raised); }
+  .session-creator label { color: var(--ui-accent); text-transform: uppercase; letter-spacing: .08em; font-size: .7rem; }
+  .session-creator textarea { width: 100%; min-height: 5rem; padding: .75rem; resize: vertical; border: 1px solid var(--ui-border); color: var(--ui-text); background: var(--ui-canvas); outline: none; }
+  .session-creator textarea:focus { border-color: var(--ui-accent); }
+  .session-creator div { display: flex; justify-content: flex-end; gap: .8rem; }
   .task-composer--create { width: min(68rem, calc(100% - 5rem)); margin: clamp(7rem, 18vh, 15rem) auto 0; }
   .composer-eyebrow { color: var(--ui-text-subtle); text-transform: uppercase; letter-spacing: .12em; }
   .task-composer--create h1 { margin: 0 0 3.5rem; text-align: center; font-size: clamp(1.7rem, 3vw, 2.5rem); font-weight: 500; }
