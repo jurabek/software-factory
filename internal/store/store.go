@@ -16,7 +16,8 @@ import (
 
 const schema = `
 create table if not exists tasks (
- id text primary key, request text not null, workspace_path text not null, primary_repository_path text,
+ id text primary key, parent_task_id text references tasks(id) on delete cascade,
+ request text not null, workspace_path text not null, primary_repository_path text,
  state text not null, previous_state text, active_phase text, error text, config_snapshot text, plan_digest text,
  approval_actor text, approval_at text, total_usage_json text, total_cost real not null default 0,
  created_at text not null, started_at text, ended_at text,
@@ -131,6 +132,7 @@ func incompatibleSchema(ctx context.Context, db *sql.DB) (bool, error) {
 
 func ensureRetriableColumns(ctx context.Context, db *sql.DB) error {
 	adds := [][2]string{
+		{"tasks", "parent_task_id text references tasks(id) on delete cascade"},
 		{"tasks", "selected_branch_id text"},
 		{"tasks", "coding_agent text not null default ''"},
 		{"tasks", "model text not null default ''"},
@@ -198,6 +200,7 @@ func tableExists(ctx context.Context, db *sql.DB, name string) (bool, error) {
 
 type Task struct {
 	ID                    string           `json:"id"`
+	ParentTaskID          string           `json:"parent_task_id,omitempty"`
 	Request               string           `json:"request"`
 	WorkspacePath         string           `json:"workspace_path"`
 	PrimaryRepositoryPath string           `json:"primary_repository_path,omitempty"`
@@ -385,7 +388,7 @@ func (db *DB) CreateTask(ctx context.Context, task Task) error {
 		return fmt.Errorf("begin create task: %w", err)
 	}
 	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, `insert into tasks(id,request,workspace_path,state,created_at,coding_agent,model,thinking) values(?,?,?,?,?,?,?,?)`, task.ID, task.Request, task.WorkspacePath, task.State, task.CreatedAt, task.CodingAgent, task.Model, task.Thinking); err != nil {
+	if _, err = tx.ExecContext(ctx, `insert into tasks(id,parent_task_id,request,workspace_path,state,created_at,coding_agent,model,thinking) values(?,?,?,?,?,?,?,?,?)`, task.ID, nullIfEmpty(task.ParentTaskID), task.Request, task.WorkspacePath, task.State, task.CreatedAt, task.CodingAgent, task.Model, task.Thinking); err != nil {
 		return wrap("create task", err)
 	}
 	for _, repository := range task.Repositories {
@@ -396,11 +399,11 @@ func (db *DB) CreateTask(ctx context.Context, task Task) error {
 	return wrap("commit task", tx.Commit())
 }
 
-const taskColumns = `id,request,workspace_path,coalesce(primary_repository_path,''),state,coalesce(previous_state,''),coalesce(active_phase,''),coalesce(error,''),coalesce(config_snapshot,''),coalesce(plan_digest,''),coalesce(approval_actor,''),coalesce(approval_at,''),total_cost,created_at,coalesce(started_at,''),coalesce(ended_at,''),coalesce(selected_branch_id,''),coalesce(coding_agent,''),coalesce(model,''),coalesce(thinking,'')`
+const taskColumns = `id,coalesce(parent_task_id,''),request,workspace_path,coalesce(primary_repository_path,''),state,coalesce(previous_state,''),coalesce(active_phase,''),coalesce(error,''),coalesce(config_snapshot,''),coalesce(plan_digest,''),coalesce(approval_actor,''),coalesce(approval_at,''),total_cost,created_at,coalesce(started_at,''),coalesce(ended_at,''),coalesce(selected_branch_id,''),coalesce(coding_agent,''),coalesce(model,''),coalesce(thinking,'')`
 
 func scanTask(scanner interface{ Scan(...any) error }) (Task, error) {
 	var value Task
-	err := scanner.Scan(&value.ID, &value.Request, &value.WorkspacePath, &value.PrimaryRepositoryPath, &value.State, &value.PreviousState, &value.ActivePhase, &value.Error, &value.ConfigSnapshot, &value.PlanDigest, &value.ApprovalActor, &value.ApprovalAt, &value.TotalCost, &value.CreatedAt, &value.StartedAt, &value.EndedAt, &value.SelectedBranchID, &value.CodingAgent, &value.Model, &value.Thinking)
+	err := scanner.Scan(&value.ID, &value.ParentTaskID, &value.Request, &value.WorkspacePath, &value.PrimaryRepositoryPath, &value.State, &value.PreviousState, &value.ActivePhase, &value.Error, &value.ConfigSnapshot, &value.PlanDigest, &value.ApprovalActor, &value.ApprovalAt, &value.TotalCost, &value.CreatedAt, &value.StartedAt, &value.EndedAt, &value.SelectedBranchID, &value.CodingAgent, &value.Model, &value.Thinking)
 	return value, err
 }
 
@@ -431,6 +434,39 @@ func (db *DB) Tasks(ctx context.Context) ([]Task, error) {
 		value.Repositories, scanErr = db.TaskRepositories(ctx, value.ID)
 		if scanErr != nil {
 			return nil, fmt.Errorf("read task repositories: %w", scanErr)
+		}
+		values = append(values, value)
+	}
+	return values, rows.Err()
+}
+
+func (db *DB) TaskSessions(ctx context.Context, taskID string) ([]Task, error) {
+	var parentTaskID string
+	err := db.QueryRowContext(ctx, `select coalesce(parent_task_id,'') from tasks where id=?`, taskID).Scan(&parentTaskID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, wrap("read task root", err)
+	}
+	if parentTaskID != "" {
+		taskID = parentTaskID
+	}
+
+	rows, err := db.QueryContext(ctx, `select `+taskColumns+` from tasks where id=? or parent_task_id=? order by created_at`, taskID, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("list task sessions: %w", err)
+	}
+	defer rows.Close()
+	values := make([]Task, 0)
+	for rows.Next() {
+		value, scanErr := scanTask(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("scan task session: %w", scanErr)
+		}
+		value.Repositories, scanErr = db.TaskRepositories(ctx, value.ID)
+		if scanErr != nil {
+			return nil, fmt.Errorf("read task session repositories: %w", scanErr)
 		}
 		values = append(values, value)
 	}

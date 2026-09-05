@@ -44,6 +44,7 @@ func TestSwaggerSpecDocumentsAPIRoutes(t *testing.T) {
 		"/control":                  {"get"},
 		"/tasks":                    {"get", "post"},
 		"/tasks/{id}":               {"get", "delete"},
+		"/tasks/{id}/sessions":      {"get", "post"},
 		"/tasks/{id}/start":         {"post"},
 		"/tasks/{id}/approve":       {"post"},
 		"/tasks/{id}/feedback":      {"post"},

@@ -58,6 +58,9 @@ type CreateRequest struct {
 	Model        string       `json:"model,omitempty"`
 	Thinking     string       `json:"thinking,omitempty"`
 }
+type CreateSessionRequest struct {
+	Request string `json:"request"`
+}
 type InterventionRequest struct {
 	TargetType     string `json:"target_type"`
 	TargetID       string `json:"target_id"`
@@ -79,6 +82,40 @@ func NewService(root string, db *store.DB, cfg config.Config, configPath string,
 }
 
 func (s *Service) Create(ctx context.Context, request CreateRequest) (store.Task, error) {
+	return s.create(ctx, request, "")
+}
+
+func (s *Service) CreateSession(ctx context.Context, taskID string, request CreateSessionRequest) (store.Task, error) {
+	task, err := s.db.Task(ctx, taskID)
+	if err != nil {
+		return store.Task{}, err
+	}
+	if task.ParentTaskID != "" {
+		task, err = s.db.Task(ctx, task.ParentTaskID)
+		if err != nil {
+			return store.Task{}, err
+		}
+	}
+	repositories := make([]Repository, 0, len(task.Repositories))
+	for _, repository := range task.Repositories {
+		input := Repository{Name: repository.Name, Type: repository.SourceType, Primary: repository.Primary}
+		if repository.SourceType == "local" {
+			input.Path = repository.SourceValue
+		} else {
+			input.Repo = repository.SourceValue
+		}
+		repositories = append(repositories, input)
+	}
+	return s.create(ctx, CreateRequest{
+		Request:      request.Request,
+		Repositories: repositories,
+		CodingAgent:  task.CodingAgent,
+		Model:        task.Model,
+		Thinking:     task.Thinking,
+	}, task.ID)
+}
+
+func (s *Service) create(ctx context.Context, request CreateRequest, parentTaskID string) (store.Task, error) {
 	request.Request = strings.TrimSpace(request.Request)
 	if request.Request == "" {
 		return store.Task{}, fmt.Errorf("task description is required")
@@ -116,7 +153,7 @@ func (s *Service) Create(ctx context.Context, request CreateRequest) (store.Task
 			return store.Task{}, fmt.Errorf("create task workspace: %w", err)
 		}
 	}
-	task := store.Task{ID: id, Request: request.Request, WorkspacePath: workspace, Repositories: repositories, State: string(Draft), CreatedAt: createdAt, CodingAgent: request.CodingAgent, Model: request.Model, Thinking: request.Thinking}
+	task := store.Task{ID: id, ParentTaskID: parentTaskID, Request: request.Request, WorkspacePath: workspace, Repositories: repositories, State: string(Draft), CreatedAt: createdAt, CodingAgent: request.CodingAgent, Model: request.Model, Thinking: request.Thinking}
 	metadata, err := json.MarshalIndent(task, "", "  ")
 	if err != nil {
 		_ = os.RemoveAll(workspace)
@@ -334,16 +371,27 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	if isActive(State(task.State)) {
-		return store.ErrConflict
-	}
-	for _, repository := range task.Repositories {
-		if repository.SourceType == "local" && repository.WorkingPath != "" {
-			_, _ = s.git.Run(ctx, "git", "-C", repository.CanonicalPath, "worktree", "remove", "--force", repository.WorkingPath)
+	tasks := []store.Task{task}
+	if task.ParentTaskID == "" {
+		tasks, err = s.db.TaskSessions(ctx, id)
+		if err != nil {
+			return err
 		}
 	}
-	if err := os.RemoveAll(s.taskDir(id)); err != nil {
-		return fmt.Errorf("remove task files: %w", err)
+	for _, session := range tasks {
+		if isActive(State(session.State)) {
+			return store.ErrConflict
+		}
+	}
+	for _, session := range tasks {
+		for _, repository := range session.Repositories {
+			if repository.SourceType == "local" && repository.WorkingPath != "" {
+				_, _ = s.git.Run(ctx, "git", "-C", repository.CanonicalPath, "worktree", "remove", "--force", repository.WorkingPath)
+			}
+		}
+		if err := os.RemoveAll(s.taskDir(session.ID)); err != nil {
+			return fmt.Errorf("remove task files: %w", err)
+		}
 	}
 	return s.db.DeleteTask(ctx, id)
 }

@@ -126,6 +126,61 @@ func TestCreateTaskAcceptsMultipleRepositories(t *testing.T) {
 	}
 }
 
+func TestCreateAndListTaskSessions(t *testing.T) {
+	root := t.TempDir()
+	db, err := store.Open(filepath.Join(root, "factory.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	service := factory.NewService(root, db, config.Config{}, "", nil, nil)
+	server, err := New(db, service, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := service.Create(context.Background(), factory.CreateRequest{Request: "Parent task", Repositories: []factory.Repository{{Type: "github", Repo: "owner/app"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+task.ID+"/sessions", bytes.NewBufferString(`{"request":"Investigate another approach"}`))
+	request.Header.Set("X-Software-Factory-Token", server.token)
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("status = %d: %s", response.Code, response.Body.String())
+	}
+	var created store.Task
+	if err = json.NewDecoder(response.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if created.ParentTaskID != task.ID {
+		t.Fatalf("parent task = %q, want %q", created.ParentTaskID, task.ID)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/api/v1/tasks/"+task.ID+"/sessions", nil)
+	response = httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", response.Code, response.Body.String())
+	}
+	var sessions []store.Task
+	if err = json.NewDecoder(response.Body).Decode(&sessions); err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 2 || sessions[1].ID != created.ID {
+		t.Fatalf("sessions = %#v", sessions)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+task.ID+"/sessions", bytes.NewBufferString(`{"request":" "}`))
+	request.Header.Set("X-Software-Factory-Token", server.token)
+	response = httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("empty request status = %d, want %d", response.Code, http.StatusUnprocessableEntity)
+	}
+}
+
 func TestLegacyRouteHasNoAlias(t *testing.T) {
 	db, err := store.Open(filepath.Join(t.TempDir(), "factory.db"))
 	if err != nil {
