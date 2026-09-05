@@ -1,6 +1,6 @@
 # Software Factory
 
-Software Factory is a loopback-only Go service that coordinates one repository through Planner, Builder, deterministic checks, and Reviewer using the installed `pi` command.
+Software Factory is a loopback-only Go service that coordinates Task Workspaces through Planner, Builder, deterministic checks, and Reviewer using the installed `pi` command. A Task Workspace may contain one or more isolated repository worktrees or clones.
 
 ## Prerequisites
 
@@ -18,7 +18,7 @@ go run main.go
 
 Open `http://127.0.0.1:8080`. Interactive Swagger API documentation is available at `http://127.0.0.1:8080/docs`; its OpenAPI document is served at `/swagger.yaml`. `PORT` changes the port. `SOFTWARE_FACTORY_DIR` changes the default `~/.software-factory` state directory. `PI_PATH` selects Pi. The first run generates `config.yaml` and editable prompts without replacing existing files.
 
-The server binds only to loopback. Mutations require the random token obtained by the same-origin UI from `/api/v1/control`. Campaign workspaces, SQLite WAL state, JSONL traces, prompts, and Pi sessions remain under the factory directory until explicit deletion.
+The server binds only to loopback. Mutations require the random token obtained by the same-origin UI from `/api/v1/control`. Task workspaces, SQLite WAL state, JSONL traces, prompts, and Pi sessions remain under the factory directory until explicit deletion.
 
 ## API example
 
@@ -26,13 +26,13 @@ The server binds only to loopback. Mutations require the random token obtained b
 
 ```bash
 TOKEN=$(curl -s http://127.0.0.1:8080/api/v1/control | jq -r .token)
-curl -s -X POST http://127.0.0.1:8080/api/v1/campaigns \
+curl -s -X POST http://127.0.0.1:8080/api/v1/tasks \
   -H "X-Software-Factory-Token: $TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"request":"Implement feature X","repository":{"type":"local","path":"/absolute/repository"}}'
+  -d '{"request":"Implement feature X","repositories":[{"type":"local","path":"/absolute/repository","primary":true}]}'
 ```
 
-Creating a draft does not access the repository. `POST /api/v1/campaigns/{id}/start` creates its isolated worktree or GitHub clone. Plan approval uses `POST /api/v1/campaigns/{id}/approve`.
+Creating a Task allocates its private workspace but does not access its repositories. `POST /api/v1/tasks/{id}/start` materializes every repository and uses the designated primary repository as the default agent/check working directory. Plans contain `questions`; when non-empty, answer them with `POST /api/v1/tasks/{id}/feedback` before approval.
 
 The factory never commits, pushes, merges, deploys, or cleans up automatically.
 
