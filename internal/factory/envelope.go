@@ -21,7 +21,8 @@ type PlanStep struct {
 }
 type Plan struct {
 	Common
-	Steps []PlanStep `json:"steps"`
+	Steps    []PlanStep `json:"steps"`
+	Questions []string  `json:"questions"`
 }
 type Build struct {
 	Common
@@ -105,7 +106,7 @@ func validateCommon(value Common) error {
 
 func ValidatePlan(text string) (Plan, error) {
 	var value Plan
-	fields := append(append([]string{}, commonFields...), "steps")
+	fields := append(append([]string{}, commonFields...), "steps", "questions")
 	if _, err := decodeExact(text, &value, fields, fields); err != nil {
 		return value, err
 	}
@@ -114,6 +115,14 @@ func ValidatePlan(text string) (Plan, error) {
 	}
 	if len(value.Steps) == 0 {
 		return value, fmt.Errorf("planner steps are required")
+	}
+	if value.Questions == nil {
+		return value, fmt.Errorf("planner questions array is required")
+	}
+	for _, question := range value.Questions {
+		if strings.TrimSpace(question) == "" {
+			return value, fmt.Errorf("planner questions cannot contain blank entries")
+		}
 	}
 	seen := map[string]bool{}
 	for _, step := range value.Steps {

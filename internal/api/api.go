@@ -52,6 +52,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/campaigns", s.campaigns)
 	mux.HandleFunc("GET /api/v1/campaigns/{id}", s.campaign)
 	mux.HandleFunc("POST /api/v1/campaigns/{id}/{command}", s.mutation(s.command))
+	mux.HandleFunc("POST /api/v1/campaigns/{id}/feedback", s.mutation(s.feedback))
 	mux.HandleFunc("DELETE /api/v1/campaigns/{id}", s.mutation(s.delete))
 	mux.HandleFunc("GET /api/v1/campaigns/{id}/phases", s.phases)
 	mux.HandleFunc("GET /api/v1/campaigns/{id}/events", s.events)
@@ -164,6 +165,40 @@ func (s *Server) command(w http.ResponseWriter, r *http.Request) {
 	write(w, http.StatusAccepted, map[string]any{"accepted": true})
 }
 
+type feedbackRequest struct {
+	Feedback   string `json:"feedback"`
+	PlanDigest string `json:"current_plan_digest,omitempty"`
+}
+
+func (s *Server) feedback(w http.ResponseWriter, r *http.Request) {
+	if !s.ready(w) {
+		return
+	}
+	request, err := decode[feedbackRequest](r)
+	if err != nil {
+		fail(w, http.StatusUnprocessableEntity, "invalid_request", err.Error())
+		return
+	}
+	actor := r.Header.Get("X-Software-Factory-Actor")
+	if actor == "" {
+		actor = "local-user"
+	}
+	err = s.factory.Feedback(r.Context(), r.PathValue("id"), actor, request.Feedback, request.PlanDigest)
+	if errors.Is(err, factory.ErrStalePlan) {
+		fail(w, http.StatusConflict, "stale_plan", err.Error())
+		return
+	}
+	if errors.Is(err, factory.ErrInvalidFeedback) {
+		fail(w, http.StatusUnprocessableEntity, "invalid_feedback", err.Error())
+		return
+	}
+	if err != nil {
+		storeError(w, err)
+		return
+	}
+	write(w, http.StatusAccepted, map[string]any{"accepted": true})
+}
+
 func (s *Server) delete(w http.ResponseWriter, r *http.Request) {
 	if err := s.factory.Delete(r.Context(), r.PathValue("id")); err != nil {
 		storeError(w, err)
@@ -223,7 +258,14 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	}
 	after, _ := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	values, err := s.db.Events(r.Context(), r.PathValue("id"), after, limit)
+	tail, _ := strconv.Atoi(r.URL.Query().Get("tail"))
+	var values []store.Event
+	var err error
+	if tail > 0 {
+		values, err = s.db.RecentEvents(r.Context(), r.PathValue("id"), tail)
+	} else {
+		values, err = s.db.Events(r.Context(), r.PathValue("id"), after, limit)
+	}
 	if err != nil {
 		internal(w, err)
 		return
