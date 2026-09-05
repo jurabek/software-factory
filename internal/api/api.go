@@ -59,6 +59,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/tasks", s.mutation(s.create))
 	mux.HandleFunc("GET /api/v1/tasks", s.tasks)
 	mux.HandleFunc("GET /api/v1/tasks/{id}", s.task)
+	mux.HandleFunc("POST /api/v1/tasks/{id}/sessions", s.mutation(s.createSession))
+	mux.HandleFunc("GET /api/v1/tasks/{id}/sessions", s.taskSessions)
 	mux.HandleFunc("POST /api/v1/tasks/{id}/{command}", s.mutation(s.command))
 	mux.HandleFunc("POST /api/v1/tasks/{id}/feedback", s.mutation(s.feedback))
 	mux.HandleFunc("POST /api/v1/tasks/{id}/interventions", s.mutation(s.createIntervention))
@@ -173,6 +175,36 @@ func (s *Server) task(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	write(w, http.StatusOK, value)
+}
+
+func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
+	if !s.ready(w) {
+		return
+	}
+	request, err := decode[factory.CreateSessionRequest](r)
+	if err != nil {
+		fail(w, http.StatusUnprocessableEntity, "invalid_request", err.Error())
+		return
+	}
+	if strings.TrimSpace(request.Request) == "" {
+		fail(w, http.StatusUnprocessableEntity, "invalid_session", "session description is required")
+		return
+	}
+	session, err := s.factory.CreateSession(r.Context(), r.PathValue("id"), request)
+	if err != nil {
+		storeError(w, err)
+		return
+	}
+	write(w, http.StatusCreated, session)
+}
+
+func (s *Server) taskSessions(w http.ResponseWriter, r *http.Request) {
+	values, err := s.db.TaskSessions(r.Context(), r.PathValue("id"))
+	if err != nil {
+		storeError(w, err)
+		return
+	}
+	write(w, http.StatusOK, values)
 }
 
 func (s *Server) command(w http.ResponseWriter, r *http.Request) {
