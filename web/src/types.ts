@@ -15,9 +15,11 @@ export interface Campaign {
   approval_at?: string;
   total_cost: number;
   created_at: string;
+  started_at?: string;
+  ended_at?: string;
 }
 export interface Phase { id: string; sequence: number; name: string; kind: string; owner: string; status: string; error?: string; started_at: string; ended_at?: string }
-export interface TraceEvent { sequence: number; id: string; type: string; name?: string; payload: unknown; started_at: string }
+export interface TraceEvent { sequence: number; id: string; phase_id?: string; type: string; name?: string; payload: unknown; started_at: string }
 export interface Check { id: string; name: string; command: string; status: string; exit_code: number; output: string; duration_ms: number }
 export interface Envelope { id: string; agent_role: string; payload: string; valid: boolean; attempt: number; created_at: string }
 export interface Diff { files: string[]; patch: string }

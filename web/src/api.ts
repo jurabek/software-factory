@@ -1,5 +1,7 @@
 import type { Campaign, Check, Control, Diff, Envelope, Health, Phase, TraceEvent } from "./types";
 
+type EventQuery = { after?: number; limit?: number; tail?: number };
+
 let token = "";
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
@@ -19,9 +21,16 @@ export const api = {
   campaign: (id: string) => request<Campaign>(`/campaigns/${encodeURIComponent(id)}`),
   create: (body: { request: string; repository: { type: string; path?: string; repo?: string } }) => request<Campaign>("/campaigns", { method: "POST", body: JSON.stringify(body) }),
   command: (id: string, command: string) => request<{ accepted: boolean }>(`/campaigns/${encodeURIComponent(id)}/${command}`, { method: "POST" }),
+  feedback: (id: string, feedback: string, currentPlanDigest?: string) => request<{ accepted: boolean }>(`/campaigns/${encodeURIComponent(id)}/feedback`, { method: "POST", body: JSON.stringify({ feedback, ...(currentPlanDigest ? { current_plan_digest: currentPlanDigest } : {}) }) }),
   remove: (id: string) => request<{ deleted: boolean }>(`/campaigns/${encodeURIComponent(id)}`, { method: "DELETE" }),
   phases: (id: string) => request<Phase[]>(`/campaigns/${encodeURIComponent(id)}/phases`),
-  events: (id: string, after = 0) => request<{ events: TraceEvent[]; cursor: number }>(`/campaigns/${encodeURIComponent(id)}/events?after=${after}`),
+  events: (id: string, query: EventQuery = {}) => {
+    const parameters = new URLSearchParams();
+    if (query.after !== undefined) parameters.set("after", String(query.after));
+    if (query.limit !== undefined) parameters.set("limit", String(query.limit));
+    if (query.tail !== undefined) parameters.set("tail", String(query.tail));
+    return request<{ events: TraceEvent[]; cursor: number }>(`/campaigns/${encodeURIComponent(id)}/events?${parameters}`);
+  },
   checks: (id: string) => request<Check[]>(`/campaigns/${encodeURIComponent(id)}/checks`),
   results: (id: string) => request<Envelope[]>(`/campaigns/${encodeURIComponent(id)}/results`),
   diff: (id: string) => request<Diff>(`/campaigns/${encodeURIComponent(id)}/diff`),

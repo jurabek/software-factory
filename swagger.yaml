@@ -264,20 +264,28 @@ paths:
     get:
       tags: [Campaigns]
       operationId: listCampaignEvents
-      summary: List campaign events after a cursor
+      summary: List campaign events after a cursor or read the newest event tail
       parameters:
         - in: query
           name: after
+          description: Return events after this cursor. Ignored when tail is set.
           type: integer
           format: int64
           minimum: 0
           default: 0
         - in: query
           name: limit
+          description: Maximum events returned for a cursor read.
           type: integer
           minimum: 1
           maximum: 1000
           default: 250
+        - in: query
+          name: tail
+          description: Return the newest events in sequence order.
+          type: integer
+          minimum: 1
+          maximum: 1000
       responses:
         "200":
           description: Event page and next cursor

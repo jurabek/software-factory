@@ -27,6 +27,11 @@ import (
 
 const maxCapturedOutput = 64 << 10
 
+var (
+	ErrStalePlan = errors.New("plan digest is stale")
+	ErrInvalidFeedback = errors.New("feedback is required")
+)
+
 type Service struct {
 	root       string
 	db         *store.DB
@@ -108,6 +113,10 @@ func (s *Service) Approve(ctx context.Context, id, actor string) error {
 	if err != nil {
 		return err
 	}
+	plan, err := ValidatePlan(payload)
+	if err != nil || len(plan.Questions) > 0 {
+		return store.ErrConflict
+	}
 	digest := sha256.Sum256([]byte(payload))
 	if err := s.db.SetApproval(ctx, id, hex.EncodeToString(digest[:]), actor); err != nil {
 		return err
@@ -118,6 +127,35 @@ func (s *Service) Approve(ctx context.Context, id, actor string) error {
 	s.launch(id, s.buildCheckReview)
 	return nil
 }
+
+func (s *Service) Feedback(ctx context.Context, id, actor, text, digest string) error {
+	text = strings.TrimSpace(text)
+	if text == "" { return ErrInvalidFeedback }
+	campaign, err := s.db.Campaign(ctx, id)
+	if err != nil { return err }
+	if campaign.State != string(AwaitingApproval) { return store.ErrConflict }
+	payload, err := s.db.ValidEnvelope(ctx, id, "planner")
+	if err != nil { return err }
+	current := fmt.Sprintf("%x", sha256.Sum256([]byte(payload)))
+	if digest != "" && digest != current { return ErrStalePlan }
+	if err = s.db.SaveFeedback(ctx, store.Feedback{ID: randomID(), CampaignID: id, Actor: actor, PlanDigest: current, Text: text, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil { return err }
+	if err = s.trace(ctx, id, "", "plan_feedback", "Planner feedback", map[string]any{"actor": actor, "plan_digest": current, "feedback": text}); err != nil { return err }
+	if err = s.db.Transition(ctx, id, string(AwaitingApproval), string(Planning), "", ""); err != nil { return err }
+	s.launch(id, s.revisePlan)
+	return nil
+}
+
+func (s *Service) revisePlan(ctx context.Context, id string) error {
+	campaign, err := s.db.Campaign(ctx, id)
+	if err != nil { return err }
+	payload, err := s.db.ValidEnvelope(ctx, id, "planner")
+	if err != nil { return err }
+	feedback, err := s.db.Feedback(ctx, id)
+	if err != nil || len(feedback) == 0 { return fmt.Errorf("feedback not found") }
+	return s.plan(ctx, campaign, map[string]any{"CurrentPlan": payload, "Questions": mustPlanQuestions(payload), "Feedback": feedback[len(feedback)-1].Text})
+}
+
+func mustPlanQuestions(payload string) []string { plan, _ := ValidatePlan(payload); return plan.Questions }
 
 func (s *Service) Pause(ctx context.Context, id string) error {
 	campaign, err := s.db.Campaign(ctx, id)
@@ -251,7 +289,7 @@ func (s *Service) prepareAndPlan(ctx context.Context, id string) error {
 	}
 	workspace := filepath.Join(s.campaignDir(id), "repository")
 	if campaign.State == string(Planning) && campaign.WorkspacePath != "" {
-		return s.plan(ctx, campaign)
+		return s.plan(ctx, campaign, nil)
 	}
 	snapshot, err := os.ReadFile(s.configPath)
 	if err != nil {
@@ -303,10 +341,10 @@ func (s *Service) prepareAndPlan(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	return s.plan(ctx, campaign)
+	return s.plan(ctx, campaign, nil)
 }
 
-func (s *Service) plan(ctx context.Context, campaign store.Campaign) error {
+func (s *Service) plan(ctx context.Context, campaign store.Campaign, revision map[string]any) error {
 	before, err := factorygit.ChangedFiles(ctx, s.git, campaign.WorkspacePath)
 	if err != nil {
 		return err
@@ -315,7 +353,9 @@ func (s *Service) plan(ctx context.Context, campaign store.Campaign) error {
 	if err != nil {
 		return err
 	}
-	payload, err := s.runRole(ctx, campaign, phase, "planner", map[string]any{"CampaignID": campaign.ID, "Request": campaign.Request, "Repository": campaign.WorkspacePath}, func(text string) (any, error) { return ValidatePlan(text) })
+	data := map[string]any{"CampaignID": campaign.ID, "Request": campaign.Request, "Repository": campaign.WorkspacePath}
+	for key, value := range revision { data[key] = value }
+	payload, err := s.runRole(ctx, campaign, phase, "planner", data, func(text string) (any, error) { return ValidatePlan(text) })
 	if err != nil {
 		s.failPhase(ctx, phase, err)
 		return err
@@ -466,7 +506,9 @@ func (s *Service) runRole(ctx context.Context, campaign store.Campaign, phase st
 		if len(tail) > maxCapturedOutput {
 			tail = tail[len(tail)-maxCapturedOutput:]
 		}
-		_ = s.db.SaveEnvelope(ctx, randomID(), campaign.ID, phase.ID, role, role, tail, valid, attempt+1)
+		stored := tail
+		if valid { stored = result.Text }
+		_ = s.db.SaveEnvelope(ctx, randomID(), campaign.ID, phase.ID, role, role, stored, valid, attempt+1)
 		if valid {
 			return result.Text, nil
 		}
