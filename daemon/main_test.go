@@ -3,6 +3,8 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -37,6 +39,7 @@ func TestSwaggerSpecDocumentsAPIRoutes(t *testing.T) {
 	}
 
 	routes := map[string][]string{
+		"/identity":                 {"get"},
 		"/health":                   {"get"},
 		"/config":                   {"get"},
 		"/harnesses":                {"get"},
@@ -70,6 +73,66 @@ func TestSwaggerSpecDocumentsAPIRoutes(t *testing.T) {
 				t.Errorf("missing operation %s %s", method, path)
 			}
 		}
+	}
+	if !strings.Contains(response.Body.String(), "DaemonCredential") {
+		t.Fatal("swagger spec does not document daemon bearer authentication")
+	}
+}
+
+func TestDaemonIdentityPersistsInFactoryRoot(t *testing.T) {
+	root := t.TempDir()
+	first, err := loadDaemonID(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := loadDaemonID(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != second || len(first) != 32 {
+		t.Fatalf("identities = %q and %q", first, second)
+	}
+	info, err := os.Stat(filepath.Join(root, "daemon-id"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %o, want 600", info.Mode().Perm())
+	}
+}
+
+func TestMalformedDaemonIdentityFailsClosed(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "daemon-id"), []byte("not-an-identity\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadDaemonID(root); err == nil {
+		t.Fatal("loadDaemonID succeeded with malformed identity")
+	}
+}
+
+func TestDaemonNetworkConfiguration(t *testing.T) {
+	const token = "remote-test-credential-with-32-characters"
+	for _, test := range []struct {
+		name, bind, port, token, wantAddress string
+		wantError                            bool
+	}{
+		{name: "loopback default", bind: "127.0.0.1", port: "8080", wantAddress: "127.0.0.1:8080"},
+		{name: "IPv6 loopback", bind: "::1", port: "8080", wantAddress: "[::1]:8080"},
+		{name: "remote bind with credential", bind: "0.0.0.0", port: "9000", token: token, wantError: true},
+		{name: "remote without credential", bind: "0.0.0.0", port: "8080", wantError: true},
+		{name: "weak credential", bind: "127.0.0.1", port: "8080", token: "short", wantError: true},
+		{name: "hostname rejected", bind: "localhost", port: "8080", token: token, wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			address, gotToken, err := daemonNetworkConfig(test.bind, test.port, test.token)
+			if (err != nil) != test.wantError {
+				t.Fatalf("error = %v, wantError %v", err, test.wantError)
+			}
+			if address != test.wantAddress || gotToken != test.token && !test.wantError {
+				t.Fatalf("address, token = %q, %q", address, gotToken)
+			}
+		})
 	}
 }
 

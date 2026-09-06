@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"embed"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -38,6 +41,7 @@ var swaggerSpec []byte
 
 const (
 	defaultPort = "8080"
+	defaultBind = "127.0.0.1"
 	swaggerUI   = `<!doctype html>
 <html lang="en">
 <head>
@@ -94,6 +98,18 @@ func run() error {
 		return err
 	}
 	defer lock.Close()
+	daemonID, err := loadDaemonID(root)
+	if err != nil {
+		return fmt.Errorf("load daemon identity: %w", err)
+	}
+	address, remoteToken, err := daemonNetworkConfig(
+		envOrDefault("SOFTWARE_FACTORY_BIND", defaultBind),
+		envOrDefault("PORT", defaultPort),
+		os.Getenv("SOFTWARE_FACTORY_DAEMON_TOKEN"),
+	)
+	if err != nil {
+		return err
+	}
 	db, err := store.Open(filepath.Join(root, "factory.db"))
 	if err != nil {
 		return err
@@ -145,7 +161,7 @@ func run() error {
 		}
 	}
 	service := factory.NewService(root, db, configured, configPath, registry, factorygit.OSRunner{})
-	apiServer, err := api.New(db, service, configured, problems, loadErr, harnessNames, catalog)
+	apiServer, err := api.New(db, service, configured, problems, loadErr, harnessNames, catalog, api.RemoteAccess{DaemonID: daemonID, Token: remoteToken})
 	if err != nil {
 		return err
 	}
@@ -155,11 +171,12 @@ func run() error {
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/api/v1/", apiServer.Handler())
-	mux.HandleFunc("GET /swagger.yaml", serveSwaggerSpec)
-	mux.HandleFunc("GET /docs", serveSwaggerUI)
-	mux.HandleFunc("GET /docs/", serveSwaggerUI)
-	mux.Handle("/", spaHandler{files: staticFS})
-	address := "127.0.0.1:" + envOrDefault("PORT", defaultPort)
+	if remoteToken == "" {
+		mux.HandleFunc("GET /swagger.yaml", serveSwaggerSpec)
+		mux.HandleFunc("GET /docs", serveSwaggerUI)
+		mux.HandleFunc("GET /docs/", serveSwaggerUI)
+		mux.Handle("/", spaHandler{files: staticFS})
+	}
 	server := &http.Server{
 		Addr:              address,
 		Handler:           requestLog(logger, staticSecurityHeaders(mux)),
@@ -184,6 +201,55 @@ func run() error {
 		service.Shutdown(shutdownCtx)
 		return server.Shutdown(shutdownCtx)
 	}
+}
+
+func daemonNetworkConfig(bind, port, token string) (string, string, error) {
+	address := net.ParseIP(bind)
+	if address == nil {
+		return "", "", fmt.Errorf("SOFTWARE_FACTORY_BIND must be an IP address")
+	}
+	if strings.TrimSpace(token) != token {
+		return "", "", fmt.Errorf("SOFTWARE_FACTORY_DAEMON_TOKEN must not have surrounding whitespace")
+	}
+	if token != "" && len(token) < 32 {
+		return "", "", fmt.Errorf("SOFTWARE_FACTORY_DAEMON_TOKEN must contain at least 32 characters")
+	}
+	if !address.IsLoopback() {
+		return "", "", fmt.Errorf("SOFTWARE_FACTORY_BIND must remain loopback; use an encrypted tunnel for remote access")
+	}
+	return net.JoinHostPort(bind, port), token, nil
+}
+
+func loadDaemonID(root string) (string, error) {
+	path := filepath.Join(root, "daemon-id")
+	value, err := os.ReadFile(path)
+	if err == nil {
+		return validateDaemonID(string(value))
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	var random [16]byte
+	if _, err = rand.Read(random[:]); err != nil {
+		return "", err
+	}
+	if err = createIfMissing(path, []byte(hex.EncodeToString(random[:])+"\n")); err != nil {
+		return "", err
+	}
+	value, err = os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return validateDaemonID(string(value))
+}
+
+func validateDaemonID(value string) (string, error) {
+	id := strings.TrimSpace(value)
+	decoded, err := hex.DecodeString(id)
+	if err != nil || len(decoded) != 16 || id != strings.ToLower(id) {
+		return "", fmt.Errorf("daemon-id must contain 32 lowercase hexadecimal characters")
+	}
+	return id, nil
 }
 
 func factoryRoot() (string, error) {

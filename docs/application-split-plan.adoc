@@ -5,22 +5,25 @@
 
 Planning complete; implementation has not started. This document captures the conversation's final scope for the next implementation agent. It is not a record of implemented functionality.
 
-Build a separately runnable Software Factory application with Next.js and React. The application owns authentication, teams, memberships, and daemon connections in its own database. It connects to multiple Go daemons running in independent sandboxes and displays and controls their tasks.
+Build a separately runnable Software Factory application with Next.js and React. The application owns a single initial-user login and daemon connections in its own database. It connects to multiple Go daemons running in independent sandboxes and displays and controls their tasks.
 
 Keep application and daemon in this repository initially. Separate their runtime, persistence, and release/build responsibilities; splitting repositories is not required.
 
 == Implementation Progress
 
-Record for the next agent. Step 1 is implemented; steps 2-6 are untouched.
+Record for the next agent. Steps 1-3 are implemented under the simplified single-user scope; steps 4-6 remain.
 
 * Step 1 done: `application/` Next.js workspace builds and starts without daemon state. Includes runtime environment validation (`src/server/environment.ts`), transactional numbered PostgreSQL migrations with advisory locking (`src/server/migrations.ts`, `migrations/0001_foundation.sql`), migration CLI (`scripts/migrate.ts`), honest setup-only `/` page, `.env.example`, and 23 passing tests (`application:build`, `application:test`, `typecheck` green).
 * Early structural work, done per follow-up requests ahead of step 6: Go code moved to `daemon/` as its own module (`github.com/jurabek/software-factory/daemon`); Vue UI moved with it to `daemon/web/` so `//go:embed web/dist/*` keeps serving until React parity. Root scripts use `go -C daemon`; npm workspaces are `["daemon/web", "application"]`. Added `application/Dockerfile` (standalone), `docker-compose.yaml` (app + migrate + postgres), `.dockerignore`, `output: standalone`.
-* `daemon/` verified: `go -C daemon test ./...`, `-race`, plus smoke (`/`, `/api/v1/health`, `/docs` all 200). `docker compose config` valid. Daemon UI/API/docs unchanged in behavior.
-* Never verified, blocked on docker socket permission: image build, `compose up`, migrations against live PostgreSQL (mock-boundary tests only).
+* Prior local-mode daemon smoke: `/`, `/api/v1/health`, and `/docs` all returned 200. Remote credential mode now intentionally serves only authenticated `/api/v1/` routes.
+* Live container verification remains blocked by docker socket permission: image build, `compose up`, migrations against live PostgreSQL, and browser-to-two-daemon integration. Database and daemon boundaries use automated fakes.
 * Post-handoff fix, committed with step 1: `docker-compose.yaml` `migrate` service now overrides the image CMD with `node --import tsx application/scripts/migrate.ts` and `restart: "no"`; without it the service booted the app server and `app` waited forever on `service_completed_successfully`. `docker compose config` renders the command correctly. `Dockerfile` CMD `node application/server.js` verified against the real standalone tree (`standalone/application/server.js`).
-* Re-verified post-handoff: `go -C daemon test ./...`, `-race`, `npm run typecheck`, `application:build`, `application:test` (23 pass), `docker compose config` all green.
+* User scope override: do not use Better Auth, OAuth providers, registration, Teams, memberships, invitations, or account linking. Authentication is one configured `INITIAL_USER_LOGIN`/`INITIAL_USER_PASSWORD` with opaque, hashed, database-backed sessions.
+* Step 2 done: password login/logout routes, same-origin mutation checks, HTTP-only strict cookies, expiration, generic credential failures, and login-independent daemon configuration. `0002_identity.sql` stores only session-token digests and expiration.
+* Step 3 done: stable daemon identity, bearer authentication for tunneled daemon reads and writes, enforced loopback binding, exact-origin/IP endpoint policy, redirect rejection, AES-256-GCM credential storage, daemon registry, identity/health handshake and continuity checks, daemon-qualified task reads, registration UI, and per-daemon task errors. `0003_daemon_connections.sql` owns registrations.
+* Current automated verification: application tests (50), application production build, Go tests, Go race tests, root typecheck/build, Swagger validation, Compose rendering, and diff checks pass.
 * Do not delete `daemon/web/` until step 5 React parity carries its behavior forward.
-* Work left uncommitted at handoff; `git status` also carries unrelated pre-existing entries (skill dirs, `skills-lock.json`, `web/dist` asset churn, staged `SPEC.md` deletion).
+* Implementation remains uncommitted. Preserve unrelated skill-directory and `skills-lock.json` worktree entries.
 
 IMPORTANT: The user explicitly deferred retention after initially requesting durable history. The initial release must not implement task archival, log replication, a synchronization worker, or deletion-safety protocols. Tasks and logs remain on their owning daemon. The application does not guarantee history after sandbox deletion.
 
@@ -30,8 +33,7 @@ IMPORTANT: The user explicitly deferred retention after initially requesting dur
 * Next.js supplies both the UI and application backend. Do not introduce an additional Go application backend.
 * Start self-hosted, rather than targeting a serverless hosting platform.
 * The application has its own database for application-owned state.
-* Support GitHub and Google login initially.
-* Registration is invite-only, with an explicitly configured initial owner. There is no public signup or first-login-wins administrator bootstrap.
+* Use one explicitly configured initial-user login and password. There is no signup, provider login, invitation, Team, or multi-user scope.
 * Daemons remain authoritative for tasks and execution; the application displays daemon tasks and forwards authorized actions.
 * Support multiple independently running sandbox daemons.
 * Retention is deferred, not rejected permanently.
@@ -41,11 +43,8 @@ IMPORTANT: The user explicitly deferred retention after initially requesting dur
 These were recommended during planning, not individually mandated by the user. Use them unless implementation research reveals a concrete problem; explain material departures.
 
 * PostgreSQL for application persistence.
-* Better Auth for provider login, sessions, and membership/invitation support.
-* Use Better Auth's organization tenant as the product's Team. Avoid adding a separate organization plus nested-team hierarchy.
-* Each daemon registration belongs to exactly one Team initially. Cross-team sharing is outside the initial scope.
-* Owners/admins manage membership and connections; members can browse and operate the Team's tasks. Define explicit permissions rather than deriving authorization from UI visibility.
-* Copyable, email-bound invitation links initially, avoiding an SMTP dependency.
+* Opaque database-backed sessions for the configured initial user.
+* Every daemon registration is available only to that authenticated user.
 * Docker Compose for the Next.js application and PostgreSQL, with persistent database storage. Daemons run independently, not as mandatory dependencies of the application's startup.
 * Preserve the existing UI's workflows and visual language during the React migration.
 
@@ -57,8 +56,7 @@ Browser
    |
 Next.js application
    |-- React UI
-   |-- Authentication and sessions
-   |-- Teams, memberships, invitations, permissions
+   |-- Initial-user authentication and sessions
    |-- Daemon registry and authorized HTTP/SSE access
    |-- PostgreSQL application database
    |
@@ -68,51 +66,35 @@ Next.js application
 
 The browser talks to the application, not directly to arbitrary daemon addresses. Provider secrets and daemon credentials stay server-side.
 
-Application persistence covers users, provider accounts, login sessions, Teams, memberships, invitations, one-time bootstrap state, daemon registrations, and application preferences as needed. An authentication login session is distinct from a daemon Task Session.
+Application persistence covers login sessions, daemon registrations, and application preferences as needed. An authentication login session is distinct from a daemon Task Session.
 
 Daemon persistence continues to cover tasks and child Task Sessions, repositories, attempts, branches, events, interventions, results, checks, local logs, artifacts, and workspace snapshots. No task database migration to PostgreSQL is part of this split.
 
-Use Server Components for suitable initial reads, and Client Components for interactive controls, forms, selection, and live events. No requirement to force every read through RSC or use experimental caching features. Team-private data must not leak through shared caches.
+Use Server Components for suitable initial reads, and Client Components for interactive controls, forms, selection, and live events. No requirement to force every read through RSC or use experimental caching features. Authenticated data must not leak through shared caches.
 
 == Authentication and Authorization Contract
 
-=== Initial Owner
+=== Initial User
 
-* Configure the initial owner server-side, for example through `INITIAL_OWNER_EMAIL`; the exact environment-variable name is an implementation detail.
-* Grant bootstrap ownership only after GitHub or Google proves ownership of the configured verified email. An OAuth login or profile email string alone is insufficient proof. Fail closed if verification cannot be established.
-* Persist bootstrap completion in PostgreSQL and make concurrent bootstrap attempts safe. Changing configuration later must not silently create another owner.
-* The initial owner can create the first Team and invite members. Bootstrap status does not grant permanent access to every Team or daemon; normal membership checks still apply.
-* Missing or invalid bootstrap configuration must have an actionable setup error, not fall back to public signup.
-
-=== Login and Invitations
-
-* Existing accounts may sign in through their linked providers; Team resources require current membership.
-* Block unauthorized new account creation in the server-side OAuth/signup path, not merely by hiding signup buttons.
-* An invited new user must authenticate with the matching verified email. Invitation possession alone does not establish membership.
-* Invitations identify the Team, recipient email, assigned role, inviter, expiration, revocation, and acceptance state.
-* Use opaque, unguessable invitation identifiers/tokens, enforce expiration and single use, and consume membership grants transactionally.
-* Team owners/admins may issue and revoke invitations within their authorized Team and role-grant limits.
-* Account creation and invitation acceptance must have a defined failure/retry path. A rejected, revoked, or raced invitation must never grant membership or bypass the registration gate.
-* Keep GitHub/Google account linking explicit and authenticated. Do not silently merge accounts solely by equal email strings.
-* Request only provider permissions needed for identity. GitHub sign-in does not grant the sandbox repository credentials or permissions.
-
-Better Auth has Next.js, provider, and organization support, but verify the selected release's actual signup hooks, invitation semantics, email verification, and account-linking defaults before relying on them. Reuse its mechanisms where they meet this contract; test the full OAuth-to-invitation path.
+* Configure `INITIAL_USER_LOGIN` and `INITIAL_USER_PASSWORD` server-side. There is no registration or password-recovery flow.
+* Store only hashes of opaque random session tokens in PostgreSQL. Keep the configured password out of the database, logs, client bundles, and responses.
+* Use HTTP-only, same-site cookies with bounded expiration. Login and logout mutations require the configured application origin.
+* Missing or invalid login configuration has an actionable setup error and fails closed.
+* Daemon configuration or availability must not prevent login or logout.
 
 === Resource Access
 
-* Validate session and current membership for every protected server read, action, route handler, file response, and stream. Redirect middleware and active-Team selection are not authorization.
-* Scope daemon lookup by authorized Team before contacting an upstream. An attacker-supplied daemon/task ID must not bypass tenancy checks.
-* Apply role checks to invitations, membership changes, connection management, and execution actions. Prevent privilege escalation and accidental loss of the last owner.
-* Membership removal must revoke resource access, including long-lived streams within a defined bounded revalidation interval. Test it.
+* Validate the current initial-user session for every protected server read, action, route handler, file response, and stream.
+* Resolve every daemon/task operation through a stored daemon registration before contacting an upstream. An attacker-supplied daemon/task ID must not bypass that lookup.
 * Validate mutation origin/CSRF protections and configure trusted application origins explicitly.
 
 == Daemon Connectivity Contract
 
-* Store a stable application-side daemon registration ID, Team ownership, display name, endpoint, and credentials. Qualify task identity and routes by daemon ID plus task ID; never by task ID alone.
+* Store a stable application-side daemon registration ID, display name, endpoint, and credentials. Qualify task identity and routes by daemon ID plus task ID; never by task ID alone.
 * Add daemon identity to the connection handshake, or an equivalent explicit replacement check, so reusing an endpoint does not silently associate a different sandbox with the old connection.
 * Add real application-to-daemon authentication for reads, mutations, and streams. The current daemon mutation token is not remote authentication.
-* Use HTTPS or an explicitly trusted local/private tunnel. Preserve safe loopback defaults; configurable remote binding must not enable unauthenticated public access.
-* Keep browser cookies and OAuth tokens out of upstream requests. Use only the daemon credential and explicitly selected headers.
+* Keep daemon binding on loopback and use an encrypted tunnel for application connectivity. Do not expose bearer credentials over cleartext remote HTTP.
+* Keep browser cookies out of upstream requests. Use only the daemon credential and explicitly selected headers.
 * Restrict configurable upstream destinations using deployment-controlled policy. Private sandbox addresses may be legitimate, but connection management must not become an arbitrary SSRF proxy. Address redirects and DNS changes as well as initial URL validation.
 * Keep stored credentials protected at rest, redact them in logs and errors, and return no secrets to clients. Choose the smallest suitable secret-storage approach for the self-hosted deployment.
 * Preserve daemon error status/meaning, request cancellation, reasonable timeouts, and SSE flush/reconnect behavior.
@@ -125,26 +107,26 @@ Exact credential provisioning and transport mechanics remain implementation choi
 
 Re-read source and `git status` before editing; these are navigation pointers, not a substitute for current code.
 
-* `main.go`: daemon startup, SQLite recovery, local root/lock, harness registration, API wiring, embedded Vue assets, Swagger, loopback bind, shutdown.
-* `main_test.go`: Swagger and same-origin documentation checks.
-* `internal/api/api.go`: task/action routes, mutation-token and origin checks, REST events and SSE.
-* `internal/factory/service.go`: task creation and execution, child Task Sessions, task deletion, check logs, prompts, and process ownership.
-* `internal/store/store.go`: daemon SQLite schema, transitions, events, lineage, and startup recovery.
-* `internal/harness/harness.go`: agent runtime interface, not the remote-daemon interface. Keep these concerns separate.
-* `web/src/api.ts`: singleton same-origin client and module-global mutation token.
-* `web/src/types.ts`: existing TypeScript request/response shapes; reusable after checking against actual daemon responses.
-* `web/src/App.vue`: task/session routing, polling, direct EventSource usage, actions, detail selection, and async state handling.
-* `web/src/components/`: task creation, task/artifact rails, artifact viewer, session log, and intervention composer to migrate.
-* `web/vite.config.ts`, root and web `package.json`: current frontend build and development wiring.
-* `swagger.yaml`: daemon interface description; update with shipped daemon interface changes.
+* `daemon/main.go`: daemon startup, SQLite recovery, local root/lock, identity, bind/auth configuration, harness registration, API wiring, embedded Vue assets, Swagger, and shutdown.
+* `daemon/main_test.go`: identity, bind policy, Swagger, and same-origin documentation checks.
+* `daemon/internal/api/api.go`: task/action routes, local mutation-token checks, remote bearer authentication, REST events, and SSE.
+* `daemon/internal/factory/service.go`: task creation and execution, child Task Sessions, task deletion, check logs, prompts, and process ownership.
+* `daemon/internal/store/store.go`: daemon SQLite schema, transitions, events, lineage, and startup recovery.
+* `daemon/internal/harness/harness.go`: agent runtime interface, not the remote-daemon interface. Keep these concerns separate.
+* `daemon/web/src/api.ts`: singleton same-origin client and module-global mutation token.
+* `daemon/web/src/types.ts`: existing TypeScript request/response shapes; reusable after checking against actual daemon responses.
+* `daemon/web/src/App.vue`: task/session routing, polling, direct EventSource usage, actions, detail selection, and async state handling.
+* `daemon/web/src/components/`: task creation, task/artifact rails, artifact viewer, session log, and intervention composer to migrate.
+* `daemon/web/vite.config.ts`, root and workspace `package.json` files: current frontend build and development wiring.
+* `daemon/swagger.yaml`: daemon interface description; update with shipped daemon interface changes.
 * `CONTEXT.md`, `docs/ARCHITECTURE.md`, `docs/USAGE.md`, `SPEC.md`, `docs/retriable-execution.adoc`: terminology and existing behavior. Older single-host/no-remote constraints do not override the user's application-split decision here.
 
 Current behavior requiring care:
 
-* The daemon binds to loopback. `/api/v1/control` exposes a random per-process mutation token; reads are not authenticated by that token. The token and same-origin checks protect local browser mutations, not remote Team access.
+* The daemon always binds to loopback. Local mode exposes a random per-process mutation token through `/api/v1/control`. Configuring the application bearer credential requires it for every API read, mutation, and stream and disables `/control`, embedded UI, and Swagger routes.
 * SSE supports `after` and `Last-Event-ID`. Sequence numbers are daemon-database-wide; per-task gaps are normal. Preserve cursor scope and avoid duplicate display on reconnect.
 * Events are not a complete task-state change journal. Keep task/detail refresh rather than assuming SSE reconstructs state.
-* Current UI guards often compare only task IDs. React state and stale-response protection must also include Team/daemon selection, with cancellation or request generations.
+* Current UI guards often compare only task IDs. React state and stale-response protection must also include daemon selection, with cancellation or request generations.
 * Repository paths and artifact paths belong to the daemon filesystem, not the application host or browser. Explain this in the UI; do not read those paths on the application server.
 * Task Sessions are child task records, not auth sessions or native agent-session files.
 * Deleting a root task can delete its child Task Sessions and task files. Preserve existing behavior without claiming archival safety.
@@ -163,17 +145,17 @@ Create a Next.js npm workspace alongside the existing frontend, with TypeScript,
 
 Completion: the application builds and starts without a daemon database, daemon lock, agent executable, or Vue build. The existing daemon/UI still starts as before during migration.
 
-=== 2. Identity and Teams
+=== 2. Initial-User Identity
 
-Implement both providers, database-backed sessions, initial-owner bootstrap, Team creation/switching, membership management, and invitations under the security contract above. Provide login/setup/error states and explicit provider linking.
+Implement configured login/password authentication and database-backed sessions under the security contract above. Provide login/setup/error/logout states. Do not add registration or provider login.
 
-Completion: an initial owner can create a Team, invite another user, and grant scoped access; an uninvited identity cannot register; tests prove bootstrap and invitation race/replay handling and cross-Team denial.
+Completion: the configured initial user can log in and out; incorrect credentials and cross-origin mutations fail; raw credentials and session tokens are not persisted.
 
 === 3. Authenticated Daemon Registration and First Task Read
 
-Add the smallest authenticated Go daemon interface changes required, Team-scoped connection persistence, endpoint policy, health/identity checks, and a server-only daemon client. Route through the application instead of changing browser base URLs.
+Add the smallest authenticated Go daemon interface changes required, connection persistence, endpoint policy, health/identity checks, and a server-only daemon client. Route through the application instead of changing browser base URLs.
 
-Completion: one Team can connect two test daemons, read their tasks independently, and distinguish overlapping task IDs; another Team cannot access either connection by guessing IDs. No secrets reach the browser.
+Completion: the initial user can connect two test daemons, read their tasks independently, and distinguish overlapping task IDs; unauthenticated requests and guessed registration IDs fail. No secrets reach the browser.
 
 === 4. Actions, Live Events, and Failure Isolation
 
@@ -185,7 +167,7 @@ Completion: create a draft on the selected daemon, receive its live events, reco
 
 Migrate task/session creation, lists and navigation, start/approve/pause/resume/abort, feedback and interventions, attempt and branch selection, results, checks, diffs, artifacts, logs, and deletion. Preserve relevant existing action restrictions and stale-plan/branch handling.
 
-Add Team and daemon selectors, combined Team task browsing, daemon-qualified routes, and per-daemon connectivity feedback. Scope recent repository paths and any other client preferences by their actual Team/daemon owner. Clear or cancel old selection work when switching; use explicit offline/unavailable states rather than presenting old live data as current.
+Add daemon selectors, combined task browsing, daemon-qualified routes, and per-daemon connectivity feedback. Scope recent repository paths and any other client preferences by their actual daemon owner. Clear or cancel old selection work when switching; use explicit offline/unavailable states rather than presenting old live data as current.
 
 Completion: existing workflows and uncommitted UI improvements are represented in React; browser tests cover multi-daemon selection and representative mutations on desktop and mobile.
 
@@ -197,18 +179,14 @@ Completion: the Go daemon builds without frontend assets; the self-hosted applic
 
 == Verification Matrix
 
-* Authentication: both providers, logout, session expiration, unauthorized OAuth account creation, unverified/mismatched emails, explicit account linking, and provider/callback failures.
-* Bootstrap: absent configuration fails closed, only the configured verified identity succeeds, concurrent first logins are safe, and changed configuration cannot grant a second bootstrap owner.
-* Invitations: expiration, revocation, single use, replay/concurrent acceptance, email binding, grant limits, and safe retries after partial failure.
-* Tenancy: cross-Team reads/mutations/streams/connections denied, guessed IDs rejected, private data not shared through caches, role escalation prevented, and removed members lose access.
+* Authentication: configured login/password, logout, session expiration, incorrect credentials, missing configuration, origin rejection, and no raw session-token persistence.
+* Authorization: every application daemon read/mutation/stream requires the initial-user session; guessed registration IDs are rejected.
 * Connectivity: missing/invalid daemon credentials, unsafe destinations/redirects, redacted errors, two daemons with overlapping IDs, offline daemon isolation, restart/reconnect, and no browser-secret exposure.
 * Streaming: cursor forwarding, flush behavior, cancellation, duplicate suppression, and access revocation for open streams.
-* React: Team/daemon switching with delayed requests, stale responses/errors/events, creation/config/model scoping, session navigation, commands and interventions, desktop/mobile layouts.
+* React: daemon switching with delayed requests, stale responses/errors/events, creation/config/model scoping, session navigation, commands and interventions, desktop/mobile layouts.
 * Packaging: independent application/daemon builds and startup, persistent PostgreSQL volume, migrations, and production environment validation.
 
 Run the repository's declared checks: `go test ./...`, `go test -race ./...`, `npm run typecheck`, and `npm run build`. Update npm scripts to cover the new workspace during migration and the final application after cutover. Add application and browser tests for the acceptance cases above; existing frontend scripts currently have no test runner.
-
-Never claim real GitHub/Google OAuth end-to-end verification without actual configured providers. Automated provider-boundary tests can run without secrets; report external setup blockers separately.
 
 == Deferred Scope and Future Retention
 
@@ -218,9 +196,7 @@ The earlier retention discussion remains a future requirement, not acceptance cr
 
 == External Setup and Remaining Choices
 
-No unanswered product question blocks starting implementation. Actual deployment requires an application origin, owner email, PostgreSQL connection, authentication secret, GitHub and Google client IDs/secrets, and reachable daemon endpoints/credentials. Obtain these through environment/secret configuration, never committed values.
-
-With the documented Better Auth defaults, OAuth callback paths are `/api/auth/callback/github` and `/api/auth/callback/google`. Verify them against the implemented auth base path before registering providers. Production should use the configured HTTPS origin; local provider setup can use supported localhost callbacks.
+No unanswered product question blocks implementation. Deployment requires an application origin, initial-user login/password, PostgreSQL connection, daemon credential encryption key, exact allowed daemon origins, and reachable daemon endpoints/credentials. Obtain these through environment/secret configuration, never committed values.
 
 Resolve ORM/migration tooling, endpoint allowlisting, credential storage/provisioning, and exact role policy during implementation. Ask the user only if a choice materially changes this scope or trust model. Defer account-recovery tooling and deployment automation beyond the initial safe setup unless required to operate the chosen authentication integration.
 
@@ -230,11 +206,4 @@ Load `project-rules` and `clean-code` before implementation. Use `go-best-practi
 
 New Next.js-related skills are present in the dirty worktree; inspect their instructions and relevance before adopting them. Their presence does not add cache-component or partial-prefetching requirements to this plan.
 
-Official references checked during planning:
-
-* https://www.better-auth.com/docs/integrations/next[Better Auth Next.js integration]
-* https://www.better-auth.com/docs/authentication/github[GitHub provider]
-* https://www.better-auth.com/docs/authentication/google[Google provider]
-* https://www.better-auth.com/docs/plugins/organization[Organizations, memberships, and invitations]
-
-Start by reading repository instructions, this plan, the current worktree diff, and the source pointers for step 1. Track progress by the completion criteria above. No implementation work, commits, or application verification were performed in the planning session.
+Start by reading repository instructions, this plan, the current worktree diff, and the source pointers for the next step. Track progress by the completion criteria above.

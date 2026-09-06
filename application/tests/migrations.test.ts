@@ -23,7 +23,7 @@ function database(history: History = [], failOn?: string) {
 
 test("foundation migration is numbered and does not create authentication tables", async () => {
   const migrations = await loadMigrations();
-  assert.equal(migrations.length, 1);
+  assert.equal(migrations.length, 3);
   assert.equal(migrations[0].version, 1);
   assert.equal(migrations[0].name, "0001_foundation.sql");
   assert.match(migrations[0].checksum, /^[a-f0-9]{64}$/);
@@ -33,17 +33,27 @@ test("foundation migration is numbered and does not create authentication tables
 
 test("locks before ledger access and commits SQL with its migration record", async () => {
   const db = database();
-  assert.equal(await runMigrations(db.pool), 1);
+  assert.equal(await runMigrations(db.pool), 3);
   assert.match(db.queries[0].sql, /pg_advisory_lock/);
   assert.equal(db.queries[0].values?.length, 2);
   const ledgerRead = db.queries.findIndex(({ sql }) => sql.startsWith("SELECT version"));
   const transaction = db.queries.slice(ledgerRead + 1);
-  assert.equal(transaction.length, 4);
+  assert.equal(transaction.length, 12);
   assert.equal(transaction[0].sql, "BEGIN");
   assert.match(transaction[1].sql, /CREATE TABLE factory_application\.foundation/);
   assert.match(transaction[2].sql, /INSERT INTO factory_application\.schema_migrations/);
   assert.equal(transaction[2].values?.[0], 1);
   assert.equal(transaction[3].sql, "COMMIT");
+  assert.equal(transaction[4].sql, "BEGIN");
+  assert.match(transaction[5].sql, /CREATE TABLE factory_application\.owner_session/);
+  assert.match(transaction[6].sql, /INSERT INTO factory_application\.schema_migrations/);
+  assert.equal(transaction[6].values?.[0], 2);
+  assert.equal(transaction[7].sql, "COMMIT");
+  assert.equal(transaction[8].sql, "BEGIN");
+  assert.match(transaction[9].sql, /CREATE TABLE factory_application\.daemon_connection/);
+  assert.match(transaction[10].sql, /INSERT INTO factory_application\.schema_migrations/);
+  assert.equal(transaction[10].values?.[0], 3);
+  assert.equal(transaction[11].sql, "COMMIT");
   assert.deepEqual(db.releases, [true]);
 });
 

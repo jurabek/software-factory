@@ -1,6 +1,15 @@
 # Software Factory API usage
 
-Start the API and embedded UI with `go -C daemon run .`. State defaults to `~/.software-factory`; override it with `SOFTWARE_FACTORY_DIR`. The API is loopback-only and has no CORS support.
+Start the API and embedded UI with `go -C daemon run .`. State defaults to `~/.software-factory`; override it with `SOFTWARE_FACTORY_DIR`. The API binds to loopback and has no CORS support by default.
+
+To connect the separate application, configure a server credential and expose the loopback daemon through an encrypted tunnel:
+
+```bash
+SOFTWARE_FACTORY_DAEMON_TOKEN='replace-with-at-least-32-random-characters' \
+go -C daemon run .
+```
+
+Non-loopback binds are rejected, including when a credential is present. Remote clients send `Authorization: Bearer $SOFTWARE_FACTORY_DAEMON_TOKEN` on every tunneled read, mutation, and stream. `GET /api/v1/identity` returns the stable identity stored in `$SOFTWARE_FACTORY_DIR/daemon-id`. Configuring the remote credential disables `/api/v1/control`, the embedded UI, and Swagger routes; use a separate local-mode daemon process only against a different state directory.
 
 Fetch the per-process mutation token:
 

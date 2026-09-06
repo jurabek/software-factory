@@ -3,8 +3,10 @@ info:
   title: Software Factory API
   version: "1.0"
   description: |
-    Loopback-only API for creating and controlling Software Factory tasks.
-    Call GET /control, copy its token, then use Authorize to set the mutation token.
+    API for creating and controlling Software Factory tasks. It is loopback-only
+    by default. Local mode uses the GET /control mutation token. Remote mode
+    requires the configured bearer credential for every operation and disables
+    /control.
 basePath: /api/v1
 schemes:
   - http
@@ -16,11 +18,28 @@ tags:
   - name: System
   - name: Tasks
 securityDefinitions:
+  DaemonCredential:
+    type: apiKey
+    name: Authorization
+    in: header
+    description: Bearer credential configured through SOFTWARE_FACTORY_DAEMON_TOKEN
   MutationToken:
     type: apiKey
     name: X-Software-Factory-Token
     in: header
 paths:
+  /identity:
+    get:
+      tags: [System]
+      operationId: getIdentity
+      summary: Get the stable daemon identity
+      responses:
+        "200":
+          description: Stable identity for this daemon data directory
+          schema:
+            $ref: "#/definitions/Identity"
+        "401":
+          $ref: "#/responses/Unauthorized"
   /health:
     get:
       tags: [System]
@@ -74,6 +93,7 @@ paths:
       tags: [System]
       operationId: getControl
       summary: Get the per-process mutation token
+      security: []
       responses:
         "200":
           description: Control state and mutation token
@@ -98,6 +118,7 @@ paths:
       operationId: createTask
       summary: Create a task draft
       security:
+        - DaemonCredential: []
         - MutationToken: []
       parameters:
         - in: body
@@ -135,6 +156,7 @@ paths:
       operationId: deleteTask
       summary: Delete an inactive task and its files
       security:
+        - DaemonCredential: []
         - MutationToken: []
       responses:
         "200":
@@ -172,6 +194,7 @@ paths:
       operationId: createTaskSession
       summary: Create another session in a task
       security:
+        - DaemonCredential: []
         - MutationToken: []
       parameters:
         - in: body
@@ -198,6 +221,7 @@ paths:
       operationId: startTask
       summary: Start repository preparation and planning
       security:
+        - DaemonCredential: []
         - MutationToken: []
       responses:
         "202":
@@ -218,6 +242,7 @@ paths:
       operationId: approveTask
       summary: Approve the plan and continue the task
       security:
+        - DaemonCredential: []
         - MutationToken: []
       parameters:
         - in: header
@@ -245,6 +270,7 @@ paths:
       operationId: reviseTaskPlan
       summary: Answer Planner questions and revise the plan
       security:
+        - DaemonCredential: []
         - MutationToken: []
       parameters:
         - in: body
@@ -277,6 +303,7 @@ paths:
       operationId: commentOnTaskHistory
       summary: Add an idempotent comment to a Task, Attempt, Event, or Artifact
       security:
+        - DaemonCredential: []
         - MutationToken: []
       parameters:
         - in: body
@@ -297,6 +324,7 @@ paths:
       operationId: pauseTask
       summary: Pause an active task
       security:
+        - DaemonCredential: []
         - MutationToken: []
       responses:
         "202":
@@ -317,6 +345,7 @@ paths:
       operationId: resumeTask
       summary: Resume a paused or recoverable blocked task
       security:
+        - DaemonCredential: []
         - MutationToken: []
       responses:
         "202":
@@ -337,6 +366,7 @@ paths:
       operationId: abortTask
       summary: Abort a task
       security:
+        - DaemonCredential: []
         - MutationToken: []
       responses:
         "202":
@@ -499,6 +529,10 @@ parameters:
     pattern: '^SF-[0-9]{8}-[a-f0-9]{8}$'
     description: Task identifier
 responses:
+  Unauthorized:
+    description: Daemon credential missing or invalid
+    schema:
+      $ref: "#/definitions/APIError"
   Accepted:
     description: Command accepted
     schema:
@@ -528,6 +562,13 @@ responses:
     schema:
       $ref: "#/definitions/APIError"
 definitions:
+  Identity:
+    type: object
+    required: [id]
+    properties:
+      id:
+        type: string
+        pattern: "^[a-f0-9]{32}$"
   APIError:
     type: object
     required: [code, message]

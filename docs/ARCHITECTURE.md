@@ -1,6 +1,6 @@
 # How the Software Factory daemon works
 
-Software Factory is a long-running, loopback-only Go service that coordinates coding-agent work inside isolated Task Workspaces. The browser UI is the control surface, but the daemon process owns orchestration, repository access, child processes, validation, and durable state.
+Software Factory is a long-running Go service that coordinates coding-agent work inside isolated Task Workspaces. It binds to loopback by default and can expose an authenticated remote API for the separate application. The daemon process owns orchestration, repository access, child processes, validation, and durable state.
 
 The service does not daemonize or install a process supervisor. `go -C daemon run .` starts it in the foreground; use an external supervisor if it must survive a terminal or login session.
 
@@ -47,9 +47,11 @@ On startup, the process:
 4. Opens `factory.db` with WAL, foreign keys, a busy timeout, and `synchronous=NORMAL`.
 5. Recovers stale database records from an interrupted prior process and leaves affected work blocked rather than silently resuming it.
 6. Loads configuration, registers the Pi harness, and probes the installed Pi model catalog.
-7. Starts the API and embedded Vue application on `127.0.0.1:${PORT:-8080}`.
+7. Loads or creates the stable `daemon-id`, validates bind/authentication configuration, and starts the API and embedded Vue application on `${SOFTWARE_FACTORY_BIND:-127.0.0.1}:${PORT:-8080}`.
 
 Configuration or Pi validation errors put the server in a degraded state. Read endpoints and the UI remain available, but new Task work is rejected until configuration is valid.
+
+Non-loopback binding is rejected. Remote application access uses a trusted encrypted tunnel to a loopback-bound daemon and `SOFTWARE_FACTORY_DAEMON_TOKEN` with at least 32 characters. When that credential is configured, every API request requires it, including requests arriving over loopback, and `/api/v1/control`, the embedded UI, and Swagger routes are disabled. Without a remote credential, loopback browser access retains the per-process mutation token and embedded UI.
 
 The process handles `SIGINT` and `SIGTERM`. During shutdown it cancels active work, marks active Tasks blocked, shuts down HTTP, closes SQLite, and releases the lock.
 
@@ -246,16 +248,17 @@ The persistence model also supports append-only Interventions, execution branche
 
 ## Security model
 
-The security boundary is the local operating-system user, not a remote multi-user identity system.
+The daemon has local and application-connected security modes.
 
-- The HTTP server binds only to loopback and does not enable CORS.
-- Every mutation requires a random per-process token from the same-origin `/api/v1/control` endpoint.
+- The HTTP server always binds to loopback and does not enable CORS. Remote reachability requires an encrypted tunnel.
+- Local mode mutations require a random per-process token from the same-origin `/api/v1/control` endpoint.
+- Application-connected mode requires the configured bearer credential for every API read, mutation, and stream. It disables `/control`, the embedded UI, and Swagger routes.
 - Requests with a foreign `Origin` are rejected, and API responses are not cached.
 - The state directory, prompts, sessions, raw output, and repository materializations are never exposed through a generic static-file route.
 - Embedded UI assets are the only files served outside the API.
 - Coding agents and checks have the same host access as the user running the daemon.
 
-The mutation token protects the browser control surface from cross-origin requests; it is not a substitute for host isolation. Run the daemon as a user with only the repositories, credentials, tools, and network access required by its Tasks. Do not expose the loopback service through a public proxy without adding a separate authentication and authorization layer.
+The local mutation token and remote bearer credential are not substitutes for host isolation or transport encryption. Run the daemon as a user with only the repositories, credentials, tools, and network access required by its Tasks. Do not expose the loopback service through an unencrypted or public proxy.
 
 ## Architectural guarantees
 
