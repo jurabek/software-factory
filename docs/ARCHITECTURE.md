@@ -1,16 +1,19 @@
-# How the Software Factory daemon works
+# Software Factory architecture
 
-Software Factory is a long-running, loopback-only Go service that coordinates coding-agent work inside isolated Task Workspaces. The browser UI is the control surface, but the daemon process owns orchestration, repository access, child processes, validation, and durable state.
+Software Factory has a self-hosted Next.js application and independently deployed Go daemons. The application owns the single-user login, daemon registry, and browser control surface. Each daemon owns orchestration, repository access, child processes, validation, Tasks, and durable sandbox state.
 
-The service does not daemonize or install a process supervisor. `go run main.go` starts it in the foreground; use an external supervisor if it must survive a terminal or login session.
+The service does not daemonize or install a process supervisor. `go -C daemon run .` starts it in the foreground; use an external supervisor if it must survive a terminal or login session.
 
 ## System shape
 
-The daemon is deliberately a single-host system: one Go process, one SQLite database, and at most one active Task. There is no remote worker, message broker, or in-memory copy of the durable task model.
+Each daemon is deliberately a single-host system: one Go process, one SQLite database, and at most one active Task. There is no remote worker, message broker, or application-side copy of the durable task model.
 
 ```mermaid
 flowchart LR
-    User[Browser or API client] -->|HTTP commands| API[Loopback HTTP API]
+    User[Browser] -->|same-origin HTTP and SSE| App[Next.js application]
+    App --> AppDB[(PostgreSQL)]
+    App -->|authenticated HTTP and SSE through tunnel| API[Loopback daemon API]
+    Client[Local API client] --> API
     API --> Factory[Factory service]
     Factory --> Policy[State and transition policy]
     Factory --> Git[Git and GitHub commands]
@@ -20,22 +23,21 @@ flowchart LR
     Factory --> Store[(SQLite WAL)]
     Factory --> Files[Task Workspace files]
     Store -->|poll by event cursor| SSE[SSE endpoint]
-    SSE -->|normalized events| User
-    API -->|embedded assets| User
+    SSE -->|normalized events| App
 ```
 
 The main modules are:
 
 | Module | Responsibility |
 | --- | --- |
-| `main.go` | Bootstrap, single-server lock, dependency wiring, embedded UI, HTTP listener, and shutdown |
+| `main.go` | Bootstrap, single-server lock, dependency wiring, Swagger, HTTP listener, and shutdown |
 | `internal/api` | REST commands and reads, mutation protection, error mapping, and SSE delivery |
 | `internal/factory` | Task lifecycle, phase execution, prompts, envelopes, checks, snapshots, and interventions |
 | `internal/store` | SQLite schema, durable state transitions, event cursors, and JSONL trace mirroring |
 | `internal/git` | Repository isolation, repository profiles, changed-file detection, and diffs |
 | `internal/harness` | Agent-runtime boundary used by orchestration |
 | `internal/harness/pi` | Pi command invocation, JSONL consumption, event normalization, usage, and process termination |
-| `web` | Vue control surface; it does not own workflow policy |
+| `application` | Next.js UI, initial-user authentication, PostgreSQL state, daemon registry, and authenticated daemon proxy |
 
 ## Startup and ownership
 
@@ -47,9 +49,11 @@ On startup, the process:
 4. Opens `factory.db` with WAL, foreign keys, a busy timeout, and `synchronous=NORMAL`.
 5. Recovers stale database records from an interrupted prior process and leaves affected work blocked rather than silently resuming it.
 6. Loads configuration, registers the Pi harness, and probes the installed Pi model catalog.
-7. Starts the API and embedded Vue application on `127.0.0.1:${PORT:-8080}`.
+7. Loads or creates the stable `daemon-id`, validates bind/authentication configuration, and starts the API on `${SOFTWARE_FACTORY_BIND:-127.0.0.1}:${PORT:-8080}`.
 
-Configuration or Pi validation errors put the server in a degraded state. Read endpoints and the UI remain available, but new Task work is rejected until configuration is valid.
+Configuration or Pi validation errors put the daemon in a degraded state. Read endpoints remain available, but new Task work is rejected until configuration is valid.
+
+Non-loopback binding is rejected. Remote application access uses a trusted encrypted tunnel to a loopback-bound daemon and `SOFTWARE_FACTORY_DAEMON_TOKEN` with at least 32 characters. When that credential is configured, every API request requires it, including requests arriving over loopback, and `/api/v1/control` and Swagger routes are disabled. Without a remote credential, local API clients can use the per-process mutation token and Swagger UI.
 
 The process handles `SIGINT` and `SIGTERM`. During shutdown it cancels active work, marks active Tasks blocked, shuts down HTTP, closes SQLite, and releases the lock.
 
@@ -152,7 +156,7 @@ sequenceDiagram
     participant H as Pi harness
     participant P as pi process
     participant D as SQLite and JSONL
-    participant U as Browser UI
+    participant U as Next.js application
 
     F->>H: Run(cwd, prompts, model, session, deadline)
     H->>P: Start one-shot JSON-mode process
@@ -246,16 +250,18 @@ The persistence model also supports append-only Interventions, execution branche
 
 ## Security model
 
-The security boundary is the local operating-system user, not a remote multi-user identity system.
+The daemon has local and application-connected security modes.
 
-- The HTTP server binds only to loopback and does not enable CORS.
-- Every mutation requires a random per-process token from the same-origin `/api/v1/control` endpoint.
+- The HTTP server always binds to loopback and does not enable CORS. Remote reachability requires an encrypted tunnel.
+- Local mode mutations require a random per-process token from the same-origin `/api/v1/control` endpoint.
+- Application-connected mode requires the configured bearer credential for every API read, mutation, and stream. It disables `/control` and Swagger routes.
+- The application sends the stable identity it learned at registration as `X-Software-Factory-Daemon-ID` on every post-registration read, mutation, and stream. A mismatch fails with 409 `daemon_identity_mismatch` before dispatch, so reusing an endpoint never silently operates on a different sandbox.
 - Requests with a foreign `Origin` are rejected, and API responses are not cached.
 - The state directory, prompts, sessions, raw output, and repository materializations are never exposed through a generic static-file route.
-- Embedded UI assets are the only files served outside the API.
+- Local mode serves only the Swagger document and Swagger UI outside the API.
 - Coding agents and checks have the same host access as the user running the daemon.
 
-The mutation token protects the browser control surface from cross-origin requests; it is not a substitute for host isolation. Run the daemon as a user with only the repositories, credentials, tools, and network access required by its Tasks. Do not expose the loopback service through a public proxy without adding a separate authentication and authorization layer.
+The local mutation token and remote bearer credential are not substitutes for host isolation or transport encryption. Run the daemon as a user with only the repositories, credentials, tools, and network access required by its Tasks. Do not expose the loopback service through an unencrypted or public proxy.
 
 ## Architectural guarantees
 

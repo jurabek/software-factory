@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -29,13 +30,21 @@ type Server struct {
 	harnesses        []string
 	models           func(context.Context, string) ([]config.Model, error)
 	token            string
+	daemonID         string
+	remoteToken      string
 }
+
+type RemoteAccess struct {
+	DaemonID string
+	Token    string
+}
+
 type APIError struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
 }
 
-func New(db *store.DB, service *factory.Service, cfg config.Config, problems []string, loadErr error, harnesses []string, models func(context.Context, string) ([]config.Model, error)) (*Server, error) {
+func New(db *store.DB, service *factory.Service, cfg config.Config, problems []string, loadErr error, harnesses []string, models func(context.Context, string) ([]config.Model, error), access RemoteAccess) (*Server, error) {
 	token, err := newToken()
 	if err != nil {
 		return nil, err
@@ -46,11 +55,14 @@ func New(db *store.DB, service *factory.Service, cfg config.Config, problems []s
 	if models == nil {
 		models = func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil }
 	}
-	return &Server{db: db, factory: service, config: cfg, validationErrors: problems, loadError: loadErr, harnesses: harnesses, models: models, token: token}, nil
+	return &Server{db: db, factory: service, config: cfg, validationErrors: problems, loadError: loadErr, harnesses: harnesses, models: models, token: token, daemonID: access.DaemonID, remoteToken: access.Token}, nil
 }
+
+const expectedDaemonIDHeader = "X-Software-Factory-Daemon-ID"
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/v1/identity", s.identity)
 	mux.HandleFunc("GET /api/v1/health", s.health)
 	mux.HandleFunc("GET /api/v1/config", s.configRead)
 	mux.HandleFunc("GET /api/v1/harnesses", s.harnessesRead)
@@ -75,7 +87,34 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/tasks/{id}/results", s.results)
 	mux.HandleFunc("GET /api/v1/tasks/{id}/checks", s.checks)
 	mux.HandleFunc("GET /api/v1/tasks/{id}/diff", s.diff)
-	return headers(mux)
+	return headers(s.authenticateRemote(s.enforceExpectedIdentity(mux)))
+}
+
+func (s *Server) enforceExpectedIdentity(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/api/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		expected := strings.TrimSpace(r.Header.Get(expectedDaemonIDHeader))
+		if expected == "" || s.daemonID == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if subtle.ConstantTimeCompare([]byte(expected), []byte(s.daemonID)) != 1 {
+			fail(w, http.StatusConflict, "daemon_identity_mismatch", "daemon identity does not match this connection")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) identity(w http.ResponseWriter, r *http.Request) {
+	if s.remoteToken != "" && !s.hasRemoteCredential(r) {
+		fail(w, http.StatusUnauthorized, "invalid_credential", "daemon credential missing or invalid")
+		return
+	}
+	write(w, http.StatusOK, map[string]string{"id": s.daemonID})
 }
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
@@ -138,7 +177,11 @@ func (s *Server) modelsRead(w http.ResponseWriter, r *http.Request) {
 	write(w, http.StatusOK, map[string]any{"harness": harness, "models": models})
 }
 
-func (s *Server) control(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) control(w http.ResponseWriter, r *http.Request) {
+	if s.remoteToken != "" || !isLoopbackRequest(r) {
+		fail(w, http.StatusForbidden, "local_access_only", "control token is available only over loopback")
+		return
+	}
 	write(w, http.StatusOK, map[string]any{"enabled": true, "token": s.token})
 }
 
@@ -478,6 +521,10 @@ func (s *Server) exists(w http.ResponseWriter, r *http.Request) bool {
 
 func (s *Server) mutation(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if remoteAuthenticated(r.Context()) {
+			next(w, r)
+			return
+		}
 		provided := r.Header.Get("X-Software-Factory-Token")
 		if subtle.ConstantTimeCompare([]byte(provided), []byte(s.token)) != 1 {
 			fail(w, http.StatusForbidden, "invalid_token", "mutation token missing or invalid")
@@ -489,6 +536,47 @@ func (s *Server) mutation(next http.HandlerFunc) http.HandlerFunc {
 		}
 		next(w, r)
 	}
+}
+
+type remoteAuthenticationKey struct{}
+
+func (s *Server) authenticateRemote(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.remoteToken == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if !s.hasRemoteCredential(r) {
+			fail(w, http.StatusUnauthorized, "invalid_credential", "daemon credential missing or invalid")
+			return
+		}
+		ctx := context.WithValue(r.Context(), remoteAuthenticationKey{}, true)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+func (s *Server) hasRemoteCredential(r *http.Request) bool {
+	const prefix = "Bearer "
+	authorization := r.Header.Get("Authorization")
+	if !strings.HasPrefix(authorization, prefix) {
+		return false
+	}
+	provided := strings.TrimPrefix(authorization, prefix)
+	return subtle.ConstantTimeCompare([]byte(provided), []byte(s.remoteToken)) == 1
+}
+
+func remoteAuthenticated(ctx context.Context) bool {
+	authenticated, _ := ctx.Value(remoteAuthenticationKey{}).(bool)
+	return authenticated
+}
+
+func isLoopbackRequest(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	address := net.ParseIP(host)
+	return address != nil && address.IsLoopback()
 }
 
 func (s *Server) ready(w http.ResponseWriter) bool {

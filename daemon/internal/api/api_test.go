@@ -43,7 +43,7 @@ func TestEventsTailReturnsNewestEventsInSequenceOrder(t *testing.T) {
 		}
 	}
 
-	server, err := New(db, nil, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil })
+	server, err := New(db, nil, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil }, RemoteAccess{DaemonID: "daemon-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +74,7 @@ func TestEmptyCollectionsAreJSONArrays(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	server, err := New(db, nil, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil })
+	server, err := New(db, nil, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil }, RemoteAccess{DaemonID: "daemon-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func TestCreateTaskAcceptsMultipleRepositories(t *testing.T) {
 	}
 	defer db.Close()
 	service := factory.NewService(root, db, config.Config{}, "", nil, nil)
-	server, err := New(db, service, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil })
+	server, err := New(db, service, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil }, RemoteAccess{DaemonID: "daemon-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +134,7 @@ func TestCreateAndListTaskSessions(t *testing.T) {
 	}
 	defer db.Close()
 	service := factory.NewService(root, db, config.Config{}, "", nil, nil)
-	server, err := New(db, service, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil })
+	server, err := New(db, service, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil }, RemoteAccess{DaemonID: "daemon-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +187,7 @@ func TestLegacyRouteHasNoAlias(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	server, err := New(db, nil, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil })
+	server, err := New(db, nil, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil }, RemoteAccess{DaemonID: "daemon-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,5 +196,138 @@ func TestLegacyRouteHasNoAlias(t *testing.T) {
 	server.Handler().ServeHTTP(response, request)
 	if response.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", response.Code)
+	}
+}
+
+func TestRemoteAccessRequiresDaemonCredential(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "factory.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	const credential = "remote-test-credential-with-32-characters"
+	server, err := New(db, nil, config.Config{}, nil, nil, nil, nil, RemoteAccess{DaemonID: "daemon-identity", Token: credential})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		name          string
+		path          string
+		authorization string
+		wantStatus    int
+	}{
+		{name: "missing", path: "/api/v1/tasks", wantStatus: http.StatusUnauthorized},
+		{name: "missing stream credential", path: "/api/v1/tasks/task-1/events/stream", wantStatus: http.StatusUnauthorized},
+		{name: "incorrect", path: "/api/v1/tasks", authorization: "Bearer wrong", wantStatus: http.StatusUnauthorized},
+		{name: "read", path: "/api/v1/tasks", authorization: "Bearer " + credential, wantStatus: http.StatusOK},
+		{name: "identity", path: "/api/v1/identity", authorization: "Bearer " + credential, wantStatus: http.StatusOK},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, test.path, nil)
+			request.RemoteAddr = "198.51.100.9:4000"
+			request.Header.Set("Authorization", test.authorization)
+			response := httptest.NewRecorder()
+			server.Handler().ServeHTTP(response, request)
+			if response.Code != test.wantStatus {
+				t.Fatalf("status = %d, want %d: %s", response.Code, test.wantStatus, response.Body.String())
+			}
+		})
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/identity", nil)
+	request.RemoteAddr = "127.0.0.1:4000"
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("loopback identity status = %d, want %d", response.Code, http.StatusUnauthorized)
+	}
+	request = httptest.NewRequest(http.MethodGet, "/api/v1/tasks", nil)
+	request.RemoteAddr = "127.0.0.1:4000"
+	response = httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("loopback tasks status = %d, want %d", response.Code, http.StatusUnauthorized)
+	}
+	request = httptest.NewRequest(http.MethodGet, "/api/v1/control", nil)
+	request.RemoteAddr = "127.0.0.1:4000"
+	request.Header.Set("Authorization", "Bearer "+credential)
+	response = httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("remote-mode control status = %d, want %d", response.Code, http.StatusForbidden)
+	}
+}
+
+func TestRemoteCredentialAuthorizesMutationWithoutLocalToken(t *testing.T) {
+	root := t.TempDir()
+	db, err := store.Open(filepath.Join(root, "factory.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	service := factory.NewService(root, db, config.Config{}, "", nil, nil)
+	const credential = "remote-test-credential-with-32-characters"
+	server, err := New(db, service, config.Config{}, nil, nil, nil, nil, RemoteAccess{DaemonID: "daemon-identity", Token: credential})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/tasks", bytes.NewBufferString(`{"request":"Remote task","repositories":[{"type":"github","repo":"owner/app"}]}`))
+	request.RemoteAddr = "198.51.100.9:4000"
+	request.Header.Set("Authorization", "Bearer "+credential)
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("status = %d: %s", response.Code, response.Body.String())
+	}
+	var task store.Task
+	if err = json.NewDecoder(response.Body).Decode(&task); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	request = httptest.NewRequest(http.MethodGet, "/api/v1/tasks/"+task.ID+"/events/stream", nil).WithContext(ctx)
+	request.RemoteAddr = "198.51.100.9:4000"
+	request.Header.Set("Authorization", "Bearer "+credential)
+	response = httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "text/event-stream" {
+		t.Fatalf("stream status, content type = %d, %q", response.Code, response.Header().Get("Content-Type"))
+	}
+}
+
+func TestExpectedDaemonIdentityMismatchFailsBeforeDispatch(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "factory.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	server, err := New(db, nil, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil }, RemoteAccess{DaemonID: "0123456789abcdef0123456789abcdef"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/tasks", nil)
+	request.Header.Set("X-Software-Factory-Daemon-ID", "ffffffffffffffffffffffffffffffff")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("mismatch status = %d, want %d", response.Code, http.StatusConflict)
+	}
+	var body struct {
+		Code string `json:"code"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Code != "daemon_identity_mismatch" {
+		t.Fatalf("code = %q, want daemon_identity_mismatch", body.Code)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/api/v1/tasks", nil)
+	request.Header.Set("X-Software-Factory-Daemon-ID", "0123456789abcdef0123456789abcdef")
+	response = httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("matching identity status = %d, want %d", response.Code, http.StatusOK)
 	}
 }

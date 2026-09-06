@@ -1,0 +1,61 @@
+# Self-hosted application and PostgreSQL. Daemons run independently.
+# Configure credentials through the environment, never in this file.
+x-database-url: &database-url "postgresql://${POSTGRES_USER:-factory}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-factory_application}"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-factory}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-factory_application}
+    volumes:
+      - factory-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-factory} -d $${POSTGRES_DB:-factory_application}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    build:
+      context: .
+      dockerfile: application/Dockerfile
+    image: software-factory-application:local
+    command: ["node", "--import", "tsx", "application/scripts/migrate.ts"]
+    restart: "no"
+    environment:
+      DATABASE_URL: *database-url
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  app:
+    build:
+      context: .
+      dockerfile: application/Dockerfile
+    image: software-factory-application:local
+    restart: unless-stopped
+    ports:
+      - "${APPLICATION_PORT:-3000}:3000"
+    environment:
+      APPLICATION_ORIGIN: ${APPLICATION_ORIGIN:-http://localhost:3000}
+      DATABASE_URL: *database-url
+      INITIAL_USER_LOGIN: ${INITIAL_USER_LOGIN:-owner}
+      INITIAL_USER_PASSWORD: ${INITIAL_USER_PASSWORD:?Set INITIAL_USER_PASSWORD}
+      DAEMON_CREDENTIAL_KEY: ${DAEMON_CREDENTIAL_KEY:?Set DAEMON_CREDENTIAL_KEY}
+      DAEMON_ALLOWED_ORIGINS: ${DAEMON_ALLOWED_ORIGINS:?Set DAEMON_ALLOWED_ORIGINS}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:3000/api/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  factory-pgdata:
