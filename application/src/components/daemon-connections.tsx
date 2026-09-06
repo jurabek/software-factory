@@ -1,66 +1,121 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import type { DaemonTask } from "../server/daemon-client.ts";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { daemonTasks, listDaemons, registerDaemon, type QualifiedTask } from "../client/daemon-api.ts";
+import { RequestScope } from "../client/daemon-ui-state.ts";
 import type { DaemonConnection } from "../server/daemon-registry.ts";
+import { TaskCreation } from "./task-creation.tsx";
+import { TaskDetail } from "./task-detail.tsx";
 
-type TaskState = { tasks: (DaemonTask & { daemonId: string })[]; error: string | null; loading: boolean };
-
-async function responseMessage(response: Response): Promise<string> {
-  const body = await response.json().catch(() => null) as { message?: unknown } | null;
-  return typeof body?.message === "string" ? body.message : `Request failed with status ${response.status}.`;
-}
+type TaskState = { tasks: QualifiedTask[]; error: string | null; loading: boolean; offline: boolean };
 
 export function DaemonConnections() {
   const [connections, setConnections] = useState<DaemonConnection[]>([]);
   const [taskStates, setTaskStates] = useState<Record<string, TaskState>>({});
   const [failure, setFailure] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  const [selectedDaemonId, setSelectedDaemonId] = useState<string | null>(null);
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [sessionExpired, setSessionExpired] = useState(false);
+  const scopes = useRef(new Map<string, RequestScope>());
+  const controllers = useRef(new Map<string, AbortController>());
 
-  async function loadTasks(connection: DaemonConnection) {
-    setTaskStates((current) => ({ ...current, [connection.id]: { tasks: current[connection.id]?.tasks ?? [], error: null, loading: true } }));
-    try {
-      const response = await fetch(`/api/daemons/${encodeURIComponent(connection.id)}/tasks`, { cache: "no-store" });
-      if (!response.ok) throw new Error(await responseMessage(response));
-      const body = await response.json() as { tasks: (DaemonTask & { daemonId: string })[] };
-      setTaskStates((current) => ({ ...current, [connection.id]: { tasks: body.tasks, error: null, loading: false } }));
-    } catch (error) {
-      setTaskStates((current) => ({ ...current, [connection.id]: { tasks: current[connection.id]?.tasks ?? [], error: error instanceof Error ? error.message : "Daemon is unavailable.", loading: false } }));
+  function scopeFor(daemonId: string): RequestScope {
+    let scope = scopes.current.get(daemonId);
+    if (!scope) {
+      scope = new RequestScope();
+      scopes.current.set(daemonId, scope);
     }
+    return scope;
   }
 
-  async function loadConnections() {
+  const loadTasks = useCallback(async (connection: DaemonConnection) => {
+    const scope = scopeFor(connection.id);
+    const generation = scope.next();
+    controllers.current.get(connection.id)?.abort();
+    const controller = new AbortController();
+    controllers.current.set(connection.id, controller);
+    setTaskStates((current) => ({
+      ...current,
+      [connection.id]: { tasks: current[connection.id]?.tasks ?? [], error: null, loading: true, offline: false },
+    }));
     try {
-      const response = await fetch("/api/daemons", { cache: "no-store" });
-      if (!response.ok) throw new Error(await responseMessage(response));
-      const body = await response.json() as { daemons: DaemonConnection[] };
+      const result = await daemonTasks(connection.id, controller.signal);
+      if (!scope.isCurrent(generation)) return;
+      setTaskStates((current) => ({
+        ...current,
+        [connection.id]: { tasks: result.tasks, error: null, loading: false, offline: false },
+      }));
+    } catch (error) {
+      if (controller.signal.aborted || !scope.isCurrent(generation)) return;
+      const message = error instanceof Error ? error.message : "Daemon is unavailable.";
+      if (message.startsWith("Session expired")) {
+        setSessionExpired(true);
+        setTaskStates((current) => ({
+          ...current,
+          [connection.id]: { tasks: current[connection.id]?.tasks ?? [], error: message, loading: false, offline: false },
+        }));
+        return;
+      }
+      // Keep previously loaded tasks but mark them explicitly stale/offline.
+      setTaskStates((current) => ({
+        ...current,
+        [connection.id]: { tasks: current[connection.id]?.tasks ?? [], error: message, loading: false, offline: true },
+      }));
+    }
+  }, []);
+
+  const loadConnections = useCallback(async () => {
+    try {
+      const body = await listDaemons();
       setConnections(body.daemons);
+      setFailure(null);
+      setSelectedDaemonId((current) => current ?? body.daemons[0]?.id ?? null);
       for (const connection of body.daemons) void loadTasks(connection);
     } catch (error) {
-      setFailure(error instanceof Error ? error.message : "Could not load daemon connections.");
+      const message = error instanceof Error ? error.message : "Could not load daemon connections.";
+      if (message.startsWith("Session expired")) setSessionExpired(true);
+      else setFailure(message);
     }
-  }
+  }, [loadTasks]);
 
-  useEffect(() => { void loadConnections(); }, []);
+  useEffect(() => {
+    void loadConnections();
+    return () => {
+      for (const controller of controllers.current.values()) controller.abort();
+    };
+  }, [loadConnections]);
+
+  function selectDaemon(daemonId: string) {
+    setSelectedDaemonId(daemonId);
+    setSelectedTaskId(null);
+  }
 
   async function register(form: FormData) {
     setPending(true);
     setFailure(null);
-    const response = await fetch("/api/daemons", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: form.get("name"), endpoint: form.get("endpoint"), credential: form.get("credential") }),
-    });
-    if (!response.ok) {
-      setFailure(await responseMessage(response));
+    try {
+      const response = await registerDaemon({
+        name: String(form.get("name") ?? ""),
+        endpoint: String(form.get("endpoint") ?? ""),
+        credential: String(form.get("credential") ?? ""),
+      });
+      setConnections((current) => [...current, response.connection].sort((left, right) => left.name.localeCompare(right.name)));
+      setSelectedDaemonId(response.connection.id);
+      setSelectedTaskId(null);
+      void loadTasks(response.connection);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not connect the daemon.";
+      if (message.startsWith("Session expired")) setSessionExpired(true);
+      else setFailure(message);
+    } finally {
       setPending(false);
-      return;
     }
-    const body = await response.json() as { connection: DaemonConnection };
-    setConnections((current) => [...current, body.connection].sort((left, right) => left.name.localeCompare(right.name)));
-    setPending(false);
-    void loadTasks(body.connection);
   }
+
+  const selected = connections.find((connection) => connection.id === selectedDaemonId) ?? null;
+  const selectedState = selected ? taskStates[selected.id] : undefined;
+  const selectedTask = selectedState?.tasks.find((task) => task.id === selectedTaskId) ?? null;
 
   return (
     <section aria-labelledby="daemons-heading" className="panel">
@@ -69,6 +124,7 @@ export function DaemonConnections() {
         <span className="badge" data-state={connections.length ? "configured" : "pending"}>{connections.length} connected</span>
       </div>
       <p>Credentials stay on the application server. Repository and artifact paths belong to each daemon sandbox.</p>
+      {sessionExpired ? <p role="alert" className="notice">Session expired. Sign in again to continue.</p> : null}
       {failure ? <p role="alert" className="notice">{failure}</p> : null}
       <form className="form daemon-form" action={register}>
         <label>Name<input name="name" maxLength={80} required placeholder="sandbox-a" /></label>
@@ -80,22 +136,62 @@ export function DaemonConnections() {
         {connections.map((connection) => {
           const state = taskStates[connection.id];
           return (
-            <article className="daemon-card" key={connection.id}>
-              <div className="section-heading"><h3>{connection.name}</h3><button type="button" disabled={state?.loading} onClick={() => loadTasks(connection)}>Refresh</button></div>
+            <article className="daemon-card" key={connection.id} aria-current={connection.id === selectedDaemonId}>
+              <div className="section-heading">
+                <h3>{connection.name}</h3>
+                <div className="actions">
+                  <button type="button" disabled={state?.loading} onClick={() => loadTasks(connection)}>Refresh</button>
+                  <button type="button" disabled={connection.id === selectedDaemonId} onClick={() => selectDaemon(connection.id)}>Select</button>
+                </div>
+              </div>
               <code>{connection.endpoint}</code>
               <p className="daemon-identity">ID {connection.daemonIdentity}</p>
-              {state?.error ? <p role="alert" className="notice">{state.error}</p> : null}
+              {state?.offline ? <p role="alert" className="notice">Daemon offline. Showing last known tasks.</p> : null}
+              {state?.error && !state.offline ? <p role="alert" className="notice">{state.error}</p> : null}
               {state?.loading ? <p>Loading tasks...</p> : null}
               {!state?.loading && !state?.error && state?.tasks.length === 0 ? <p>No tasks on this daemon.</p> : null}
               <ul className="task-list">
                 {state?.tasks.map((task) => (
-                  <li key={`${task.daemonId}:${task.id}`}><code>{task.id}</code><span>{task.state}</span><strong>{task.request}</strong></li>
+                  <li key={`${task.daemonId}:${task.id}`} className={task.id === selectedTaskId && connection.id === selectedDaemonId ? "selected" : undefined}>
+                    <code>{task.id}</code><span>{task.state}</span>
+                    <strong>{task.request}</strong>
+                    <button type="button" onClick={() => { selectDaemon(connection.id); setSelectedTaskId(task.id); }}>Open</button>
+                  </li>
                 ))}
               </ul>
             </article>
           );
         })}
       </div>
+      {selected ? (
+        <TaskCreation
+          key={selected.id}
+          daemon={selected}
+          onCreated={(task) => {
+            setSelectedTaskId(task.id);
+            void (async () => {
+              try {
+                const result = await daemonTasks(selected.id);
+                setTaskStates((current) => ({
+                  ...current,
+                  [selected.id]: { tasks: result.tasks, error: null, loading: false, offline: false },
+                }));
+              } catch {
+                // Creation already succeeded; the next refresh recovers the list.
+              }
+            })();
+          }}
+        />
+      ) : null}
+      {selected && selectedTask ? (
+        <TaskDetail
+          key={`${selected.id}:${selectedTask.id}`}
+          daemonId={selected.id}
+          daemonName={selected.name}
+          task={selectedTask}
+          onChanged={() => loadTasks(selected)}
+        />
+      ) : null}
     </section>
   );
 }

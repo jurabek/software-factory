@@ -33,6 +33,8 @@ paths:
       tags: [System]
       operationId: getIdentity
       summary: Get the stable daemon identity
+      parameters:
+        - $ref: "#/parameters/DaemonIdentityHeader"
       responses:
         "200":
           description: Stable identity for this daemon data directory
@@ -40,6 +42,8 @@ paths:
             $ref: "#/definitions/Identity"
         "401":
           $ref: "#/responses/Unauthorized"
+        "409":
+          $ref: "#/responses/Conflict"
   /health:
     get:
       tags: [System]
@@ -104,6 +108,8 @@ paths:
       tags: [Tasks]
       operationId: listTasks
       summary: List tasks
+      parameters:
+        - $ref: "#/parameters/DaemonIdentityHeader"
       responses:
         "200":
           description: Tasks ordered newest first
@@ -121,6 +127,7 @@ paths:
         - DaemonCredential: []
         - MutationToken: []
       parameters:
+        - $ref: "#/parameters/DaemonIdentityHeader"
         - in: body
           name: task
           required: true
@@ -444,6 +451,7 @@ paths:
       produces:
         - text/event-stream
       parameters:
+        - $ref: "#/parameters/DaemonIdentityHeader"
         - in: query
           name: after
           type: integer
@@ -528,6 +536,13 @@ parameters:
     required: true
     pattern: '^SF-[0-9]{8}-[a-f0-9]{8}$'
     description: Task identifier
+  DaemonIdentityHeader:
+    in: header
+    name: X-Software-Factory-Daemon-ID
+    type: string
+    required: false
+    pattern: '^[a-f0-9]{32}$'
+    description: Expected stable daemon identity. Send the identity learned at registration; mismatches fail with 409 daemon_identity_mismatch before dispatch.
 responses:
   Unauthorized:
     description: Daemon credential missing or invalid

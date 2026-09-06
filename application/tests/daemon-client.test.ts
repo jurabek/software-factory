@@ -20,7 +20,7 @@ test("daemon client maps upstream errors without reflecting their fields", async
   const client = createDaemonClient(async () => Response.json({ code: "secret-in-code", message: "secret-in-message" }, { status: 401 }));
   await assert.rejects(
     client.tasks("http://127.0.0.1:8080", "bad"),
-    (error: unknown) => error instanceof DaemonRequestError && error.status === 401 && error.code === "daemon_unauthorized" && error.message === "Daemon request failed with status 401.",
+    (error: unknown) => error instanceof DaemonRequestError && error.status === 401 && error.code === "daemon_unauthorized" && error.message === "Daemon credential missing or invalid.",
   );
 });
 
@@ -37,4 +37,100 @@ test("network, malformed identity, and malformed task responses use fixed errors
   await assert.rejects(createDaemonClient(async () => { throw new Error("private network details"); }).health("http://127.0.0.1:8080", "credential"), /Daemon is unavailable/);
   await assert.rejects(createDaemonClient(async () => Response.json({ id: "wrong" })).identity("http://127.0.0.1:8080", "credential"), /invalid identity/);
   await assert.rejects(createDaemonClient(async () => Response.json([{ id: "task" }])).tasks("http://127.0.0.1:8080", "credential"), /invalid task list/);
+});
+
+test("commands send the expected identity and server-selected actor", async () => {
+  const requests: { input: string; init?: RequestInit }[] = [];
+  const client = createDaemonClient(async (input: string | URL | globalThis.Request, init?: RequestInit) => {
+    requests.push({ input: String(input), init });
+    return Response.json({ accepted: true }, { status: 202 });
+  });
+  const result = await client.command("http://127.0.0.1:8080", "credential", "task-1", "approve", {
+    expectedIdentity: "0123456789abcdef0123456789abcdef",
+    actor: "owner",
+  });
+  assert.deepEqual(result, { accepted: true });
+  assert.equal(requests[0].input, "http://127.0.0.1:8080/api/v1/tasks/task-1/approve");
+  const headers = requests[0].init?.headers as Record<string, string>;
+  assert.equal(headers.Authorization, "Bearer credential");
+  assert.equal(headers["X-Software-Factory-Daemon-ID"], "0123456789abcdef0123456789abcdef");
+  assert.equal(headers["X-Software-Factory-Actor"], "owner");
+  assert.equal(requests[0].init?.method, "POST");
+});
+
+test("unsupported commands fail before any fetch", async () => {
+  let calls = 0;
+  const client = createDaemonClient(async () => { calls++; return Response.json({ accepted: true }); });
+  await assert.rejects(client.command("http://127.0.0.1:8080", "credential", "task-1", "fly" as never), /Unsupported daemon command/);
+  assert.equal(calls, 0);
+});
+
+test("safe upstream conflict codes are preserved without reflecting messages", async () => {
+  const client = createDaemonClient(async () => Response.json({ code: "stale_plan", message: "plan digest abc123 at /secret/path" }, { status: 409 }));
+  await assert.rejects(
+    client.command("http://127.0.0.1:8080", "credential", "task-1", "approve", { actor: "owner" }),
+    (error: unknown) => error instanceof DaemonRequestError && error.status === 409 && error.code === "stale_plan" && !error.message.includes("/secret/path"),
+  );
+});
+
+test("identity mismatch responses preserve their safe code", async () => {
+  const client = createDaemonClient(async () => Response.json({ code: "daemon_identity_mismatch", message: "mismatch" }, { status: 409 }));
+  await assert.rejects(
+    client.tasks("http://127.0.0.1:8080", "credential", { expectedIdentity: "0123456789abcdef0123456789abcdef" }),
+    (error: unknown) => error instanceof DaemonRequestError && error.code === "daemon_identity_mismatch",
+  );
+});
+
+test("creation posts JSON bodies with the expected identity", async () => {
+  const requests: { input: string; init?: RequestInit }[] = [];
+  const client = createDaemonClient(async (input: string | URL | globalThis.Request, init?: RequestInit) => {
+    requests.push({ input: String(input), init });
+    return Response.json({ id: "task-1", request: "Build", state: "draft", created_at: "2026-09-06T12:00:00Z" }, { status: 201 });
+  });
+  const task = await client.createTask(
+    "http://127.0.0.1:8080",
+    "credential",
+    { request: "Build", repositories: [{ type: "github", repo: "owner/app" }] },
+    { expectedIdentity: "0123456789abcdef0123456789abcdef" },
+  );
+  assert.equal(task.id, "task-1");
+  assert.equal(requests[0].init?.method, "POST");
+  assert.equal((requests[0].init?.headers as Record<string, string>)["X-Software-Factory-Daemon-ID"], "0123456789abcdef0123456789abcdef");
+  assert.deepEqual(JSON.parse(String(requests[0].init?.body)), { request: "Build", repositories: [{ type: "github", repo: "owner/app" }] });
+});
+
+test("config projection exposes only creation defaults", async () => {
+  const secret = "prompt-secret-that-must-not-leak";
+  const client = createDaemonClient(async (input) => {
+    if (String(input).includes("/harnesses")) return Response.json({ harnesses: ["pi"] });
+    return Response.json({ config: { defaults: { coding_agent: "pi", model: "m", thinking: "medium" }, agents: [{ secret }] }, errors: [] });
+  });
+  const defaults = await client.configDefaults("http://127.0.0.1:8080", "credential");
+  assert.deepEqual(defaults, { coding_agent: "pi", model: "m", thinking: "medium" });
+  assert.doesNotMatch(JSON.stringify(defaults), /prompt-secret/);
+});
+
+test("event streams forward cursors without a JSON timeout", async () => {
+  const requests: { input: string; init?: RequestInit }[] = [];
+  const stream = new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode("id: 1\n\n")); controller.close(); } });
+  const client = createDaemonClient(async (input: string | URL | globalThis.Request, init?: RequestInit) => {
+    requests.push({ input: String(input), init });
+    return new Response(stream, { headers: { "Content-Type": "text/event-stream" } });
+  });
+  const response = await client.eventStream("http://127.0.0.1:8080", "credential", "task-1", { after: 41, lastEventID: "42" }, { expectedIdentity: "0123456789abcdef0123456789abcdef" });
+  assert.equal(response.headers.get("Content-Type"), "text/event-stream");
+  assert.ok(requests[0].input.includes("/api/v1/tasks/task-1/events/stream?after=41"));
+  const headers = requests[0].init?.headers as Record<string, string>;
+  assert.equal(headers.Accept, "text/event-stream");
+  assert.equal(headers["Last-Event-ID"], "42");
+  assert.equal(headers["X-Software-Factory-Daemon-ID"], "0123456789abcdef0123456789abcdef");
+});
+
+test("redirects are rejected for mutations", async () => {
+  const client = createDaemonClient((async () => {
+    const response = Response.json({ accepted: true }, { status: 202 });
+    (response as unknown as { redirected: boolean }).redirected = true;
+    throw new TypeError("Redirect failed");
+  }) as typeof fetch);
+  await assert.rejects(client.command("http://127.0.0.1:8080", "credential", "task-1", "start", { actor: "owner" }), /Daemon is unavailable/);
 });

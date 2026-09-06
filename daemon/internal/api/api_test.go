@@ -295,3 +295,39 @@ func TestRemoteCredentialAuthorizesMutationWithoutLocalToken(t *testing.T) {
 		t.Fatalf("stream status, content type = %d, %q", response.Code, response.Header().Get("Content-Type"))
 	}
 }
+
+func TestExpectedDaemonIdentityMismatchFailsBeforeDispatch(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "factory.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	server, err := New(db, nil, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil }, RemoteAccess{DaemonID: "0123456789abcdef0123456789abcdef"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/tasks", nil)
+	request.Header.Set("X-Software-Factory-Daemon-ID", "ffffffffffffffffffffffffffffffff")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("mismatch status = %d, want %d", response.Code, http.StatusConflict)
+	}
+	var body struct {
+		Code string `json:"code"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Code != "daemon_identity_mismatch" {
+		t.Fatalf("code = %q, want daemon_identity_mismatch", body.Code)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/api/v1/tasks", nil)
+	request.Header.Set("X-Software-Factory-Daemon-ID", "0123456789abcdef0123456789abcdef")
+	response = httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("matching identity status = %d, want %d", response.Code, http.StatusOK)
+	}
+}

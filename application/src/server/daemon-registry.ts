@@ -1,8 +1,17 @@
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { decryptCredential, encryptCredential } from "./credential-vault.ts";
-import type { DaemonClient, DaemonHealth, DaemonTask } from "./daemon-client.ts";
-import { createDaemonClient } from "./daemon-client.ts";
+import type {
+  CreateTaskInput,
+  DaemonClient,
+  DaemonCommand,
+  DaemonCreationDefaults,
+  DaemonEvent,
+  DaemonHealth,
+  DaemonTask,
+  EventQuery,
+} from "./daemon-client.ts";
+import { createDaemonClient, daemonCommands, DaemonRequestError } from "./daemon-client.ts";
 import { getDatabasePool } from "./database.ts";
 import { parseAllowedDaemonOrigins, normalizeDaemonEndpoint } from "./endpoint-policy.ts";
 import { readDeploymentEnvironment } from "./environment.ts";
@@ -88,8 +97,115 @@ type DaemonRegistryOptions = {
   createID?: () => string;
 };
 
-export function createDaemonRegistry(options: DaemonRegistryOptions) {
+// Server-only resolved connection. Never serialize credential or return it to clients.
+export type ResolvedDaemon = {
+  connection: DaemonConnection;
+  endpoint: string;
+  credential: string;
+  expectedIdentity: string;
+};
+
+const thinkingValues = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+
+function validatedTaskID(taskId: unknown): string {
+  if (typeof taskId !== "string" || !taskId || taskId.length > 80) {
+    throw new DaemonRegistryError(400, "invalid_task_id", "Task ID must be a non-empty string.");
+  }
+  return taskId;
+}
+
+function validatedEventQuery(query: EventQuery): EventQuery {
+  const result: EventQuery = {};
+  if (query.after !== undefined) {
+    if (!Number.isInteger(query.after) || query.after < 0) throw new DaemonRegistryError(400, "invalid_cursor", "Event cursor must be a non-negative integer.");
+    result.after = query.after;
+  }
+  if (query.limit !== undefined) {
+    if (!Number.isInteger(query.limit) || query.limit < 1 || query.limit > 1000) throw new DaemonRegistryError(400, "invalid_limit", "Event limit must be between 1 and 1000.");
+    result.limit = query.limit;
+  }
+  if (query.tail !== undefined) {
+    if (!Number.isInteger(query.tail) || query.tail < 1 || query.tail > 1000) throw new DaemonRegistryError(400, "invalid_tail", "Event tail must be between 1 and 1000.");
+    result.tail = query.tail;
+  }
+  return result;
+}
+
+function validatedCreateInput(input: CreateTaskInput): CreateTaskInput {
+  if (!input || typeof input !== "object") throw new DaemonRegistryError(400, "invalid_request", "Task request is invalid.");
+  if (typeof input.request !== "string" || !input.request.trim() || input.request.length > 20000) {
+    throw new DaemonRegistryError(400, "invalid_request", "Task request must contain 1-20000 characters.");
+  }
+  if (!Array.isArray(input.repositories) || input.repositories.length < 1 || input.repositories.length > 10) {
+    throw new DaemonRegistryError(400, "invalid_repositories", "Provide 1-10 repositories.");
+  }
+  for (const repository of input.repositories) {
+    if (!repository || typeof repository !== "object") throw new DaemonRegistryError(400, "invalid_repositories", "Repository entry is invalid.");
+    if (repository.type !== "local" && repository.type !== "github") throw new DaemonRegistryError(400, "invalid_repositories", "Repository type must be local or github.");
+    if (repository.name !== undefined && (typeof repository.name !== "string" || !repository.name || repository.name.length > 80)) {
+      throw new DaemonRegistryError(400, "invalid_repositories", "Repository name is invalid.");
+    }
+    if (repository.type === "local" && (typeof repository.path !== "string" || !repository.path.startsWith("/"))) {
+      throw new DaemonRegistryError(400, "invalid_repositories", "Local repositories need an absolute path.");
+    }
+    if (repository.type === "github" && (typeof repository.repo !== "string" || !/^[^/\s]+\/[^/\s]+$/.test(repository.repo))) {
+      throw new DaemonRegistryError(400, "invalid_repositories", "GitHub repositories need owner/name.");
+    }
+    if (repository.primary !== undefined && typeof repository.primary !== "boolean") {
+      throw new DaemonRegistryError(400, "invalid_repositories", "Repository primary flag is invalid.");
+    }
+  }
+  if (input.coding_agent !== undefined && typeof input.coding_agent !== "string") {
+    throw new DaemonRegistryError(400, "invalid_harness", "Coding agent selection is invalid.");
+  }
+  if (input.model !== undefined && (typeof input.model !== "string" || !input.model || input.model.length > 200)) {
+    throw new DaemonRegistryError(400, "invalid_model", "Model selection is invalid.");
+  }
+  if (input.thinking !== undefined && (typeof input.thinking !== "string" || !thinkingValues.has(input.thinking))) {
+    throw new DaemonRegistryError(400, "invalid_thinking", "Thinking level is invalid.");
+  }
   return {
+    request: input.request.trim(),
+    repositories: input.repositories,
+    ...(input.coding_agent ? { coding_agent: input.coding_agent } : {}),
+    ...(input.model ? { model: input.model } : {}),
+    ...(input.thinking ? { thinking: input.thinking } : {}),
+  };
+}
+
+function identityMismatch(error: unknown): boolean {
+  return error instanceof DaemonRequestError && (error.code === "daemon_identity_mismatch" || error.status === 409 && error.code === "daemon_identity_mismatch");
+}
+
+function remapIdentityMismatch(error: unknown): unknown {
+  if (identityMismatch(error)) {
+    return new DaemonRegistryError(409, "daemon_identity_changed", "Daemon identity no longer matches this registration.");
+  }
+  return error;
+}
+
+export function createDaemonRegistry(options: DaemonRegistryOptions) {
+  async function resolve(id: string): Promise<ResolvedDaemon> {
+    const row = await options.store.find(id);
+    if (!row) throw new DaemonRegistryError(404, "daemon_not_found", "Daemon connection not found.");
+    let credential: string;
+    try {
+      credential = decryptCredential(row.credential_ciphertext, options.credentialKey);
+    } catch {
+      throw new DaemonRegistryError(500, "daemon_credential_unavailable", "Stored daemon credential is unavailable.");
+    }
+    return {
+      connection: publicConnection(row),
+      endpoint: row.endpoint,
+      credential,
+      expectedIdentity: row.daemon_identity,
+    };
+  }
+
+  return {
+    async resolve(id: string): Promise<ResolvedDaemon> {
+      return resolve(id);
+    },
     async register(input: { name: string; endpoint: string; credential: string }): Promise<{ connection: DaemonConnection; health: Pick<DaemonHealth, "status"> }> {
       const name = input.name.trim();
       if (!name || name.length > 80) throw new DaemonRegistryError(400, "invalid_name", "Daemon name must contain 1-80 characters.");
@@ -118,17 +234,115 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
     async list(): Promise<DaemonConnection[]> {
       return (await options.store.list()).map(publicConnection);
     },
-    async tasks(id: string): Promise<{ connection: DaemonConnection; tasks: (DaemonTask & { daemonId: string })[] }> {
-      const row = await options.store.find(id);
-      if (!row) throw new DaemonRegistryError(404, "daemon_not_found", "Daemon connection not found.");
-      const credential = decryptCredential(row.credential_ciphertext, options.credentialKey);
-      const identity = await options.client.identity(row.endpoint, credential);
-      if (identity.id !== row.daemon_identity) {
-        throw new DaemonRegistryError(409, "daemon_identity_changed", "Daemon identity no longer matches this registration.");
+    async tasks(id: string, signal?: AbortSignal): Promise<{ connection: DaemonConnection; tasks: (DaemonTask & { daemonId: string })[] }> {
+      const resolved = await resolve(id);
+      try {
+        const tasks = await options.client.tasks(resolved.endpoint, resolved.credential, { expectedIdentity: resolved.expectedIdentity, signal });
+        return { connection: resolved.connection, tasks: tasks.map((task) => ({ ...task, daemonId: resolved.connection.id })) };
+      } catch (error) {
+        throw remapIdentityMismatch(error);
       }
-      const connection = publicConnection(row);
-      const tasks = (await options.client.tasks(row.endpoint, credential)).map((task) => ({ ...task, daemonId: connection.id }));
-      return { connection, tasks };
+    },
+    async creationOptions(id: string, harness?: string, signal?: AbortSignal): Promise<{
+      connection: DaemonConnection;
+      defaults: DaemonCreationDefaults;
+      harnesses: string[];
+      models: { harness: string; models: { provider: string; id: string }[] };
+    }> {
+      const resolved = await resolve(id);
+      const operation = { expectedIdentity: resolved.expectedIdentity, signal };
+      try {
+        const [defaults, harnesses] = await Promise.all([
+          options.client.configDefaults(resolved.endpoint, resolved.credential, operation),
+          options.client.harnesses(resolved.endpoint, resolved.credential, operation),
+        ]);
+        const selected = harness?.trim() ? harness.trim() : defaults.coding_agent;
+        if (selected.length > 80) throw new DaemonRegistryError(400, "invalid_harness", "Harness selection is invalid.");
+        const models = await options.client.models(resolved.endpoint, resolved.credential, selected, operation);
+        return { connection: resolved.connection, defaults, harnesses, models };
+      } catch (error) {
+        if (error instanceof DaemonRegistryError) throw error;
+        throw remapIdentityMismatch(error);
+      }
+    },
+    async createTask(id: string, input: CreateTaskInput, signal?: AbortSignal): Promise<{ connection: DaemonConnection; task: DaemonTask & { daemonId: string } }> {
+      const validated = validatedCreateInput(input);
+      const resolved = await resolve(id);
+      try {
+        const task = await options.client.createTask(resolved.endpoint, resolved.credential, validated, {
+          expectedIdentity: resolved.expectedIdentity,
+          signal,
+        });
+        return { connection: resolved.connection, task: { ...task, daemonId: resolved.connection.id } };
+      } catch (error) {
+        if (error instanceof DaemonRegistryError) throw error;
+        throw remapIdentityMismatch(error);
+      }
+    },
+    async command(
+      id: string,
+      taskId: string,
+      command: DaemonCommand,
+      actor: string,
+      signal?: AbortSignal,
+    ): Promise<{ connection: DaemonConnection; taskId: string; accepted: boolean }> {
+      if (!daemonCommands.includes(command)) throw new DaemonRegistryError(404, "unknown_command", "Unsupported daemon command.");
+      const validatedTask = validatedTaskID(taskId);
+      if (!actor || actor.length > 64) throw new DaemonRegistryError(400, "invalid_actor", "Command actor is invalid.");
+      const resolved = await resolve(id);
+      try {
+        const result = await options.client.command(resolved.endpoint, resolved.credential, validatedTask, command, {
+          expectedIdentity: resolved.expectedIdentity,
+          actor,
+          signal,
+        });
+        return { connection: resolved.connection, taskId: validatedTask, accepted: result.accepted };
+      } catch (error) {
+        throw remapIdentityMismatch(error);
+      }
+    },
+    async events(
+      id: string,
+      taskId: string,
+      query: EventQuery,
+      signal?: AbortSignal,
+    ): Promise<{ connection: DaemonConnection; taskId: string; events: DaemonEvent[]; cursor: number }> {
+      const validatedTask = validatedTaskID(taskId);
+      const validatedQuery = validatedEventQuery(query);
+      const resolved = await resolve(id);
+      try {
+        const result = await options.client.events(resolved.endpoint, resolved.credential, validatedTask, validatedQuery, {
+          expectedIdentity: resolved.expectedIdentity,
+          signal,
+        });
+        return { connection: resolved.connection, taskId: validatedTask, events: result.events, cursor: result.cursor };
+      } catch (error) {
+        throw remapIdentityMismatch(error);
+      }
+    },
+    async eventStream(
+      id: string,
+      taskId: string,
+      cursor: { after?: number; lastEventID?: string },
+      signal?: AbortSignal,
+    ): Promise<{ connection: DaemonConnection; taskId: string; upstream: Response }> {
+      const validatedTask = validatedTaskID(taskId);
+      if (cursor.after !== undefined && (!Number.isInteger(cursor.after) || cursor.after < 0)) {
+        throw new DaemonRegistryError(400, "invalid_cursor", "Event cursor must be a non-negative integer.");
+      }
+      if (cursor.lastEventID !== undefined && !/^\d+$/.test(cursor.lastEventID)) {
+        throw new DaemonRegistryError(400, "invalid_cursor", "Last event ID must be a non-negative integer.");
+      }
+      const resolved = await resolve(id);
+      try {
+        const upstream = await options.client.eventStream(resolved.endpoint, resolved.credential, validatedTask, cursor, {
+          expectedIdentity: resolved.expectedIdentity,
+          signal,
+        });
+        return { connection: resolved.connection, taskId: validatedTask, upstream };
+      } catch (error) {
+        throw remapIdentityMismatch(error);
+      }
     },
   };
 }

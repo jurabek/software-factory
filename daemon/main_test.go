@@ -77,6 +77,9 @@ func TestSwaggerSpecDocumentsAPIRoutes(t *testing.T) {
 	if !strings.Contains(response.Body.String(), "DaemonCredential") {
 		t.Fatal("swagger spec does not document daemon bearer authentication")
 	}
+	if !strings.Contains(response.Body.String(), "X-Software-Factory-Daemon-ID") {
+		t.Fatal("swagger spec does not document expected daemon identity header")
+	}
 }
 
 func TestDaemonIdentityPersistsInFactoryRoot(t *testing.T) {

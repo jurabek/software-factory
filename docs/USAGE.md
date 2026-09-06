@@ -49,3 +49,14 @@ The Planner revision reuses its Task session and approval binds to the latest di
 Task state and normalized events are stored in SQLite WAL and mirrored to task JSONL traces. Prompt audit copies and Pi sessions remain private beneath the factory directory. Do not expose that directory with a static server.
 
 `curl` examples demonstrate the HTTP API; curl is not a Software Factory CLI.
+
+## Application routes
+
+The Next.js application owns the initial-user session and daemon registrations. Sign in, then register each tunneled daemon once; the browser only calls same-origin `/api/daemons/...` routes and never sees daemon credentials:
+
+- `GET /api/daemons` lists registrations; `POST /api/daemons` registers `{name, endpoint, credential}`.
+- `GET /api/daemons/{daemonId}/tasks` lists that daemon's tasks; `POST` with `{request, repositories, coding_agent?, model?, thinking?}` creates a draft.
+- `GET /api/daemons/{daemonId}/creation-options[?harness=]` returns projected defaults, harnesses, and models for the creation form.
+- `POST /api/daemons/{daemonId}/tasks/{taskId}/{start|approve|pause|resume|abort}` runs one lifecycle command; the approval actor comes from the login session.
+- `GET /api/daemons/{daemonId}/tasks/{taskId}/events[?after=&limit=|?tail=]` replays events; `GET .../events/stream[?after=]` proxies the live SSE feed with `Last-Event-ID` support. Open streams revalidate the login session and close on logout or disconnect.
+- Every read needs the login session; every mutation additionally needs the configured application origin. Guessed registration IDs return 404, and a replaced daemon at a registered endpoint returns 409.

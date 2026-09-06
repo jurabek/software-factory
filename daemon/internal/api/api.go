@@ -58,6 +58,8 @@ func New(db *store.DB, service *factory.Service, cfg config.Config, problems []s
 	return &Server{db: db, factory: service, config: cfg, validationErrors: problems, loadError: loadErr, harnesses: harnesses, models: models, token: token, daemonID: access.DaemonID, remoteToken: access.Token}, nil
 }
 
+const expectedDaemonIDHeader = "X-Software-Factory-Daemon-ID"
+
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/identity", s.identity)
@@ -85,7 +87,26 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/tasks/{id}/results", s.results)
 	mux.HandleFunc("GET /api/v1/tasks/{id}/checks", s.checks)
 	mux.HandleFunc("GET /api/v1/tasks/{id}/diff", s.diff)
-	return headers(s.authenticateRemote(mux))
+	return headers(s.authenticateRemote(s.enforceExpectedIdentity(mux)))
+}
+
+func (s *Server) enforceExpectedIdentity(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/api/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		expected := strings.TrimSpace(r.Header.Get(expectedDaemonIDHeader))
+		if expected == "" || s.daemonID == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if subtle.ConstantTimeCompare([]byte(expected), []byte(s.daemonID)) != 1 {
+			fail(w, http.StatusConflict, "daemon_identity_mismatch", "daemon identity does not match this connection")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) identity(w http.ResponseWriter, r *http.Request) {

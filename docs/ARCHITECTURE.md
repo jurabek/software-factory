@@ -253,6 +253,7 @@ The daemon has local and application-connected security modes.
 - The HTTP server always binds to loopback and does not enable CORS. Remote reachability requires an encrypted tunnel.
 - Local mode mutations require a random per-process token from the same-origin `/api/v1/control` endpoint.
 - Application-connected mode requires the configured bearer credential for every API read, mutation, and stream. It disables `/control`, the embedded UI, and Swagger routes.
+- The application sends the stable identity it learned at registration as `X-Software-Factory-Daemon-ID` on every post-registration read, mutation, and stream. A mismatch fails with 409 `daemon_identity_mismatch` before dispatch, so reusing an endpoint never silently operates on a different sandbox.
 - Requests with a foreign `Origin` are rejected, and API responses are not cached.
 - The state directory, prompts, sessions, raw output, and repository materializations are never exposed through a generic static-file route.
 - Embedded UI assets are the only files served outside the API.
