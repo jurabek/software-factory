@@ -1,7 +1,7 @@
 package factory
 
 import (
-	"github.com/jurabek/software-factory/internal/store"
+	"github.com/jurabek/software-factory/daemon/internal/store"
 )
 
 // AvailableActions returns server-computed actions for an attempt.
