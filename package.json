@@ -3,11 +3,16 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "workspaces": ["web"],
+  "workspaces": ["web", "application"],
   "engines": { "node": ">=24" },
   "scripts": {
-    "build": "npm --prefix web run build",
-    "typecheck": "npm --prefix web run typecheck",
+    "build": "npm run build --workspaces",
+    "typecheck": "npm run typecheck --workspaces",
+    "application:dev": "npm run dev --workspace @software-factory/application",
+    "application:build": "npm run build --workspace @software-factory/application",
+    "application:start": "npm run start --workspace @software-factory/application",
+    "application:test": "npm run test --workspace @software-factory/application",
+    "application:migrations": "npm run migrations --workspace @software-factory/application",
     "test": "go test ./...",
     "swagger:validate": "go run github.com/go-swagger/go-swagger/cmd/swagger@v0.36.5 validate swagger.yaml"
   }
