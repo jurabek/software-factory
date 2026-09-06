@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jurabek/software-factory/internal/config"
-	"github.com/jurabek/software-factory/internal/store"
+	"github.com/jurabek/software-factory/daemon/internal/config"
+	"github.com/jurabek/software-factory/daemon/internal/store"
 )
 
 func testService(t *testing.T) (*Service, *store.DB, string) {

@@ -15,7 +15,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jurabek/software-factory/internal/harness"
+	"github.com/jurabek/software-factory/daemon/internal/harness"
 )
 
 const (

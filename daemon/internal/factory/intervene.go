@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jurabek/software-factory/internal/store"
+	"github.com/jurabek/software-factory/daemon/internal/store"
 )
 
 // Anchor is a canonical artifact coordinate. Rendered DOM paths and pixel

@@ -19,10 +19,10 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/jurabek/software-factory/internal/config"
-	factorygit "github.com/jurabek/software-factory/internal/git"
-	"github.com/jurabek/software-factory/internal/harness"
-	"github.com/jurabek/software-factory/internal/store"
+	"github.com/jurabek/software-factory/daemon/internal/config"
+	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
+	"github.com/jurabek/software-factory/daemon/internal/harness"
+	"github.com/jurabek/software-factory/daemon/internal/store"
 	"gopkg.in/yaml.v3"
 )
 
