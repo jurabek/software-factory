@@ -1,4 +1,4 @@
-module github.com/jurabek/software-factory
+module github.com/jurabek/software-factory/daemon
 
 go 1.27.1
 
