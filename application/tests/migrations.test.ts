@@ -1,91 +1,58 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Pool } from "pg";
-import { loadMigrations, runMigrations } from "../src/server/migrations.ts";
+import { ensureSchema, splitStatements } from "../src/server/migrations.ts";
 
-type History = { version: number; name: string; checksum: string }[];
-
-function database(history: History = [], failOn?: string) {
-  const queries: { sql: string; values?: unknown[] }[] = [];
-  const releases: boolean[] = [];
-  const client = {
-    async query(sql: string, values?: unknown[]) {
-      queries.push({ sql, values });
+function database(failOn?: string) {
+  const queries: string[] = [];
+  const pool = {
+    async query(sql: string) {
+      queries.push(sql);
       if (failOn && sql.includes(failOn)) throw new Error("Simulated database failure");
-      return { rows: sql.startsWith("SELECT version") ? history : [] };
+      return { rows: [] };
     },
-    release(destroy: boolean) { releases.push(destroy); },
-  };
-  // Only the checked-out client boundary is simulated; no PostgreSQL claims here.
-  const pool = { async connect() { return client; } } as unknown as Pool;
-  return { pool, queries, releases };
+  } as unknown as Pool;
+  return { pool, queries };
 }
 
-test("foundation migration is numbered and does not create authentication tables", async () => {
-  const migrations = await loadMigrations();
-  assert.equal(migrations.length, 3);
-  assert.equal(migrations[0].version, 1);
-  assert.equal(migrations[0].name, "0001_foundation.sql");
-  assert.match(migrations[0].checksum, /^[a-f0-9]{64}$/);
-  assert.match(migrations[0].sql, /CREATE TABLE factory_application\.foundation/);
-  assert.doesNotMatch(migrations[0].sql, /CREATE TABLE.*(?:user|session|account|organization|invitation)/i);
+test("schema is a single portable file with both tables", async () => {
+  const url = new URL("../migrations/schema.sql", import.meta.url);
+  const { readFile } = await import("node:fs/promises");
+  const sql = await readFile(url, "utf8");
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS owner_session/);
+  assert.match(sql, /CREATE TABLE IF NOT EXISTS daemon_connection/);
+  assert.match(sql, /CREATE INDEX IF NOT EXISTS owner_session_expires_at_idx/);
+  assert.match(sql, /daemon_identity TEXT NOT NULL UNIQUE/);
+  assert.match(sql, /credential_ciphertext TEXT NOT NULL/);
 });
 
-test("locks before ledger access and commits SQL with its migration record", async () => {
+test("schema SQL avoids server-specific syntax", async () => {
+  const url = new URL("../migrations/schema.sql", import.meta.url);
+  const { readFile } = await import("node:fs/promises");
+  const body = (await readFile(url, "utf8")).replace(/^--.*$/gm, "");
+  assert.doesNotMatch(body, /\w+\.\w+\s*\(/);
+  for (const token of ["timestamptz", "pg_advisory_lock", "CREATE SCHEMA", "now()", "char(", "schema_migrations", "foundation"]) {
+    assert.equal(body.includes(token), false, token);
+  }
+  assert.doesNotMatch(body, /password|secret|client_secret|token text/i);
+});
+
+test("ensureSchema executes every statement and is idempotent", async () => {
   const db = database();
-  assert.equal(await runMigrations(db.pool), 3);
-  assert.match(db.queries[0].sql, /pg_advisory_lock/);
-  assert.equal(db.queries[0].values?.length, 2);
-  const ledgerRead = db.queries.findIndex(({ sql }) => sql.startsWith("SELECT version"));
-  const transaction = db.queries.slice(ledgerRead + 1);
-  assert.equal(transaction.length, 12);
-  assert.equal(transaction[0].sql, "BEGIN");
-  assert.match(transaction[1].sql, /CREATE TABLE factory_application\.foundation/);
-  assert.match(transaction[2].sql, /INSERT INTO factory_application\.schema_migrations/);
-  assert.equal(transaction[2].values?.[0], 1);
-  assert.equal(transaction[3].sql, "COMMIT");
-  assert.equal(transaction[4].sql, "BEGIN");
-  assert.match(transaction[5].sql, /CREATE TABLE factory_application\.owner_session/);
-  assert.match(transaction[6].sql, /INSERT INTO factory_application\.schema_migrations/);
-  assert.equal(transaction[6].values?.[0], 2);
-  assert.equal(transaction[7].sql, "COMMIT");
-  assert.equal(transaction[8].sql, "BEGIN");
-  assert.match(transaction[9].sql, /CREATE TABLE factory_application\.daemon_connection/);
-  assert.match(transaction[10].sql, /INSERT INTO factory_application\.schema_migrations/);
-  assert.equal(transaction[10].values?.[0], 3);
-  assert.equal(transaction[11].sql, "COMMIT");
-  assert.deepEqual(db.releases, [true]);
+  const count = await ensureSchema(db.pool);
+  assert.equal(count, db.queries.length);
+  assert.ok(db.queries.some((sql) => sql.includes("CREATE TABLE IF NOT EXISTS owner_session")));
+  assert.ok(db.queries.some((sql) => sql.includes("CREATE TABLE IF NOT EXISTS daemon_connection")));
+  const rerun = await ensureSchema(db.pool);
+  assert.equal(rerun, count);
 });
 
-test("an already-applied migration is not rerun", async () => {
-  const db = database(await loadMigrations());
-  assert.equal(await runMigrations(db.pool), 0);
-  assert.equal(db.queries.some(({ sql }) => sql.includes("CREATE TABLE factory_application.foundation")), false);
-  assert.deepEqual(db.releases, [true]);
+test("statement failure propagates", async () => {
+  const db = database("CREATE TABLE IF NOT EXISTS owner_session");
+  await assert.rejects(ensureSchema(db.pool), /Simulated database failure/);
 });
 
-test("changed, missing, and out-of-order migration history fails closed", async () => {
-  const [migration] = await loadMigrations();
-  for (const history of [
-    [{ ...migration, checksum: "changed" }],
-    [{ ...migration, name: "0001_changed.sql" }],
-    [{ ...migration, version: 2 }],
-    [migration, { ...migration, version: 2 }],
-  ]) {
-    const db = database(history);
-    await assert.rejects(runMigrations(db.pool), /Migration history differs/);
-    assert.equal(db.queries.at(-1)?.sql, "ROLLBACK");
-    assert.deepEqual(db.releases, [true]);
-  }
-});
-
-test("SQL or ledger failure rolls back and destroys the lock-owning connection", async () => {
-  for (const failOn of ["CREATE TABLE factory_application.foundation", "INSERT INTO factory_application.schema_migrations", "CREATE SCHEMA", "pg_advisory_lock"]) {
-    const db = database([], failOn);
-    await assert.rejects(runMigrations(db.pool), /Simulated database failure/);
-    assert.equal(db.queries.at(-1)?.sql, "ROLLBACK");
-    const failureIndex = db.queries.findIndex(({ sql }) => sql.includes(failOn));
-    assert.equal(db.queries.slice(failureIndex + 1).some(({ sql }) => sql === "COMMIT"), false);
-    assert.deepEqual(db.releases, [true]);
-  }
+test("splitStatements drops comments and empties", () => {
+  assert.deepEqual(splitStatements("-- comment\nCREATE TABLE a (x TEXT);\n  ;\n"), ["CREATE TABLE a (x TEXT)"]);
+  assert.deepEqual(splitStatements(""), []);
 });

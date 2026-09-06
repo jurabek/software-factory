@@ -74,23 +74,24 @@ export type Authentication = ReturnType<typeof createAuthentication>;
 export function createAuthStore(pool: Pool): AuthStore {
   return {
     async createSession(tokenDigest, expiresAt) {
-      await pool.query(
-        "INSERT INTO factory_application.owner_session (token_digest, expires_at) VALUES ($1, $2)",
-        [tokenDigest, expiresAt],
-      );
+      await pool.query("INSERT INTO owner_session (token_digest, expires_at, created_at) VALUES ($1, $2, $3)", [
+        tokenDigest,
+        expiresAt.toISOString(),
+        new Date().toISOString(),
+      ]);
     },
     async hasSession(tokenDigest, now) {
-      const result = await pool.query(
-        "SELECT 1 FROM factory_application.owner_session WHERE token_digest = $1 AND expires_at > $2",
-        [tokenDigest, now],
-      );
+      const result = await pool.query("SELECT 1 FROM owner_session WHERE token_digest = $1 AND expires_at > $2", [
+        tokenDigest,
+        now.toISOString(),
+      ]);
       return result.rowCount === 1;
     },
     async deleteSession(tokenDigest) {
-      await pool.query("DELETE FROM factory_application.owner_session WHERE token_digest = $1", [tokenDigest]);
+      await pool.query("DELETE FROM owner_session WHERE token_digest = $1", [tokenDigest]);
     },
     async deleteExpiredSessions(now) {
-      await pool.query("DELETE FROM factory_application.owner_session WHERE expires_at <= $1", [now]);
+      await pool.query("DELETE FROM owner_session WHERE expires_at <= $1", [now.toISOString()]);
     },
   };
 }

@@ -22,7 +22,7 @@ type DaemonConnectionRow = {
   endpoint: string;
   daemon_identity: string;
   credential_ciphertext: string;
-  created_at: Date;
+  created_at: Date | string;
 };
 
 export type DaemonConnection = {
@@ -51,7 +51,7 @@ function publicConnection(row: DaemonConnectionRow): DaemonConnection {
     name: row.name,
     endpoint: row.endpoint,
     daemonIdentity: row.daemon_identity,
-    createdAt: row.created_at.toISOString(),
+    createdAt: new Date(row.created_at).toISOString(),
   };
 }
 
@@ -61,9 +61,9 @@ export function createDaemonRegistryStore(pool: Pool): DaemonRegistryStore {
     async create(connection) {
       try {
         const result = await pool.query<DaemonConnectionRow>(
-          `INSERT INTO factory_application.daemon_connection (id, name, endpoint, daemon_identity, credential_ciphertext)
-           VALUES ($1, $2, $3, $4, $5) RETURNING ${columns}`,
-          [connection.id, connection.name, connection.endpoint, connection.daemon_identity, connection.credential_ciphertext],
+          `INSERT INTO daemon_connection (id, name, endpoint, daemon_identity, credential_ciphertext, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6) RETURNING ${columns}`,
+          [connection.id, connection.name, connection.endpoint, connection.daemon_identity, connection.credential_ciphertext, new Date().toISOString()],
         );
         return result.rows[0];
       } catch (error) {
@@ -75,13 +75,13 @@ export function createDaemonRegistryStore(pool: Pool): DaemonRegistryStore {
     },
     async list() {
       const result = await pool.query<DaemonConnectionRow>(
-        `SELECT ${columns} FROM factory_application.daemon_connection ORDER BY name, id`,
+        `SELECT ${columns} FROM daemon_connection ORDER BY name, id`,
       );
       return result.rows;
     },
     async find(id) {
       const result = await pool.query<DaemonConnectionRow>(
-        `SELECT ${columns} FROM factory_application.daemon_connection WHERE id = $1`,
+        `SELECT ${columns} FROM daemon_connection WHERE id = $1`,
         [id],
       );
       return result.rows[0] ?? null;

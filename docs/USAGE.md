@@ -5,6 +5,7 @@ Start the API and embedded UI with `go -C daemon run .`. State defaults to `~/.s
 To connect the separate application, configure a server credential and expose the loopback daemon through an encrypted tunnel:
 
 ```bash
+openssl rand -hex 32
 SOFTWARE_FACTORY_DAEMON_TOKEN='replace-with-at-least-32-random-characters' \
 go -C daemon run .
 ```

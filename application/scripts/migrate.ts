@@ -1,7 +1,7 @@
 import nextEnvironment from "@next/env";
 import { fileURLToPath } from "node:url";
 import { createDatabasePool } from "../src/server/database.ts";
-import { runMigrations } from "../src/server/migrations.ts";
+import { ensureSchema } from "../src/server/migrations.ts";
 import { validateDatabaseURL } from "../src/server/environment.ts";
 
 nextEnvironment.loadEnvConfig(fileURLToPath(new URL("..", import.meta.url)), process.env.NODE_ENV !== "production");
@@ -13,11 +13,11 @@ if (issue) {
 } else {
   const pool = createDatabasePool(process.env.DATABASE_URL);
   try {
-    const count = await runMigrations(pool);
-    console.info(`Application schema ready. Applied ${count} migration(s).`);
+    const count = await ensureSchema(pool);
+    console.info(`Application schema ready. Applied ${count} statement(s).`);
   } catch {
     // Driver errors can contain credentials, SQL, or connection details.
-    console.error("Application migration failed. Check database access, migration files, and schema history. No pending migration was partially committed.");
+    console.error("Application migration failed. Check database access and schema.sql.");
     process.exitCode = 1;
   } finally {
     await pool.end();

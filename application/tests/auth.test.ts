@@ -71,7 +71,7 @@ test("session cookie parsing ignores unrelated and empty cookies", () => {
   assert.equal(sessionTokenFromCookie(null), undefined);
 });
 
-test("PostgreSQL store uses token digests and expiration in every query", async () => {
+test("database store uses token digests and ISO-8601 expiration in every query", async () => {
   const queries: { sql: string; values?: unknown[] }[] = [];
   const pool = {
     async query(sql: string, values?: unknown[]) {
@@ -86,7 +86,10 @@ test("PostgreSQL store uses token digests and expiration in every query", async 
   await store.deleteSession("digest");
   await store.deleteExpiredSessions(new Date());
   assert.equal(queries.length, 4);
-  assert.match(queries[0].sql, /owner_session/);
-  assert.deepEqual(queries[0].values, ["digest", expires]);
+  assert.match(queries[0].sql, /INSERT INTO owner_session/);
+  assert.equal(queries[0].values?.[0], "digest");
+  assert.equal(queries[0].values?.[1], expires.toISOString());
+  assert.equal(typeof queries[0].values?.[2], "string");
   assert.match(queries[1].sql, /expires_at > \$2/);
+  assert.doesNotMatch(queries.map(({ sql }) => sql).join("\n"), /factory_application/);
 });

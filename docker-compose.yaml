@@ -1,13 +1,12 @@
-# Self-hosted stack: Next.js application plus dedicated PostgreSQL.
-# Daemons run independently in their own sandboxes, never as services here.
-# Configure secrets through the environment, never in this file.
-# See application/.env.example for the full variable list.
-x-database-url: &database-url "postgresql://${POSTGRES_USER:-factory}:${POSTGRES_PASSWORD:-factory}@postgres:5432/${POSTGRES_DB:-factory_application}"
-
+# Local PostgreSQL only. Application runs via scripts/local.sh (next dev).
+# Daemon runs separately: go -C daemon run .
+# Configure credentials through the environment, never in this file.
 services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-factory}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-factory}
@@ -19,46 +18,6 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
-
-  migrate:
-    build:
-      context: .
-      dockerfile: application/Dockerfile
-    image: software-factory-application:local
-    # Override the image's app-server CMD: apply numbered migrations, then exit.
-    command: ["node", "--import", "tsx", "application/scripts/migrate.ts"]
-    restart: "no"
-    environment:
-      DATABASE_URL: *database-url
-    depends_on:
-      postgres:
-        condition: service_healthy
-
-  app:
-    build:
-      context: .
-      dockerfile: application/Dockerfile
-    image: software-factory-application:local
-    restart: unless-stopped
-    ports:
-      - "${APPLICATION_PORT:-3000}:3000"
-    environment:
-      APPLICATION_ORIGIN: ${APPLICATION_ORIGIN:-http://localhost:3000}
-      DATABASE_URL: *database-url
-      INITIAL_USER_LOGIN: ${INITIAL_USER_LOGIN:-owner}
-      INITIAL_USER_PASSWORD: ${INITIAL_USER_PASSWORD:-}
-      DAEMON_CREDENTIAL_KEY: ${DAEMON_CREDENTIAL_KEY:-}
-      DAEMON_ALLOWED_ORIGINS: ${DAEMON_ALLOWED_ORIGINS:-}
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
-      postgres:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:3000/api/health || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
 
 volumes:
   factory-pgdata:
