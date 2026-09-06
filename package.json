@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "workspaces": ["web", "application"],
+  "workspaces": ["daemon/web", "application"],
   "engines": { "node": ">=24" },
   "scripts": {
     "build": "npm run build --workspaces",
@@ -13,7 +13,7 @@
     "application:start": "npm run start --workspace @software-factory/application",
     "application:test": "npm run test --workspace @software-factory/application",
     "application:migrations": "npm run migrations --workspace @software-factory/application",
-    "test": "go test ./...",
-    "swagger:validate": "go run github.com/go-swagger/go-swagger/cmd/swagger@v0.36.5 validate swagger.yaml"
+    "test": "go -C daemon test ./...",
+    "swagger:validate": "go -C daemon run github.com/go-swagger/go-swagger/cmd/swagger@v0.36.5 validate swagger.yaml"
   }
 }

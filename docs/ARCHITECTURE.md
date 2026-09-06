@@ -2,7 +2,7 @@
 
 Software Factory is a long-running, loopback-only Go service that coordinates coding-agent work inside isolated Task Workspaces. The browser UI is the control surface, but the daemon process owns orchestration, repository access, child processes, validation, and durable state.
 
-The service does not daemonize or install a process supervisor. `go run main.go` starts it in the foreground; use an external supervisor if it must survive a terminal or login session.
+The service does not daemonize or install a process supervisor. `go -C daemon run .` starts it in the foreground; use an external supervisor if it must survive a terminal or login session.
 
 ## System shape
 

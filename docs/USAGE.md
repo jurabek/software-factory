@@ -1,6 +1,6 @@
 # Software Factory API usage
 
-Start the API and embedded UI with `go run main.go`. State defaults to `~/.software-factory`; override it with `SOFTWARE_FACTORY_DIR`. The API is loopback-only and has no CORS support.
+Start the API and embedded UI with `go -C daemon run .`. State defaults to `~/.software-factory`; override it with `SOFTWARE_FACTORY_DIR`. The API is loopback-only and has no CORS support.
 
 Fetch the per-process mutation token:
 

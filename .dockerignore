@@ -1,0 +1,10 @@
+.git/
+.software-factory/
+**/node_modules/
+**/.next/
+daemon/
+!daemon/web/package.json
+dist/
+.env*
+!application/.env.example
+*.tsbuildinfo

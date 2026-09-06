@@ -1,0 +1,42 @@
+:root {
+  color-scheme: dark;
+  --ui-canvas: #15131f;
+  --ui-surface: #1d1a29;
+  --ui-border: #393448;
+  --ui-border-strong: #57506a;
+  --ui-text: #ddd8eb;
+  --ui-text-muted: #aaa3bb;
+  --ui-accent: #c8a6e8;
+  --ui-cyan: #8bcbd4;
+  --ui-warning: #d2ae72;
+  --ui-font-mono: "Berkeley Mono", "SFMono-Regular", Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--ui-canvas); color: var(--ui-text); font: 14px/1.6 var(--ui-font-mono); }
+.shell { min-height: 100dvh; }
+.masthead { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem; padding: 1.15rem 2rem; border-bottom: 1px solid var(--ui-border); }
+.brand { font-weight: 600; letter-spacing: -.04em; }
+.badge { display: inline-block; border: 1px solid var(--ui-border-strong); padding: .25rem .55rem; color: var(--ui-text-muted); font-size: .7rem; text-transform: uppercase; letter-spacing: .06em; }
+.badge[data-state="pending"] { color: var(--ui-warning); }
+.badge[data-state="configured"] { color: var(--ui-cyan); }
+main { width: min(100%, 64rem); margin: 0 auto; padding: 4rem 2rem 2rem; }
+.eyebrow { color: var(--ui-accent); font-size: .75rem; text-transform: uppercase; letter-spacing: .12em; }
+h1 { max-width: 24ch; font-size: clamp(1.8rem, 5vw, 3rem); line-height: 1.2; font-weight: 500; letter-spacing: -.055em; margin: 1rem 0; }
+.intro { max-width: 74ch; margin-bottom: 2.5rem; }
+p, footer { color: var(--ui-text-muted); }
+.panel { margin: 1rem 0; padding: 1.4rem; border: 1px solid var(--ui-border); border-radius: .2rem; background: var(--ui-surface); }
+.section-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .8rem; }
+h2 { font-size: 1rem; font-weight: 500; margin: 0; }
+code { color: var(--ui-text); font: inherit; overflow-wrap: anywhere; }
+.issues { list-style: none; padding: 0; margin: 1.5rem 0 0; }
+.issues li { display: grid; grid-template-columns: minmax(0, 15rem) minmax(0, 1fr); gap: .5rem 1rem; padding: .85rem 0; border-top: 1px solid var(--ui-border); }
+.issues span { color: var(--ui-text-muted); font-size: .8rem; }
+.notice { border-left: 2px solid var(--ui-cyan); padding-left: 1rem; }
+footer { max-width: 78ch; margin-top: 2rem; font-size: .75rem; }
+@media (max-width: 600px) {
+  .masthead { padding: 1rem; }
+  main { padding: 2rem 1rem; }
+  .panel { padding: 1rem; }
+  .issues li { grid-template-columns: minmax(0, 1fr); }
+}

@@ -1,0 +1,66 @@
+# Self-hosted stack: Next.js application plus dedicated PostgreSQL.
+# Daemons run independently in their own sandboxes, never as services here.
+# Configure secrets through the environment, never in this file.
+# See application/.env.example for the full variable list.
+x-database-url: &database-url "postgresql://${POSTGRES_USER:-factory}:${POSTGRES_PASSWORD:-factory}@postgres:5432/${POSTGRES_DB:-factory_application}"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-factory}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-factory}
+      POSTGRES_DB: ${POSTGRES_DB:-factory_application}
+    volumes:
+      - factory-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-factory} -d $${POSTGRES_DB:-factory_application}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    build:
+      context: .
+      dockerfile: application/Dockerfile
+    image: software-factory-application:local
+    # Override the image's app-server CMD: apply numbered migrations, then exit.
+    command: ["node", "--import", "tsx", "application/scripts/migrate.ts"]
+    restart: "no"
+    environment:
+      DATABASE_URL: *database-url
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  app:
+    build:
+      context: .
+      dockerfile: application/Dockerfile
+    image: software-factory-application:local
+    restart: unless-stopped
+    ports:
+      - "${APPLICATION_PORT:-3000}:3000"
+    environment:
+      APPLICATION_ORIGIN: ${APPLICATION_ORIGIN:-http://localhost:3000}
+      DATABASE_URL: *database-url
+      INITIAL_OWNER_EMAIL: ${INITIAL_OWNER_EMAIL:-}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-}
+      GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:-}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3000/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  factory-pgdata:

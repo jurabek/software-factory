@@ -13,7 +13,7 @@ Software Factory is a loopback-only Go service that coordinates Task Workspaces 
 ## Run
 
 ```bash
-go run main.go
+go -C daemon run .
 ```
 
 Open `http://127.0.0.1:8080`. Interactive Swagger API documentation is available at `http://127.0.0.1:8080/docs`; its OpenAPI document is served at `/swagger.yaml`. `PORT` changes the port. `SOFTWARE_FACTORY_DIR` changes the default `~/.software-factory` state directory. `PI_PATH` selects Pi. The first run generates `config.yaml` and editable prompts without replacing existing files.
@@ -41,8 +41,8 @@ The factory never commits, pushes, merges, deploys, or cleans up automatically.
 ## Checks
 
 ```bash
-go test ./...
-go test -race ./...
+go -C daemon test ./...
+go -C daemon test -race ./...
 npm run typecheck
 npm run build
 npm run swagger:validate

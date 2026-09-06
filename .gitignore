@@ -1,8 +1,8 @@
 .workspace
 dist
-!web/dist/
-!web/dist/**
+!daemon/web/dist/
+!daemon/web/dist/**
 node_modules
-web/node_modules
+daemon/web/node_modules
 .software-factory/
 /.software-factory
