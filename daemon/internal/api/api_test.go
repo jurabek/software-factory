@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jurabek/software-factory/internal/config"
-	"github.com/jurabek/software-factory/internal/factory"
-	"github.com/jurabek/software-factory/internal/store"
+	"github.com/jurabek/software-factory/daemon/internal/config"
+	"github.com/jurabek/software-factory/daemon/internal/factory"
+	"github.com/jurabek/software-factory/daemon/internal/store"
 )
 
 func TestEventsTailReturnsNewestEventsInSequenceOrder(t *testing.T) {

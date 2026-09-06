@@ -13,7 +13,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/jurabek/software-factory/internal/store"
+	"github.com/jurabek/software-factory/daemon/internal/store"
 )
 
 func nowString() string { return time.Now().UTC().Format(time.RFC3339Nano) }
