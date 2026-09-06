@@ -252,6 +252,7 @@ onUnmounted(() => { window.removeEventListener("hashchange", route); clearInterv
         <div class="task-header__title"><p>Session <span>{{ selected.id }}</span></p><h1>{{ selected.request }}</h1></div>
         <div class="task-header__actions">
           <span class="state-badge" :data-state="selected.state">{{ selected.state.replaceAll('_', ' ') }}</span>
+          <button v-if="selected.state === 'draft'" class="button button--accent" type="button" :disabled="busy || health.status !== 'ok'" @click="command('start')">Start</button>
           <button class="button button--accent" type="button" :disabled="busy || health.status !== 'ok'" @click="creatingSession = !creatingSession">New session</button>
           <button v-if="['preparing','planning','building','checking','reviewing'].includes(selected.state)" class="button" type="button" @click="command('pause')">Pause</button>
           <button v-if="!['completed','aborted'].includes(selected.state)" class="button" type="button" @click="command('abort')">Abort</button>
