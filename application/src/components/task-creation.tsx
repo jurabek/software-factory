@@ -5,6 +5,7 @@ import { daemonCreationOptions, daemonCreateTask, type QualifiedTask } from "../
 import type { DaemonConnection } from "../server/daemon-registry.ts";
 
 const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+type RepositoryDraft = { type: "local" | "github"; value: string; name: string; primary: boolean };
 
 function recentKey(daemonId: string): string {
   return `software-factory.recent-directories.${daemonId}`;
@@ -12,8 +13,7 @@ function recentKey(daemonId: string): string {
 
 export function TaskCreation({ daemon, onCreated }: { daemon: DaemonConnection; onCreated: (task: QualifiedTask) => void }) {
   const [request, setRequest] = useState("");
-  const [repoType, setRepoType] = useState<"local" | "github">("github");
-  const [repoValue, setRepoValue] = useState("");
+  const [repositories, setRepositories] = useState<RepositoryDraft[]>([{ type: "github", value: "", name: "", primary: true }]);
   const [harness, setHarness] = useState("");
   const [model, setModel] = useState("");
   const [thinking, setThinking] = useState("");
@@ -46,12 +46,28 @@ export function TaskCreation({ daemon, onCreated }: { daemon: DaemonConnection; 
       });
     try {
       const recent = JSON.parse(localStorage.getItem(recentKey(daemon.id)) ?? "[]") as unknown;
-      if (Array.isArray(recent) && typeof recent[0] === "string") setRepoValue((previous) => previous || recent[0]);
+       if (Array.isArray(recent) && typeof recent[0] === "string") setRepositories((previous) => previous.map((repository, index) => index === 0 && !repository.value ? { ...repository, type: "local", value: recent[0] } : repository));
     } catch {
       // Ignore corrupt local preferences; they are only a convenience.
     }
     return () => controller.abort();
   }, [daemon.id]);
+
+  function updateRepository(index: number, update: Partial<RepositoryDraft>) {
+    setRepositories((current) => current.map((repository, repositoryIndex) => repositoryIndex === index ? { ...repository, ...update } : repository));
+  }
+
+  function addRepository() {
+    setRepositories((current) => [...current, { type: "local", value: "", name: "", primary: false }]);
+  }
+
+  function removeRepository(index: number) {
+    setRepositories((current) => current.length === 1 ? current : current.filter((_, repositoryIndex) => repositoryIndex !== index).map((repository, repositoryIndex) => ({ ...repository, primary: repository.primary || repositoryIndex === 0 })));
+  }
+
+  function selectPrimary(index: number) {
+    setRepositories((current) => current.map((repository, repositoryIndex) => ({ ...repository, primary: repositoryIndex === index })));
+  }
 
   useEffect(() => {
     if (!harness) return;
@@ -74,18 +90,22 @@ export function TaskCreation({ daemon, onCreated }: { daemon: DaemonConnection; 
     try {
       const trimmed = request.trim();
       if (!trimmed) throw new Error("Describe the task first.");
-      if (!repoValue.trim()) throw new Error(repoType === "local" ? "Provide an absolute local path." : "Provide owner/repository.");
-      const result = await daemonCreateTask(daemon.id, {
-        request: trimmed,
-        repositories: [repoType === "local" ? { type: "local", path: repoValue.trim(), primary: true } : { type: "github", repo: repoValue.trim(), primary: true }],
+       if (repositories.some((repository) => !repository.value.trim())) throw new Error("Complete every repository before creating the task.");
+       if (repositories.some((repository) => repository.type === "local" && !repository.value.trim().startsWith("/"))) throw new Error("Local repositories need an absolute daemon path.");
+       if (repositories.some((repository) => repository.type === "github" && !/^[^/\s]+\/[^/\s]+$/.test(repository.value.trim()))) throw new Error("GitHub repositories need owner/name.");
+       const result = await daemonCreateTask(daemon.id, {
+         request: trimmed,
+         repositories: repositories.map((repository) => repository.type === "local"
+           ? { type: "local", path: repository.value.trim(), ...(repository.name.trim() ? { name: repository.name.trim() } : {}), primary: repository.primary }
+           : { type: "github", repo: repository.value.trim(), ...(repository.name.trim() ? { name: repository.name.trim() } : {}), primary: repository.primary }),
         ...(harness ? { coding_agent: harness } : {}),
         ...(model ? { model } : {}),
         ...(thinking ? { thinking } : {}),
       });
-      if (repoType === "local") {
-        try {
-          const recent = JSON.parse(localStorage.getItem(recentKey(daemon.id)) ?? "[]") as unknown;
-          const values = [repoValue.trim(), ...(Array.isArray(recent) ? recent.filter((entry): entry is string => typeof entry === "string") : [])].slice(0, 6);
+       if (repositories.some((repository) => repository.type === "local")) {
+         try {
+           const recent = JSON.parse(localStorage.getItem(recentKey(daemon.id)) ?? "[]") as unknown;
+           const values = [...repositories.filter((repository) => repository.type === "local").map((repository) => repository.value.trim()), ...(Array.isArray(recent) ? recent.filter((entry): entry is string => typeof entry === "string") : [])].slice(0, 6);
           localStorage.setItem(recentKey(daemon.id), JSON.stringify([...new Set(values)]));
         } catch {
           // Recent paths are a convenience; creation already succeeded.
@@ -105,17 +125,18 @@ export function TaskCreation({ daemon, onCreated }: { daemon: DaemonConnection; 
       <h3>Create a draft on {daemon.name}</h3>
       {error ? <p role="alert" className="notice">{error}</p> : null}
       <label>Task request<textarea value={request} onChange={(event) => setRequest(event.target.value)} required maxLength={20000} placeholder="Coordinate the change…" /></label>
-      <div className="form-row">
-        <label>Repository type
-          <select value={repoType} onChange={(event) => setRepoType(event.target.value as "local" | "github")}>
-            <option value="github">GitHub</option>
-            <option value="local">Local path on the daemon</option>
-          </select>
-        </label>
-        <label>{repoType === "local" ? "Absolute daemon path" : "owner/repository"}
-          <input value={repoValue} onChange={(event) => setRepoValue(event.target.value)} required placeholder={repoType === "local" ? "/srv/sandbox/repo" : "owner/app"} />
-        </label>
-      </div>
+       <div className="repository-drafts">
+         {repositories.map((repository, index) => (
+           <div className="form-row repository-draft" key={index}>
+             <button type="button" aria-label={`Make repository ${index + 1} primary`} aria-pressed={repository.primary} onClick={() => selectPrimary(index)}>{repository.primary ? "Primary" : "Secondary"}</button>
+             <label>Name<input value={repository.name} onChange={(event) => updateRepository(index, { name: event.target.value })} placeholder="optional" /></label>
+             <label>Type<select value={repository.type} onChange={(event) => updateRepository(index, { type: event.target.value as RepositoryDraft["type"] })}><option value="github">GitHub</option><option value="local">Local daemon path</option></select></label>
+             <label>{repository.type === "local" ? "Absolute daemon path" : "owner/repository"}<input value={repository.value} onChange={(event) => updateRepository(index, { value: event.target.value })} required placeholder={repository.type === "local" ? "/srv/sandbox/repo" : "owner/app"} /></label>
+             <button type="button" disabled={repositories.length === 1} onClick={() => removeRepository(index)}>Remove</button>
+           </div>
+         ))}
+         <button type="button" onClick={addRepository}>Add repository</button>
+       </div>
       {loading ? <p>Loading harness options…</p> : (
         <div className="form-row">
           <label>Harness

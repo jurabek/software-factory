@@ -3,6 +3,7 @@ import type { Pool } from "pg";
 import { decryptCredential, encryptCredential } from "./credential-vault.ts";
 import type {
   CreateTaskInput,
+  CreateSessionInput,
   DaemonClient,
   DaemonCommand,
   DaemonCreationDefaults,
@@ -10,6 +11,8 @@ import type {
   DaemonHealth,
   DaemonTask,
   EventQuery,
+  FeedbackInput,
+  InterventionInput,
 } from "./daemon-client.ts";
 import { createDaemonClient, daemonCommands, DaemonRequestError } from "./daemon-client.ts";
 import { getDatabasePool } from "./database.ts";
@@ -276,6 +279,198 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
         return { connection: resolved.connection, task: { ...task, daemonId: resolved.connection.id } };
       } catch (error) {
         if (error instanceof DaemonRegistryError) throw error;
+        throw remapIdentityMismatch(error);
+      }
+    },
+    async task(id: string, taskId: string, signal?: AbortSignal): Promise<{ connection: DaemonConnection; taskId: string; task: unknown }> {
+      const validatedTask = validatedTaskID(taskId);
+      const resolved = await resolve(id);
+      try {
+        const task = await options.client.task(resolved.endpoint, resolved.credential, validatedTask, {
+          expectedIdentity: resolved.expectedIdentity,
+          signal,
+        });
+        return { connection: resolved.connection, taskId: validatedTask, task };
+      } catch (error) {
+        throw remapIdentityMismatch(error);
+      }
+    },
+    async sessions(id: string, taskId: string, signal?: AbortSignal): Promise<{ connection: DaemonConnection; taskId: string; sessions: unknown }> {
+      const validatedTask = validatedTaskID(taskId);
+      const resolved = await resolve(id);
+      try {
+        const sessions = await options.client.sessions(resolved.endpoint, resolved.credential, validatedTask, {
+          expectedIdentity: resolved.expectedIdentity,
+          signal,
+        });
+        return { connection: resolved.connection, taskId: validatedTask, sessions };
+      } catch (error) {
+        throw remapIdentityMismatch(error);
+      }
+    },
+    async createSession(id: string, taskId: string, input: CreateSessionInput, signal?: AbortSignal): Promise<{ connection: DaemonConnection; taskId: string; session: unknown }> {
+      const validatedTask = validatedTaskID(taskId);
+      if (!input || typeof input.request !== "string" || !input.request.trim() || input.request.length > 20_000) {
+        throw new DaemonRegistryError(400, "invalid_session", "Session request must contain 1-20000 characters.");
+      }
+      const resolved = await resolve(id);
+      try {
+        const session = await options.client.createSession(resolved.endpoint, resolved.credential, validatedTask, { request: input.request.trim() }, {
+          expectedIdentity: resolved.expectedIdentity,
+          signal,
+        });
+        return { connection: resolved.connection, taskId: validatedTask, session };
+      } catch (error) {
+        throw remapIdentityMismatch(error);
+      }
+    },
+    async feedback(id: string, taskId: string, actor: string, input: FeedbackInput, signal?: AbortSignal): Promise<{ connection: DaemonConnection; taskId: string; result: unknown }> {
+      const validatedTask = validatedTaskID(taskId);
+      if (!actor || actor.length > 64) throw new DaemonRegistryError(400, "invalid_actor", "Feedback actor is invalid.");
+      if (!input || typeof input.feedback !== "string" || !input.feedback.trim()) {
+        throw new DaemonRegistryError(400, "invalid_feedback", "Feedback is required.");
+      }
+      const resolved = await resolve(id);
+      try {
+        const result = await options.client.feedback(resolved.endpoint, resolved.credential, validatedTask, {
+          feedback: input.feedback.trim(),
+          ...(input.current_plan_digest ? { current_plan_digest: input.current_plan_digest } : {}),
+        }, { expectedIdentity: resolved.expectedIdentity, actor, signal });
+        return { connection: resolved.connection, taskId: validatedTask, result };
+      } catch (error) {
+        throw remapIdentityMismatch(error);
+      }
+    },
+    async intervene(id: string, taskId: string, actor: string, input: InterventionInput, signal?: AbortSignal): Promise<{ connection: DaemonConnection; taskId: string; result: unknown }> {
+      const validatedTask = validatedTaskID(taskId);
+      if (!actor || actor.length > 64) throw new DaemonRegistryError(400, "invalid_actor", "Intervention actor is invalid.");
+      const resolved = await resolve(id);
+      try {
+        const result = await options.client.intervene(resolved.endpoint, resolved.credential, validatedTask, input, {
+          expectedIdentity: resolved.expectedIdentity,
+          actor,
+          signal,
+        });
+        return { connection: resolved.connection, taskId: validatedTask, result };
+      } catch (error) {
+        throw remapIdentityMismatch(error);
+      }
+    },
+    async interventions(id: string, taskId: string, signal?: AbortSignal): Promise<{ connection: DaemonConnection; taskId: string; interventions: unknown }> {
+      const validatedTask = validatedTaskID(taskId);
+      const resolved = await resolve(id);
+      try {
+        const interventions = await options.client.interventions(resolved.endpoint, resolved.credential, validatedTask, {
+          expectedIdentity: resolved.expectedIdentity,
+          signal,
+        });
+        return { connection: resolved.connection, taskId: validatedTask, interventions };
+      } catch (error) {
+        throw remapIdentityMismatch(error);
+      }
+    },
+    async remove(id: string, taskId: string, signal?: AbortSignal): Promise<{ connection: DaemonConnection; taskId: string; result: unknown }> {
+      const validatedTask = validatedTaskID(taskId);
+      const resolved = await resolve(id);
+      try {
+        const result = await options.client.remove(resolved.endpoint, resolved.credential, validatedTask, {
+          expectedIdentity: resolved.expectedIdentity,
+          signal,
+        });
+        return { connection: resolved.connection, taskId: validatedTask, result };
+      } catch (error) {
+        throw remapIdentityMismatch(error);
+      }
+    },
+    async attempts(id: string, taskId: string, signal?: AbortSignal): Promise<{ connection: DaemonConnection; taskId: string; attempts: unknown }> {
+      const validatedTask = validatedTaskID(taskId);
+      const resolved = await resolve(id);
+      try {
+        const attempts = await options.client.attempts(resolved.endpoint, resolved.credential, validatedTask, {
+          expectedIdentity: resolved.expectedIdentity,
+          signal,
+        });
+        return { connection: resolved.connection, taskId: validatedTask, attempts };
+      } catch (error) {
+        throw remapIdentityMismatch(error);
+      }
+    },
+    async attempt(id: string, taskId: string, attemptId: string, signal?: AbortSignal): Promise<{ connection: DaemonConnection; taskId: string; attemptId: string; attempt: unknown }> {
+      const validatedTask = validatedTaskID(taskId);
+      const validatedAttempt = validatedTaskID(attemptId);
+      const resolved = await resolve(id);
+      try {
+        const attempt = await options.client.attempt(resolved.endpoint, resolved.credential, validatedTask, validatedAttempt, {
+          expectedIdentity: resolved.expectedIdentity,
+          signal,
+        });
+        return { connection: resolved.connection, taskId: validatedTask, attemptId: validatedAttempt, attempt };
+      } catch (error) {
+        throw remapIdentityMismatch(error);
+      }
+    },
+    async branches(id: string, taskId: string, signal?: AbortSignal): Promise<{ connection: DaemonConnection; taskId: string; branches: unknown }> {
+      const validatedTask = validatedTaskID(taskId);
+      const resolved = await resolve(id);
+      try {
+        const branches = await options.client.branches(resolved.endpoint, resolved.credential, validatedTask, {
+          expectedIdentity: resolved.expectedIdentity,
+          signal,
+        });
+        return { connection: resolved.connection, taskId: validatedTask, branches };
+      } catch (error) {
+        throw remapIdentityMismatch(error);
+      }
+    },
+    async artifacts(id: string, taskId: string, signal?: AbortSignal): Promise<{ connection: DaemonConnection; taskId: string; artifacts: unknown }> {
+      const validatedTask = validatedTaskID(taskId);
+      const resolved = await resolve(id);
+      try {
+        const artifacts = await options.client.artifacts(resolved.endpoint, resolved.credential, validatedTask, {
+          expectedIdentity: resolved.expectedIdentity,
+          signal,
+        });
+        return { connection: resolved.connection, taskId: validatedTask, artifacts };
+      } catch (error) {
+        throw remapIdentityMismatch(error);
+      }
+    },
+    async checks(id: string, taskId: string, signal?: AbortSignal): Promise<{ connection: DaemonConnection; taskId: string; checks: unknown }> {
+      const validatedTask = validatedTaskID(taskId);
+      const resolved = await resolve(id);
+      try {
+        const checks = await options.client.checks(resolved.endpoint, resolved.credential, validatedTask, {
+          expectedIdentity: resolved.expectedIdentity,
+          signal,
+        });
+        return { connection: resolved.connection, taskId: validatedTask, checks };
+      } catch (error) {
+        throw remapIdentityMismatch(error);
+      }
+    },
+    async results(id: string, taskId: string, signal?: AbortSignal): Promise<{ connection: DaemonConnection; taskId: string; results: unknown }> {
+      const validatedTask = validatedTaskID(taskId);
+      const resolved = await resolve(id);
+      try {
+        const results = await options.client.results(resolved.endpoint, resolved.credential, validatedTask, {
+          expectedIdentity: resolved.expectedIdentity,
+          signal,
+        });
+        return { connection: resolved.connection, taskId: validatedTask, results };
+      } catch (error) {
+        throw remapIdentityMismatch(error);
+      }
+    },
+    async diff(id: string, taskId: string, signal?: AbortSignal): Promise<{ connection: DaemonConnection; taskId: string; diff: unknown }> {
+      const validatedTask = validatedTaskID(taskId);
+      const resolved = await resolve(id);
+      try {
+        const diff = await options.client.diff(resolved.endpoint, resolved.credential, validatedTask, {
+          expectedIdentity: resolved.expectedIdentity,
+          signal,
+        });
+        return { connection: resolved.connection, taskId: validatedTask, diff };
+      } catch (error) {
         throw remapIdentityMismatch(error);
       }
     },

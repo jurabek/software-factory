@@ -3,7 +3,7 @@
 
 == Status and Objective
 
-Planning complete; implementation has not started. This document captures the conversation's final scope for the next implementation agent. It is not a record of implemented functionality.
+Planning complete; implementation is in progress. This document captures the conversation's final scope and the current implementation record.
 
 Build a separately runnable Software Factory application with Next.js and React. The application owns a single initial-user login and daemon connections in its own database. It connects to multiple Go daemons running in independent sandboxes and displays and controls their tasks.
 
@@ -11,7 +11,7 @@ Keep application and daemon in this repository initially. Separate their runtime
 
 == Implementation Progress
 
-Record for the next agent. Steps 1-4 are implemented under the simplified single-user scope; steps 5-6 remain.
+Record for the next agent. Steps 1-4 are implemented under the simplified single-user scope; Step 5 is in progress and Step 6 remains.
 
 * Step 1 done: `application/` Next.js workspace builds and starts without daemon state. Includes runtime environment validation (`src/server/environment.ts`), transactional numbered PostgreSQL migrations with advisory locking (`src/server/migrations.ts`, `migrations/0001_foundation.sql`), migration CLI (`scripts/migrate.ts`), honest setup-only `/` page, `.env.example`, and 23 passing tests (`application:build`, `application:test`, `typecheck` green).
 * Early structural work, done per follow-up requests ahead of step 6: Go code moved to `daemon/` as its own module (`github.com/jurabek/software-factory/daemon`); Vue UI moved with it to `daemon/web/` so `//go:embed web/dist/*` keeps serving until React parity. Root scripts use `go -C daemon`; npm workspaces are `["daemon/web", "application"]`. Added `application/Dockerfile` (standalone), `docker-compose.yaml` (app + migrate + postgres), `.dockerignore`, `output: standalone`.
@@ -22,7 +22,8 @@ Record for the next agent. Steps 1-4 are implemented under the simplified single
 * Step 2 done: password login/logout routes, same-origin mutation checks, HTTP-only strict cookies, expiration, generic credential failures, and login-independent daemon configuration. `0002_identity.sql` stores only session-token digests and expiration.
 * Step 3 done: stable daemon identity, bearer authentication for tunneled daemon reads and writes, enforced loopback binding, exact-origin/IP endpoint policy, redirect rejection, AES-256-GCM credential storage, daemon registry, identity/health handshake and continuity checks, daemon-qualified task reads, registration UI, and per-daemon task errors. `0003_daemon_connections.sql` owns registrations.
 * Step 4 done: atomic daemon identity continuity (`X-Software-Factory-Daemon-ID` enforced per request before dispatch, 409 `daemon_identity_mismatch`), single-request scoped operations without preflight races, authenticated creation/config/model flows (`creation-options`, task create), all five lifecycle commands with server-derived actors, REST event replay and authorized SSE proxy with cursor forwarding, 5s revocation revalidation and browser-disconnect cancellation, safe upstream code preservation (`stale_plan`, `stale_branch`, `stale_anchor`, `invalid_state`), per-daemon offline isolation, and selection/cancellation/dedup guards in React (`daemon-ui-state.ts`, `daemon-api.ts`, `task-creation.tsx`, `task-detail.tsx`, daemon-scoped recent paths).
-* Current automated verification: application tests (74), application production build, Go tests, Go race tests, root typecheck/build, Swagger validation, Compose rendering, and diff checks pass.
+* Step 5 partial: the Next.js proxy and server registry now expose daemon task detail, sessions, feedback, interventions, deletion, attempts, branches, artifacts, checks, results, and diffs with scoped authentication and identity continuity. React now supports multi-repository creation, combined multi-daemon task browsing, task metadata, sessions, evidence, intervention/plan feedback, terminal-task deletion, and the existing live event workflow.
+* Current automated verification: application tests (71), application production build, Go tests, Go race tests, root typecheck/build, and Swagger validation pass.
 * Do not delete `daemon/web/` until step 5 React parity carries its behavior forward.
 * Implementation remains uncommitted. Preserve unrelated skill-directory and `skills-lock.json` worktree entries.
 

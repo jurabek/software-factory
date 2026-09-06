@@ -1,10 +1,39 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { daemonCommand, daemonEvents, openTaskStream, type QualifiedTask, type TaskEvent } from "../client/daemon-api.ts";
+import {
+  daemonArtifacts,
+  daemonAttempts,
+  daemonBranches,
+  daemonChecks,
+  daemonCommand,
+  daemonCreateSession,
+  daemonDiff,
+  daemonEvents,
+  daemonFeedback,
+  daemonIntervene,
+  daemonInterventions,
+  daemonRemoveTask,
+  daemonResults,
+  daemonSessions,
+  daemonTask,
+  openTaskStream,
+  type QualifiedTask,
+  type TaskArtifact,
+  type TaskAttempt,
+  type TaskBranch,
+  type TaskCheck,
+  type TaskDetails,
+  type TaskDiff,
+  type TaskEvent,
+  type TaskIntervention,
+  type TaskResult,
+} from "../client/daemon-api.ts";
 import { qualifiedEventKey, RequestScope } from "../client/daemon-ui-state.ts";
 
 const commands = ["start", "approve", "pause", "resume", "abort"] as const;
+const interventionActions = ["comment", "steer", "follow_up", "retry", "revise", "repair"] as const;
+type InterventionAction = (typeof interventionActions)[number];
 
 function commandEnabled(command: (typeof commands)[number], state: string): boolean {
   switch (command) {
@@ -16,61 +45,128 @@ function commandEnabled(command: (typeof commands)[number], state: string): bool
   }
 }
 
+function readable(value: unknown): string {
+  if (typeof value === "string") return value;
+  try { return JSON.stringify(value, null, 2); } catch { return String(value); }
+}
+
+function artifactContent(artifact: TaskArtifact): string {
+  return `This artifact remains on the daemon sandbox.\n\nPath: ${artifact.path}\nDigest: ${artifact.digest}`;
+}
+
 export function TaskDetail({ daemonId, daemonName, task, onChanged }: {
   daemonId: string;
   daemonName: string;
   task: QualifiedTask;
   onChanged: () => void;
 }) {
+  const [details, setDetails] = useState<TaskDetails | null>(null);
+  const [attempts, setAttempts] = useState<TaskAttempt[]>([]);
+  const [branches, setBranches] = useState<TaskBranch[]>([]);
+  const [artifacts, setArtifacts] = useState<TaskArtifact[]>([]);
+  const [checks, setChecks] = useState<TaskCheck[]>([]);
+  const [results, setResults] = useState<TaskResult[]>([]);
+  const [diff, setDiff] = useState<TaskDiff>({ repositories: [] });
+  const [sessions, setSessions] = useState<TaskDetails[]>([]);
+  const [interventions, setInterventions] = useState<TaskIntervention[]>([]);
+  const [selectedAttempt, setSelectedAttempt] = useState<string | null>(null);
+  const [selectedArtifact, setSelectedArtifact] = useState<string | null>(null);
   const [events, setEvents] = useState<TaskEvent[]>([]);
   const [cursor, setCursor] = useState<number | undefined>(undefined);
   const [live, setLive] = useState<"connecting" | "live" | "reconnecting" | "offline">("connecting");
   const [error, setError] = useState<string | null>(null);
   const [pendingCommand, setPendingCommand] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
+  const [sessionRequest, setSessionRequest] = useState("");
+  const [message, setMessage] = useState("");
+  const [action, setAction] = useState<InterventionAction>("comment");
   const scope = useRef(new RequestScope());
   const cursorRef = useRef<number | undefined>(undefined);
   const seen = useRef(new Set<string>());
+
+  const currentTask = details ?? task;
+  const rootTaskId = currentTask.parent_task_id ?? currentTask.id;
+  const selectedBranch = branches.find((branch) => branch.id === currentTask.selected_branch_id) ?? branches[0];
+  const selectedArtifactValue = artifacts.find((artifact) => artifact.id === selectedArtifact) ?? null;
+
+  async function refreshDetails(signal?: AbortSignal) {
+    const [taskResult, attemptResult, branchResult, artifactResult, checksResult, resultsResult, diffResult, sessionsResult, interventionsResult] = await Promise.all([
+      daemonTask(daemonId, task.id, signal),
+      daemonAttempts(daemonId, task.id, signal),
+      daemonBranches(daemonId, task.id, signal),
+      daemonArtifacts(daemonId, task.id, signal),
+      daemonChecks(daemonId, task.id, signal),
+      daemonResults(daemonId, task.id, signal),
+      daemonDiff(daemonId, task.id, signal),
+      daemonSessions(daemonId, rootTaskId, signal),
+      daemonInterventions(daemonId, task.id, signal),
+    ]);
+    setDetails(taskResult.task);
+    setAttempts(attemptResult.attempts ?? []);
+    setBranches(branchResult.branches ?? []);
+    setArtifacts(artifactResult.artifacts ?? []);
+    setChecks(checksResult.checks ?? []);
+    setResults(resultsResult.results ?? []);
+    setDiff(diffResult.diff ?? { repositories: [] });
+    setSessions(sessionsResult.sessions ?? []);
+    setInterventions(interventionsResult.interventions ?? []);
+  }
+
+  useEffect(() => {
+    const current = scope.current.next();
+    const controller = new AbortController();
+    setDetails(null);
+    setAttempts([]);
+    setBranches([]);
+    setArtifacts([]);
+    setChecks([]);
+    setResults([]);
+    setDiff({ repositories: [] });
+    setSessions([]);
+    setInterventions([]);
+    setSelectedAttempt(null);
+    setSelectedArtifact(null);
+    setError(null);
+    void refreshDetails(controller.signal).catch((failure: unknown) => {
+      if (controller.signal.aborted || !scope.current.isCurrent(current)) return;
+      setError(failure instanceof Error ? failure.message : "Could not load task details.");
+    });
+    return () => controller.abort();
+  }, [daemonId, task.id]);
 
   useEffect(() => {
     const current = scope.current.next();
     const controller = new AbortController();
     setEvents([]);
     setCursor(undefined);
-    setError(null);
     setLive("connecting");
     cursorRef.current = undefined;
     seen.current = new Set();
     let streamCleanup = false;
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 
-    function qualified(sequence: number): string {
-      return qualifiedEventKey(daemonId, task.id, sequence);
-    }
-
-    function toTaskEvent(entry: { sequence: number; raw: unknown }): TaskEvent {
-      const raw = entry.raw as { id?: unknown; type?: unknown; name?: unknown; payload?: unknown; started_at?: unknown } | null;
-      return {
-        sequence: entry.sequence,
-        id: raw && typeof raw.id === "string" ? raw.id : String(entry.sequence),
-        task_id: task.id,
-        type: raw && typeof raw.type === "string" ? raw.type : "event",
-        ...(raw && typeof raw.name === "string" ? { name: raw.name } : {}),
-        payload: raw && "payload" in raw ? raw.payload : (entry.raw ?? null),
-        started_at: raw && typeof raw.started_at === "string" ? raw.started_at : "",
-      };
-    }
-
     function append(incoming: { sequence: number; raw: unknown }[]) {
-      const fresh = incoming.filter((entry) => !seen.current.has(qualified(entry.sequence)));
+      const fresh = incoming.filter((entry) => !seen.current.has(qualifiedEventKey(daemonId, task.id, entry.sequence)));
       if (!fresh.length) return;
-      for (const entry of fresh) seen.current.add(qualified(entry.sequence));
-      const freshEvents = fresh.map(toTaskEvent);
-      setEvents((previous) => {
-        const known = new Set(previous.map((event) => event.sequence));
-        const merged = [...previous, ...freshEvents.filter((event) => !known.has(event.sequence))];
-        merged.sort((left, right) => left.sequence - right.sequence);
-        return merged.length > 1000 ? merged.slice(merged.length - 1000) : merged;
+      for (const entry of fresh) seen.current.add(qualifiedEventKey(daemonId, task.id, entry.sequence));
+      const mapped = fresh.map((entry) => {
+        const raw = entry.raw as Partial<TaskEvent> | null;
+        return {
+          sequence: entry.sequence,
+          id: typeof raw?.id === "string" ? raw.id : String(entry.sequence),
+          task_id: task.id,
+          type: typeof raw?.type === "string" ? raw.type : "event",
+          ...(typeof raw?.phase_id === "string" ? { phase_id: raw.phase_id } : {}),
+          ...(typeof raw?.attempt_id === "string" ? { attempt_id: raw.attempt_id } : {}),
+          ...(typeof raw?.artifact_id === "string" ? { artifact_id: raw.artifact_id } : {}),
+          ...(typeof raw?.branch_id === "string" ? { branch_id: raw.branch_id } : {}),
+          ...(typeof raw?.name === "string" ? { name: raw.name } : {}),
+          payload: raw && "payload" in raw ? raw.payload : entry.raw,
+          ...(Array.isArray(raw?.available_actions) ? { available_actions: raw.available_actions } : {}),
+          started_at: typeof raw?.started_at === "string" ? raw.started_at : "",
+        } satisfies TaskEvent;
       });
+      setEvents((previous) => [...previous, ...mapped].sort((left, right) => left.sequence - right.sequence).slice(-1000));
       const max = Math.max(...fresh.map((entry) => entry.sequence));
       if (cursorRef.current === undefined || max > cursorRef.current) {
         cursorRef.current = max;
@@ -78,35 +174,24 @@ export function TaskDetail({ daemonId, daemonName, task, onChanged }: {
       }
     }
 
-    function connect(from: number | undefined, isRetry: boolean) {
-      if (scope.current.isCurrent(current) === false || streamCleanup) return;
-      setLive(isRetry ? "reconnecting" : "connecting");
-      openTaskStream(
-        daemonId,
-        task.id,
-        from,
-        controller.signal,
-        (event) => {
-          if (!scope.current.isCurrent(current)) return;
-          setLive("live");
-          append([{ sequence: event.sequence, raw: event.raw }]);
-        },
-        () => {
-          if (!scope.current.isCurrent(current) || controller.signal.aborted) return;
-          setLive("reconnecting");
-          reconnectTimer = setTimeout(() => connect(cursorRef.current, true), 2000);
-        },
-        () => {
-          if (!scope.current.isCurrent(current) || controller.signal.aborted) return;
-          setLive("live");
-        },
-      );
+    function connect(from: number | undefined, retry: boolean) {
+      if (streamCleanup || !scope.current.isCurrent(current)) return;
+      setLive(retry ? "reconnecting" : "connecting");
+      openTaskStream(daemonId, task.id, from, controller.signal, (event) => {
+        if (!scope.current.isCurrent(current)) return;
+        setLive("live");
+        append([event]);
+      }, () => {
+        if (!scope.current.isCurrent(current) || controller.signal.aborted) return;
+        setLive("reconnecting");
+        reconnectTimer = setTimeout(() => connect(cursorRef.current, true), 2_000);
+      }, () => setLive("live"));
     }
 
     void daemonEvents(daemonId, task.id, { tail: 100 }, controller.signal)
       .then((result) => {
         if (!scope.current.isCurrent(current)) return;
-        for (const event of result.events) seen.current.add(qualified(event.sequence));
+        result.events.forEach((event) => seen.current.add(qualifiedEventKey(daemonId, task.id, event.sequence)));
         setEvents(result.events);
         cursorRef.current = result.events.length ? result.cursor : 0;
         setCursor(cursorRef.current);
@@ -117,7 +202,6 @@ export function TaskDetail({ daemonId, daemonName, task, onChanged }: {
         setError(failure instanceof Error ? failure.message : "Could not load events.");
         setLive("offline");
       });
-
     return () => {
       streamCleanup = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
@@ -125,50 +209,152 @@ export function TaskDetail({ daemonId, daemonName, task, onChanged }: {
     };
   }, [daemonId, task.id]);
 
-  async function send(command: (typeof commands)[number]) {
-    const target = { daemonId, taskId: task.id };
+  async function sendCommand(command: (typeof commands)[number]) {
     setPendingCommand(command);
     setError(null);
     try {
-      await daemonCommand(target.daemonId, target.taskId, command);
+      await daemonCommand(daemonId, task.id, command);
+      await refreshDetails();
       onChanged();
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : "Command failed.");
     } finally {
-      setPendingCommand((current) => (current === command ? null : current));
+      setPendingCommand((current) => current === command ? null : current);
+    }
+  }
+
+  async function createSession(event: React.FormEvent) {
+    event.preventDefault();
+    if (!sessionRequest.trim()) return;
+    setPending(true);
+    setError(null);
+    try {
+      await daemonCreateSession(daemonId, rootTaskId, sessionRequest.trim());
+      setSessionRequest("");
+      await refreshDetails();
+      onChanged();
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : "Could not create session.");
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function submitMessage(event: React.FormEvent) {
+    event.preventDefault();
+    if (!message.trim() && action !== "comment") return;
+    setPending(true);
+    setError(null);
+    try {
+      if (action === "comment") {
+        await daemonIntervene(daemonId, task.id, { target: selectedAttempt ? { attempt_id: selectedAttempt } : {}, intent: "comment", message: message.trim(), idempotency_key: crypto.randomUUID() });
+      } else {
+        await daemonIntervene(daemonId, task.id, {
+          target: selectedAttempt ? { attempt_id: selectedAttempt } : {},
+          intent: action,
+          message: message.trim(),
+          ...(selectedBranch?.head_attempt_id ? { expected_branch_head: selectedBranch.head_attempt_id } : {}),
+          idempotency_key: crypto.randomUUID(),
+        });
+      }
+      setMessage("");
+      await refreshDetails();
+      onChanged();
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : "Could not send intervention.");
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function revisePlan(event: React.FormEvent) {
+    event.preventDefault();
+    if (!message.trim()) return;
+    setPending(true);
+    setError(null);
+    try {
+      await daemonFeedback(daemonId, task.id, message.trim(), currentTask.plan_digest);
+      setMessage("");
+      await refreshDetails();
+      onChanged();
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : "Could not send feedback.");
+    } finally {
+      setPending(false);
+    }
+  }
+
+  async function removeTask() {
+    if (!window.confirm("Delete this task and its daemon-owned files?")) return;
+    setPending(true);
+    try {
+      await daemonRemoveTask(daemonId, task.id);
+      onChanged();
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : "Could not delete the task.");
+    } finally {
+      setPending(false);
     }
   }
 
   return (
     <section className="panel task-detail" aria-label={`Task ${task.id} on ${daemonName}`}>
       <div className="section-heading">
-        <h3><code>{task.id}</code> · {task.state}</h3>
+        <div>
+          <p className="eyebrow">Task workspace · {daemonName}</p>
+          <h3><code>{currentTask.id}</code> · {currentTask.state}</h3>
+        </div>
         <span className="badge" data-state={live === "live" ? "configured" : "pending"}>{live}</span>
       </div>
-      <p><strong>{task.request}</strong></p>
+      <p><strong>{currentTask.request}</strong></p>
       {error ? <p role="alert" className="notice">{error}</p> : null}
       <div className="actions" role="group" aria-label="Task commands">
         {commands.map((command) => (
-          <button
-            key={`${daemonId}:${task.id}:${command}`}
-            type="button"
-            disabled={!commandEnabled(command, task.state) || pendingCommand !== null}
-            onClick={() => send(command)}
-          >
-            {pendingCommand === command ? `${command}…` : command}
+          <button key={`${daemonId}:${task.id}:${command}`} type="button" disabled={!commandEnabled(command, currentTask.state) || pendingCommand !== null || pending} onClick={() => void sendCommand(command)}>
+            {pendingCommand === command ? `${command}...` : command}
           </button>
         ))}
+        {(["completed", "aborted"] as string[]).includes(currentTask.state) ? <button type="button" disabled={pending} onClick={() => void removeTask()}>{pending ? "Working..." : "Delete"}</button> : null}
       </div>
-      <h3>Live events{cursor !== undefined ? ` · cursor ${cursor}` : ""}</h3>
-      {events.length === 0 ? <p>No events yet. The stream stays open while this task is selected.</p> : (
-        <ul className="event-list">
-          {events.slice(-50).map((event) => (
-            <li key={qualifiedEventKey(daemonId, task.id, event.sequence)}>
-              <code>#{event.sequence}</code><span>{event.type}</span><span>{event.name ?? ""}</span>
-            </li>
-          ))}
-        </ul>
-      )}
+
+      <dl className="task-facts">
+        <div><dt>Workspace</dt><dd>{currentTask.workspace_path ?? "Daemon sandbox"}</dd></div>
+        <div><dt>Repositories</dt><dd>{currentTask.repositories?.length ?? 0}</dd></div>
+        <div><dt>Branch</dt><dd>{selectedBranch?.id?.slice(0, 8) ?? "-"} · head {selectedBranch?.head_attempt_id?.slice(0, 8) ?? "-"}</dd></div>
+        <div><dt>Checks</dt><dd>{checks.filter((check) => check.status === "passed").length}/{checks.length}</dd></div>
+      </dl>
+
+      <form className="inline-form" onSubmit={createSession}>
+        <label>New session<input value={sessionRequest} onChange={(event) => setSessionRequest(event.target.value)} placeholder="Follow up on this task" /></label>
+        <button type="submit" disabled={pending || !sessionRequest.trim()}>Create session</button>
+      </form>
+      {sessions.length > 1 ? <p className="hint">{sessions.length} sessions on this task. Select one from the daemon task list.</p> : null}
+
+      <section className="detail-section" aria-labelledby="attempts-heading">
+        <div className="section-heading"><h3 id="attempts-heading">Attempts and branches</h3><span className="badge">{attempts.length} attempts · {branches.length} branches</span></div>
+        {attempts.length ? <ul className="attempt-list">{attempts.map((attempt) => <li key={attempt.id} className={selectedAttempt === attempt.id ? "selected" : undefined}><button type="button" onClick={() => setSelectedAttempt((current) => current === attempt.id ? null : attempt.id)}><strong>{attempt.name}</strong><span>{attempt.status}</span><small>{attempt.owner} · {attempt.error ?? attempt.description ?? "No evidence"}</small></button></li>)}</ul> : <p>No attempts yet. Start the task to create its first attempt.</p>}
+      </section>
+
+      <section className="detail-section" aria-labelledby="evidence-heading">
+        <div className="section-heading"><h3 id="evidence-heading">Evidence</h3><span className="badge">{results.length + checks.length + artifacts.length} items</span></div>
+        {results.map((result) => <article className="evidence-card" key={result.id}><strong>{result.agent_role} result</strong><small>attempt {result.attempt}</small><pre>{readable(result.payload)}</pre></article>)}
+        {checks.map((check) => <article className="evidence-card" key={`check-${check.id}`}><strong>{check.name}</strong><small>{check.status} · {check.duration_ms}ms</small><pre>{check.output || check.command}</pre></article>)}
+        {diff.repositories.map((repository) => <article className="evidence-card" key={`diff-${repository.repository_id}`}><strong>{repository.name} diff</strong><small>{repository.files.length} files</small><pre>{repository.patch || "No changes"}</pre></article>)}
+        {artifacts.map((artifact) => <button className="artifact-link" key={artifact.id} type="button" onClick={() => setSelectedArtifact(artifact.id)}><strong>{artifact.type}</strong><span>{artifact.path}</span></button>)}
+        {selectedArtifactValue ? <article className="artifact-preview"><div className="section-heading"><strong>{selectedArtifactValue.type}</strong><button type="button" onClick={() => setSelectedArtifact(null)}>Close</button></div><pre>{artifactContent(selectedArtifactValue)}</pre></article> : null}
+      </section>
+
+      <section className="detail-section" aria-labelledby="events-heading">
+        <div className="section-heading"><h3 id="events-heading">Live events{cursor !== undefined ? ` · cursor ${cursor}` : ""}</h3><span className="badge" data-state={live === "live" ? "configured" : "pending"}>{live}</span></div>
+        {events.length ? <ul className="event-list">{events.slice(-50).map((event) => <li key={qualifiedEventKey(daemonId, task.id, event.sequence)}><code>#{event.sequence}</code><span>{event.type}</span><span>{event.name ?? ""}</span></li>)}</ul> : <p>No events yet. The stream stays open while this task is selected.</p>}
+      </section>
+
+      <form className="context-form" onSubmit={currentTask.state === "awaiting_plan_approval" ? revisePlan : submitMessage}>
+        <div className="section-heading"><h3>{currentTask.state === "awaiting_plan_approval" ? "Revise plan" : "Task intervention"}</h3><select value={action} onChange={(event) => setAction(event.target.value as InterventionAction)} disabled={currentTask.state === "awaiting_plan_approval"}>{interventionActions.map((item) => <option key={item} value={item}>{item.replaceAll("_", " ")}</option>)}</select></div>
+        <textarea value={message} onChange={(event) => setMessage(event.target.value)} placeholder={currentTask.state === "awaiting_plan_approval" ? "Explain what the planner should revise..." : "Message this task..."} />
+        <div className="actions"><span className="hint">{selectedAttempt ? `Targeting attempt ${selectedAttempt.slice(0, 8)}` : "Targets the current task history"}</span><button type="submit" disabled={pending || !message.trim()}>{pending ? "Sending..." : "Send"}</button></div>
+      </form>
+      {interventions.length ? <p className="hint">{interventions.length} intervention{interventions.length === 1 ? "" : "s"} recorded on this daemon.</p> : null}
     </section>
   );
 }

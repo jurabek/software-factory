@@ -99,6 +99,42 @@ test("creation posts JSON bodies with the expected identity", async () => {
   assert.deepEqual(JSON.parse(String(requests[0].init?.body)), { request: "Build", repositories: [{ type: "github", repo: "owner/app" }] });
 });
 
+test("task workflow resources stay on the authenticated daemon connection", async () => {
+  const requests: { input: string; init?: RequestInit }[] = [];
+  const client = createDaemonClient(async (input: string | URL | globalThis.Request, init?: RequestInit) => {
+    requests.push({ input: String(input), init });
+    return Response.json({});
+  });
+  const options = { expectedIdentity: "0123456789abcdef0123456789abcdef", actor: "owner" };
+  await client.task("http://127.0.0.1:8080", "credential", "task-1", options);
+  await client.sessions("http://127.0.0.1:8080", "credential", "task-1", options);
+  await client.createSession("http://127.0.0.1:8080", "credential", "task-1", { request: "Follow up" }, options);
+  await client.feedback("http://127.0.0.1:8080", "credential", "task-1", { feedback: "Revise" }, options);
+  await client.intervene("http://127.0.0.1:8080", "credential", "task-1", { target: {}, intent: "comment", message: "Note", idempotency_key: "key" }, options);
+  await client.remove("http://127.0.0.1:8080", "credential", "task-1", options);
+  await client.attempts("http://127.0.0.1:8080", "credential", "task-1", options);
+  await client.branches("http://127.0.0.1:8080", "credential", "task-1", options);
+  await client.artifacts("http://127.0.0.1:8080", "credential", "task-1", options);
+  await client.checks("http://127.0.0.1:8080", "credential", "task-1", options);
+  await client.results("http://127.0.0.1:8080", "credential", "task-1", options);
+  await client.diff("http://127.0.0.1:8080", "credential", "task-1", options);
+  assert.deepEqual(requests.map((request) => request.input.replace("http://127.0.0.1:8080", "")), [
+    "/api/v1/tasks/task-1",
+    "/api/v1/tasks/task-1/sessions",
+    "/api/v1/tasks/task-1/sessions",
+    "/api/v1/tasks/task-1/feedback",
+    "/api/v1/tasks/task-1/interventions",
+    "/api/v1/tasks/task-1",
+    "/api/v1/tasks/task-1/attempts",
+    "/api/v1/tasks/task-1/branches",
+    "/api/v1/tasks/task-1/artifacts",
+    "/api/v1/tasks/task-1/checks",
+    "/api/v1/tasks/task-1/results",
+    "/api/v1/tasks/task-1/diff",
+  ]);
+  assert.ok(requests.every((request) => (request.init?.headers as Record<string, string>)?.Authorization === "Bearer credential"));
+});
+
 test("config projection exposes only creation defaults", async () => {
   const secret = "prompt-secret-that-must-not-leak";
   const client = createDaemonClient(async (input) => {

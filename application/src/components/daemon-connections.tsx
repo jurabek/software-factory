@@ -116,6 +116,7 @@ export function DaemonConnections() {
   const selected = connections.find((connection) => connection.id === selectedDaemonId) ?? null;
   const selectedState = selected ? taskStates[selected.id] : undefined;
   const selectedTask = selectedState?.tasks.find((task) => task.id === selectedTaskId) ?? null;
+  const allTasks = connections.flatMap((connection) => (taskStates[connection.id]?.tasks ?? []).map((task) => ({ connection, task })));
 
   return (
     <section aria-labelledby="daemons-heading" className="panel">
@@ -132,6 +133,20 @@ export function DaemonConnections() {
         <label>Daemon credential<input name="credential" type="password" minLength={32} autoComplete="off" required /></label>
         <div className="actions"><button type="submit" disabled={pending}>{pending ? "Checking daemon..." : "Connect daemon"}</button></div>
       </form>
+      {connections.length > 1 ? (
+        <section className="combined-tasks" aria-labelledby="combined-tasks-heading">
+          <div className="section-heading"><h3 id="combined-tasks-heading">All task sessions</h3><span className="badge">{allTasks.length}</span></div>
+          <ul className="task-list">
+            {allTasks.map(({ connection, task }) => (
+              <li key={`${connection.id}:${task.id}`} className={connection.id === selectedDaemonId && task.id === selectedTaskId ? "selected" : undefined}>
+                <code>{connection.name}/{task.id}</code><span>{task.state}</span><strong>{task.request}</strong>
+                <button type="button" onClick={() => { selectDaemon(connection.id); setSelectedTaskId(task.id); }}>Open</button>
+              </li>
+            ))}
+          </ul>
+          {!allTasks.length ? <p>No task sessions loaded from the connected daemons.</p> : null}
+        </section>
+      ) : null}
       <div className="daemon-grid">
         {connections.map((connection) => {
           const state = taskStates[connection.id];

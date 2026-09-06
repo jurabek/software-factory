@@ -10,8 +10,17 @@ export type DaemonTask = {
   request: string;
   state: string;
   created_at: string;
+  workspace_path?: string;
+  selected_branch_id?: string;
+  repositories?: unknown[];
+  plan_digest?: string;
+  total_cost?: number;
+  coding_agent?: string;
+  model?: string;
+  thinking?: string;
+  [key: string]: unknown;
 };
-export type DaemonCommand = "start" | "approve" | "pause" | "resume" | "abort";
+export type DaemonCommand = "start" | "approve" | "pause" | "resume" | "abort"
 export type DaemonRequestOptions = {
   signal?: AbortSignal;
   expectedIdentity?: string;
@@ -42,6 +51,16 @@ export type CreateTaskInput = {
   coding_agent?: string;
   model?: string;
   thinking?: string;
+};
+
+export type CreateSessionInput = { request: string };
+export type FeedbackInput = { feedback: string; current_plan_digest?: string };
+export type InterventionInput = {
+  target: { event_id?: string; artifact_id?: string; attempt_id?: string; anchor?: unknown };
+  intent: string;
+  message: string;
+  expected_branch_head?: string;
+  idempotency_key: string;
 };
 
 export const daemonCommands: readonly DaemonCommand[] = ["start", "approve", "pause", "resume", "abort"];
@@ -244,6 +263,15 @@ export function createDaemonClient(fetcher: typeof fetch = fetch) {
       assertTaskShape(body);
       return projectTask(body as DaemonTask & Record<string, unknown>);
     },
+    async task(endpoint: string, credential: string, taskId: string, options: DaemonRequestOptions = {}): Promise<unknown> {
+      return requestJSON(fetcher, endpoint, credential, `/api/v1/tasks/${encodeURIComponent(taskId)}`, options);
+    },
+    async sessions(endpoint: string, credential: string, taskId: string, options: DaemonRequestOptions = {}): Promise<unknown> {
+      return requestJSON(fetcher, endpoint, credential, `/api/v1/tasks/${encodeURIComponent(taskId)}/sessions`, options);
+    },
+    async createSession(endpoint: string, credential: string, taskId: string, input: CreateSessionInput, options: DaemonRequestOptions = {}): Promise<unknown> {
+      return requestJSON(fetcher, endpoint, credential, `/api/v1/tasks/${encodeURIComponent(taskId)}/sessions`, { ...options, method: "POST", body: input });
+    },
     async command(endpoint: string, credential: string, taskId: string, command: DaemonCommand, options: DaemonRequestOptions = {}): Promise<{ accepted: boolean }> {
       if (!daemonCommands.includes(command)) {
         throw new DaemonRequestError(400, "invalid_command", "Unsupported daemon command.");
@@ -257,6 +285,39 @@ export function createDaemonClient(fetcher: typeof fetch = fetch) {
         throw new DaemonRequestError(502, "invalid_daemon_command", "Daemon returned an invalid command response.");
       }
       return { accepted: true };
+    },
+    async feedback(endpoint: string, credential: string, taskId: string, input: FeedbackInput, options: DaemonRequestOptions = {}): Promise<unknown> {
+      return requestJSON(fetcher, endpoint, credential, `/api/v1/tasks/${encodeURIComponent(taskId)}/feedback`, { ...options, method: "POST", body: input });
+    },
+    async intervene(endpoint: string, credential: string, taskId: string, input: InterventionInput, options: DaemonRequestOptions = {}): Promise<unknown> {
+      return requestJSON(fetcher, endpoint, credential, `/api/v1/tasks/${encodeURIComponent(taskId)}/interventions`, { ...options, method: "POST", body: input });
+    },
+    async interventions(endpoint: string, credential: string, taskId: string, options: DaemonRequestOptions = {}): Promise<unknown> {
+      return requestJSON(fetcher, endpoint, credential, `/api/v1/tasks/${encodeURIComponent(taskId)}/interventions`, options);
+    },
+    async remove(endpoint: string, credential: string, taskId: string, options: DaemonRequestOptions = {}): Promise<unknown> {
+      return requestJSON(fetcher, endpoint, credential, `/api/v1/tasks/${encodeURIComponent(taskId)}`, { ...options, method: "DELETE", body: {} });
+    },
+    async attempts(endpoint: string, credential: string, taskId: string, options: DaemonRequestOptions = {}): Promise<unknown> {
+      return requestJSON(fetcher, endpoint, credential, `/api/v1/tasks/${encodeURIComponent(taskId)}/attempts`, options);
+    },
+    async attempt(endpoint: string, credential: string, taskId: string, attemptId: string, options: DaemonRequestOptions = {}): Promise<unknown> {
+      return requestJSON(fetcher, endpoint, credential, `/api/v1/tasks/${encodeURIComponent(taskId)}/attempts/${encodeURIComponent(attemptId)}`, options);
+    },
+    async branches(endpoint: string, credential: string, taskId: string, options: DaemonRequestOptions = {}): Promise<unknown> {
+      return requestJSON(fetcher, endpoint, credential, `/api/v1/tasks/${encodeURIComponent(taskId)}/branches`, options);
+    },
+    async artifacts(endpoint: string, credential: string, taskId: string, options: DaemonRequestOptions = {}): Promise<unknown> {
+      return requestJSON(fetcher, endpoint, credential, `/api/v1/tasks/${encodeURIComponent(taskId)}/artifacts`, options);
+    },
+    async checks(endpoint: string, credential: string, taskId: string, options: DaemonRequestOptions = {}): Promise<unknown> {
+      return requestJSON(fetcher, endpoint, credential, `/api/v1/tasks/${encodeURIComponent(taskId)}/checks`, options);
+    },
+    async results(endpoint: string, credential: string, taskId: string, options: DaemonRequestOptions = {}): Promise<unknown> {
+      return requestJSON(fetcher, endpoint, credential, `/api/v1/tasks/${encodeURIComponent(taskId)}/results`, options);
+    },
+    async diff(endpoint: string, credential: string, taskId: string, options: DaemonRequestOptions = {}): Promise<unknown> {
+      return requestJSON(fetcher, endpoint, credential, `/api/v1/tasks/${encodeURIComponent(taskId)}/diff`, options);
     },
     async events(endpoint: string, credential: string, taskId: string, query: EventQuery, options: DaemonRequestOptions = {}): Promise<{ events: DaemonEvent[]; cursor: number }> {
       const parameters = new URLSearchParams();
