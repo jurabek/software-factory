@@ -5,14 +5,12 @@ FROM node:24-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 COPY application/package.json ./application/package.json
-COPY daemon/web/package.json ./daemon/web/package.json
 RUN npm ci --omit=dev
 
 FROM node:24-alpine AS builder
 WORKDIR /app
 COPY package.json package-lock.json ./
 COPY application ./application
-COPY daemon/web/package.json ./daemon/web/package.json
 RUN npm ci
 RUN npm run build --workspace @software-factory/application
 

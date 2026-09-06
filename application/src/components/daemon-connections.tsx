@@ -178,10 +178,10 @@ export function DaemonConnections() {
         <section className="combined-tasks" aria-labelledby="combined-tasks-heading">
           <div className="section-heading"><h3 id="combined-tasks-heading">All task sessions</h3><span className="badge">{allTasks.length}</span></div>
           <ul className="task-list">
-            {allTasks.map(({ connection, task }) => (
-              <li key={`${connection.id}:${task.id}`} className={connection.id === selectedDaemonId && task.id === selectedTaskId ? "selected" : undefined}>
-                <code>{connection.name}/{task.id}</code><span>{task.state}</span><strong>{task.request}</strong>
-                 <button type="button" onClick={() => selectTask(connection.id, task.id)}>Open</button>
+             {allTasks.map(({ connection, task }) => (
+               <li key={`${connection.id}:${task.id}`} className={connection.id === selectedDaemonId && task.id === selectedTaskId ? "selected" : undefined}>
+                 <code>{connection.name}/{task.id}</code><span>{taskStates[connection.id]?.offline ? "offline" : task.state}</span><strong>{task.request}</strong>
+                  <button type="button" onClick={() => selectTask(connection.id, task.id)}>Open</button>
               </li>
             ))}
           </ul>
@@ -209,7 +209,7 @@ export function DaemonConnections() {
               <ul className="task-list">
                 {state?.tasks.filter((task) => !task.parent_task_id).map((rootTask) => {
                   const sessions = state.tasks.filter((task) => task.id === rootTask.id || task.parent_task_id === rootTask.id).sort((left, right) => left.created_at.localeCompare(right.created_at));
-                  return <li key={`${connection.id}:${rootTask.id}`} className="task-group"><div className="task-group-heading"><strong>{rootTask.request}</strong><span>{sessions.length} sessions</span></div><ul className="task-list task-sessions">{sessions.map((task) => <li key={`${task.daemonId}:${task.id}`} className={task.id === selectedTaskId && connection.id === selectedDaemonId ? "selected" : undefined}><code>{task.id}</code><span>{task.state}</span><strong>{task.request}</strong><button type="button" onClick={() => selectTask(connection.id, task.id)}>Open</button></li>)}</ul></li>;
+                   return <li key={`${connection.id}:${rootTask.id}`} className="task-group"><div className="task-group-heading"><strong>{rootTask.request}</strong><span>{sessions.length} sessions</span></div><ul className="task-list task-sessions">{sessions.map((task) => <li key={`${task.daemonId}:${task.id}`} className={task.id === selectedTaskId && connection.id === selectedDaemonId ? "selected" : undefined}><code>{task.id}</code><span>{state?.offline ? "offline" : task.state}</span><strong>{task.request}</strong><button type="button" onClick={() => selectTask(connection.id, task.id)}>Open</button></li>)}</ul></li>;
                 })}
               </ul>
             </article>
@@ -246,7 +246,10 @@ export function DaemonConnections() {
           offline={Boolean(selectedState?.offline)}
           onChanged={() => loadTasks(selected)}
           onSelectTask={(taskId) => selectTask(selected.id, taskId)}
-          onRemoved={() => { setSelectedTaskId(null); writeRouteSelection(selected.id, null); }}
+           onRemoved={(parentTaskId) => {
+             if (parentTaskId) selectTask(selected.id, parentTaskId);
+             else { setSelectedTaskId(null); writeRouteSelection(selected.id, null); }
+           }}
         />
       ) : null}
     </section>

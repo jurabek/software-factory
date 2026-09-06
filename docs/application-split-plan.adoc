@@ -11,7 +11,7 @@ Keep application and daemon in this repository initially. Separate their runtime
 
 == Implementation Progress
 
-Record for the next agent. Steps 1-4 are implemented under the simplified single-user scope; Step 5 is in progress and Step 6 remains.
+Steps 1-6 are implemented under the simplified single-user scope.
 
 * Step 1 done: `application/` Next.js workspace builds and starts without daemon state. Includes runtime environment validation (`src/server/environment.ts`), transactional numbered PostgreSQL migrations with advisory locking (`src/server/migrations.ts`, `migrations/0001_foundation.sql`), migration CLI (`scripts/migrate.ts`), honest setup-only `/` page, `.env.example`, and 23 passing tests (`application:build`, `application:test`, `typecheck` green).
 * Early structural work, done per follow-up requests ahead of step 6: Go code moved to `daemon/` as its own module (`github.com/jurabek/software-factory/daemon`); Vue UI moved with it to `daemon/web/` so `//go:embed web/dist/*` keeps serving until React parity. Root scripts use `go -C daemon`; npm workspaces are `["daemon/web", "application"]`. Added `application/Dockerfile` (standalone), `docker-compose.yaml` (app + migrate + postgres), `.dockerignore`, `output: standalone`.
@@ -24,8 +24,11 @@ Record for the next agent. Steps 1-4 are implemented under the simplified single
 * Step 4 done: atomic daemon identity continuity (`X-Software-Factory-Daemon-ID` enforced per request before dispatch, 409 `daemon_identity_mismatch`), single-request scoped operations without preflight races, authenticated creation/config/model flows (`creation-options`, task create), all five lifecycle commands with server-derived actors, REST event replay and authorized SSE proxy with cursor forwarding, 5s revocation revalidation and browser-disconnect cancellation, safe upstream code preservation (`stale_plan`, `stale_branch`, `stale_anchor`, `invalid_state`), per-daemon offline isolation, and selection/cancellation/dedup guards in React (`daemon-ui-state.ts`, `daemon-api.ts`, `task-creation.tsx`, `task-detail.tsx`, daemon-scoped recent paths).
 * Step 5 partial: the Next.js proxy and server registry now expose daemon task detail, sessions, feedback, interventions, deletion, attempts, branches, artifacts, checks, results, and diffs with scoped authentication and identity continuity. React now supports multi-repository creation, combined multi-daemon task browsing, task metadata, sessions, evidence, intervention/plan feedback, terminal-task deletion, and the existing live event workflow.
 * Step 5 continued: React now groups root tasks with child sessions, selects newly created sessions, persists daemon/task selection in daemon-qualified URL query state, refreshes task and daemon state on scoped intervals, disables mutations while a daemon is offline, exposes server-provided intervention actions, supports branch selection and returned branch/attempt targeting, expands event payloads, preserves event lineage/action metadata, and reconnects after clean stream termination.
-* Current automated verification: application tests (72), application production build, Go tests, Go race tests, root typecheck/build, and Swagger validation pass.
-* Do not delete `daemon/web/` until step 5 React parity carries its behavior forward.
+* Step 5 hardening: React now cancels in-flight creation and task mutations on daemon/task changes, restores daemon-scoped recent repository paths and keyboard submission, filters transient work-log events, supports rendered/raw evidence selection and quote-to-comment, filters attempts by branch, marks cached combined-task rows offline, and returns to a root task after child-session deletion.
+* Step 5 stream and work-log hardening: browser SSE parsing now accepts CRLF and multiline data frames; React work logs provide meaningful-event previews, follow-tail scrolling, bounded-window notices, event status/target metadata, and accessible detail dialogs with raw payloads.
+* Step 5 option and work-log hardening: creation options now isolate daemon and harness request generations so delayed responses cannot replace another daemon's defaults or leave the form loading; event dialogs retain primitive tool arguments instead of dropping them. Application tests cover the argument projection.
+* Step 6 done: retired `daemon/web/`, removed frontend embedding and Vue/Vite workspace dependencies, retained local Swagger access, restored the self-hosted application/migration/PostgreSQL Compose stack, removed the tracked local credential file, added ignored deployment configuration guidance, and updated usage and architecture documentation. Fresh schema application and an idempotent rerun against an existing PostgreSQL volume both pass.
+* Current automated verification: application tests (75), application typecheck, application production build, standalone image build, Go tests/build, Go race tests, root typecheck/build, Swagger validation, Compose rendering, and live Compose health/migration checks pass. Browser coverage remains pending because no browser test runner is configured.
 * Implementation remains uncommitted. Preserve unrelated skill-directory and `skills-lock.json` worktree entries.
 
 IMPORTANT: The user explicitly deferred retention after initially requesting durable history. The initial release must not implement task archival, log replication, a synchronization worker, or deletion-safety protocols. Tasks and logs remain on their owning daemon. The application does not guarantee history after sandbox deletion.
@@ -110,23 +113,20 @@ Exact credential provisioning and transport mechanics remain implementation choi
 
 Re-read source and `git status` before editing; these are navigation pointers, not a substitute for current code.
 
-* `daemon/main.go`: daemon startup, SQLite recovery, local root/lock, identity, bind/auth configuration, harness registration, API wiring, embedded Vue assets, Swagger, and shutdown.
+* `daemon/main.go`: daemon startup, SQLite recovery, local root/lock, identity, bind/auth configuration, harness registration, API wiring, Swagger, and shutdown.
 * `daemon/main_test.go`: identity, bind policy, Swagger, and same-origin documentation checks.
 * `daemon/internal/api/api.go`: task/action routes, local mutation-token checks, remote bearer authentication, REST events, and SSE.
 * `daemon/internal/factory/service.go`: task creation and execution, child Task Sessions, task deletion, check logs, prompts, and process ownership.
 * `daemon/internal/store/store.go`: daemon SQLite schema, transitions, events, lineage, and startup recovery.
 * `daemon/internal/harness/harness.go`: agent runtime interface, not the remote-daemon interface. Keep these concerns separate.
-* `daemon/web/src/api.ts`: singleton same-origin client and module-global mutation token.
-* `daemon/web/src/types.ts`: existing TypeScript request/response shapes; reusable after checking against actual daemon responses.
-* `daemon/web/src/App.vue`: task/session routing, polling, direct EventSource usage, actions, detail selection, and async state handling.
-* `daemon/web/src/components/`: task creation, task/artifact rails, artifact viewer, session log, and intervention composer to migrate.
-* `daemon/web/vite.config.ts`, root and workspace `package.json` files: current frontend build and development wiring.
+* `application/`: React control surface, initial-user identity, PostgreSQL application state, daemon registry, and authenticated HTTP/SSE proxy.
+* Root and application `package.json` files: final application-only frontend workspace and build wiring.
 * `daemon/swagger.yaml`: daemon interface description; update with shipped daemon interface changes.
 * `CONTEXT.md`, `docs/ARCHITECTURE.md`, `docs/USAGE.md`, `SPEC.md`, `docs/retriable-execution.adoc`: terminology and existing behavior. Older single-host/no-remote constraints do not override the user's application-split decision here.
 
 Current behavior requiring care:
 
-* The daemon always binds to loopback. Local mode exposes a random per-process mutation token through `/api/v1/control`. Configuring the application bearer credential requires it for every API read, mutation, and stream and disables `/control`, embedded UI, and Swagger routes.
+* The daemon always binds to loopback. Local mode exposes a random per-process mutation token through `/api/v1/control` and serves Swagger. Configuring the application bearer credential requires it for every API read, mutation, and stream and disables `/control` and Swagger routes.
 * SSE supports `after` and `Last-Event-ID`. Sequence numbers are daemon-database-wide; per-task gaps are normal. Preserve cursor scope and avoid duplicate display on reconnect.
 * Events are not a complete task-state change journal. Keep task/detail refresh rather than assuming SSE reconstructs state.
 * Current UI guards often compare only task IDs. React state and stale-response protection must also include daemon selection, with cancellation or request generations.
@@ -136,9 +136,9 @@ Current behavior requiring care:
 
 === Existing Uncommitted Work
 
-At handoff, changes already existed in `web/src/App.vue` and tracked `web/dist` assets. Additional untracked Next.js-related skill directories under `.agents/skills/` and `skills-lock.json` also appeared during planning. None were authored as part of this plan.
+At handoff, changes already existed in the former Vue frontend and tracked build assets. Their relevant behavior was carried into React before the Step 6 cutover. Additional Next.js-related skill directories under `.agents/skills/` and `skills-lock.json` appeared during planning and were not authored as part of this plan.
 
-Preserve all existing work. Read the current Vue diff before migrating it, and avoid building the old frontend merely to regenerate tracked assets. Do not delete the old UI until its behavior and user changes have been carried forward.
+Preserve unrelated existing work. The retired Vue source and build assets are no longer part of the daemon or npm workspace.
 
 == Execution Sequence
 

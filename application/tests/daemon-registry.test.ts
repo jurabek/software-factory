@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { DaemonClient, DaemonRequestOptions } from "../src/server/daemon-client.ts";
-import { DaemonRequestError } from "../src/server/daemon-client.ts";
+import { createDaemonClient, DaemonRequestError } from "../src/server/daemon-client.ts";
 import { createDaemonRegistry, DaemonRegistryError, type DaemonRegistryStore } from "../src/server/daemon-registry.ts";
 
 const credentialKey = "11".repeat(32);
@@ -36,6 +36,7 @@ function daemonClient(taskID = "task-1"): DaemonClient & { calls: { method: stri
     }
   }
   return {
+    ...createDaemonClient(async () => { throw new Error("Unexpected daemon client call."); }),
     calls: state.calls,
     get upstreamIdentity() { return state.upstreamIdentity; },
     set upstreamIdentity(value: string) { state.upstreamIdentity = value; },

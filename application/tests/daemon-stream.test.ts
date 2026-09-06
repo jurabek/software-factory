@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { parseSSEFrame } from "../src/client/daemon-api.ts";
 import { proxyDaemonStream } from "../src/server/daemon-route.ts";
 
 function sseUpstream(chunks: string[]): Response {
@@ -46,6 +47,15 @@ test("stream sequence IDs are never renumbered", async () => {
   assert.ok(text.includes("id: 100"));
   assert.ok(text.includes("id: 105"));
   assert.doesNotMatch(text, /id: 101/);
+});
+
+test("SSE frames accept CRLF and multiline data", () => {
+  assert.deepEqual(
+    parseSSEFrame('id: 105\r\ndata: {"message":\r\ndata: "ready"}\r\n'),
+    { sequence: 105, raw: { message: "ready" } },
+  );
+  assert.equal(parseSSEFrame(": heartbeat\r\n"), null);
+  assert.equal(parseSSEFrame("id: -1\ndata: {}"), null);
 });
 
 test("browser disconnect cancels the upstream reader", async () => {

@@ -6,6 +6,29 @@ import type { DaemonConnection } from "../server/daemon-registry.ts";
 export type QualifiedTask = DaemonTask & { daemonId: string };
 export type StreamEvent = { sequence: number; raw: unknown };
 
+export function parseSSEFrame(frame: string): StreamEvent | null {
+  let id: string | undefined;
+  const data: string[] = [];
+  for (const line of frame.split(/\r\n|\n|\r/)) {
+    if (line.startsWith("id:")) id = line.slice(3).trim();
+    else if (line.startsWith("data:")) data.push(line.startsWith("data: ") ? line.slice(6) : line.slice(5));
+  }
+  if (id === undefined || data.length === 0) return null;
+  const sequence = Number(id);
+  if (!Number.isSafeInteger(sequence) || sequence < 0) return null;
+  const payload = data.join("\n");
+  try {
+    return { sequence, raw: JSON.parse(payload) };
+  } catch {
+    return { sequence, raw: payload };
+  }
+}
+
+function sseFrameBoundary(buffer: string): { index: number; length: number } | null {
+  const match = /\r\n\r\n|\n\n|\r\r/.exec(buffer);
+  return match && match.index !== undefined ? { index: match.index, length: match[0].length } : null;
+}
+
 async function apiMessage(response: Response): Promise<string> {
   const body = (await response.json().catch(() => null)) as { message?: unknown; error?: unknown } | null;
   if (body && typeof body.message === "string") return body.message;
@@ -190,29 +213,15 @@ export function openTaskStream(
         const { done, value } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
-        let boundary = buffer.indexOf("\n\n");
-        while (boundary >= 0) {
-          const frame = buffer.slice(0, boundary);
-          buffer = buffer.slice(boundary + 2);
+        let boundary = sseFrameBoundary(buffer);
+        while (boundary) {
+          const frame = buffer.slice(0, boundary.index);
+          buffer = buffer.slice(boundary.index + boundary.length);
           if (!frame.startsWith(":")) {
-            let id: string | undefined;
-            let data: string | undefined;
-            for (const line of frame.split("\n")) {
-              if (line.startsWith("id:")) id = line.slice(3).trim();
-              else if (line.startsWith("data:")) data = line.slice(5).trim();
-            }
-            if (id !== undefined && data !== undefined) {
-              const sequence = Number(id);
-              if (Number.isInteger(sequence)) {
-                try {
-                  onEvent({ sequence, raw: JSON.parse(data) });
-                } catch {
-                  onEvent({ sequence, raw: data });
-                }
-              }
-            }
+            const event = parseSSEFrame(frame);
+            if (event) onEvent(event);
           }
-          boundary = buffer.indexOf("\n\n");
+          boundary = sseFrameBoundary(buffer);
         }
       }
       if (!signal.aborted) onError(new Error("Stream disconnected."));

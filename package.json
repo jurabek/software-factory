@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "workspaces": ["daemon/web", "application"],
+  "workspaces": ["application"],
   "engines": { "node": ">=24" },
   "scripts": {
     "build": "npm run build --workspaces",

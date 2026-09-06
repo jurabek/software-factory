@@ -19,38 +19,54 @@ export function TaskCreation({ daemon, offline, onCreated }: { daemon: DaemonCon
   const [thinking, setThinking] = useState("");
   const [harnesses, setHarnesses] = useState<string[]>([]);
   const [models, setModels] = useState<{ provider: string; id: string }[]>([]);
+  const [recentDirectories, setRecentDirectories] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const generation = useRef(0);
+  const optionsGeneration = useRef(0);
+  const modelGeneration = useRef(0);
+  const mutationController = useRef<AbortController | null>(null);
 
   useEffect(() => {
-    const current = ++generation.current;
+    const current = ++optionsGeneration.current;
     const controller = new AbortController();
     setLoading(true);
     setError(null);
+    setHarnesses([]);
+    setModels([]);
+    setHarness("");
+    setModel("");
+    setThinking("");
+    setRecentDirectories([]);
     void daemonCreationOptions(daemon.id, undefined, controller.signal)
       .then((options) => {
-        if (generation.current !== current) return;
+        if (optionsGeneration.current !== current) return;
         setHarnesses(options.harnesses);
         setModels(options.models.models);
-        setHarness((previous) => previous || options.defaults.coding_agent);
-        setModel((previous) => previous || options.defaults.model);
-        setThinking((previous) => previous || options.defaults.thinking);
+        setHarness(options.defaults.coding_agent);
+        setModel(options.defaults.model);
+        setThinking(options.defaults.thinking);
         setLoading(false);
       })
       .catch((failure: unknown) => {
-        if (controller.signal.aborted || generation.current !== current) return;
+        if (controller.signal.aborted || optionsGeneration.current !== current) return;
         setError(failure instanceof Error ? failure.message : "Could not load creation options.");
         setLoading(false);
       });
     try {
       const recent = JSON.parse(localStorage.getItem(recentKey(daemon.id)) ?? "[]") as unknown;
-       if (Array.isArray(recent) && typeof recent[0] === "string") setRepositories((previous) => previous.map((repository, index) => index === 0 && !repository.value ? { ...repository, type: "local", value: recent[0] } : repository));
+      if (Array.isArray(recent)) {
+        const paths = recent.filter((entry): entry is string => typeof entry === "string");
+        setRecentDirectories(paths);
+        if (paths[0]) setRepositories((previous) => previous.map((repository, index) => index === 0 && !repository.value ? { ...repository, type: "local", value: paths[0] } : repository));
+      }
     } catch {
       // Ignore corrupt local preferences; they are only a convenience.
     }
-    return () => controller.abort();
+    return () => {
+      controller.abort();
+      mutationController.current?.abort();
+    };
   }, [daemon.id]);
 
   function updateRepository(index: number, update: Partial<RepositoryDraft>) {
@@ -71,11 +87,13 @@ export function TaskCreation({ daemon, offline, onCreated }: { daemon: DaemonCon
 
   useEffect(() => {
     if (!harness) return;
-    const current = ++generation.current;
+    const daemonGeneration = optionsGeneration.current;
+    const current = ++modelGeneration.current;
     const controller = new AbortController();
+    setModels([]);
     void daemonCreationOptions(daemon.id, harness, controller.signal)
       .then((options) => {
-        if (generation.current !== current) return;
+        if (optionsGeneration.current !== daemonGeneration || modelGeneration.current !== current) return;
         setHarnesses(options.harnesses);
         setModels(options.models.models);
       })
@@ -85,6 +103,9 @@ export function TaskCreation({ daemon, offline, onCreated }: { daemon: DaemonCon
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
+    mutationController.current?.abort();
+    const controller = new AbortController();
+    mutationController.current = controller;
     setSubmitting(true);
     setError(null);
     try {
@@ -93,7 +114,7 @@ export function TaskCreation({ daemon, offline, onCreated }: { daemon: DaemonCon
        if (repositories.some((repository) => !repository.value.trim())) throw new Error("Complete every repository before creating the task.");
        if (repositories.some((repository) => repository.type === "local" && !repository.value.trim().startsWith("/"))) throw new Error("Local repositories need an absolute daemon path.");
        if (repositories.some((repository) => repository.type === "github" && !/^[^/\s]+\/[^/\s]+$/.test(repository.value.trim()))) throw new Error("GitHub repositories need owner/name.");
-       const result = await daemonCreateTask(daemon.id, {
+        const result = await daemonCreateTask(daemon.id, {
          request: trimmed,
          repositories: repositories.map((repository) => repository.type === "local"
            ? { type: "local", path: repository.value.trim(), ...(repository.name.trim() ? { name: repository.name.trim() } : {}), primary: repository.primary }
@@ -101,7 +122,7 @@ export function TaskCreation({ daemon, offline, onCreated }: { daemon: DaemonCon
         ...(harness ? { coding_agent: harness } : {}),
         ...(model ? { model } : {}),
         ...(thinking ? { thinking } : {}),
-      });
+       }, controller.signal);
        if (repositories.some((repository) => repository.type === "local")) {
          try {
            const recent = JSON.parse(localStorage.getItem(recentKey(daemon.id)) ?? "[]") as unknown;
@@ -112,11 +133,12 @@ export function TaskCreation({ daemon, offline, onCreated }: { daemon: DaemonCon
         }
       }
       setRequest("");
-      onCreated(result.task);
+       if (!controller.signal.aborted) onCreated(result.task);
     } catch (failure) {
+      if (controller.signal.aborted) return;
       setError(failure instanceof Error ? failure.message : "Could not create the task.");
     } finally {
-      setSubmitting(false);
+      if (!controller.signal.aborted) setSubmitting(false);
     }
   }
 
@@ -125,19 +147,20 @@ export function TaskCreation({ daemon, offline, onCreated }: { daemon: DaemonCon
       <h3>Create a draft on {daemon.name}</h3>
       {offline ? <p role="alert" className="notice">Daemon offline. Reconnect before creating a task.</p> : null}
       {error ? <p role="alert" className="notice">{error}</p> : null}
-      <label>Task request<textarea value={request} onChange={(event) => setRequest(event.target.value)} required maxLength={20000} placeholder="Coordinate the change…" /></label>
-       <div className="repository-drafts">
+      <label>Task request<textarea value={request} onChange={(event) => setRequest(event.target.value)} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} required maxLength={20000} placeholder="Coordinate the change…" /></label>
+      <div className="repository-drafts">
          {repositories.map((repository, index) => (
            <div className="form-row repository-draft" key={index}>
              <button type="button" aria-label={`Make repository ${index + 1} primary`} aria-pressed={repository.primary} onClick={() => selectPrimary(index)}>{repository.primary ? "Primary" : "Secondary"}</button>
              <label>Name<input value={repository.name} onChange={(event) => updateRepository(index, { name: event.target.value })} placeholder="optional" /></label>
              <label>Type<select value={repository.type} onChange={(event) => updateRepository(index, { type: event.target.value as RepositoryDraft["type"] })}><option value="github">GitHub</option><option value="local">Local daemon path</option></select></label>
-             <label>{repository.type === "local" ? "Absolute daemon path" : "owner/repository"}<input value={repository.value} onChange={(event) => updateRepository(index, { value: event.target.value })} required placeholder={repository.type === "local" ? "/srv/sandbox/repo" : "owner/app"} /></label>
+              <label>{repository.type === "local" ? "Absolute daemon path" : "owner/repository"}<input value={repository.value} onChange={(event) => updateRepository(index, { value: event.target.value })} list={repository.type === "local" ? `recent-directories-${daemon.id}` : undefined} required placeholder={repository.type === "local" ? "/srv/sandbox/repo" : "owner/app"} /></label>
              <button type="button" disabled={repositories.length === 1} onClick={() => removeRepository(index)}>Remove</button>
            </div>
          ))}
          <button type="button" onClick={addRepository}>Add repository</button>
-       </div>
+        </div>
+        {recentDirectories.length ? <datalist id={`recent-directories-${daemon.id}`}>{recentDirectories.map((path) => <option key={path} value={path} />)}</datalist> : null}
       {loading ? <p>Loading harness options…</p> : (
         <div className="form-row">
           <label>Harness

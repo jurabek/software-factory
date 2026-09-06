@@ -1,6 +1,6 @@
 # Software Factory API usage
 
-Start the API and embedded UI with `go -C daemon run .`. State defaults to `~/.software-factory`; override it with `SOFTWARE_FACTORY_DIR`. The API binds to loopback and has no CORS support by default.
+Start a daemon API with `go -C daemon run .`. State defaults to `~/.software-factory`; override it with `SOFTWARE_FACTORY_DIR`. The API binds to loopback and has no CORS support. The daemon does not serve a frontend; users operate it through the separate Next.js application.
 
 To connect the separate application, configure a server credential and expose the loopback daemon through an encrypted tunnel:
 
@@ -10,7 +10,7 @@ SOFTWARE_FACTORY_DAEMON_TOKEN='replace-with-at-least-32-random-characters' \
 go -C daemon run .
 ```
 
-Non-loopback binds are rejected, including when a credential is present. Remote clients send `Authorization: Bearer $SOFTWARE_FACTORY_DAEMON_TOKEN` on every tunneled read, mutation, and stream. `GET /api/v1/identity` returns the stable identity stored in `$SOFTWARE_FACTORY_DIR/daemon-id`. Configuring the remote credential disables `/api/v1/control`, the embedded UI, and Swagger routes; use a separate local-mode daemon process only against a different state directory.
+Non-loopback binds are rejected, including when a credential is present. Remote clients send `Authorization: Bearer $SOFTWARE_FACTORY_DAEMON_TOKEN` on every tunneled read, mutation, and stream. `GET /api/v1/identity` returns the stable identity stored in `$SOFTWARE_FACTORY_DIR/daemon-id`. Configuring the remote credential disables `/api/v1/control` and local Swagger routes. Without a remote credential, Swagger remains available at `/docs` for local API use.
 
 Fetch the per-process mutation token:
 
@@ -61,3 +61,18 @@ The Next.js application owns the initial-user session and daemon registrations. 
 - `POST /api/daemons/{daemonId}/tasks/{taskId}/{start|approve|pause|resume|abort}` runs one lifecycle command; the approval actor comes from the login session.
 - `GET /api/daemons/{daemonId}/tasks/{taskId}/events[?after=&limit=|?tail=]` replays events; `GET .../events/stream[?after=]` proxies the live SSE feed with `Last-Event-ID` support. Open streams revalidate the login session and close on logout or disconnect.
 - Every read needs the login session; every mutation additionally needs the configured application origin. Guessed registration IDs return 404, and a replaced daemon at a registered endpoint returns 409.
+
+## Application deployment and schema
+
+For Docker Compose, copy `.env.example` to the ignored `.env`, replace all placeholders, and run `docker compose up --build`. The `migrate` service waits for PostgreSQL, applies `application/migrations/schema.sql`, and must exit successfully before the application starts. PostgreSQL data persists in the `factory-pgdata` volume; daemons are not Compose dependencies.
+
+For a direct Node.js deployment, copy `application/.env.example` to `application/.env.local`, then run:
+
+```bash
+npm ci
+npm run application:migrations
+npm run application:build
+npm run application:start
+```
+
+Use the same migration command for both fresh and existing application databases. The schema is idempotent, so run it before each application release. Back up an existing database first. Application migrations never read or modify a daemon's SQLite database or sandbox files.

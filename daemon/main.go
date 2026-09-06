@@ -30,9 +30,6 @@ import (
 	"github.com/jurabek/software-factory/daemon/internal/store"
 )
 
-//go:embed web/dist/*
-var frontend embed.FS
-
 //go:embed templates
 var defaultTemplates embed.FS
 
@@ -165,17 +162,12 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	staticFS, err := fs.Sub(frontend, "web/dist")
-	if err != nil {
-		return err
-	}
 	mux := http.NewServeMux()
 	mux.Handle("/api/v1/", apiServer.Handler())
 	if remoteToken == "" {
 		mux.HandleFunc("GET /swagger.yaml", serveSwaggerSpec)
 		mux.HandleFunc("GET /docs", serveSwaggerUI)
 		mux.HandleFunc("GET /docs/", serveSwaggerUI)
-		mux.Handle("/", spaHandler{files: staticFS})
 	}
 	server := &http.Server{
 		Addr:              address,
@@ -354,19 +346,6 @@ func serveSwaggerSpec(w http.ResponseWriter, _ *http.Request) {
 func serveSwaggerUI(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = io.WriteString(w, swaggerUI)
-}
-
-type spaHandler struct{ files fs.FS }
-
-func (handler spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	path := filepath.Clean(r.URL.Path)
-	if path == "." || path == "/" {
-		path = "/index.html"
-	}
-	if _, err := fs.Stat(handler.files, path[1:]); err != nil {
-		path = "/index.html"
-	}
-	http.ServeFileFS(w, r, handler.files, path)
 }
 
 func staticSecurityHeaders(next http.Handler) http.Handler {
