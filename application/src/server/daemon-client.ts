@@ -31,9 +31,14 @@ export type DaemonEvent = {
   sequence: number;
   id: string;
   task_id: string;
+  phase_id?: string;
+  attempt_id?: string;
+  artifact_id?: string;
+  branch_id?: string;
   type: string;
   name?: string;
   payload: unknown;
+  available_actions?: string[];
   started_at: string;
 };
 export type DaemonHarnessModels = { harness: string; models: { provider: string; id: string }[] };
@@ -342,9 +347,14 @@ export function createDaemonClient(fetcher: typeof fetch = fetch) {
           sequence: event.sequence,
           id: event.id,
           task_id: event.task_id,
+          ...(typeof event.phase_id === "string" ? { phase_id: event.phase_id } : {}),
+          ...(typeof event.attempt_id === "string" ? { attempt_id: event.attempt_id } : {}),
+          ...(typeof event.artifact_id === "string" ? { artifact_id: event.artifact_id } : {}),
+          ...(typeof event.branch_id === "string" ? { branch_id: event.branch_id } : {}),
           type: event.type,
           ...(typeof event.name === "string" ? { name: event.name } : {}),
           payload: event.payload,
+          ...(Array.isArray(event.available_actions) ? { available_actions: event.available_actions.filter((action): action is string => typeof action === "string") } : {}),
           started_at: event.started_at,
         })),
         cursor: value.cursor,

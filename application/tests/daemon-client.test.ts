@@ -162,6 +162,41 @@ test("event streams forward cursors without a JSON timeout", async () => {
   assert.equal(headers["X-Software-Factory-Daemon-ID"], "0123456789abcdef0123456789abcdef");
 });
 
+test("event reads preserve lineage and available actions", async () => {
+  const client = createDaemonClient(async () => Response.json({
+    events: [{
+      sequence: 8,
+      id: "event-8",
+      task_id: "task-1",
+      phase_id: "phase-1",
+      attempt_id: "attempt-1",
+      artifact_id: "artifact-1",
+      branch_id: "branch-1",
+      type: "phase_end",
+      payload: { status: "passed" },
+      available_actions: ["retry", 7],
+      started_at: "2026-09-06T12:00:00Z",
+    }],
+    cursor: 8,
+  }));
+  assert.deepEqual(await client.events("http://127.0.0.1:8080", "credential", "task-1", { tail: 1 }), {
+    events: [{
+      sequence: 8,
+      id: "event-8",
+      task_id: "task-1",
+      phase_id: "phase-1",
+      attempt_id: "attempt-1",
+      artifact_id: "artifact-1",
+      branch_id: "branch-1",
+      type: "phase_end",
+      payload: { status: "passed" },
+      available_actions: ["retry"],
+      started_at: "2026-09-06T12:00:00Z",
+    }],
+    cursor: 8,
+  });
+});
+
 test("redirects are rejected for mutations", async () => {
   const client = createDaemonClient((async () => {
     const response = Response.json({ accepted: true }, { status: 202 });

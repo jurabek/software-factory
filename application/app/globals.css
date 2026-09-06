@@ -54,6 +54,10 @@ h3 { font-size: .85rem; font-weight: 500; margin: 1.5rem 0 .25rem; }
 .task-list li button { padding: .25rem .55rem; font-size: .75rem; }
 .task-list span { color: var(--ui-cyan); font-size: .7rem; text-transform: uppercase; }
 .task-list strong { min-width: 0; font-weight: 400; overflow-wrap: anywhere; }
+.task-group { display: grid; gap: .5rem; }
+.task-group-heading { display: flex; justify-content: space-between; gap: .75rem; border-top: 1px solid var(--ui-border); padding-top: .5rem; }
+.task-group-heading span { color: var(--ui-text-muted); font-size: .7rem; }
+.task-sessions { margin: 0 0 0 1rem; }
 .task-form { margin-top: 1.5rem; border-top: 1px solid var(--ui-border); padding-top: 1rem; }
 .repository-drafts { display: grid; gap: .75rem; border-top: 1px solid var(--ui-border); padding-top: .75rem; }
 .repository-draft { grid-template-columns: auto minmax(7rem, .5fr) minmax(8rem, .6fr) minmax(0, 1fr) auto; align-items: end; }
@@ -66,6 +70,13 @@ textarea { font: inherit; color: var(--ui-text); background: var(--ui-canvas); b
 .task-facts div { min-width: 0; border-top: 1px solid var(--ui-border); padding-top: .6rem; }
 .task-facts dt { color: var(--ui-text-muted); font-size: .7rem; text-transform: uppercase; }
 .task-facts dd { margin: .2rem 0 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .8rem; }
+.repository-chips { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: 1rem; }
+.repository-chips span { display: grid; gap: .1rem; border: 1px solid var(--ui-border); padding: .35rem .55rem; }
+.repository-chips strong { font-size: .75rem; font-weight: 500; }
+.repository-chips small { color: var(--ui-text-muted); font-size: .7rem; }
+.branch-select { display: grid; gap: .25rem; width: min(100%, 22rem); color: var(--ui-text-muted); font-size: .8rem; }
+.session-links { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-top: 1rem; }
+.session-links button.selected { border-color: var(--ui-accent); color: var(--ui-accent); }
 .inline-form, .context-form { display: grid; gap: .75rem; margin-top: 1.25rem; border-top: 1px solid var(--ui-border); padding-top: 1rem; }
 .inline-form { grid-template-columns: minmax(0, 1fr) auto; align-items: end; }
 .inline-form label { display: grid; gap: .25rem; color: var(--ui-text-muted); font-size: .8rem; }
@@ -88,6 +99,8 @@ textarea { font: inherit; color: var(--ui-text); background: var(--ui-canvas); b
 .context-form select { width: min(100%, 18rem); }
 .event-list { display: grid; gap: .35rem; list-style: none; margin: 1rem 0 0; padding: 0; max-height: 24rem; overflow-y: auto; }
 .event-list li { display: flex; gap: .75rem; align-items: baseline; border-top: 1px solid var(--ui-border); padding-top: .35rem; font-size: .8rem; }
+.event-list li button { width: 100%; display: flex; gap: .75rem; align-items: baseline; border: 0; padding: 0; text-align: left; }
+.event-list li pre { max-height: 16rem; margin: .5rem 0 0; padding: .6rem; overflow: auto; white-space: pre-wrap; color: var(--ui-text-muted); font: .75rem/1.5 var(--ui-font-mono); }
 .event-list span { color: var(--ui-text-muted); }
 footer { max-width: 78ch; margin-top: 2rem; font-size: .75rem; }
 @media (max-width: 600px) {

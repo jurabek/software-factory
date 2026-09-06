@@ -11,7 +11,7 @@ function recentKey(daemonId: string): string {
   return `software-factory.recent-directories.${daemonId}`;
 }
 
-export function TaskCreation({ daemon, onCreated }: { daemon: DaemonConnection; onCreated: (task: QualifiedTask) => void }) {
+export function TaskCreation({ daemon, offline, onCreated }: { daemon: DaemonConnection; offline: boolean; onCreated: (task: QualifiedTask) => void }) {
   const [request, setRequest] = useState("");
   const [repositories, setRepositories] = useState<RepositoryDraft[]>([{ type: "github", value: "", name: "", primary: true }]);
   const [harness, setHarness] = useState("");
@@ -123,6 +123,7 @@ export function TaskCreation({ daemon, onCreated }: { daemon: DaemonConnection; 
   return (
     <form className="form task-form" onSubmit={submit} aria-label={`Create a task on ${daemon.name}`}>
       <h3>Create a draft on {daemon.name}</h3>
+      {offline ? <p role="alert" className="notice">Daemon offline. Reconnect before creating a task.</p> : null}
       {error ? <p role="alert" className="notice">{error}</p> : null}
       <label>Task request<textarea value={request} onChange={(event) => setRequest(event.target.value)} required maxLength={20000} placeholder="Coordinate the change…" /></label>
        <div className="repository-drafts">
@@ -153,7 +154,7 @@ export function TaskCreation({ daemon, onCreated }: { daemon: DaemonConnection; 
         </div>
       )}
       {models.length ? <p className="hint">Available models: {models.map((entry) => `${entry.provider}/${entry.id}`).join(", ")}</p> : null}
-      <div className="actions"><button type="submit" disabled={submitting || loading}>{submitting ? "Creating…" : "Create draft"}</button></div>
+      <div className="actions"><button type="submit" disabled={offline || submitting || loading}>{submitting ? "Creating…" : "Create draft"}</button></div>
     </form>
   );
 }

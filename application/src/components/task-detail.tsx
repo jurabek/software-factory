@@ -34,6 +34,14 @@ import { qualifiedEventKey, RequestScope } from "../client/daemon-ui-state.ts";
 const commands = ["start", "approve", "pause", "resume", "abort"] as const;
 const interventionActions = ["comment", "steer", "follow_up", "retry", "revise", "repair"] as const;
 type InterventionAction = (typeof interventionActions)[number];
+const actionLabels: Record<InterventionAction, string> = {
+  comment: "Comment",
+  steer: "Steer running agent",
+  follow_up: "Follow up after settle",
+  retry: "Retry exact",
+  revise: "Revise and retry",
+  repair: "Continue repair",
+};
 
 function commandEnabled(command: (typeof commands)[number], state: string): boolean {
   switch (command) {
@@ -54,11 +62,29 @@ function artifactContent(artifact: TaskArtifact): string {
   return `This artifact remains on the daemon sandbox.\n\nPath: ${artifact.path}\nDigest: ${artifact.digest}`;
 }
 
-export function TaskDetail({ daemonId, daemonName, task, onChanged }: {
+type TaskRepository = { id: string; name: string; source_type: string; primary: boolean };
+
+function isTaskRepository(value: unknown): value is TaskRepository {
+  if (!value || typeof value !== "object") return false;
+  const repository = value as Partial<TaskRepository>;
+  return typeof repository.id === "string" && typeof repository.name === "string" && typeof repository.source_type === "string" && typeof repository.primary === "boolean";
+}
+
+function interventionChoices(state: string, availableActions: string[]): InterventionAction[] {
+  const serverActions = availableActions.filter((action): action is InterventionAction => interventionActions.includes(action as InterventionAction));
+  if (state === "draft") return ["comment"];
+  if (state === "blocked" || state === "paused") return [...new Set<InterventionAction>(["comment", ...serverActions.filter((action) => ["retry", "revise", "repair"].includes(action))])];
+  return serverActions.length ? serverActions : ["comment"];
+}
+
+export function TaskDetail({ daemonId, daemonName, task, offline, onChanged, onSelectTask, onRemoved }: {
   daemonId: string;
   daemonName: string;
   task: QualifiedTask;
-  onChanged: () => void;
+  offline: boolean;
+  onChanged: () => Promise<void> | void;
+  onSelectTask: (taskId: string) => void;
+  onRemoved: () => void;
 }) {
   const [details, setDetails] = useState<TaskDetails | null>(null);
   const [attempts, setAttempts] = useState<TaskAttempt[]>([]);
@@ -70,8 +96,11 @@ export function TaskDetail({ daemonId, daemonName, task, onChanged }: {
   const [sessions, setSessions] = useState<TaskDetails[]>([]);
   const [interventions, setInterventions] = useState<TaskIntervention[]>([]);
   const [selectedAttempt, setSelectedAttempt] = useState<string | null>(null);
+  const [selectedBranchId, setSelectedBranchId] = useState<string | null>(null);
   const [selectedArtifact, setSelectedArtifact] = useState<string | null>(null);
+  const [expandedEvent, setExpandedEvent] = useState<number | null>(null);
   const [events, setEvents] = useState<TaskEvent[]>([]);
+  const [availableActions, setAvailableActions] = useState<string[]>([]);
   const [cursor, setCursor] = useState<number | undefined>(undefined);
   const [live, setLive] = useState<"connecting" | "live" | "reconnecting" | "offline">("connecting");
   const [error, setError] = useState<string | null>(null);
@@ -86,8 +115,14 @@ export function TaskDetail({ daemonId, daemonName, task, onChanged }: {
 
   const currentTask = details ?? task;
   const rootTaskId = currentTask.parent_task_id ?? currentTask.id;
-  const selectedBranch = branches.find((branch) => branch.id === currentTask.selected_branch_id) ?? branches[0];
+  const repositories = (currentTask.repositories ?? []).filter(isTaskRepository);
+  const selectedBranch = branches.find((branch) => branch.id === selectedBranchId) ?? branches.find((branch) => branch.id === currentTask.selected_branch_id) ?? branches[0];
   const selectedArtifactValue = artifacts.find((artifact) => artifact.id === selectedArtifact) ?? null;
+
+  useEffect(() => {
+    const choices = interventionChoices(currentTask.state, availableActions);
+    if (!choices.includes(action)) setAction(choices[0] ?? "comment");
+  }, [action, availableActions, currentTask.state]);
 
   async function refreshDetails(signal?: AbortSignal) {
     const [taskResult, attemptResult, branchResult, artifactResult, checksResult, resultsResult, diffResult, sessionsResult, interventionsResult] = await Promise.all([
@@ -110,6 +145,9 @@ export function TaskDetail({ daemonId, daemonName, task, onChanged }: {
     setDiff(diffResult.diff ?? { repositories: [] });
     setSessions(sessionsResult.sessions ?? []);
     setInterventions(interventionsResult.interventions ?? []);
+    setSelectedBranchId((current) => current && branchResult.branches?.some((branch) => branch.id === current)
+      ? current
+      : taskResult.task.selected_branch_id ?? branchResult.branches?.[0]?.id ?? null);
   }
 
   useEffect(() => {
@@ -125,13 +163,17 @@ export function TaskDetail({ daemonId, daemonName, task, onChanged }: {
     setSessions([]);
     setInterventions([]);
     setSelectedAttempt(null);
+    setSelectedBranchId(null);
     setSelectedArtifact(null);
+    setExpandedEvent(null);
     setError(null);
-    void refreshDetails(controller.signal).catch((failure: unknown) => {
+    const handleFailure = (failure: unknown) => {
       if (controller.signal.aborted || !scope.current.isCurrent(current)) return;
       setError(failure instanceof Error ? failure.message : "Could not load task details.");
-    });
-    return () => controller.abort();
+    };
+    void refreshDetails(controller.signal).catch(handleFailure);
+    const refreshTimer = setInterval(() => void refreshDetails(controller.signal).catch(handleFailure), 5_000);
+    return () => { clearInterval(refreshTimer); controller.abort(); };
   }, [daemonId, task.id]);
 
   useEffect(() => {
@@ -139,6 +181,7 @@ export function TaskDetail({ daemonId, daemonName, task, onChanged }: {
     const controller = new AbortController();
     setEvents([]);
     setCursor(undefined);
+    setAvailableActions([]);
     setLive("connecting");
     cursorRef.current = undefined;
     seen.current = new Set();
@@ -167,6 +210,7 @@ export function TaskDetail({ daemonId, daemonName, task, onChanged }: {
         } satisfies TaskEvent;
       });
       setEvents((previous) => [...previous, ...mapped].sort((left, right) => left.sequence - right.sequence).slice(-1000));
+      setAvailableActions(mapped.at(-1)?.available_actions ?? []);
       const max = Math.max(...fresh.map((entry) => entry.sequence));
       if (cursorRef.current === undefined || max > cursorRef.current) {
         cursorRef.current = max;
@@ -193,6 +237,7 @@ export function TaskDetail({ daemonId, daemonName, task, onChanged }: {
         if (!scope.current.isCurrent(current)) return;
         result.events.forEach((event) => seen.current.add(qualifiedEventKey(daemonId, task.id, event.sequence)));
         setEvents(result.events);
+        setAvailableActions(result.events.at(-1)?.available_actions ?? []);
         cursorRef.current = result.events.length ? result.cursor : 0;
         setCursor(cursorRef.current);
         connect(cursorRef.current, false);
@@ -215,7 +260,7 @@ export function TaskDetail({ daemonId, daemonName, task, onChanged }: {
     try {
       await daemonCommand(daemonId, task.id, command);
       await refreshDetails();
-      onChanged();
+      await onChanged();
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : "Command failed.");
     } finally {
@@ -229,10 +274,11 @@ export function TaskDetail({ daemonId, daemonName, task, onChanged }: {
     setPending(true);
     setError(null);
     try {
-      await daemonCreateSession(daemonId, rootTaskId, sessionRequest.trim());
+      const result = await daemonCreateSession(daemonId, rootTaskId, sessionRequest.trim());
       setSessionRequest("");
       await refreshDetails();
-      onChanged();
+      await onChanged();
+      onSelectTask(result.session.id);
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : "Could not create session.");
     } finally {
@@ -242,24 +288,26 @@ export function TaskDetail({ daemonId, daemonName, task, onChanged }: {
 
   async function submitMessage(event: React.FormEvent) {
     event.preventDefault();
-    if (!message.trim() && action !== "comment") return;
+    if (!message.trim() && action !== "retry") return;
     setPending(true);
     setError(null);
     try {
       if (action === "comment") {
         await daemonIntervene(daemonId, task.id, { target: selectedAttempt ? { attempt_id: selectedAttempt } : {}, intent: "comment", message: message.trim(), idempotency_key: crypto.randomUUID() });
       } else {
-        await daemonIntervene(daemonId, task.id, {
+        const result = await daemonIntervene(daemonId, task.id, {
           target: selectedAttempt ? { attempt_id: selectedAttempt } : {},
           intent: action,
           message: message.trim(),
           ...(selectedBranch?.head_attempt_id ? { expected_branch_head: selectedBranch.head_attempt_id } : {}),
           idempotency_key: crypto.randomUUID(),
         });
+        if (result.result.branch_id) setSelectedBranchId(result.result.branch_id);
+        if (result.result.attempt_id) setSelectedAttempt(result.result.attempt_id);
       }
       setMessage("");
       await refreshDetails();
-      onChanged();
+      await onChanged();
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : "Could not send intervention.");
     } finally {
@@ -276,7 +324,7 @@ export function TaskDetail({ daemonId, daemonName, task, onChanged }: {
       await daemonFeedback(daemonId, task.id, message.trim(), currentTask.plan_digest);
       setMessage("");
       await refreshDetails();
-      onChanged();
+      await onChanged();
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : "Could not send feedback.");
     } finally {
@@ -289,7 +337,8 @@ export function TaskDetail({ daemonId, daemonName, task, onChanged }: {
     setPending(true);
     try {
       await daemonRemoveTask(daemonId, task.id);
-      onChanged();
+      await onChanged();
+      onRemoved();
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : "Could not delete the task.");
     } finally {
@@ -308,27 +357,32 @@ export function TaskDetail({ daemonId, daemonName, task, onChanged }: {
       </div>
       <p><strong>{currentTask.request}</strong></p>
       {error ? <p role="alert" className="notice">{error}</p> : null}
+      {offline ? <p role="alert" className="notice">Daemon offline. Actions are disabled until it reconnects.</p> : null}
       <div className="actions" role="group" aria-label="Task commands">
         {commands.map((command) => (
-          <button key={`${daemonId}:${task.id}:${command}`} type="button" disabled={!commandEnabled(command, currentTask.state) || pendingCommand !== null || pending} onClick={() => void sendCommand(command)}>
+          <button key={`${daemonId}:${task.id}:${command}`} type="button" disabled={offline || !commandEnabled(command, currentTask.state) || pendingCommand !== null || pending} onClick={() => void sendCommand(command)}>
             {pendingCommand === command ? `${command}...` : command}
           </button>
         ))}
-        {(["completed", "aborted"] as string[]).includes(currentTask.state) ? <button type="button" disabled={pending} onClick={() => void removeTask()}>{pending ? "Working..." : "Delete"}</button> : null}
+        {(["completed", "aborted"] as string[]).includes(currentTask.state) ? <button type="button" disabled={offline || pending} onClick={() => void removeTask()}>{pending ? "Working..." : "Delete"}</button> : null}
       </div>
 
       <dl className="task-facts">
         <div><dt>Workspace</dt><dd>{currentTask.workspace_path ?? "Daemon sandbox"}</dd></div>
-        <div><dt>Repositories</dt><dd>{currentTask.repositories?.length ?? 0}</dd></div>
+        <div><dt>Repositories</dt><dd>{repositories.length}</dd></div>
         <div><dt>Branch</dt><dd>{selectedBranch?.id?.slice(0, 8) ?? "-"} · head {selectedBranch?.head_attempt_id?.slice(0, 8) ?? "-"}</dd></div>
+        <div><dt>Current attempt</dt><dd>{attempts.at(-1)?.name ?? "not started"}</dd></div>
         <div><dt>Checks</dt><dd>{checks.filter((check) => check.status === "passed").length}/{checks.length}</dd></div>
       </dl>
+      {repositories.length ? <div className="repository-chips" aria-label="Task repositories">{repositories.map((repository) => <span key={repository.id}><strong>{repository.primary ? "◆" : "◇"} {repository.name}</strong><small>{repository.source_type}</small></span>)}</div> : null}
+
+      {branches.length > 1 ? <label className="branch-select">Branch<select value={selectedBranch?.id ?? ""} disabled={offline || pending} onChange={(event) => setSelectedBranchId(event.target.value)}>{branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.id.slice(0, 8)} · {branch.status}</option>)}</select></label> : null}
 
       <form className="inline-form" onSubmit={createSession}>
         <label>New session<input value={sessionRequest} onChange={(event) => setSessionRequest(event.target.value)} placeholder="Follow up on this task" /></label>
-        <button type="submit" disabled={pending || !sessionRequest.trim()}>Create session</button>
+        <button type="submit" disabled={offline || pending || !sessionRequest.trim()}>Create session</button>
       </form>
-      {sessions.length > 1 ? <p className="hint">{sessions.length} sessions on this task. Select one from the daemon task list.</p> : null}
+      {sessions.length > 1 ? <div className="session-links"><span className="hint">Sessions</span>{sessions.map((session) => <button key={session.id} type="button" className={session.id === task.id ? "selected" : undefined} onClick={() => onSelectTask(session.id)}>{session.id.slice(0, 8)} · {session.state}</button>)}</div> : null}
 
       <section className="detail-section" aria-labelledby="attempts-heading">
         <div className="section-heading"><h3 id="attempts-heading">Attempts and branches</h3><span className="badge">{attempts.length} attempts · {branches.length} branches</span></div>
@@ -346,13 +400,13 @@ export function TaskDetail({ daemonId, daemonName, task, onChanged }: {
 
       <section className="detail-section" aria-labelledby="events-heading">
         <div className="section-heading"><h3 id="events-heading">Live events{cursor !== undefined ? ` · cursor ${cursor}` : ""}</h3><span className="badge" data-state={live === "live" ? "configured" : "pending"}>{live}</span></div>
-        {events.length ? <ul className="event-list">{events.slice(-50).map((event) => <li key={qualifiedEventKey(daemonId, task.id, event.sequence)}><code>#{event.sequence}</code><span>{event.type}</span><span>{event.name ?? ""}</span></li>)}</ul> : <p>No events yet. The stream stays open while this task is selected.</p>}
+        {events.length ? <ul className="event-list">{events.slice(-50).map((event) => <li key={qualifiedEventKey(daemonId, task.id, event.sequence)}><button type="button" onClick={() => setExpandedEvent((current) => current === event.sequence ? null : event.sequence)}><code>#{event.sequence}</code><span>{event.type}</span><span>{event.name ?? ""}</span></button>{expandedEvent === event.sequence ? <pre>{readable(event.payload)}</pre> : null}</li>)}</ul> : <p>No events yet. The stream stays open while this task is selected.</p>}
       </section>
 
       <form className="context-form" onSubmit={currentTask.state === "awaiting_plan_approval" ? revisePlan : submitMessage}>
-        <div className="section-heading"><h3>{currentTask.state === "awaiting_plan_approval" ? "Revise plan" : "Task intervention"}</h3><select value={action} onChange={(event) => setAction(event.target.value as InterventionAction)} disabled={currentTask.state === "awaiting_plan_approval"}>{interventionActions.map((item) => <option key={item} value={item}>{item.replaceAll("_", " ")}</option>)}</select></div>
-        <textarea value={message} onChange={(event) => setMessage(event.target.value)} placeholder={currentTask.state === "awaiting_plan_approval" ? "Explain what the planner should revise..." : "Message this task..."} />
-        <div className="actions"><span className="hint">{selectedAttempt ? `Targeting attempt ${selectedAttempt.slice(0, 8)}` : "Targets the current task history"}</span><button type="submit" disabled={pending || !message.trim()}>{pending ? "Sending..." : "Send"}</button></div>
+        <div className="section-heading"><h3>{currentTask.state === "awaiting_plan_approval" ? "Revise plan" : "Task intervention"}</h3><select value={action} onChange={(event) => setAction(event.target.value as InterventionAction)} disabled={offline || currentTask.state === "awaiting_plan_approval"}>{interventionChoices(currentTask.state, availableActions).map((item) => <option key={item} value={item}>{actionLabels[item]}</option>)}</select></div>
+        <textarea value={message} onChange={(event) => setMessage(event.target.value)} disabled={offline || pending} placeholder={currentTask.state === "awaiting_plan_approval" ? "Explain what the planner should revise..." : "Message this task..."} />
+        <div className="actions"><span className="hint">{selectedAttempt ? `Targeting attempt ${selectedAttempt.slice(0, 8)}` : selectedBranch ? `Branch ${selectedBranch.id.slice(0, 8)}` : "Targets the current task history"}</span><button type="submit" disabled={offline || pending || (!message.trim() && action !== "retry")}>{pending ? "Sending..." : "Send"}</button></div>
       </form>
       {interventions.length ? <p className="hint">{interventions.length} intervention{interventions.length === 1 ? "" : "s"} recorded on this daemon.</p> : null}
     </section>

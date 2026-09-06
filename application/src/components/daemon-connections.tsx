@@ -9,6 +9,20 @@ import { TaskDetail } from "./task-detail.tsx";
 
 type TaskState = { tasks: QualifiedTask[]; error: string | null; loading: boolean; offline: boolean };
 
+function routeSelection(): { daemonId: string | null; taskId: string | null } {
+  const parameters = new URLSearchParams(window.location.search);
+  return { daemonId: parameters.get("daemon"), taskId: parameters.get("task") };
+}
+
+function writeRouteSelection(daemonId: string | null, taskId: string | null): void {
+  const url = new URL(window.location.href);
+  if (daemonId) url.searchParams.set("daemon", daemonId);
+  else url.searchParams.delete("daemon");
+  if (taskId) url.searchParams.set("task", taskId);
+  else url.searchParams.delete("task");
+  window.history.replaceState(null, "", url);
+}
+
 export function DaemonConnections() {
   const [connections, setConnections] = useState<DaemonConnection[]>([]);
   const [taskStates, setTaskStates] = useState<Record<string, TaskState>>({});
@@ -70,7 +84,9 @@ export function DaemonConnections() {
       const body = await listDaemons();
       setConnections(body.daemons);
       setFailure(null);
-      setSelectedDaemonId((current) => current ?? body.daemons[0]?.id ?? null);
+      const requested = routeSelection();
+      setSelectedDaemonId((current) => current ?? body.daemons.find((daemon) => daemon.id === requested.daemonId)?.id ?? body.daemons[0]?.id ?? null);
+      setSelectedTaskId((current) => current ?? requested.taskId ?? null);
       for (const connection of body.daemons) void loadTasks(connection);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Could not load daemon connections.";
@@ -86,9 +102,33 @@ export function DaemonConnections() {
     };
   }, [loadConnections]);
 
+  useEffect(() => {
+    const refreshTimer = setInterval(() => {
+      for (const connection of connections) void loadTasks(connection);
+    }, 5_000);
+    return () => clearInterval(refreshTimer);
+  }, [connections, loadTasks]);
+
+  useEffect(() => {
+    function applyRoute() {
+      const requested = routeSelection();
+      setSelectedDaemonId(requested.daemonId);
+      setSelectedTaskId(requested.taskId);
+    }
+    window.addEventListener("popstate", applyRoute);
+    return () => window.removeEventListener("popstate", applyRoute);
+  }, []);
+
   function selectDaemon(daemonId: string) {
     setSelectedDaemonId(daemonId);
     setSelectedTaskId(null);
+    writeRouteSelection(daemonId, null);
+  }
+
+  function selectTask(daemonId: string, taskId: string) {
+    setSelectedDaemonId(daemonId);
+    setSelectedTaskId(taskId);
+    writeRouteSelection(daemonId, taskId);
   }
 
   async function register(form: FormData) {
@@ -103,6 +143,7 @@ export function DaemonConnections() {
       setConnections((current) => [...current, response.connection].sort((left, right) => left.name.localeCompare(right.name)));
       setSelectedDaemonId(response.connection.id);
       setSelectedTaskId(null);
+      writeRouteSelection(response.connection.id, null);
       void loadTasks(response.connection);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Could not connect the daemon.";
@@ -140,7 +181,7 @@ export function DaemonConnections() {
             {allTasks.map(({ connection, task }) => (
               <li key={`${connection.id}:${task.id}`} className={connection.id === selectedDaemonId && task.id === selectedTaskId ? "selected" : undefined}>
                 <code>{connection.name}/{task.id}</code><span>{task.state}</span><strong>{task.request}</strong>
-                <button type="button" onClick={() => { selectDaemon(connection.id); setSelectedTaskId(task.id); }}>Open</button>
+                 <button type="button" onClick={() => selectTask(connection.id, task.id)}>Open</button>
               </li>
             ))}
           </ul>
@@ -166,13 +207,10 @@ export function DaemonConnections() {
               {state?.loading ? <p>Loading tasks...</p> : null}
               {!state?.loading && !state?.error && state?.tasks.length === 0 ? <p>No tasks on this daemon.</p> : null}
               <ul className="task-list">
-                {state?.tasks.map((task) => (
-                  <li key={`${task.daemonId}:${task.id}`} className={task.id === selectedTaskId && connection.id === selectedDaemonId ? "selected" : undefined}>
-                    <code>{task.id}</code><span>{task.state}</span>
-                    <strong>{task.request}</strong>
-                    <button type="button" onClick={() => { selectDaemon(connection.id); setSelectedTaskId(task.id); }}>Open</button>
-                  </li>
-                ))}
+                {state?.tasks.filter((task) => !task.parent_task_id).map((rootTask) => {
+                  const sessions = state.tasks.filter((task) => task.id === rootTask.id || task.parent_task_id === rootTask.id).sort((left, right) => left.created_at.localeCompare(right.created_at));
+                  return <li key={`${connection.id}:${rootTask.id}`} className="task-group"><div className="task-group-heading"><strong>{rootTask.request}</strong><span>{sessions.length} sessions</span></div><ul className="task-list task-sessions">{sessions.map((task) => <li key={`${task.daemonId}:${task.id}`} className={task.id === selectedTaskId && connection.id === selectedDaemonId ? "selected" : undefined}><code>{task.id}</code><span>{task.state}</span><strong>{task.request}</strong><button type="button" onClick={() => selectTask(connection.id, task.id)}>Open</button></li>)}</ul></li>;
+                })}
               </ul>
             </article>
           );
@@ -182,8 +220,9 @@ export function DaemonConnections() {
         <TaskCreation
           key={selected.id}
           daemon={selected}
+          offline={Boolean(selectedState?.offline)}
           onCreated={(task) => {
-            setSelectedTaskId(task.id);
+            selectTask(selected.id, task.id);
             void (async () => {
               try {
                 const result = await daemonTasks(selected.id);
@@ -204,7 +243,10 @@ export function DaemonConnections() {
           daemonId={selected.id}
           daemonName={selected.name}
           task={selectedTask}
+          offline={Boolean(selectedState?.offline)}
           onChanged={() => loadTasks(selected)}
+          onSelectTask={(taskId) => selectTask(selected.id, taskId)}
+          onRemoved={() => { setSelectedTaskId(null); writeRouteSelection(selected.id, null); }}
         />
       ) : null}
     </section>

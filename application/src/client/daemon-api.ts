@@ -215,6 +215,7 @@ export function openTaskStream(
           boundary = buffer.indexOf("\n\n");
         }
       }
+      if (!signal.aborted) onError(new Error("Stream disconnected."));
     } catch (error) {
       if (signal.aborted) return;
       onError(error instanceof Error ? error : new Error("Stream disconnected."));
