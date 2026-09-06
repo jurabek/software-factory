@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/jurabek/software-factory/internal/config"
-	"github.com/jurabek/software-factory/internal/store"
+	"github.com/jurabek/software-factory/daemon/internal/config"
+	"github.com/jurabek/software-factory/daemon/internal/store"
 )
 
 func TestCreateTaskAllocatesWorkspaceForMultipleRepositories(t *testing.T) {

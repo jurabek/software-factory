@@ -18,13 +18,13 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jurabek/software-factory/internal/api"
-	"github.com/jurabek/software-factory/internal/config"
-	"github.com/jurabek/software-factory/internal/factory"
-	factorygit "github.com/jurabek/software-factory/internal/git"
-	"github.com/jurabek/software-factory/internal/harness"
-	piharness "github.com/jurabek/software-factory/internal/harness/pi"
-	"github.com/jurabek/software-factory/internal/store"
+	"github.com/jurabek/software-factory/daemon/internal/api"
+	"github.com/jurabek/software-factory/daemon/internal/config"
+	"github.com/jurabek/software-factory/daemon/internal/factory"
+	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
+	"github.com/jurabek/software-factory/daemon/internal/harness"
+	piharness "github.com/jurabek/software-factory/daemon/internal/harness/pi"
+	"github.com/jurabek/software-factory/daemon/internal/store"
 )
 
 //go:embed web/dist/*
