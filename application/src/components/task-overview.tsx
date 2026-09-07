@@ -1,0 +1,17 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { daemonCreateSession, daemonSessions, daemonTask, type QualifiedTask, type TaskDetails } from "../client/daemon-api.ts";
+import type { DaemonConnection } from "../server/daemon-registry.ts";
+
+export function TaskOverview({ daemon, task, offline, onCreated }: { daemon: DaemonConnection; task: QualifiedTask; offline: boolean; onCreated: (session: QualifiedTask) => void }) {
+  const [details, setDetails] = useState<TaskDetails | null>(null);
+  const [sessions, setSessions] = useState<TaskDetails[]>([]);
+  const [request, setRequest] = useState("");
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => { const controller = new AbortController(); void Promise.all([daemonTask(daemon.id, task.id, controller.signal), daemonSessions(daemon.id, task.id, controller.signal)]).then(([root, childTasks]) => { setDetails(root.task); setSessions(childTasks.sessions ?? []); }).catch((failure: unknown) => { if (!controller.signal.aborted) setError(failure instanceof Error ? failure.message : "Could not load task overview."); }); return () => controller.abort(); }, [daemon.id, task.id]);
+  const current = details ?? task;
+  async function createSession(event: React.FormEvent) { event.preventDefault(); if (!request.trim()) return; setPending(true); setError(null); try { const response = await daemonCreateSession(daemon.id, task.id, request.trim()); setRequest(""); onCreated(response.session); } catch (failure) { setError(failure instanceof Error ? failure.message : "Could not create session."); } finally { setPending(false); } }
+  return <main className="task-workspace"><header className="workspace-breadcrumb"><span>{daemon.name}</span><span>/</span><strong>{current.request}</strong><span className="badge">{current.state}</span></header><section className="task-header"><div className="task-header-title"><p>Task overview <span>{current.id}</span></p><h1>{current.request}</h1></div><dl className="task-facts"><div><dt>Workspace</dt><dd>{current.workspace_path ?? "Daemon sandbox"}</dd></div><div><dt>State</dt><dd>{current.state}</dd></div><div><dt>Sessions</dt><dd>{sessions.length}</dd></div></dl>{current.repositories?.length ? <div className="repository-chips">{current.repositories.map((repository, index) => <span key={index}>{String((repository as { name?: string }).name ?? "repository")}</span>)}</div> : null}</section>{error ? <p className="notice" role="alert">{error}</p> : null}{offline ? <p className="notice" role="alert">Daemon offline. Showing last-known task data.</p> : null}<section className="session-creator"><h2>New session</h2><form onSubmit={createSession}><textarea value={request} onChange={(event) => setRequest(event.target.value)} placeholder="Describe the independent follow-up work..." /><button type="submit" disabled={offline || pending || !request.trim()}>{pending ? "Creating..." : "Create session"}</button></form></section><section className="attempt-table" aria-labelledby="sessions-heading"><header><h2 id="sessions-heading">Sessions</h2><span>State</span><span>Created</span></header>{sessions.map((session) => <button type="button" key={session.id} onClick={() => onCreated(session)}><strong>{session.request}</strong><span>{session.state}</span><small>{new Date(session.created_at).toLocaleString()}</small></button>)}{!sessions.length ? <p className="workspace-empty">No sessions yet. Create one to begin work.</p> : null}</section></main>;
+}

@@ -31,6 +31,8 @@ import {
 } from "../client/daemon-api.ts";
 import { qualifiedEventKey, RequestScope } from "../client/daemon-ui-state.ts";
 import { eventArgumentEntries } from "../client/work-log.ts";
+import { AttemptGraph } from "./attempt-graph.tsx";
+import { ArtifactRail } from "./artifact-rail.tsx";
 
 const commands = ["start", "approve", "pause", "resume", "abort"] as const;
 const interventionActions = ["comment", "steer", "follow_up", "retry", "revise", "repair"] as const;
@@ -243,7 +245,6 @@ export function TaskDetail({ daemonId, daemonName, task, offline, onChanged, onS
     ...artifacts.map((artifact) => ({ id: artifact.id, kind: "file" as const, title: artifact.type, subtitle: artifact.path, content: `This artifact remains on the daemon sandbox.\n\nPath: ${artifact.path}\nDigest: ${artifact.digest}` })),
   ];
   const selectedArtifactValue = artifactViews.find((artifact) => artifact.id === selectedArtifact) ?? null;
-  const selectedAttempts = selectedBranchId ? attempts.filter((attempt) => !attempt.branch_id || attempt.branch_id === selectedBranchId) : attempts;
   const meaningfulEvents = events.filter((event) => !transientEventTypes.has(event.type) && (!selectedAttempt || event.attempt_id === selectedAttempt || event.phase_id === selectedAttempt));
   const visibleEvents = meaningfulEvents.slice(-visibleEventLimit);
   const hiddenEventCount = Math.max(0, meaningfulEvents.length - visibleEvents.length);
@@ -329,15 +330,24 @@ export function TaskDetail({ daemonId, daemonName, task, offline, onChanged, onS
   useEffect(() => {
     if (!selectedEvent) return;
     eventDialog.current?.focus();
-    function closeOnEscape(event: KeyboardEvent) {
+    function handleDialogKeyboard(event: KeyboardEvent) {
       if (event.key === "Escape") {
         event.preventDefault();
         setSelectedEvent(null);
         eventTrigger.current?.focus();
+        return;
+      }
+      if (event.key === "Tab" && eventDialog.current) {
+        const focusable = Array.from(eventDialog.current.querySelectorAll<HTMLElement>("button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])")).filter((element) => !element.hasAttribute("disabled"));
+        const first = focusable[0];
+        const last = focusable.at(-1);
+        if (!first || !last) return;
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
       }
     }
-    document.addEventListener("keydown", closeOnEscape);
-    return () => document.removeEventListener("keydown", closeOnEscape);
+    document.addEventListener("keydown", handleDialogKeyboard);
+    return () => document.removeEventListener("keydown", handleDialogKeyboard);
   }, [selectedEvent]);
 
   useEffect(() => {
@@ -537,15 +547,15 @@ export function TaskDetail({ daemonId, daemonName, task, offline, onChanged, onS
   }
 
   return (
-    <section className="panel task-detail" aria-label={`Task ${task.id} on ${daemonName}`}>
-      <div className="section-heading">
+    <section className="task-detail task-workspace" aria-label={`Task ${task.id} on ${daemonName}`}>
+      <header className="workspace-breadcrumb">
         <div>
           <p className="eyebrow">Task workspace · {daemonName}</p>
           <h3><code>{currentTask.id}</code> · {currentTask.state}</h3>
         </div>
         <span className="badge" data-state={live === "live" ? "configured" : "pending"}>{live}</span>
-      </div>
-      <p><strong>{currentTask.request}</strong></p>
+      </header>
+      <section className="task-header"><div className="task-header-title"><p>Session workspace</p><h1>{currentTask.request}</h1></div><dl className="task-facts"><div><dt>Workspace</dt><dd>{currentTask.workspace_path ?? "Daemon sandbox"}</dd></div><div><dt>State</dt><dd>{currentTask.state}</dd></div><div><dt>Branch</dt><dd>{selectedBranch?.id?.slice(0, 8) ?? "-"}</dd></div></dl></section>
       {error ? <p role="alert" className="notice">{error}</p> : null}
       {offline ? <p role="alert" className="notice">Daemon offline. Actions are disabled until it reconnects.</p> : null}
       <div className="actions" role="group" aria-label="Task commands">
@@ -576,7 +586,7 @@ export function TaskDetail({ daemonId, daemonName, task, offline, onChanged, onS
 
       <section className="detail-section" aria-labelledby="attempts-heading">
         <div className="section-heading"><h3 id="attempts-heading">Attempts and branches</h3><span className="badge">{attempts.length} attempts · {branches.length} branches</span></div>
-        {selectedAttempts.length ? <ul className="attempt-list">{selectedAttempts.map((attempt) => <li key={attempt.id} className={selectedAttempt === attempt.id ? "selected" : undefined}><button type="button" onClick={() => setSelectedAttempt((current) => current === attempt.id ? null : attempt.id)}><strong>{attempt.name}</strong><span>{attempt.status}</span><small>{attempt.owner} · {attempt.error ?? attempt.description ?? "No evidence"}</small></button></li>)}</ul> : <p>No attempts yet. Start the task to create its first attempt.</p>}
+        <AttemptGraph attempts={attempts} branchId={selectedBranchId} selectedAttempt={selectedAttempt} onSelect={setSelectedAttempt} />
       </section>
 
       <section className="detail-section" aria-labelledby="evidence-heading">
@@ -586,7 +596,8 @@ export function TaskDetail({ daemonId, daemonName, task, offline, onChanged, onS
         {diff.repositories.map((repository) => <article className="evidence-card" key={`diff-${repository.repository_id}`}><strong>{repository.name} diff</strong><small>{repository.files.length} files</small><pre>{repository.patch || "No changes"}</pre></article>)}
         {artifactViews.map((artifact) => <button className="artifact-link" key={artifact.id} type="button" onClick={() => { setSelectedArtifact(artifact.id); setArtifactMode("rendered"); setArtifactQuote(""); }}><strong>{artifact.title}</strong><span>{artifact.subtitle}</span></button>)}
         {selectedArtifactValue ? <article className="artifact-preview"><div className="section-heading"><strong>{selectedArtifactValue.title}</strong><div className="actions"><button type="button" aria-pressed={artifactMode === "rendered"} onClick={() => setArtifactMode("rendered")}>Rendered</button><button type="button" aria-pressed={artifactMode === "raw"} onClick={() => setArtifactMode("raw")}>Raw</button><button type="button" onClick={() => { setSelectedArtifact(null); setArtifactQuote(""); }}>Close</button></div></div><pre onMouseUp={() => setArtifactQuote(window.getSelection()?.toString().trim() ?? "")}>{artifactMode === "rendered" ? renderedArtifactContent(selectedArtifactValue) : selectedArtifactValue.content}</pre>{artifactQuote ? <div className="selection-action"><span>“{artifactQuote.slice(0, 72)}{artifactQuote.length > 72 ? "…" : ""}”</span><button type="button" onClick={() => { setAction("comment"); setMessage((current) => current ? `${current}\nRegarding “${artifactQuote}”` : `Regarding “${artifactQuote}”\n`); }}>Comment</button></div> : null}</article> : null}
-      </section>
+       </section>
+      <ArtifactRail artifacts={artifacts} checks={checks} results={results} diff={diff} onSelect={(id) => { setSelectedArtifact(id); setArtifactMode("rendered"); setArtifactQuote(""); }} />
 
       <section className="detail-section" aria-labelledby="events-heading">
         <div className="section-heading"><div><h3 id="events-heading">Work log{cursor !== undefined ? ` · cursor ${cursor}` : ""}</h3><p>Actions and results from every task attempt</p></div><label className="follow-tail"><input type="checkbox" checked={autoScroll} onChange={(event) => setAutoScroll(event.target.checked)} /> follow tail</label><span className="badge" data-state={live === "live" ? "configured" : "pending"}>{live}</span></div>
@@ -605,7 +616,7 @@ export function TaskDetail({ daemonId, daemonName, task, offline, onChanged, onS
       </section></div> : null}
 
       <form className="context-form" onSubmit={currentTask.state === "awaiting_plan_approval" ? revisePlan : submitMessage}>
-         <div className="section-heading"><h3>{currentTask.state === "awaiting_plan_approval" ? "Revise plan" : "Task intervention"}</h3><select value={action} onChange={(event) => setAction(event.target.value as InterventionAction)} disabled={offline || pending || pendingCommand !== null || currentTask.state === "awaiting_plan_approval"}>{interventionChoices(currentTask.state, availableActions).map((item) => <option key={item} value={item}>{actionLabels[item]}</option>)}</select></div>
+         <div className="section-heading"><h3>{currentTask.state === "awaiting_plan_approval" ? "Revise plan" : "Task intervention"}</h3><select aria-label="Intervention action" value={action} onChange={(event) => setAction(event.target.value as InterventionAction)} disabled={offline || pending || pendingCommand !== null || currentTask.state === "awaiting_plan_approval"}>{interventionChoices(currentTask.state, availableActions).map((item) => <option key={item} value={item}>{actionLabels[item]}</option>)}</select></div>
          <textarea value={message} onChange={(event) => setMessage(event.target.value)} disabled={offline || pending || pendingCommand !== null} placeholder={currentTask.state === "awaiting_plan_approval" ? "Explain what the planner should revise..." : "Message this task..."} />
          <div className="actions"><span className="hint">{selectedAttempt ? `Targeting attempt ${selectedAttempt.slice(0, 8)}` : selectedBranch ? `Branch ${selectedBranch.id.slice(0, 8)}` : "Targets the current task history"}</span><button type="submit" disabled={offline || pending || pendingCommand !== null || (!message.trim() && action !== "retry")}>{pending ? "Sending..." : "Send"}</button></div>
       </form>

@@ -24,6 +24,8 @@ export function TaskCreation({ daemon, offline, onCreated }: { daemon: DaemonCon
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const optionsGeneration = useRef(0);
+  const modelOptions = models.map((entry) => `${entry.provider}/${entry.id}`);
+  const showCustomModel = model !== "" && !modelOptions.includes(model);
   const modelGeneration = useRef(0);
   const mutationController = useRef<AbortController | null>(null);
 
@@ -90,12 +92,17 @@ export function TaskCreation({ daemon, offline, onCreated }: { daemon: DaemonCon
     const daemonGeneration = optionsGeneration.current;
     const current = ++modelGeneration.current;
     const controller = new AbortController();
-    setModels([]);
     void daemonCreationOptions(daemon.id, harness, controller.signal)
       .then((options) => {
         if (optionsGeneration.current !== daemonGeneration || modelGeneration.current !== current) return;
         setHarnesses(options.harnesses);
         setModels(options.models.models);
+        const available = options.models.models.map((entry) => `${entry.provider}/${entry.id}`);
+        setModel((previous) => {
+          if (available.includes(previous)) return previous;
+          if (available.includes(options.defaults.model)) return options.defaults.model;
+          return available[0] ?? previous;
+        });
       })
       .catch(() => undefined);
     return () => controller.abort();
@@ -143,12 +150,13 @@ export function TaskCreation({ daemon, offline, onCreated }: { daemon: DaemonCon
   }
 
   return (
-    <form className="form task-form" onSubmit={submit} aria-label={`Create a task on ${daemon.name}`}>
-      <h3>Create a draft on {daemon.name}</h3>
+    <form className="task-composer-create" onSubmit={submit} aria-label={`Create a task on ${daemon.name}`}>
+      <p className="eyebrow">{daemon.name} / New task</p>
+      <h1>What should the factory build?</h1>
       {offline ? <p role="alert" className="notice">Daemon offline. Reconnect before creating a task.</p> : null}
       {error ? <p role="alert" className="notice">{error}</p> : null}
-      <label>Task request<textarea value={request} onChange={(event) => setRequest(event.target.value)} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} required maxLength={20000} placeholder="Coordinate the change…" /></label>
-      <div className="repository-drafts">
+      <label className="composer-prompt"><span className="sr-only">Task request</span><textarea value={request} onChange={(event) => setRequest(event.target.value)} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} required maxLength={20000} placeholder="Coordinate the change..." /></label>
+      <details className="composer-details" open><summary>Repository sources</summary><div className="repository-drafts">
          {repositories.map((repository, index) => (
            <div className="form-row repository-draft" key={index}>
              <button type="button" aria-label={`Make repository ${index + 1} primary`} aria-pressed={repository.primary} onClick={() => selectPrimary(index)}>{repository.primary ? "Primary" : "Secondary"}</button>
@@ -156,28 +164,33 @@ export function TaskCreation({ daemon, offline, onCreated }: { daemon: DaemonCon
              <label>Type<select value={repository.type} onChange={(event) => updateRepository(index, { type: event.target.value as RepositoryDraft["type"] })}><option value="github">GitHub</option><option value="local">Local daemon path</option></select></label>
               <label>{repository.type === "local" ? "Absolute daemon path" : "owner/repository"}<input value={repository.value} onChange={(event) => updateRepository(index, { value: event.target.value })} list={repository.type === "local" ? `recent-directories-${daemon.id}` : undefined} required placeholder={repository.type === "local" ? "/srv/sandbox/repo" : "owner/app"} /></label>
              <button type="button" disabled={repositories.length === 1} onClick={() => removeRepository(index)}>Remove</button>
-           </div>
+          </div>
          ))}
          <button type="button" onClick={addRepository}>Add repository</button>
-        </div>
+         </div></details>
         {recentDirectories.length ? <datalist id={`recent-directories-${daemon.id}`}>{recentDirectories.map((path) => <option key={path} value={path} />)}</datalist> : null}
       {loading ? <p>Loading harness options…</p> : (
-        <div className="form-row">
+         <details className="composer-details"><summary>Harness and model</summary><div className="form-row">
           <label>Harness
             <select value={harness} onChange={(event) => setHarness(event.target.value)}>
               {harnesses.map((entry) => <option key={entry} value={entry}>{entry}</option>)}
             </select>
           </label>
-          <label>Model<input value={model} onChange={(event) => setModel(event.target.value)} placeholder="provider/model" /></label>
+          <label>Model
+            <select value={model} onChange={(event) => setModel(event.target.value)} disabled={modelOptions.length === 0}>
+              {showCustomModel ? <option key={model} value={model}>{model}</option> : null}
+              {modelOptions.map((entry) => <option key={entry} value={entry}>{entry}</option>)}
+              {modelOptions.length === 0 && !showCustomModel ? <option value="">No models available</option> : null}
+            </select>
+          </label>
           <label>Thinking
             <select value={thinking} onChange={(event) => setThinking(event.target.value)}>
               {thinkingLevels.map((level) => <option key={level} value={level}>{level}</option>)}
             </select>
           </label>
-        </div>
-      )}
-      {models.length ? <p className="hint">Available models: {models.map((entry) => `${entry.provider}/${entry.id}`).join(", ")}</p> : null}
-      <div className="actions"><button type="submit" disabled={offline || submitting || loading}>{submitting ? "Creating…" : "Create draft"}</button></div>
+         </div></details>
+             )}
+       <footer className="composer-footer"><span>Ctrl/Cmd + Enter to create</span><button type="submit" disabled={offline || submitting || loading}>{submitting ? "Creating..." : "Create draft"}</button></footer>
     </form>
   );
 }

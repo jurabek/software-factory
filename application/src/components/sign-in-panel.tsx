@@ -15,7 +15,7 @@ export function SignInPanel() {
       body: JSON.stringify({ login: form.get("login"), password: form.get("password") }),
     });
     if (response.ok) {
-      window.location.assign("/");
+      window.location.assign("/tasks");
       return;
     }
     setError(response.status === 401 ? "Login or password is incorrect." : "Sign-in is unavailable. Check application setup.");
@@ -23,7 +23,7 @@ export function SignInPanel() {
   }
 
   return (
-    <section aria-labelledby="signin-heading" className="panel">
+    <section aria-labelledby="signin-heading" className="sign-in-panel">
       <h2 id="signin-heading">Sign in</h2>
       <p>Use the initial-user credentials configured on this server.</p>
       {error ? <p role="alert" className="notice">{error}</p> : null}

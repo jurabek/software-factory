@@ -3,8 +3,8 @@ import type { ReactNode } from "react";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Software Factory | Application Setup",
-  description: "Independent Software Factory application foundation and deployment setup.",
+  title: "Software Factory",
+  description: "Coordinate software work across connected daemons.",
   robots: { index: false, follow: false },
 };
 

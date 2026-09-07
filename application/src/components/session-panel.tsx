@@ -12,7 +12,7 @@ export function SessionPanel({ login }: { login: string }) {
     try {
       const response = await fetch("/api/logout", { method: "POST" });
       if (!response.ok) throw new Error("Sign-out failed.");
-      window.location.assign("/");
+      window.location.assign("/login");
     } catch {
       setFailure("Could not sign out. Try again.");
       setPending(false);
@@ -20,8 +20,8 @@ export function SessionPanel({ login }: { login: string }) {
   }
 
   return (
-    <section className="panel">
-      <h2>Signed in as {login}</h2>
+    <section className="account-panel">
+      <span>Signed in as <strong>{login}</strong></span>
       {failure ? <p role="alert" className="notice">{failure}</p> : null}
       <div className="actions">
         <button type="button" disabled={pending} onClick={signOut}>{pending ? "Signing out..." : "Sign out"}</button>
