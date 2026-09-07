@@ -3,5 +3,6 @@ dist
 node_modules
 .env
 .env.local
+/local.env
 .software-factory/
 /.software-factory

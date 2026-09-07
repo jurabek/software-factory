@@ -64,7 +64,7 @@ The Next.js application owns the initial-user session and daemon registrations. 
 
 ## Application deployment and schema
 
-For Docker Compose, copy `.env.example` to the ignored `.env`, replace all placeholders, and run `docker compose up --build`. The `migrate` service waits for PostgreSQL, applies `application/migrations/schema.sql`, and must exit successfully before the application starts. PostgreSQL data persists in the `factory-pgdata` volume; daemons are not Compose dependencies.
+Docker Compose provides PostgreSQL only. Copy `.env.example` to the ignored `.env`, replace the placeholder, and run `docker compose up -d`. PostgreSQL data persists in the `factory-pgdata` volume; daemons are not Compose dependencies. The application itself runs via pure npm (see below).
 
 For a direct Node.js deployment, copy `application/.env.example` to `application/.env.local`, then run:
 

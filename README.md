@@ -8,26 +8,30 @@ Software Factory consists of a self-hosted Next.js application and independent l
 - Git
 - GitHub CLI (`gh`) for GitHub repositories
 - Pi with authenticated providers
-- Docker with Compose for the application, or Node.js 24 and PostgreSQL 16
+- Node.js 24 and Docker with Compose for PostgreSQL
 
 ## Run the application
 
-Create deployment configuration without committing it:
+PostgreSQL runs in Compose; the application runs via pure npm. Create configuration without committing it:
 
 ```bash
 cp .env.example .env
+cp application/.env.example application/.env.local
 openssl rand -hex 32
 ```
 
-Put the generated value in `DAEMON_CREDENTIAL_KEY`, replace the other placeholders, then start PostgreSQL, apply the application schema, and start the application:
+Put the generated value in `DAEMON_CREDENTIAL_KEY` inside `application/.env.local`, replace the other placeholders, then start PostgreSQL, apply the application schema, and start the application:
 
 ```bash
-docker compose up --build
+docker compose up -d
+npm ci
+npm run application:migrations
+npm run application:dev
 ```
 
 Open `http://localhost:3000`. The PostgreSQL volume persists application login sessions and daemon registrations. Daemon Tasks and logs remain in each daemon's sandbox.
 
-For an existing application database, back it up and run `docker compose run --rm migrate` before starting the updated application. The schema runner is idempotent and is also run automatically by `docker compose up`; startup stops if it fails. For a fresh database, the same command creates all required tables.
+For production use `npm run application:build` then `npm run application:start`. The schema runner is idempotent; back up an existing database, then run `npm run application:migrations` before each application release. For a fresh database, the same command creates all required tables.
 
 ## Run a daemon
 

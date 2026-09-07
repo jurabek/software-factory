@@ -1,8 +1,0 @@
-.git/
-.software-factory/
-**/node_modules/
-**/.next/
-daemon/
-dist/
-.env*
-*.tsbuildinfo

@@ -203,7 +203,7 @@ func ChangedFiles(ctx context.Context, runner Runner, root string) ([]string, er
 		return nil, fmt.Errorf("read untracked changes: %w", err)
 	}
 	seen := map[string]bool{}
-	var files []string
+	files := make([]string, 0)
 	for _, output := range [][]byte{tracked, untracked} {
 		for name := range strings.SplitSeq(string(output), "\x00") {
 			name = filepath.ToSlash(strings.TrimSpace(name))
