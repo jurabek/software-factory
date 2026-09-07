@@ -39,6 +39,114 @@ The main modules are:
 | `internal/harness/pi` | Pi command invocation, JSONL consumption, event normalization, usage, and process termination |
 | `application` | Next.js UI, initial-user authentication, PostgreSQL state, daemon registry, and authenticated daemon proxy |
 
+## Application-to-daemon request flow
+
+The browser uses same-origin Next.js routes for every daemon operation. The application stores only login sessions and daemon registrations in PostgreSQL; daemon SQLite remains authoritative for Tasks, sessions, events, and execution data. A registered endpoint is reached through its trusted encrypted tunnel to the loopback daemon.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant B as Browser
+    participant N as Next.js routes
+    participant PG as PostgreSQL
+    participant R as Daemon registry
+    participant T as Encrypted tunnel
+    participant D as Go daemon API
+    participant S as Daemon SQLite
+
+    B->>N: POST /api/daemons (name, endpoint, bearer credential)
+    N->>N: Authenticate application login session
+    N->>R: Validate endpoint and credential
+    R->>T: GET /api/v1/identity + /api/v1/health
+    T->>D: Forward bearer-authenticated probes
+    D->>S: Read stable daemon identity and health state
+    S-->>D: Identity and health
+    D-->>T: Identity + health response
+    T-->>R: Verify reachable daemon
+    R->>PG: Store registration and encrypted credential
+    PG-->>R: daemon ID, endpoint, expected identity
+    R-->>N: Public connection metadata only
+    N-->>B: Registration result
+
+    B->>N: GET /api/daemons/:daemonId/tasks
+    N->>PG: Validate login session and resolve registration
+    PG-->>N: Endpoint, encrypted credential, expected daemon identity
+    N->>R: Resolve and decrypt server-side credential
+    R->>T: GET /api/v1/tasks
+    T->>D: Authorization: Bearer credential\nX-Software-Factory-Daemon-ID: expected identity
+    D->>S: Read Tasks
+    S-->>D: Current daemon-owned task list
+    D-->>T: Task list
+    T-->>R: Tunnel response
+    R-->>N: Qualified tasks (daemon ID added)
+    N-->>B: Same-origin JSON response
+
+    B->>N: GET task, sessions, attempts, branches, artifacts, checks, results, diff
+    N->>PG: Validate login session and resolve daemon registration
+    PG-->>N: Encrypted credential and expected identity
+    N->>T: Forward resource read
+    T->>D: Bearer credential + expected identity header
+    D->>S: Query authoritative task/session/resource records
+    S-->>D: Current resource data
+    D-->>T: JSON resource response
+    T-->>N: Transparent response
+    N-->>B: Same-origin JSON response
+
+    B->>N: POST create task/session, feedback, intervention, or lifecycle command
+    N->>PG: Validate login session and resolve registration
+    PG-->>N: Credential and expected identity
+    N->>T: Forward mutation with actor
+    T->>D: Bearer credential + expected identity + actor header
+    D->>S: Validate transition and persist mutation
+    S-->>D: Accepted result and new events
+    D-->>T: Mutation response
+    T-->>N: Transparent response
+    N-->>B: Accepted result
+
+    B->>N: GET events/stream?after=cursor (or Last-Event-ID)
+    N->>PG: Validate login session and resolve registration
+    PG-->>N: Credential and expected identity
+    N->>T: Open SSE stream; forward cursor headers/query
+    T->>D: Bearer credential + expected identity\nLast-Event-ID / after cursor
+    D->>S: Replay events after cursor
+    S-->>D: Durable ordered event frames
+    D-->>T: Replay SSE frames with daemon sequence IDs
+    T-->>N: Stream without buffering or renumbering
+    N-->>B: Replay then live SSE frames
+    loop Until disconnect or revocation
+        D->>S: Poll for events after last cursor
+        S-->>D: New events, if any
+        D-->>T: Live SSE frame or heartbeat
+        T-->>N: Transparent frame
+        N-->>B: Event with daemon cursor
+    end
+    B-->>N: Disconnect; retain latest daemon cursor
+    N->>T: Cancel upstream stream on disconnect
+    B->>N: Reconnect stream with after=cursor or Last-Event-ID
+    N->>T: Open a new upstream stream with the cursor
+    T->>D: Replay from the requested cursor
+    D->>S: Read events after cursor
+    S-->>D: Durable replay records
+    D-->>T: Replay SSE frames
+    T-->>N: Transparent replay
+    N-->>B: Continue from the last cursor
+    N->>PG: Periodically recheck login session during stream
+    alt Login session revoked
+        PG-->>N: Session is not alive
+        N->>T: Cancel upstream stream
+        T-->>D: Close request
+    else Daemon offline
+        T-->>N: Timeout or unavailable
+        N-->>B: Isolated daemon_unavailable failure
+    else Identity mismatch
+        D-->>T: 409 daemon_identity_mismatch before dispatch
+        T-->>N: Identity mismatch
+        N-->>B: Isolated daemon_identity_changed failure
+    end
+```
+
+Task history is not copied into PostgreSQL or synchronized by the application. An offline daemon or identity mismatch affects only requests routed to that registration.
+
 ## Startup and ownership
 
 On startup, the process:
