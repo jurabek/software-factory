@@ -42,15 +42,15 @@ set +a
 : "${DAEMON_CREDENTIAL_KEY:?Set DAEMON_CREDENTIAL_KEY in local.env}"
 : "${DAEMON_ALLOWED_ORIGINS:?Set DAEMON_ALLOWED_ORIGINS in local.env}"
 
-docker compose up -d postgres
+docker-compose up -d postgres
 
 echo "Waiting for postgres..."
-until docker compose exec -T postgres pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" >/dev/null 2>&1; do
+until docker-compose exec -T postgres pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" >/dev/null 2>&1; do
   sleep 1
 done
 
 # POSTGRES_PASSWORD only initializes a new volume; keep an existing local role in sync.
-docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+docker-compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
   --set=password="$POSTGRES_PASSWORD" >/dev/null <<'SQL'
 SELECT format('ALTER ROLE %I WITH PASSWORD %L', current_user, :'password') \gexec
 SQL

@@ -86,9 +86,12 @@ export function normalizeWorkspaceSelection(
     return { daemonId, taskId: null, sessionId: null };
   }
   const rootId = taskRootId(selected);
-  return selected.id === rootId
-    ? { daemonId, taskId: rootId, sessionId: null }
-    : { daemonId, taskId: rootId, sessionId: selected.id };
+  if (selected.id === rootId) {
+    // The root is also the initial session. A bare task link shows the task
+    // overview; an explicit session link to the root opens its chat.
+    return { daemonId, taskId: rootId, sessionId: selection.sessionId === rootId ? rootId : null };
+  }
+  return { daemonId, taskId: rootId, sessionId: selected.id };
 }
 
 export function workspaceSearch(selection: WorkspaceSelection): string {
@@ -105,6 +108,23 @@ export function statePresentation(state: string): "active" | "success" | "failur
   if (["aborted", "blocked", "failed", "error"].includes(state)) return "failure";
   if (["preparing", "planning", "building", "checking", "reviewing", "running"].includes(state)) return "active";
   return "idle";
+}
+
+// Compact relative timestamp ("now", "4m", "3h", "2d") for chat and tables.
+export function relativeTime(iso: string, now: number = Date.now()): string {
+  const then = new Date(iso).getTime();
+  if (!Number.isFinite(then)) return "";
+  const seconds = Math.max(0, Math.round((now - then) / 1000));
+  if (seconds < 45) return "now";
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.round(hours / 24);
+  if (days < 7) return `${days}d`;
+  const weeks = Math.round(days / 7);
+  if (weeks < 5) return `${weeks}w`;
+  return new Date(iso).toLocaleDateString();
 }
 
 export function orderedAttempts(attempts: TaskAttempt[], branchId?: string | null): TaskAttempt[] {

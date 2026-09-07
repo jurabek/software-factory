@@ -7,7 +7,6 @@ import {
   daemonBranches,
   daemonChecks,
   daemonCommand,
-  daemonCreateSession,
   daemonDiff,
   daemonEvents,
   daemonFeedback,
@@ -29,10 +28,9 @@ import {
   type TaskIntervention,
   type TaskResult,
 } from "../client/daemon-api.ts";
-import { qualifiedEventKey, RequestScope } from "../client/daemon-ui-state.ts";
+import { qualifiedEventKey, relativeTime, RequestScope, statePresentation } from "../client/daemon-ui-state.ts";
 import { eventArgumentEntries } from "../client/work-log.ts";
-import { AttemptGraph } from "./attempt-graph.tsx";
-import { ArtifactRail } from "./artifact-rail.tsx";
+import { IconArchive, IconBranch, IconCollapse, IconCopy, IconFastForward, IconFile, IconFolder, IconMonitor, IconPencil, IconPeople, IconPlus, IconRobot, IconSend, IconShield, IconSkip, IconSplit, IconTerminal } from "./icons.tsx";
 
 const commands = ["start", "approve", "pause", "resume", "abort"] as const;
 const interventionActions = ["comment", "steer", "follow_up", "retry", "revise", "repair"] as const;
@@ -190,13 +188,50 @@ function renderedArtifactContent(artifact: DisplayArtifact): string {
   try { return JSON.stringify(JSON.parse(artifact.content), null, 2); } catch { return artifact.content; }
 }
 
-export function TaskDetail({ daemonId, daemonName, task, offline, onChanged, onSelectTask, onRemoved }: {
+function monogram(name: string): string {
+  const parts = name.replace(/@.*/, "").split(/[.\s_@-]+/).filter(Boolean);
+  return ((parts[0]?.[0] ?? name[0] ?? "?") + (parts[1]?.[0] ?? "")).toUpperCase();
+}
+
+function displayName(name: string): string {
+  const base = name.replace(/@.*/, "");
+  return base.split(/[.\s_-]+/).filter(Boolean).map((part) => (part[0]?.toUpperCase() ?? "") + part.slice(1)).join(" ") || name;
+}
+
+function modelLabel(model?: string): string {
+  if (!model) return "DEFAULT";
+  return (model.split("/").pop() ?? model).toUpperCase();
+}
+
+type ChatItem = { key: string; role: "user" | "agent" | "system" | "tool"; author?: string; text?: string; at: number; iso: string; event?: TaskEvent };
+
+function buildTimeline(request: string, createdAt: string, author: string, interventions: TaskIntervention[], events: TaskEvent[]): ChatItem[] {
+  const items: ChatItem[] = [];
+  if (request.trim()) items.push({ key: "request", role: "user", author, text: request, at: new Date(createdAt).getTime() || 0, iso: createdAt });
+  for (const intervention of interventions) {
+    if (!intervention.text?.trim()) continue;
+    items.push({ key: `iv-${intervention.id}`, role: "user", author: intervention.actor, text: intervention.text, at: new Date(intervention.created_at).getTime() || 0, iso: intervention.created_at });
+  }
+  for (const event of events) {
+    const at = eventStartedAt(event);
+    const iso = Number.isNaN(at.getTime()) ? event.started_at : at.toISOString();
+    if (event.type === "tool_call") { items.push({ key: `ev-${event.sequence}`, role: "tool", at: at.getTime() || 0, iso, event }); continue; }
+    const text = eventResult(event).trim();
+    if (text) { items.push({ key: `ev-${event.sequence}`, role: "agent", text, at: at.getTime() || 0, iso, event }); continue; }
+    if (event.type.includes("error")) items.push({ key: `ev-${event.sequence}`, role: "system", text: eventTitle(event), at: at.getTime() || 0, iso, event });
+  }
+  return items.sort((left, right) => left.at - right.at || left.key.localeCompare(right.key));
+}
+
+export function TaskDetail({ daemonId, daemonName, task, rootTask, login, offline, onChanged, onOpenTask, onRemoved }: {
   daemonId: string;
   daemonName: string;
   task: QualifiedTask;
+  rootTask: QualifiedTask;
+  login: string;
   offline: boolean;
   onChanged: () => Promise<void> | void;
-  onSelectTask: (taskId: string) => void;
+  onOpenTask: () => void;
   onRemoved: (parentTaskId?: string) => void;
 }) {
   const [details, setDetails] = useState<TaskDetails | null>(null);
@@ -222,15 +257,15 @@ export function TaskDetail({ daemonId, daemonName, task, offline, onChanged, onS
   const [error, setError] = useState<string | null>(null);
   const [pendingCommand, setPendingCommand] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
-  const [sessionRequest, setSessionRequest] = useState("");
   const [message, setMessage] = useState("");
   const [action, setAction] = useState<InterventionAction>("comment");
+  const [sidebarTab, setSidebarTab] = useState<"artifacts" | "workspace" | "minimap">("artifacts");
+  const chatScroll = useRef<HTMLDivElement | null>(null);
   const scope = useRef(new RequestScope());
   const mutationScope = useRef(new RequestScope());
   const mutationController = useRef<AbortController | null>(null);
   const eventDialog = useRef<HTMLElement | null>(null);
   const eventTrigger = useRef<HTMLButtonElement | null>(null);
-  const eventList = useRef<HTMLUListElement | null>(null);
   const cursorRef = useRef<number | undefined>(undefined);
   const seen = useRef(new Set<string>());
 
@@ -248,6 +283,11 @@ export function TaskDetail({ daemonId, daemonName, task, offline, onChanged, onS
   const meaningfulEvents = events.filter((event) => !transientEventTypes.has(event.type) && (!selectedAttempt || event.attempt_id === selectedAttempt || event.phase_id === selectedAttempt));
   const visibleEvents = meaningfulEvents.slice(-visibleEventLimit);
   const hiddenEventCount = Math.max(0, meaningfulEvents.length - visibleEvents.length);
+  const timeline = buildTimeline(currentTask.request, currentTask.created_at, login, interventions, visibleEvents);
+  const editCount = diff.repositories.reduce((sum, repository) => sum + repository.files.length, 0);
+  const otherCount = results.length + checks.length + diff.repositories.length;
+  const workspacePath = currentTask.workspace_path ?? "Daemon sandbox";
+  const canSend = !offline && !pending && pendingCommand === null;
 
   function beginMutation(): { generation: number; controller: AbortController } {
     mutationController.current?.abort();
@@ -324,8 +364,8 @@ export function TaskDetail({ daemonId, daemonName, task, offline, onChanged, onS
   }, [daemonId, task.id]);
 
   useEffect(() => {
-    if (autoScroll && eventList.current) eventList.current.scrollTop = eventList.current.scrollHeight;
-  }, [autoScroll, events]);
+    if (autoScroll && chatScroll.current) chatScroll.current.scrollTop = chatScroll.current.scrollHeight;
+  }, [autoScroll, events, interventions]);
 
   useEffect(() => {
     if (!selectedEvent) return;
@@ -361,6 +401,15 @@ export function TaskDetail({ daemonId, daemonName, task, offline, onChanged, onS
     seen.current = new Set();
     let streamCleanup = false;
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+    let attempts = 0;
+
+    function scheduleReconnect(run: () => void) {
+      if (streamCleanup || controller.signal.aborted || !scope.current.isCurrent(current)) return;
+      setLive(attempts >= 3 ? "offline" : "reconnecting");
+      const delay = Math.min(30_000, 1_000 * 2 ** attempts);
+      attempts += 1;
+      reconnectTimer = setTimeout(run, delay);
+    }
 
     function append(incoming: { sequence: number; raw: unknown }[]) {
       const fresh = incoming.filter((entry) => !seen.current.has(qualifiedEventKey(daemonId, task.id, entry.sequence)));
@@ -394,33 +443,40 @@ export function TaskDetail({ daemonId, daemonName, task, offline, onChanged, onS
 
     function connect(from: number | undefined, retry: boolean) {
       if (streamCleanup || !scope.current.isCurrent(current)) return;
-      setLive(retry ? "reconnecting" : "connecting");
+      setLive(retry ? (attempts >= 3 ? "offline" : "reconnecting") : "connecting");
       openTaskStream(daemonId, task.id, from, controller.signal, (event) => {
         if (!scope.current.isCurrent(current)) return;
+        attempts = 0;
         setLive("live");
         append([event]);
       }, () => {
         if (!scope.current.isCurrent(current) || controller.signal.aborted) return;
-        setLive("reconnecting");
-        reconnectTimer = setTimeout(() => connect(cursorRef.current, true), 2_000);
-      }, () => setLive("live"));
+        scheduleReconnect(() => connect(cursorRef.current, true));
+      }, () => { attempts = 0; setLive("live"); });
     }
 
-    void daemonEvents(daemonId, task.id, { tail: 100 }, controller.signal)
-      .then((result) => {
-        if (!scope.current.isCurrent(current)) return;
-        result.events.forEach((event) => seen.current.add(qualifiedEventKey(daemonId, task.id, event.sequence)));
-        setEvents(result.events);
-        setAvailableActions(result.events.at(-1)?.available_actions ?? []);
-        cursorRef.current = result.events.length ? result.cursor : 0;
-        setCursor(cursorRef.current);
-        connect(cursorRef.current, false);
-      })
-      .catch((failure: unknown) => {
-        if (controller.signal.aborted || !scope.current.isCurrent(current)) return;
-        setError(failure instanceof Error ? failure.message : "Could not load events.");
-        setLive("offline");
-      });
+    function bootstrap() {
+      if (streamCleanup || !scope.current.isCurrent(current)) return;
+      void daemonEvents(daemonId, task.id, { tail: 100 }, controller.signal)
+        .then((result) => {
+          if (!scope.current.isCurrent(current)) return;
+          attempts = 0;
+          setError(null);
+          result.events.forEach((event) => seen.current.add(qualifiedEventKey(daemonId, task.id, event.sequence)));
+          setEvents(result.events);
+          setAvailableActions(result.events.at(-1)?.available_actions ?? []);
+          cursorRef.current = result.events.length ? result.cursor : 0;
+          setCursor(cursorRef.current);
+          connect(cursorRef.current, false);
+        })
+        .catch((failure: unknown) => {
+          if (controller.signal.aborted || !scope.current.isCurrent(current)) return;
+          setError(failure instanceof Error ? failure.message : "Could not load events.");
+          scheduleReconnect(bootstrap);
+        });
+    }
+
+    bootstrap();
     return () => {
       streamCleanup = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
@@ -441,28 +497,6 @@ export function TaskDetail({ daemonId, daemonName, task, offline, onChanged, onS
       setError(failure instanceof Error ? failure.message : "Command failed.");
     } finally {
       if (mutationIsCurrent(generation, controller)) setPendingCommand((current) => current === command ? null : current);
-    }
-  }
-
-  async function createSession(event: React.FormEvent) {
-    event.preventDefault();
-    if (!sessionRequest.trim() || pending || pendingCommand !== null) return;
-    const { generation, controller } = beginMutation();
-    setPending(true);
-    setError(null);
-    try {
-      const result = await daemonCreateSession(daemonId, rootTaskId, sessionRequest.trim(), controller.signal);
-      setSessionRequest("");
-      await refreshDetails(controller.signal);
-      if (mutationIsCurrent(generation, controller)) {
-        await onChanged();
-        onSelectTask(result.session.id);
-      }
-    } catch (failure) {
-      if (!mutationIsCurrent(generation, controller)) return;
-      setError(failure instanceof Error ? failure.message : "Could not create session.");
-    } finally {
-      if (mutationIsCurrent(generation, controller)) setPending(false);
     }
   }
 
@@ -547,63 +581,120 @@ export function TaskDetail({ daemonId, daemonName, task, offline, onChanged, onS
   }
 
   return (
-    <section className="task-detail task-workspace" aria-label={`Task ${task.id} on ${daemonName}`}>
-      <header className="workspace-breadcrumb">
-        <div>
-          <p className="eyebrow">Task workspace · {daemonName}</p>
-          <h3><code>{currentTask.id}</code> · {currentTask.state}</h3>
+    <section className="chat-view" aria-label={`Session ${task.id} on ${daemonName}`}>
+      <div className="chat-main">
+        <header className="page-topbar">
+          <nav className="crumbs" aria-label="Breadcrumb">
+            <button type="button" onClick={onOpenTask}>Tasks</button><i>›</i>
+            <button type="button" onClick={onOpenTask}>{rootTask.request}</button><i>›</i>
+            <strong>{currentTask.request}</strong>
+            <button type="button" className="icon-button" aria-label="Rename session"><IconPencil /></button>
+          </nav>
+          <div className="topbar-tools"><span className="live-dot" data-live={live} title={live} aria-label={`Stream ${live}`} /><button type="button" className="icon-button" aria-label="Collapse panel"><IconCollapse /></button><button type="button" className="icon-button" aria-label="New task"><IconPlus /></button></div>
+        </header>
+
+        <div className="chat-subbar">
+          <div className="path-crumb"><code title={workspacePath}>{workspacePath}</code><button type="button" className="icon-button" aria-label="Copy path"><IconCopy /></button><button type="button" className="icon-button" aria-label="Open folder"><IconFolder /></button><button type="button" className="icon-button" aria-label="Split view"><IconSplit /></button><button type="button" className="icon-button" aria-label="Open terminal"><IconTerminal /></button></div>
+          <span className="tag accent">{currentTask.coding_agent ?? "session"}</span>
         </div>
-        <span className="badge" data-state={live === "live" ? "configured" : "pending"}>{live}</span>
-      </header>
-      <section className="task-header"><div className="task-header-title"><p>Session workspace</p><h1>{currentTask.request}</h1></div><dl className="task-facts"><div><dt>Workspace</dt><dd>{currentTask.workspace_path ?? "Daemon sandbox"}</dd></div><div><dt>State</dt><dd>{currentTask.state}</dd></div><div><dt>Branch</dt><dd>{selectedBranch?.id?.slice(0, 8) ?? "-"}</dd></div></dl></section>
-      {error ? <p role="alert" className="notice">{error}</p> : null}
-      {offline ? <p role="alert" className="notice">Daemon offline. Actions are disabled until it reconnects.</p> : null}
-      <div className="actions" role="group" aria-label="Task commands">
-        {commands.map((command) => (
-          <button key={`${daemonId}:${task.id}:${command}`} type="button" disabled={offline || !commandEnabled(command, currentTask.state) || pendingCommand !== null || pending} onClick={() => void sendCommand(command)}>
-            {pendingCommand === command ? `${command}...` : command}
-          </button>
-        ))}
-        {(["completed", "aborted"] as string[]).includes(currentTask.state) ? <button type="button" disabled={offline || pending} onClick={() => void removeTask()}>{pending ? "Working..." : "Delete"}</button> : null}
+
+        {error ? <p role="alert" className="notice chat-notice">{error}</p> : null}
+        {offline ? <p role="alert" className="notice chat-notice">Daemon offline. Actions are disabled until it reconnects.</p> : null}
+
+        {(["completed", "aborted"] as string[]).includes(currentTask.state) || commands.some((command) => commandEnabled(command, currentTask.state)) ? (
+          <div className="chat-commands" role="group" aria-label="Task commands">
+            {commands.map((command) => commandEnabled(command, currentTask.state) ? (
+              <button key={`${daemonId}:${task.id}:${command}`} type="button" disabled={offline || pendingCommand !== null || pending} onClick={() => void sendCommand(command)}>{pendingCommand === command ? `${command}…` : command}</button>
+            ) : null)}
+            {(["completed", "aborted"] as string[]).includes(currentTask.state) ? <button type="button" disabled={offline || pending} onClick={() => void removeTask()}>{pending ? "Working…" : "delete"}</button> : null}
+          </div>
+        ) : null}
+
+        <div className="chat-scroll" ref={chatScroll}>
+          {hiddenEventCount ? <p className="hint chat-hint">{hiddenEventCount} older events hidden to keep this view responsive.</p> : null}
+          {timeline.map((item) => {
+            if (item.role === "user") return (
+              <article className="msg msg-user" key={item.key}>
+                <span className="avatar" aria-hidden="true">{monogram(item.author ?? login)}</span>
+                <div className="msg-body"><div className="msg-head"><strong>{displayName(item.author ?? login)}</strong><time>{relativeTime(item.iso)}</time></div><p className="msg-text">{item.text}</p></div>
+              </article>
+            );
+            if (item.role === "tool" && item.event) return (
+              <button className="msg msg-tool" key={item.key} type="button" aria-haspopup="dialog" onClick={(clickEvent) => { eventTrigger.current = clickEvent.currentTarget; setSelectedEvent(item.event ?? null); }}>
+                <span className="tool-icon" data-success={eventSuccess(item.event)} aria-hidden="true">{eventIcon(item.event)}</span>
+                <span className="tool-title"><strong>{eventTitle(item.event)}</strong>{eventTarget(item.event) ? <span>{eventTarget(item.event)}</span> : null}{eventPreview(item.event) ? <small>{eventPreview(item.event)}</small> : null}</span>
+                <span className="tool-meta">{eventDuration(item.event)} <time>{relativeTime(item.iso)}</time><em>open</em></span>
+              </button>
+            );
+            return (
+              <article className={`msg msg-agent${item.role === "system" ? " msg-system" : ""}`} key={item.key}>
+                <span className="bot" aria-hidden="true"><IconRobot /></span>
+                <div className="msg-body"><div className="msg-head"><time>{relativeTime(item.iso)}</time></div><p className="msg-text">{item.text}</p></div>
+              </article>
+            );
+          })}
+          {!timeline.length ? <p className="chat-empty">No messages yet. The stream stays open while this session is selected.</p> : null}
+        </div>
+
+        <form className="composer" onSubmit={currentTask.state === "awaiting_plan_approval" ? revisePlan : submitMessage}>
+          <div className="composer-status">
+            <span className="status-pill" data-state={statePresentation(currentTask.state)}>{currentTask.state.replaceAll("_", " ").toUpperCase()}</span>
+            <button type="button" className="chip"><span>{modelLabel(currentTask.model)}</span><IconPencil /></button>
+            <button type="button" className="chip"><span>{(currentTask.thinking ?? "medium").toUpperCase()}</span><IconPencil /></button>
+            <span className="token-meter">{typeof currentTask.total_cost === "number" && currentTask.total_cost > 0 ? `$${currentTask.total_cost.toFixed(2)}` : "0 tokens"}</span>
+            <label className="composer-action"><span className="sr-only">Intervention action</span><select value={action} onChange={(event) => setAction(event.target.value as InterventionAction)} disabled={!canSend || currentTask.state === "awaiting_plan_approval"}>{interventionChoices(currentTask.state, availableActions).map((item) => <option key={item} value={item}>{actionLabels[item]}</option>)}</select></label>
+          </div>
+          <textarea value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} disabled={offline || pending || pendingCommand !== null} placeholder={currentTask.state === "awaiting_plan_approval" ? "Explain what the planner should revise…" : "ENTER to start typing…"} />
+          <div className="composer-bar">
+            <div className="composer-icons" aria-label="Session controls">
+              <button type="button" className="icon-button" disabled aria-label="Permissions"><IconShield /></button>
+              <button type="button" className="icon-button" disabled={!canSend || !commandEnabled("resume", currentTask.state)} aria-label="Resume" onClick={() => void sendCommand("resume")}><IconFastForward /></button>
+              <button type="button" className="icon-button" disabled={!canSend || !commandEnabled("approve", currentTask.state)} aria-label="Approve" onClick={() => void sendCommand("approve")}><IconSkip /></button>
+              <button type="button" className="icon-button" disabled={!canSend || !commandEnabled("abort", currentTask.state)} aria-label="Abort" onClick={() => void sendCommand("abort")}><IconArchive /></button>
+              <button type="button" className="icon-button" disabled aria-label="Branches"><IconBranch /></button>
+              <button type="button" className="icon-button" disabled aria-label="Files"><IconFolder /></button>
+              <button type="button" className="icon-button" disabled aria-label="Collaborators"><IconPeople /></button>
+            </div>
+            <button type="submit" className="send-button" disabled={offline || pending || pendingCommand !== null || (!message.trim() && action !== "retry")}><IconSend />{pending ? "SENDING…" : "SEND"}<kbd>⌘+ENTER</kbd></button>
+          </div>
+        </form>
       </div>
 
-      <dl className="task-facts">
-        <div><dt>Workspace</dt><dd>{currentTask.workspace_path ?? "Daemon sandbox"}</dd></div>
-        <div><dt>Repositories</dt><dd>{repositories.length}</dd></div>
-        <div><dt>Branch</dt><dd>{selectedBranch?.id?.slice(0, 8) ?? "-"} · head {selectedBranch?.head_attempt_id?.slice(0, 8) ?? "-"}</dd></div>
-        <div><dt>Current attempt</dt><dd>{attempts.at(-1)?.name ?? "not started"}</dd></div>
-        <div><dt>Checks</dt><dd>{checks.filter((check) => check.status === "passed").length}/{checks.length}</dd></div>
-      </dl>
-      {repositories.length ? <div className="repository-chips" aria-label="Task repositories">{repositories.map((repository) => <span key={repository.id}><strong>{repository.primary ? "◆" : "◇"} {repository.name}</strong><small>{repository.source_type}</small></span>)}</div> : null}
-
-      {branches.length > 1 ? <label className="branch-select">Branch<select value={selectedBranch?.id ?? ""} disabled={offline || pending} onChange={(event) => { setSelectedBranchId(event.target.value); setSelectedAttempt(null); }}>{branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.id.slice(0, 8)} · {branch.status}</option>)}</select></label> : null}
-
-      <form className="inline-form" onSubmit={createSession}>
-        <label>New session<input value={sessionRequest} onChange={(event) => setSessionRequest(event.target.value)} placeholder="Follow up on this task" /></label>
-         <button type="submit" disabled={offline || pending || pendingCommand !== null || !sessionRequest.trim()}>Create session</button>
-      </form>
-      {sessions.length > 1 ? <div className="session-links"><span className="hint">Sessions</span>{sessions.map((session) => <button key={session.id} type="button" className={session.id === task.id ? "selected" : undefined} onClick={() => onSelectTask(session.id)}>{session.id.slice(0, 8)} · {session.state}</button>)}</div> : null}
-
-      <section className="detail-section" aria-labelledby="attempts-heading">
-        <div className="section-heading"><h3 id="attempts-heading">Attempts and branches</h3><span className="badge">{attempts.length} attempts · {branches.length} branches</span></div>
-        <AttemptGraph attempts={attempts} branchId={selectedBranchId} selectedAttempt={selectedAttempt} onSelect={setSelectedAttempt} />
-      </section>
-
-      <section className="detail-section" aria-labelledby="evidence-heading">
-        <div className="section-heading"><h3 id="evidence-heading">Evidence</h3><span className="badge">{results.length + checks.length + artifacts.length} items</span></div>
-        {results.map((result) => <article className="evidence-card" key={result.id}><strong>{result.agent_role} result</strong><small>attempt {result.attempt}</small><pre>{readable(result.payload)}</pre></article>)}
-        {checks.map((check) => <article className="evidence-card" key={`check-${check.id}`}><strong>{check.name}</strong><small>{check.status} · {check.duration_ms}ms</small><pre>{check.output || check.command}</pre></article>)}
-        {diff.repositories.map((repository) => <article className="evidence-card" key={`diff-${repository.repository_id}`}><strong>{repository.name} diff</strong><small>{repository.files.length} files</small><pre>{repository.patch || "No changes"}</pre></article>)}
-        {artifactViews.map((artifact) => <button className="artifact-link" key={artifact.id} type="button" onClick={() => { setSelectedArtifact(artifact.id); setArtifactMode("rendered"); setArtifactQuote(""); }}><strong>{artifact.title}</strong><span>{artifact.subtitle}</span></button>)}
-        {selectedArtifactValue ? <article className="artifact-preview"><div className="section-heading"><strong>{selectedArtifactValue.title}</strong><div className="actions"><button type="button" aria-pressed={artifactMode === "rendered"} onClick={() => setArtifactMode("rendered")}>Rendered</button><button type="button" aria-pressed={artifactMode === "raw"} onClick={() => setArtifactMode("raw")}>Raw</button><button type="button" onClick={() => { setSelectedArtifact(null); setArtifactQuote(""); }}>Close</button></div></div><pre onMouseUp={() => setArtifactQuote(window.getSelection()?.toString().trim() ?? "")}>{artifactMode === "rendered" ? renderedArtifactContent(selectedArtifactValue) : selectedArtifactValue.content}</pre>{artifactQuote ? <div className="selection-action"><span>“{artifactQuote.slice(0, 72)}{artifactQuote.length > 72 ? "…" : ""}”</span><button type="button" onClick={() => { setAction("comment"); setMessage((current) => current ? `${current}\nRegarding “${artifactQuote}”` : `Regarding “${artifactQuote}”\n`); }}>Comment</button></div> : null}</article> : null}
-       </section>
-      <ArtifactRail artifacts={artifacts} checks={checks} results={results} diff={diff} onSelect={(id) => { setSelectedArtifact(id); setArtifactMode("rendered"); setArtifactQuote(""); }} />
-
-      <section className="detail-section" aria-labelledby="events-heading">
-        <div className="section-heading"><div><h3 id="events-heading">Work log{cursor !== undefined ? ` · cursor ${cursor}` : ""}</h3><p>Actions and results from every task attempt</p></div><label className="follow-tail"><input type="checkbox" checked={autoScroll} onChange={(event) => setAutoScroll(event.target.checked)} /> follow tail</label><span className="badge" data-state={live === "live" ? "configured" : "pending"}>{live}</span></div>
-        {hiddenEventCount ? <p className="hint">{hiddenEventCount} older events hidden to keep this view responsive.</p> : null}
-        {visibleEvents.length ? <ul className="event-list" ref={eventList}>{visibleEvents.map((event) => <li key={qualifiedEventKey(daemonId, task.id, event.sequence)}><button type="button" aria-haspopup="dialog" onClick={(clickEvent) => { eventTrigger.current = clickEvent.currentTarget; setSelectedEvent(event); }}><span className="event-icon" data-success={eventSuccess(event)} aria-hidden="true">{eventIcon(event)}</span><span className="event-content"><strong>{eventTitle(event)}</strong>{eventTarget(event) ? <span>{eventTarget(event)}</span> : null}{eventPreview(event) ? <small>{eventPreview(event)}</small> : null}</span><span className="event-meta">{eventDuration(event)} <time dateTime={event.started_at}>{eventStartedAt(event).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false })}</time><em>open</em></span></button></li>)}</ul> : <p>No events yet. The stream stays open while this task is selected.</p>}
-      </section>
+      <aside className="context-sidebar" aria-label="Session context">
+        <header className="sidebar-head"><IconMonitor /><strong title={daemonName}>{daemonName}</strong><button type="button" className="icon-button" aria-label="Collapse sidebar"><IconSplit /></button></header>
+        <div className="sidebar-tabs" role="tablist">
+          <button type="button" role="tab" aria-selected={sidebarTab === "artifacts"} onClick={() => setSidebarTab("artifacts")}>Artifacts</button>
+          <button type="button" role="tab" aria-selected={sidebarTab === "workspace"} onClick={() => setSidebarTab("workspace")}>Workspace</button>
+          <button type="button" role="tab" aria-selected={sidebarTab === "minimap"} onClick={() => setSidebarTab("minimap")}>Minimap</button>
+        </div>
+        {sidebarTab === "artifacts" ? (
+          <div className="sidebar-body">
+            <p className="artifact-counts"><strong>0</strong> src · <strong>{editCount}</strong> edit · <strong>{artifacts.length}</strong> new · <strong>{otherCount}</strong> other</p>
+            <label className="grouped-toggle"><span className="switch" aria-hidden="true" /> Grouped</label>
+            <p className="group-label">Unreferenced ({artifactViews.length})</p>
+            <ul className="artifact-cards">{artifactViews.map((artifact) => {
+              const label = artifact.kind === "file" ? (artifact.subtitle.split("/").pop() || artifact.subtitle) : artifact.title;
+              return <li key={artifact.id}><button type="button" aria-pressed={selectedArtifact === artifact.id} onClick={() => { setSelectedArtifact(artifact.id); setArtifactMode("rendered"); setArtifactQuote(""); }}><IconFile /><span className="artifact-name">{label}</span><span className="chip-count">0</span><span className="dots" aria-hidden="true">···</span></button></li>;
+            })}</ul>
+            {!artifactViews.length ? <p className="sidebar-empty">No artifacts yet.</p> : null}
+            {selectedArtifactValue ? <article className="artifact-preview"><div className="section-heading"><strong>{selectedArtifactValue.title}</strong><div className="actions"><button type="button" aria-pressed={artifactMode === "rendered"} onClick={() => setArtifactMode("rendered")}>Rendered</button><button type="button" aria-pressed={artifactMode === "raw"} onClick={() => setArtifactMode("raw")}>Raw</button><button type="button" onClick={() => { setSelectedArtifact(null); setArtifactQuote(""); }}>Close</button></div></div><pre onMouseUp={() => setArtifactQuote(window.getSelection()?.toString().trim() ?? "")}>{artifactMode === "rendered" ? renderedArtifactContent(selectedArtifactValue) : selectedArtifactValue.content}</pre>{artifactQuote ? <div className="selection-action"><span>“{artifactQuote.slice(0, 60)}{artifactQuote.length > 60 ? "…" : ""}”</span><button type="button" onClick={() => { setAction("comment"); setMessage((current) => current ? `${current}\nRegarding “${artifactQuote}”` : `Regarding “${artifactQuote}”\n`); }}>Comment</button></div> : null}</article> : null}
+          </div>
+        ) : sidebarTab === "workspace" ? (
+          <div className="sidebar-body">
+            <dl className="sidebar-facts">
+              <div><dt>Workspace</dt><dd title={workspacePath}>{workspacePath}</dd></div>
+              <div><dt>State</dt><dd>{currentTask.state}</dd></div>
+              <div><dt>Branch</dt><dd>{selectedBranch?.id?.slice(0, 8) ?? "-"} · head {selectedBranch?.head_attempt_id?.slice(0, 8) ?? "-"}</dd></div>
+              <div><dt>Attempt</dt><dd>{attempts.at(-1)?.name ?? "not started"}</dd></div>
+              <div><dt>Checks</dt><dd>{checks.filter((check) => check.status === "passed").length}/{checks.length} passed</dd></div>
+            </dl>
+            {branches.length > 1 ? <label className="branch-select">Branch<select value={selectedBranch?.id ?? ""} disabled={offline || pending} onChange={(event) => { setSelectedBranchId(event.target.value); setSelectedAttempt(null); }}>{branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.id.slice(0, 8)} · {branch.status}</option>)}</select></label> : null}
+            {repositories.length ? <div className="repository-chips">{repositories.map((repository) => <span key={repository.id}><strong>{repository.primary ? "◆" : "◇"} {repository.name}</strong><small>{repository.source_type}</small></span>)}</div> : null}
+          </div>
+        ) : (
+          <div className="sidebar-body"><p className="sidebar-empty">Minimap is not available yet.</p></div>
+        )}
+      </aside>
 
       {selectedEvent ? <div className="event-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) { setSelectedEvent(null); eventTrigger.current?.focus(); } }}><section ref={eventDialog} className="event-dialog" role="dialog" aria-modal="true" aria-label={`${eventTitle(selectedEvent)} event details`} tabIndex={-1}>
         <header className="event-dialog-heading"><span className="event-icon" data-success={eventSuccess(selectedEvent)} aria-hidden="true">{eventIcon(selectedEvent)}</span><div><h3>{eventTitle(selectedEvent)}</h3>{eventTarget(selectedEvent) ? <p>{eventTarget(selectedEvent)}</p> : null}</div><button type="button" aria-label="Close event details" onClick={() => { setSelectedEvent(null); eventTrigger.current?.focus(); }}>Close</button></header>
@@ -614,13 +705,6 @@ export function TaskDetail({ daemonId, daemonName, task, offline, onChanged, onS
         <details className="raw-event"><summary>Raw event payload</summary><pre>{readable(selectedEvent.payload)}</pre></details>
         <footer><span>{selectedEvent.type}</span><span>event {selectedEvent.sequence}</span><span>Esc to close</span></footer>
       </section></div> : null}
-
-      <form className="context-form" onSubmit={currentTask.state === "awaiting_plan_approval" ? revisePlan : submitMessage}>
-         <div className="section-heading"><h3>{currentTask.state === "awaiting_plan_approval" ? "Revise plan" : "Task intervention"}</h3><select aria-label="Intervention action" value={action} onChange={(event) => setAction(event.target.value as InterventionAction)} disabled={offline || pending || pendingCommand !== null || currentTask.state === "awaiting_plan_approval"}>{interventionChoices(currentTask.state, availableActions).map((item) => <option key={item} value={item}>{actionLabels[item]}</option>)}</select></div>
-         <textarea value={message} onChange={(event) => setMessage(event.target.value)} disabled={offline || pending || pendingCommand !== null} placeholder={currentTask.state === "awaiting_plan_approval" ? "Explain what the planner should revise..." : "Message this task..."} />
-         <div className="actions"><span className="hint">{selectedAttempt ? `Targeting attempt ${selectedAttempt.slice(0, 8)}` : selectedBranch ? `Branch ${selectedBranch.id.slice(0, 8)}` : "Targets the current task history"}</span><button type="submit" disabled={offline || pending || pendingCommand !== null || (!message.trim() && action !== "retry")}>{pending ? "Sending..." : "Send"}</button></div>
-      </form>
-      {interventions.length ? <p className="hint">{interventions.length} intervention{interventions.length === 1 ? "" : "s"} recorded on this daemon.</p> : null}
     </section>
   );
 }
