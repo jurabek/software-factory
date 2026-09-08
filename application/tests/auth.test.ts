@@ -3,11 +3,11 @@ import { createHash } from "node:crypto";
 import { test } from "node:test";
 import type { Pool } from "pg";
 import {
+	type AuthStore,
 	createAuthentication,
 	createAuthStore,
 	sessionLifetimeSeconds,
 	sessionTokenFromCookie,
-	type AuthStore,
 } from "../src/server/auth.ts";
 
 function memoryStore() {

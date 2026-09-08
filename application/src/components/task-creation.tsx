@@ -3,11 +3,10 @@
 import { ChevronRight } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
-	daemonCreationOptions,
 	daemonCreateTask,
+	daemonCreationOptions,
 	type QualifiedTask,
 } from "@/client/daemon-api.ts";
-import type { DaemonConnection } from "@/server/daemon-registry.ts";
 import { Alert, AlertDescription } from "@/components/ui/alert.tsx";
 import { Button } from "@/components/ui/button.tsx";
 import {
@@ -25,6 +24,7 @@ import {
 	SelectValue,
 } from "@/components/ui/select.tsx";
 import { Textarea } from "@/components/ui/textarea.tsx";
+import type { DaemonConnection } from "@/server/daemon-registry.ts";
 
 const thinkingLevels = [
 	"off",
@@ -36,6 +36,7 @@ const thinkingLevels = [
 	"max",
 ] as const;
 type RepositoryDraft = {
+	id: string;
 	type: "local" | "github";
 	value: string;
 	name: string;
@@ -80,7 +81,13 @@ export function TaskCreation({
 }) {
 	const [request, setRequest] = useState("");
 	const [repositories, setRepositories] = useState<RepositoryDraft[]>([
-		{ type: "github", value: "", name: "", primary: true },
+		{
+			id: crypto.randomUUID(),
+			type: "github",
+			value: "",
+			name: "",
+			primary: true,
+		},
 	]);
 	const [harness, setHarness] = useState("");
 	const [model, setModel] = useState("");
@@ -166,7 +173,13 @@ export function TaskCreation({
 	function addRepository() {
 		setRepositories((current) => [
 			...current,
-			{ type: "local", value: "", name: "", primary: false },
+			{
+				id: crypto.randomUUID(),
+				type: "local",
+				value: "",
+				name: "",
+				primary: false,
+			},
 		]);
 	}
 
@@ -362,7 +375,7 @@ export function TaskCreation({
 					{repositories.map((repository, index) => (
 						<div
 							className="grid items-end gap-3 md:grid-cols-[auto_minmax(7rem,.5fr)_minmax(8rem,.6fr)_minmax(0,1fr)_auto]"
-							key={index}
+							key={repository.id}
 						>
 							<Button
 								type="button"
