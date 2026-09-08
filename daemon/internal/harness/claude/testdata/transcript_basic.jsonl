@@ -1,0 +1,14 @@
+{"type":"user","uuid":"u1","sessionId":"sess-1","message":{"role":"user","content":"Fix the login bug"},"timestamp":"2026-09-01T10:00:00.000Z"}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"sess-1","message":{"id":"msg-1","role":"assistant","model":"sonnet","content":[{"type":"text","text":"Looking into it."}],"stop_reason":"tool_use","usage":{"input_tokens":100,"output_tokens":20,"cache_read_input_tokens":10,"cache_creation_input_tokens":5}},"timestamp":"2026-09-01T10:00:01.000Z"}
+{"type":"assistant","uuid":"a2","parentUuid":"a1","sessionId":"sess-1","message":{"id":"msg-2","role":"assistant","model":"sonnet","content":[{"type":"tool_use","id":"tool-1","name":"Read","input":{"path":"/repo/main.go"}}],"stop_reason":"tool_use"},"timestamp":"2026-09-01T10:00:02.000Z"}
+{"type":"user","uuid":"u2","parentUuid":"a2","sessionId":"sess-1","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool-1","content":"package main"}]},"timestamp":"2026-09-01T10:00:03.000Z"}
+{"type":"assistant","uuid":"a3","parentUuid":"u2","sessionId":"sess-1","message":{"id":"msg-3","role":"assistant","model":"sonnet","content":[{"type":"text","text":"Found it."}],"stop_reason":"stop","usage":{"input_tokens":120,"output_tokens":30,"cache_read_input_tokens":10,"cache_creation_input_tokens":5}},"timestamp":"2026-09-01T10:00:04.000Z"}
+{"type":"user","uuid":"u3","sessionId":"sess-1","isMeta":true,"message":{"role":"user","content":"meta marker"},"timestamp":"2026-09-01T10:00:05.000Z"}
+{"type":"system","uuid":"s1","sessionId":"sess-1","subtype":"local_command","content":"cwd is /repo","timestamp":"2026-09-01T10:00:06.000Z"}
+{"type":"system","uuid":"s2","sessionId":"sess-1","subtype":"turn_duration","content":{"duration_ms":120},"timestamp":"2026-09-01T10:00:07.000Z"}
+{"type":"custom-title","uuid":"c1","sessionId":"sess-1","content":"Login fix","timestamp":"2026-09-01T10:00:08.000Z"}
+{"type":"assistant","uuid":"a4","sessionId":"sess-1","message":{"id":"msg-4","role":"assistant","model":"sonnet","content":[{"type":"thinking","thinking":"private plan"},{"type":"text","text":"Visible answer."}],"stop_reason":"stop"},"timestamp":"2026-09-01T10:00:09.000Z"}
+{"type":"user","uuid":"u4","sessionId":"sess-1","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"ghost-1","content":"orphan"}]},"timestamp":"2026-09-01T10:00:10.000Z"}
+{"type":"assistant","uuid":"a5","sessionId":"sess-1","message":{"id":"msg-5","role":"assistant","model":"sonnet","content":[{"type":"tool_use","id":"tool-2","name":"Edit","input":{"path":"/repo/main.go"}}],"stop_reason":"tool_use"},"timestamp":"2026-09-01T10:00:11.000Z"}
+{"type":"progress","uuid":"p1","sessionId":"sess-1","parentToolUseID":"tool-2","content":"subagent working","timestamp":"2026-09-01T10:00:12.000Z"}
+{"type":"mystery-shape","uuid":"m1","sessionId":"sess-1","content":{"odd":true},"timestamp":"2026-09-01T10:00:13.000Z"}

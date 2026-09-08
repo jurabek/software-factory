@@ -19,9 +19,11 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jurabek/software-factory/daemon/internal/config"
 	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
 	"github.com/jurabek/software-factory/daemon/internal/harness"
+	"github.com/jurabek/software-factory/daemon/internal/session"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 	"gopkg.in/yaml.v3"
 )
@@ -127,10 +129,19 @@ func (s *Service) create(ctx context.Context, request CreateRequest, parentTaskI
 	request.Model = strings.TrimSpace(request.Model)
 	request.Thinking = strings.TrimSpace(request.Thinking)
 	if request.CodingAgent != "" && !config.IsValidHarness(request.CodingAgent) {
-		return store.Task{}, fmt.Errorf("coding_agent must be pi or codex")
+		return store.Task{}, fmt.Errorf("coding_agent must be pi, codex, or claude")
 	}
-	if request.Thinking != "" && !config.IsValidThinking(request.Thinking) {
-		return store.Task{}, fmt.Errorf("thinking is invalid")
+	if request.Thinking != "" {
+		harnessForThinking := request.CodingAgent
+		if harnessForThinking == "" {
+			harnessForThinking = s.config.Defaults.CodingAgent
+		}
+		if harnessForThinking == "" {
+			harnessForThinking = "pi"
+		}
+		if !config.IsValidThinkingFor(harnessForThinking, request.Thinking) {
+			return store.Task{}, fmt.Errorf("thinking %q unsupported for %s", request.Thinking, harnessForThinking)
+		}
 	}
 	if request.CodingAgent != "" {
 		if _, ok := s.harnesses.Get(request.CodingAgent); !ok && s.harnesses != nil {
@@ -229,7 +240,7 @@ func (s *Service) Comment(ctx context.Context, taskID, actor string, request Int
 		return store.Intervention{}, err
 	}
 	if created {
-		_ = s.trace(ctx, taskID, "", "intervention", "Comment", map[string]any{"intervention_id": stored.ID, "target_type": stored.TargetType, "target_id": stored.TargetID, "message": stored.Text})
+		_ = s.trace(ctx, taskID, "", session.NewIntervention(session.InterventionPayload{Actor: stored.Actor, Intent: stored.Intent, Text: stored.Text, Delivery: stored.Delivery, InterventionID: stored.ID, TargetType: stored.TargetType, TargetID: stored.TargetID}))
 	}
 	return stored, nil
 }
@@ -284,7 +295,7 @@ func (s *Service) Feedback(ctx context.Context, id, actor, text, digest string) 
 	if err = s.db.SaveFeedback(ctx, store.Feedback{ID: randomID(), TaskID: id, Actor: actor, PlanDigest: current, Text: text, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
 		return err
 	}
-	if err = s.trace(ctx, id, "", "plan_feedback", "Planner feedback", map[string]any{"actor": actor, "plan_digest": current, "feedback": text}); err != nil {
+	if err = s.trace(ctx, id, "", session.NewPlanFeedback(session.PlanFeedbackPayload{Actor: actor, PlanDigest: current, Feedback: text})); err != nil {
 		return err
 	}
 	if err = s.db.Transition(ctx, id, string(AwaitingApproval), string(Planning), "", ""); err != nil {
@@ -715,19 +726,57 @@ func (s *Service) runRole(ctx context.Context, task store.Task, phase store.Phas
 	if err != nil {
 		return "", err
 	}
-	sessionID := task.ID + "-" + role
-	sessionDir := filepath.Join(s.taskDir(task.ID), "sessions", role, "pi")
-	rawPath := filepath.Join(s.taskDir(task.ID), "sessions", role, "raw-output.jsonl")
-	request := harness.Request{CWD: task.PrimaryRepositoryPath, Prompt: userPrompt, SystemPrompt: systemPrompt, Model: agent.Model, Thinking: agent.Thinking, SessionID: sessionID, SessionDirectory: sessionDir, RawOutputPath: rawPath, DeadlineMS: taskConfig.Runtime.AgentDeadlineMS}
+	harnessName := taskConfig.Defaults.CodingAgent
+	sessionDir := filepath.Join(s.taskDir(task.ID), "sessions", role, harnessName)
+	storedSession, sessionErr := s.db.AgentSession(ctx, task.ID, role)
+	if errors.Is(sessionErr, store.ErrNotFound) {
+		storedSession, sessionErr = s.db.ReserveAgentSession(ctx, task.ID, store.AgentSession{Role: role, Harness: harnessName, Model: agent.Model, Thinking: agent.Thinking, Color: agent.Color, HarnessSessionID: uuid.NewString(), SessionDirectory: sessionDir, AccountingComplete: true})
+	}
+	if sessionErr != nil {
+		return "", sessionErr
+	}
+	if storedSession.Harness != harnessName {
+		return "", fmt.Errorf("role %s session belongs to harness %s", role, storedSession.Harness)
+	}
+	additionalDirectories := make([]string, 0, len(task.Repositories))
+	for _, repository := range task.Repositories {
+		if !repository.Primary && repository.WorkingPath != "" {
+			additionalDirectories = append(additionalDirectories, repository.WorkingPath)
+		}
+	}
+	request := harness.Request{CWD: task.PrimaryRepositoryPath, Prompt: userPrompt, SystemPrompt: systemPrompt, Model: agent.Model, Thinking: agent.Thinking, SessionID: storedSession.HarnessSessionID, SessionDirectory: storedSession.SessionDirectory, RawOutputPath: filepath.Join(storedSession.SessionDirectory, "raw-output.jsonl"), DeadlineMS: taskConfig.Runtime.AgentDeadlineMS, Resume: storedSession.SessionReady, AdditionalDirectories: additionalDirectories}
+	sessionReady := storedSession.SessionReady
 	for attempt := 0; attempt <= taskConfig.Runtime.JSONFixAttempts; attempt++ {
 		if attempt > 0 {
 			request.Prompt = "Your previous final response was invalid: " + err.Error() + "\n" + envelopeInstructions(role)
 		}
-		result, runErr := adapter.Run(ctx, request, s.eventSink(task.ID, phase.ID))
+		invocationID := uuid.NewString()
+		if err := s.db.BeginAgentInvocation(ctx, task.ID, role, invocationID); err != nil {
+			return "", err
+		}
+		result, runErr := adapter.Run(ctx, request, s.eventSink(task.ID, phase.ID, harnessName))
+		if result.SessionID == "" {
+			result.SessionID = storedSession.HarnessSessionID
+		}
+		if result.SessionID != storedSession.HarnessSessionID {
+			identityErr := fmt.Errorf("harness session identity changed from %s to %s", storedSession.HarnessSessionID, result.SessionID)
+			if runErr != nil {
+				runErr = errors.Join(runErr, identityErr)
+			} else {
+				runErr = identityErr
+			}
+		}
+		sessionReady = sessionReady || result.SessionReady
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		finalizeErr := s.db.FinalizeAgentInvocation(cleanupCtx, task.ID, role, invocationID, store.AgentSession{Role: role, Harness: harnessName, Provider: result.Provider, Model: result.Model, Thinking: agent.Thinking, Color: agent.Color, HarnessSessionID: storedSession.HarnessSessionID, SessionDirectory: storedSession.SessionDirectory, SessionReady: sessionReady, NativeTranscriptPath: result.NativeTranscriptPath, ContextTokens: result.ContextTokens, ContextWindow: result.ContextWindow, Usage: persistedUsage(result.Usage), Cost: result.Usage.Cost, AccountingComplete: result.AccountingComplete})
+		cancel()
+		if finalizeErr != nil {
+			return "", finalizeErr
+		}
+		request.Resume = sessionReady
 		if runErr != nil {
 			return "", runErr
 		}
-		_ = s.db.SaveAgentSession(ctx, task.ID, role, taskConfig.Defaults.CodingAgent, result.Provider, result.Model, agent.Thinking, agent.Color, sessionID, sessionDir, result.ContextTokens, result.ContextWindow, result.Usage, result.Usage.Cost)
 		_, validationErr := validate(result.Text)
 		valid := validationErr == nil
 		tail := result.Text
@@ -738,13 +787,19 @@ func (s *Service) runRole(ctx context.Context, task store.Task, phase store.Phas
 		if valid {
 			stored = result.Text
 		}
-		_ = s.db.SaveEnvelope(ctx, randomID(), task.ID, phase.ID, role, role, stored, valid, attempt+1)
+		if err := s.db.SaveEnvelope(ctx, randomID(), task.ID, phase.ID, role, role, stored, valid, attempt+1); err != nil {
+			return "", err
+		}
 		if valid {
 			return result.Text, nil
 		}
 		err = validationErr
 	}
 	return "", fmt.Errorf("%s envelope invalid after corrections: %w", role, err)
+}
+
+func persistedUsage(value harness.Usage) session.Usage {
+	return session.Usage{Input: value.Input, Output: value.Output, CacheRead: value.CacheRead, CacheWrite: value.CacheWrite, Reasoning: value.Reasoning, TotalTokens: value.TotalTokens}
 }
 
 func (s *Service) renderPrompts(agent config.Agent, data map[string]any) (string, string, error) {
@@ -868,7 +923,7 @@ func (s *Service) beginPhase(ctx context.Context, taskID, name, kind, owner, des
 		_ = s.db.SetBranchHead(ctx, taskID, phase.BranchID, phase.ID)
 	}
 	_ = s.db.Transition(ctx, taskID, task.State, task.State, phase.ID, "")
-	_ = s.traceBranch(ctx, taskID, phase, "phase_start", name, map[string]any{"owner": owner, "kind": kind, "input_snapshot": inputSnapshot})
+	_ = s.traceBranch(ctx, taskID, phase, session.NewPhaseStart(session.PhasePayload{Phase: phase.ID, Name: name, Owner: owner, Kind: kind, InputSnapshot: inputSnapshot}))
 	return phase, nil
 }
 
@@ -913,12 +968,12 @@ func (s *Service) endPhase(ctx context.Context, phase store.Phase, status string
 	if err := s.db.EndPhase(ctx, phase.ID, status, message); err != nil {
 		return err
 	}
-	return s.traceBranch(ctx, phase.TaskID, phase, "phase_end", phase.Name, map[string]any{"status": status, "error": message, "output_snapshot": phase.OutputSnapshot})
+	return s.traceBranch(ctx, phase.TaskID, phase, session.NewPhaseEnd(session.PhasePayload{Phase: phase.ID, Name: phase.Name, Owner: phase.Owner, Kind: phase.Kind, Status: status, Error: message, InputSnapshot: phase.InputSnapshot, OutputSnapshot: phase.OutputSnapshot}))
 }
 
-func (s *Service) traceBranch(ctx context.Context, taskID string, phase store.Phase, eventType, name string, payload map[string]any) error {
+func (s *Service) traceBranch(ctx context.Context, taskID string, phase store.Phase, entry session.Entry) error {
 	actions := AvailableActions(&phase, "")
-	_, err := s.db.AppendEvent(ctx, s.taskDir(taskID), store.Event{ID: randomID(), TaskID: taskID, PhaseID: phase.ID, AttemptID: phase.ID, BranchID: phase.BranchID, Type: eventType, Name: name, Payload: payload, AvailableActions: actions, StartedAt: time.Now().UTC()})
+	_, err := s.db.AppendEvent(ctx, s.taskDir(taskID), store.Event{ID: randomID(), TaskID: taskID, PhaseID: phase.ID, AttemptID: phase.ID, BranchID: phase.BranchID, Kind: entry.Kind, Name: entry.Name, Payload: entry.Payload, Display: entry.Display, AvailableActions: actions, StartedAt: time.Now().UTC()})
 	return err
 }
 
@@ -926,20 +981,23 @@ func (s *Service) failPhase(ctx context.Context, phase store.Phase, cause error)
 	_ = s.endPhase(context.Background(), phase, "failed", cause)
 }
 
-func (s *Service) eventSink(taskID, phaseID string) harness.EventSink {
+func (s *Service) eventSink(taskID, phaseID, harnessName string) harness.EventSink {
 	return func(ctx context.Context, event harness.Event) error {
-		pid := payloadInt(event.Payload, "pid")
-		if event.Type == "process_start" {
-			_, _ = s.db.StartProcess(ctx, taskID, phaseID, "pi", event.Name, pid, fmt.Sprint(event.Payload["command"]))
+		switch payload := event.Payload.(type) {
+		case session.ProcessStartPayload:
+			if _, err := s.db.StartProcess(ctx, taskID, phaseID, harnessName, harnessName, payload.PID, payload.Command); err != nil {
+				return err
+			}
+		case session.ProcessEndPayload:
+			if err := s.db.EndProcess(ctx, taskID, payload.PID, payload.ExitCode); err != nil {
+				return err
+			}
 		}
-		if event.Type == "process_end" {
-			_ = s.db.EndProcess(ctx, taskID, pid, payloadInt(event.Payload, "exit_code"))
-		}
-		return s.trace(ctx, taskID, phaseID, event.Type, event.Name, event.Payload)
+		return s.trace(ctx, taskID, phaseID, event)
 	}
 }
 
-func (s *Service) trace(ctx context.Context, taskID, phaseID, eventType, name string, payload any) error {
+func (s *Service) trace(ctx context.Context, taskID, phaseID string, entry session.Entry) error {
 	attemptID, branchID := phaseID, ""
 	var actions []string
 	if phaseID != "" {
@@ -953,7 +1011,7 @@ func (s *Service) trace(ctx context.Context, taskID, phaseID, eventType, name st
 			}
 		}
 	}
-	_, err := s.db.AppendEvent(ctx, s.taskDir(taskID), store.Event{ID: randomID(), TaskID: taskID, PhaseID: phaseID, AttemptID: attemptID, BranchID: branchID, Type: eventType, Name: name, Payload: payload, AvailableActions: actions, StartedAt: time.Now().UTC()})
+	_, err := s.db.AppendEvent(ctx, s.taskDir(taskID), store.Event{ID: randomID(), TaskID: taskID, PhaseID: phaseID, AttemptID: attemptID, BranchID: branchID, Kind: entry.Kind, Name: entry.Name, Payload: entry.Payload, Display: entry.Display, AvailableActions: actions, StartedAt: time.Now().UTC()})
 	return err
 }
 
@@ -974,25 +1032,27 @@ func (s *Service) taskConfig(task store.Task) (config.Config, error) {
 func validateTaskConfig(configured config.Config, harnesses harness.Registry) []string {
 	var problems []string
 	if !config.IsValidHarness(configured.Defaults.CodingAgent) {
-		problems = append(problems, "defaults.coding_agent must be pi or codex")
+		problems = append(problems, "defaults.coding_agent must be pi, codex, or claude")
 	} else if harnesses != nil {
 		if _, ok := harnesses.Get(configured.Defaults.CodingAgent); !ok {
 			problems = append(problems, "harness "+configured.Defaults.CodingAgent+" unavailable")
 		}
 	}
-	if !config.IsValidThinking(configured.Defaults.Thinking) {
-		problems = append(problems, "defaults.thinking is invalid")
+	if !config.IsValidThinkingFor(configured.Defaults.CodingAgent, configured.Defaults.Thinking) {
+		problems = append(problems, "defaults.thinking "+configured.Defaults.Thinking+" unsupported for "+configured.Defaults.CodingAgent)
 	}
 	for _, role := range []string{"planner", "builder", "reviewer"} {
 		found := false
 		for _, a := range configured.Agents {
 			if a.Name == role {
 				found = true
-				if !config.IsValidThinking(a.Thinking) {
-					problems = append(problems, role+" thinking is invalid")
+				if !config.IsValidThinkingFor(configured.Defaults.CodingAgent, a.Thinking) {
+					problems = append(problems, role+" thinking "+a.Thinking+" unsupported for "+configured.Defaults.CodingAgent)
 				}
 				if a.Model == "" {
 					problems = append(problems, role+" model is required")
+				} else if configured.Defaults.CodingAgent == "claude" && !isClaudeModel(a.Model) {
+					problems = append(problems, role+" model "+a.Model+" unsupported for claude")
 				}
 			}
 		}
@@ -1001,6 +1061,18 @@ func validateTaskConfig(configured config.Config, harnesses harness.Registry) []
 		}
 	}
 	return problems
+}
+
+func isClaudeModel(model string) bool {
+	if model == "anthropic/sonnet" || model == "anthropic/opus" || model == "sonnet" || model == "opus" {
+		return true
+	}
+	// Explicitly configured full IDs are validated at runtime by the adapter;
+	// reject other provider prefixes here so a Pi model never reaches Claude.
+	if strings.Contains(model, "/") && !strings.HasPrefix(model, "anthropic/") {
+		return false
+	}
+	return true
 }
 
 func agentForRole(configured config.Config, role string) (config.Agent, bool) {
@@ -1166,16 +1238,6 @@ func (capture *tailCapture) Write(data []byte) (int, error) {
 	return length, nil
 }
 func (capture *tailCapture) String() string { return string(capture.data) }
-func payloadInt(payload map[string]any, key string) int {
-	switch value := payload[key].(type) {
-	case int:
-		return value
-	case float64:
-		return int(value)
-	default:
-		return 0
-	}
-}
 
 func sameStrings(left, right []string) bool {
 	sort.Strings(left)

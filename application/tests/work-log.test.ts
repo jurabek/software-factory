@@ -1,125 +1,49 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import {
-	eventArgumentEntries,
-	eventDetailEntries,
-	eventDuration,
-	eventIcon,
-	eventIsAuxiliaryMessage,
-	eventPreview,
-	eventResult,
-	eventResultLine,
-	eventStartedAt,
-	eventStatusLabel,
-	eventSuccess,
-	eventTarget,
-	eventTitle,
-	meaningfulWorkEvents,
-	visibleWorkEvents,
-} from "../src/client/work-log.ts";
+import type { SessionEvent } from "../src/client/session-contract.ts";
+import { meaningfulWorkEvents, visibleWorkEvents } from "../src/client/work-log.ts";
 
-const event = (payload: unknown) => ({
-	sequence: 1,
-	id: "event-1",
-	task_id: "task-1",
-	type: "tool_call",
-	payload,
-	started_at: "2026-01-01T00:00:00.000Z",
-});
+function toolEvent(overrides: Partial<SessionEvent> & { id: string }): SessionEvent {
+	return {
+		format_version: 1,
+		sequence: 1,
+		task_id: "task-1",
+		kind: "tool_call",
+		payload: {
+			tool_call_id: "call-1",
+			tool: "read",
+			arguments: { path: "/tmp/file" },
+		},
+		display: { role: "tool", status: "neutral", title: "Read" },
+		started_at: "2026-01-01T00:00:00.000Z",
+		...overrides,
+	} as SessionEvent;
+}
 
-test("work-log arguments preserve structured input", () => {
-	assert.deepEqual(
-		eventArgumentEntries(event({ arguments: { path: "/tmp/file" } })),
-		[["path", "/tmp/file"]],
-	);
-	assert.deepEqual(
-		eventArgumentEntries(event({ args: '{"command":"go test"}' })),
-		[["command", "go test"]],
-	);
-});
-
-test("work-log arguments preserve primitive input", () => {
-	assert.deepEqual(eventArgumentEntries(event({ arguments: "--version" })), [
-		["arguments", "--version"],
-	]);
-	assert.deepEqual(eventArgumentEntries(event({ arguments: 42 })), [
-		["arguments", 42],
-	]);
-	assert.deepEqual(eventArgumentEntries(event({ arguments: "" })), []);
-});
-
-test("work-log derives title, target, result, preview, duration, and status", () => {
-	const tool = event({
-		tool: "apply_patch",
-		arguments: { path: "/tmp/file" },
-		result: { changed: true },
-		duration_ms: 1_250,
-		exit_code: 0,
+test("work-log filters by attempt and phase", () => {
+	const other = toolEvent({ id: "other", sequence: 1 });
+	const attempted = toolEvent({
+		id: "attempted",
+		sequence: 2,
+		attempt_id: "attempt-a",
 	});
-	assert.equal(eventTitle(tool), "Edit");
-	assert.equal(eventTarget(tool), "/tmp/file");
-	assert.equal(eventResult(tool), '{\n  "changed": true\n}');
-	assert.equal(eventPreview(tool), "{");
-	assert.equal(eventDuration(tool), "1.3s");
-	assert.equal(eventSuccess(tool), true);
-});
-
-test("work-log excludes transient events and retains attempted events", () => {
-	const transient = { ...event({}), id: "transient", type: "message_update" };
-	const attempted = { ...event({}), id: "attempted", attempt_id: "attempt-a" };
+	const phased = toolEvent({
+		id: "phased",
+		sequence: 3,
+		phase_id: "attempt-a",
+	});
 	assert.deepEqual(
-		visibleWorkEvents([transient, attempted], "attempt-a").map(
+		visibleWorkEvents([other, attempted, phased], "attempt-a").map(
 			(value) => value.id,
 		),
-		["attempted"],
+		["attempted", "phased"],
 	);
-});
-
-test("work-log labels non-assistant message completions as auxiliary", () => {
-	const toolResult = {
-		...event({
-			message: {
-				role: "toolResult",
-				toolName: "read",
-				content: [{ type: "text", text: "large tool transcript" }],
-			},
-		}),
-		id: "tool-result",
-		type: "message_end",
-	};
-	const assistant = {
-		...event({
-			message: {
-				role: "assistant",
-				content: [{ type: "text", text: "Readable response" }],
-			},
-		}),
-		id: "assistant",
-		type: "message_end",
-	};
-
-	assert.deepEqual(
-		meaningfulWorkEvents([toolResult, assistant]).map((value) => value.id),
-		["tool-result", "assistant"],
-	);
-	assert.equal(eventIsAuxiliaryMessage(toolResult), true);
-	assert.equal(eventTitle(toolResult), "Read result");
-	assert.equal(eventIsAuxiliaryMessage(assistant), false);
-	assert.equal(eventTitle(assistant), "Agent response");
 });
 
 test("work-log reports how many meaningful events the window hides", () => {
-	const stream = [1, 2, 3].map((sequence) => ({
-		...event({}),
-		sequence,
-		id: `event-${sequence}`,
-	}));
-	stream.push({
-		...event({}),
-		sequence: 4,
-		id: "transient",
-		type: "message_start",
-	});
+	const stream = [1, 2, 3].map((sequence) =>
+		toolEvent({ id: `event-${sequence}`, sequence }),
+	);
 	assert.equal(meaningfulWorkEvents(stream).length, 3);
 	assert.deepEqual(
 		visibleWorkEvents(stream, null, 2).map((value) => value.id),
@@ -127,53 +51,12 @@ test("work-log reports how many meaningful events the window hides", () => {
 	);
 });
 
-test("work-log marks failures, completions, and plain records", () => {
-	const failure = { ...event({ status: "failed" }), type: "process_end" };
-	const completion = { ...event({ exit_code: 0 }), type: "process_end" };
-	const record = { ...event({}), type: "agent_start" };
-	assert.equal(eventStatusLabel(failure), "failed");
-	assert.equal(eventIcon(failure), "!");
-	assert.equal(eventStatusLabel(completion), "completed");
-	assert.equal(eventIcon(completion), "+");
-	assert.equal(eventStatusLabel(record), "recorded");
-	assert.equal(eventIcon(record), ">");
-});
-
-test("work-log details omit fields the input and result sections already show", () => {
-	const detailed = event({
-		arguments: { path: "/tmp/file" },
-		result: "done",
-		tool: "read",
-		duration_ms: 12,
-	});
+test("work-log returns all events without an attempt filter", () => {
+	const stream = [1, 2].map((sequence) =>
+		toolEvent({ id: `event-${sequence}`, sequence }),
+	);
 	assert.deepEqual(
-		eventDetailEntries(detailed).map(([key]) => key),
-		["tool", "duration_ms"],
+		meaningfulWorkEvents(stream).map((value) => value.id),
+		["event-1", "event-2"],
 	);
-});
-
-test("work-log result line annotates multi-line output", () => {
-	assert.equal(
-		eventResultLine(event({ result: "first\nsecond\nthird" })),
-		"first ... (3 lines)",
-	);
-	assert.equal(eventResultLine(event({ result: "only" })), "only");
-	assert.equal(eventResultLine(event({})), "");
-});
-
-test("work-log prefers the payload start time over the envelope", () => {
-	assert.equal(
-		eventStartedAt(
-			event({ started_at: "2026-02-02T00:00:00.000Z" }),
-		).toISOString(),
-		"2026-02-02T00:00:00.000Z",
-	);
-	assert.equal(
-		eventStartedAt(event({})).toISOString(),
-		"2026-01-01T00:00:00.000Z",
-	);
-});
-
-test("work-log skips empty output fields when deriving a result", () => {
-	assert.equal(eventResult(event({ result: "  ", output: "real" })), "real");
 });

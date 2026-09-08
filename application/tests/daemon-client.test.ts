@@ -361,6 +361,7 @@ test("event reads preserve lineage and available actions", async () => {
 		Response.json({
 			events: [
 				{
+					format_version: 1,
 					sequence: 8,
 					id: "event-8",
 					task_id: "task-1",
@@ -368,13 +369,19 @@ test("event reads preserve lineage and available actions", async () => {
 					attempt_id: "attempt-1",
 					artifact_id: "artifact-1",
 					branch_id: "branch-1",
-					type: "phase_end",
+					kind: "phase_end",
 					payload: { status: "passed" },
+					display: {
+						role: "event",
+						status: "success",
+						title: "Attempt finished",
+					},
 					available_actions: ["retry", 7],
 					started_at: "2026-09-06T12:00:00Z",
 				},
 			],
 			cursor: 8,
+			format_version: 1,
 		}),
 	);
 	assert.deepEqual(
@@ -384,6 +391,7 @@ test("event reads preserve lineage and available actions", async () => {
 		{
 			events: [
 				{
+					format_version: 1,
 					sequence: 8,
 					id: "event-8",
 					task_id: "task-1",
@@ -391,13 +399,19 @@ test("event reads preserve lineage and available actions", async () => {
 					attempt_id: "attempt-1",
 					artifact_id: "artifact-1",
 					branch_id: "branch-1",
-					type: "phase_end",
+					kind: "phase_end",
 					payload: { status: "passed" },
+					display: {
+						role: "event",
+						status: "success",
+						title: "Attempt finished",
+					},
 					available_actions: ["retry"],
 					started_at: "2026-09-06T12:00:00Z",
 				},
 			],
 			cursor: 8,
+			format_version: 1,
 		},
 	);
 });

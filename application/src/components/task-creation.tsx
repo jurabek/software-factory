@@ -93,14 +93,35 @@ export function TaskCreation({
 	const [model, setModel] = useState("");
 	const [thinking, setThinking] = useState("");
 	const [harnesses, setHarnesses] = useState<string[]>([]);
-	const [models, setModels] = useState<{ provider: string; id: string }[]>([]);
+	const [models, setModels] = useState<
+		{ provider: string; id: string; thinking?: string[] }[]
+	>([]);
 	const [recentDirectories, setRecentDirectories] = useState<string[]>([]);
 	const [loading, setLoading] = useState(true);
+	const [modelsLoading, setModelsLoading] = useState(false);
 	const [submitting, setSubmitting] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	const [modelsError, setModelsError] = useState<string | null>(null);
 	const optionsGeneration = useRef(0);
 	const modelOptions = models.map((entry) => `${entry.provider}/${entry.id}`);
 	const showCustomModel = model !== "" && !modelOptions.includes(model);
+	const thinkingChoices =
+		models.length === 0
+			? [...thinkingLevels]
+			: [
+					...new Set(
+						models.flatMap((entry) =>
+							Array.isArray(entry.thinking) ? entry.thinking : [],
+						),
+					),
+				];
+	const effectiveThinkingChoices = thinkingChoices.length
+		? thinkingChoices
+		: [...thinkingLevels];
+	const thinkingValid =
+		thinking !== "" && effectiveThinkingChoices.includes(thinking);
+	const optionsUnresolved =
+		loading || modelsLoading || !harness || !thinkingValid;
 	const modelGeneration = useRef(0);
 	const mutationController = useRef<AbortController | null>(null);
 
@@ -210,6 +231,8 @@ export function TaskCreation({
 		const daemonGeneration = optionsGeneration.current;
 		const current = ++modelGeneration.current;
 		const controller = new AbortController();
+		setModelsLoading(true);
+		setModelsError(null);
 		void daemonCreationOptions(daemon.id, harness, controller.signal)
 			.then((options) => {
 				if (
@@ -226,10 +249,42 @@ export function TaskCreation({
 					if (available.includes(previous)) return previous;
 					if (available.includes(options.defaults.model))
 						return options.defaults.model;
-					return available[0] ?? previous;
+					return available[0] ?? "";
 				});
+				const thinkingAvailable = [
+					...new Set(
+						options.models.models.flatMap((entry) =>
+							Array.isArray(entry.thinking) ? entry.thinking : [],
+						),
+					),
+				];
+				const fallbackThinking =
+					thinkingAvailable.length > 0 ? thinkingAvailable : [...thinkingLevels];
+				setThinking((previous) => {
+					if (fallbackThinking.includes(previous)) return previous;
+					if (fallbackThinking.includes(options.defaults.thinking))
+						return options.defaults.thinking;
+					return fallbackThinking[0] ?? "";
+				});
+				setModelsLoading(false);
 			})
-			.catch(() => undefined);
+			.catch((failure: unknown) => {
+				if (
+					optionsGeneration.current !== daemonGeneration ||
+					modelGeneration.current !== current
+				)
+					return;
+				if (controller.signal.aborted) return;
+				setModelsError(
+					failure instanceof Error
+						? failure.message
+						: "Could not load models for this harness.",
+				);
+				setModels([]);
+				setModel("");
+				setThinking("");
+				setModelsLoading(false);
+			});
 		return () => controller.abort();
 	}, [daemon.id, harness]);
 
@@ -486,7 +541,17 @@ export function TaskCreation({
 					<div className="grid gap-3 border-t pt-3 md:grid-cols-3">
 						<div className="grid gap-1.5">
 							<Label htmlFor="harness">Harness</Label>
-							<Select value={harness} onValueChange={setHarness}>
+							<Select
+								value={harness}
+								onValueChange={(value) => {
+									if (value === harness) return;
+									setHarness(value);
+									setModel("");
+									setThinking("");
+									setModels([]);
+									setModelsError(null);
+								}}
+							>
 								<SelectTrigger id="harness" className="w-full">
 									<SelectValue />
 								</SelectTrigger>
@@ -527,10 +592,10 @@ export function TaskCreation({
 							<Label htmlFor="thinking">Thinking</Label>
 							<Select value={thinking} onValueChange={setThinking}>
 								<SelectTrigger id="thinking" className="w-full">
-									<SelectValue />
+									<SelectValue placeholder="Select effort" />
 								</SelectTrigger>
 								<SelectContent>
-									{thinkingLevels.map((level) => (
+									{effectiveThinkingChoices.map((level) => (
 										<SelectItem key={level} value={level}>
 											{level}
 										</SelectItem>
@@ -539,6 +604,17 @@ export function TaskCreation({
 							</Select>
 						</div>
 					</div>
+					{modelsError ? (
+						<p className="text-destructive mt-2 text-xs" role="alert">
+							Could not load models for {harness || "this harness"}:{" "}
+							{modelsError}
+						</p>
+					) : null}
+					{modelsLoading ? (
+						<p className="text-subtle mt-2 text-xs">
+							Loading {harness} models…
+						</p>
+					) : null}
 				</Section>
 			)}
 
@@ -549,7 +625,13 @@ export function TaskCreation({
 					variant="outline"
 					size="sm"
 					className="border-primary text-primary ml-auto"
-					disabled={offline || submitting || loading}
+					disabled={
+						offline ||
+						submitting ||
+						loading ||
+						optionsUnresolved ||
+						!!modelsError
+					}
 				>
 					{submitting ? "Creating..." : "Create draft"}
 				</Button>

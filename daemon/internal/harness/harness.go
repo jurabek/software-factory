@@ -1,10 +1,15 @@
 package harness
 
-import "context"
+import (
+	"context"
+
+	"github.com/jurabek/software-factory/daemon/internal/session"
+)
 
 type Model struct {
 	Provider, ID  string
 	ContextWindow int
+	Thinking      []string
 }
 type Request struct {
 	CWD,
@@ -15,12 +20,11 @@ type Request struct {
 	SessionID,
 	SessionDirectory,
 	RawOutputPath string
-	DeadlineMS int
+	DeadlineMS            int
+	Resume                bool
+	AdditionalDirectories []string
 }
-type Event struct {
-	Type, Name string
-	Payload    map[string]any
-}
+type Event = session.Entry
 type (
 	EventSink func(context.Context, Event) error
 	Cost      struct{ Input, Output, CacheRead, CacheWrite, Reasoning, Total float64 }
@@ -37,6 +41,9 @@ type Result struct {
 	SessionID, Provider, Model   string
 	Usage                        Usage
 	ContextTokens, ContextWindow int
+	SessionReady                 bool
+	AccountingComplete           bool
+	NativeTranscriptPath         string
 }
 type Harness interface {
 	Models(context.Context) ([]Model, error)

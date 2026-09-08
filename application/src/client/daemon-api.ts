@@ -1,7 +1,8 @@
 // Same-origin browser client. Builds only application URLs; daemon endpoints
 // and credentials never leave the application server.
-import type { DaemonTask } from "../server/daemon-client.ts";
-import type { DaemonConnection } from "../server/daemon-registry.ts";
+import type { SessionEvent, SessionUsage } from "@/client/session-contract.ts";
+import type { DaemonTask } from "@/server/daemon-client.ts";
+import type { DaemonConnection } from "@/server/daemon-registry.ts";
 
 export type QualifiedTask = DaemonTask & { daemonId: string };
 export type StreamEvent = { sequence: number; raw: unknown };
@@ -80,7 +81,15 @@ export type CreationOptions = {
 	daemon: DaemonConnection;
 	defaults: { coding_agent: string; model: string; thinking: string };
 	harnesses: string[];
-	models: { harness: string; models: { provider: string; id: string }[] };
+	models: {
+		harness: string;
+		models: {
+			provider: string;
+			id: string;
+			context_window?: number;
+			thinking?: string[];
+		}[];
+	};
 };
 
 export function daemonCreationOptions(
@@ -139,21 +148,6 @@ export function daemonCommand(
 		{ method: "POST", signal },
 	);
 }
-
-export type TaskEvent = {
-	sequence: number;
-	id: string;
-	task_id: string;
-	phase_id?: string;
-	attempt_id?: string;
-	artifact_id?: string;
-	branch_id?: string;
-	type: string;
-	name?: string;
-	payload: unknown;
-	available_actions?: string[];
-	started_at: string;
-};
 
 export type TaskAttempt = {
 	id: string;
@@ -225,6 +219,26 @@ export type TaskIntervention = {
 	created_at: string;
 };
 
+export type AgentSession = {
+	role: string;
+	harness: string;
+	provider?: string;
+	model?: string;
+	thinking?: string;
+	color?: string;
+	harness_session_id: string;
+	session_directory: string;
+	session_ready: boolean;
+	native_transcript_path?: string;
+	context_tokens?: number;
+	context_window?: number;
+	usage: SessionUsage;
+	cost: number;
+	accounting_complete: boolean;
+	created_at: string;
+	last_used_at: string;
+};
+
 export type InterventionInput = {
 	target: {
 		event_id?: string;
@@ -248,6 +262,7 @@ export type TaskDetails = QualifiedTask & {
 		primary: boolean;
 	}[];
 	plan_digest?: string;
+	agent_sessions?: AgentSession[];
 };
 
 function daemonTaskResource<T>(
@@ -451,8 +466,9 @@ export function daemonEvents(
 	return apiFetch<{
 		daemon: DaemonConnection;
 		taskId: string;
-		events: TaskEvent[];
+		events: SessionEvent[];
 		cursor: number;
+		format_version: number;
 	}>(
 		`/api/daemons/${encodeURIComponent(daemonId)}/tasks/${encodeURIComponent(taskId)}/events${suffix}`,
 		{ signal },

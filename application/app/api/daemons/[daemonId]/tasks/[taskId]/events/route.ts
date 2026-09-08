@@ -52,6 +52,7 @@ export async function GET(
 			taskId: result.taskId,
 			events: result.events,
 			cursor: result.cursor,
+			format_version: result.format_version,
 		});
 	} catch (error) {
 		return daemonErrorResponse(error);

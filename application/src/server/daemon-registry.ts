@@ -7,6 +7,7 @@ import type {
 	DaemonCommand,
 	DaemonCreationDefaults,
 	DaemonEvent,
+	DaemonHarnessModel,
 	DaemonHealth,
 	DaemonTask,
 	EventQuery,
@@ -426,7 +427,7 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
 			connection: DaemonConnection;
 			defaults: DaemonCreationDefaults;
 			harnesses: string[];
-			models: { harness: string; models: { provider: string; id: string }[] };
+			models: { harness: string; models: DaemonHarnessModel[] };
 		}> {
 			const resolved = await resolve(id);
 			const operation = { signal };
@@ -995,8 +996,9 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
 		): Promise<{
 			connection: DaemonConnection;
 			taskId: string;
-			events: DaemonEvent[];
-			cursor: number;
+			 events: DaemonEvent[];
+			 cursor: number;
+			 format_version: number;
 		}> {
 			const validatedTask = validatedTaskID(taskId);
 			const validatedQuery = validatedEventQuery(query);
@@ -1016,6 +1018,7 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
 					taskId: validatedTask,
 					events: result.events,
 					cursor: result.cursor,
+					format_version: result.format_version,
 				};
 			} catch (error) {
 				throw remapIdentityMismatch(error);

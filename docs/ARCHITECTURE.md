@@ -37,6 +37,8 @@ The main modules are:
 | `internal/git` | Repository isolation, repository profiles, changed-file detection, and diffs |
 | `internal/harness` | Agent-runtime boundary used by orchestration |
 | `internal/harness/pi` | Pi command invocation, JSONL consumption, event normalization, usage, and process termination |
+| `internal/harness/claude` | Claude print-mode execution, stream/transcript decoders, native lookup/archive, usage, and process termination |
+| `internal/session` | Versioned event contract, typed payloads, display derivation, bounded JSON |
 | `application` | Next.js UI, initial-user authentication, PostgreSQL state, daemon registry, and authenticated daemon proxy |
 
 ## Application-to-daemon request flow
@@ -252,46 +254,73 @@ Review is also read-only. The daemon blocks the Task if the Reviewer changes rep
 
 ## Agent process and event flow
 
-Orchestration depends on the small `Harness` interface rather than Pi-specific details. Pi is the only registered runtime today, so another runtime can be added without moving lifecycle policy into the adapter.
+Orchestration depends on the small `Harness` interface
+(`Run(ctx, Request, EventSink)` with explicit `Resume` / `SessionReady` /
+accounting-completeness lifecycle) rather than harness-specific details. Pi
+and Claude are registered; lifecycle policy stays in the factory, never in an
+adapter. The daemon owns the versioned session contract
+(`daemon/internal/session`, `docs/SESSION-FORMAT.md`): display metadata is
+computed at emit time, persisted per event, and consumed verbatim by the UI.
+Transient/partial records are dropped at the adapter; unknown records become
+bounded `custom` events; unmatched tools become `incomplete` calls without an
+invented outcome.
 
 ```mermaid
 sequenceDiagram
     participant F as Factory service
-    participant H as Pi harness
-    participant P as pi process
+    participant H as Harness (pi/claude)
+    participant P as agent process
     participant D as SQLite and JSONL
     participant U as Next.js application
 
-    F->>H: Run(cwd, prompts, model, session, deadline)
-    H->>P: Start one-shot JSON-mode process
-    H->>D: Record process_start
-    loop Pi stdout records
-        P-->>H: JSONL event
-        H->>D: Append raw output, then normalized event
-        D-->>U: SSE event after cursor
+    F->>H: Run(cwd, prompts, model, session UUID, resume, deadline, add-dir)
+    H->>P: Start argv directly (no shell)
+    H->>D: Record process_start (selected harness name)
+    loop stdout records
+        P-->>H: JSONL record
+        H->>D: Append raw output, then normalized session.Entry
+        D-->>U: SSE event after cursor (display verbatim)
     end
-    P-->>H: Final assistant message and exit
+    P-->>H: Terminal result and exit
     H->>D: Record process_end and usage
-    H-->>F: Text, model, session, usage, exit code
-    F->>F: Validate role envelope
+    H-->>F: Text, model, session, usage, cost, readiness (even on error)
+    F->>F: Persist metadata, validate role envelope
     alt Invalid envelope and retries remain
-        F->>H: Correction turn using same session ID
+        F->>H: Correction turn reusing readiness (Resume=true after init)
     else Valid envelope
         F->>D: Persist valid result and advance state
     end
 ```
 
-Each Task role has a stable session ID and private Pi session directory. Initial turns, Planner feedback, and bounded JSON-correction turns reuse that role session. The Pi adapter:
+Each `(task, role)` has a reserved UUID session and a private
+`<task>/sessions/<role>/<harness>/` directory. Initial turns, Planner
+feedback, ordinary continuation, and bounded JSON-correction turns reuse it;
+`Request.Resume` expresses confirmed native continuation and
+`Result.SessionReady` distinguishes a reserved ID from a CLI-initialized one.
+One active invocation per native session is enforced with pending markers;
+crash recovery marks accounting incomplete and never erases the historical
+gap. The Pi adapter runs one-shot JSON mode with project approval; the Claude
+adapter runs `claude -p --output-format stream-json --verbose` with
+`--session-id` / `--resume`, `--append-system-prompt` role instructions on
+every turn, noninteractive `dontAsk` permissions, additive `--allowedTools`,
+validated `--effort`, and explicit `--add-dir` values. Both construct argv
+directly, mirror raw stdout append-only with invocation boundaries, terminate
+the full process group on deadline/cancel, and return discovered metadata even
+on failure. Raw harness JSONL is retained for audit; SQLite holds the
+normalized events.
 
-- invokes an argument vector directly rather than constructing a shell command;
-- runs Pi with project approval and without a tool allowlist;
-- appends and flushes raw Pi stdout before interpreting each event;
-- folds tool start/end records into one bounded normalized `tool_call` event;
-- accumulates token usage, context occupancy, and provider cost;
-- enforces the configured wall-clock deadline; and
-- terminates the complete process group on cancellation.
-
-Raw Pi JSONL is retained for audit. SQLite contains the normalized events used by the API and UI.
+Claude native state versus task-owned audit: native transcripts live in
+Claude's configured state root (`CLAUDE_CONFIG_DIR` or `~/.claude/projects`);
+the daemon reconciles only the exact reserved UUID (match → resume, proven
+absence → create, ambiguity → stop; ready-but-missing → explicit error, never
+a fresh start). After a run it archives only that session and its associated
+subagent/tool-result files under the task directory (replacing snapshots);
+archive failures surface as incomplete accounting. Task deletion removes only
+task-owned archives/workspace, never shared native state, which remains
+subject to Claude retention. Retrying after a repository rewind allocates a
+fresh Claude conversation (prior UUID retained in a `claude.session_reset`
+audit event); Pi retains continuation. UUID resume continues a conversation;
+it does not rewind it to a restored snapshot.
 
 ## Events and live UI updates
 
@@ -324,9 +353,10 @@ SQLite is the query source for the API. Task files preserve execution inputs and
         |-- repository-profiles/
         |-- events.jsonl
         |-- prompts/<role>/
-        |-- sessions/<role>/
+        |-- sessions/<role>/<harness>/
         |   |-- raw-output.jsonl
-        |   `-- pi/
+        |   `-- native/
+        |       `-- <uuid>.jsonl (+ associated files)
         |-- checks/
         |-- artifacts/
         `-- workspace/
