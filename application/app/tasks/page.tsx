@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
-import { DaemonConnections } from "../../src/components/daemon-connections.tsx";
-import { getCurrentSession } from "../../src/server/session.ts";
+import { DaemonConnections } from "@/components/daemon-connections.tsx";
+import { getCurrentSession } from "@/server/session.ts";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";

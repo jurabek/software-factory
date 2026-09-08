@@ -1,14 +1,33 @@
 "use client";
 
+import { ChevronRight } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { daemonCreationOptions, daemonCreateTask, type QualifiedTask } from "../client/daemon-api.ts";
-import type { DaemonConnection } from "../server/daemon-registry.ts";
+import { daemonCreationOptions, daemonCreateTask, type QualifiedTask } from "@/client/daemon-api.ts";
+import type { DaemonConnection } from "@/server/daemon-registry.ts";
+import { Alert, AlertDescription } from "@/components/ui/alert.tsx";
+import { Button } from "@/components/ui/button.tsx";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible.tsx";
+import { Input } from "@/components/ui/input.tsx";
+import { Label } from "@/components/ui/label.tsx";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select.tsx";
+import { Textarea } from "@/components/ui/textarea.tsx";
 
 const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 type RepositoryDraft = { type: "local" | "github"; value: string; name: string; primary: boolean };
 
 function recentKey(daemonId: string): string {
   return `software-factory.recent-directories.${daemonId}`;
+}
+
+function Section({ title, defaultOpen = false, children }: { title: string; defaultOpen?: boolean; children: React.ReactNode }) {
+  return (
+    <Collapsible defaultOpen={defaultOpen} className="bg-card mt-3 rounded-md border">
+      <CollapsibleTrigger className="text-subtle hover:text-foreground group flex w-full items-center gap-2 px-3 py-2.5 text-left">
+        <ChevronRight className="size-4 transition-transform group-data-[state=open]:rotate-90" />{title}
+      </CollapsibleTrigger>
+      <CollapsibleContent className="p-3 pt-0">{children}</CollapsibleContent>
+    </Collapsible>
+  );
 }
 
 export function TaskCreation({ daemon, offline, onCreated }: { daemon: DaemonConnection; offline: boolean; onCreated: (task: QualifiedTask) => void }) {
@@ -118,29 +137,29 @@ export function TaskCreation({ daemon, offline, onCreated }: { daemon: DaemonCon
     try {
       const trimmed = request.trim();
       if (!trimmed) throw new Error("Describe the task first.");
-       if (repositories.some((repository) => !repository.value.trim())) throw new Error("Complete every repository before creating the task.");
-       if (repositories.some((repository) => repository.type === "local" && !repository.value.trim().startsWith("/"))) throw new Error("Local repositories need an absolute daemon path.");
-       if (repositories.some((repository) => repository.type === "github" && !/^[^/\s]+\/[^/\s]+$/.test(repository.value.trim()))) throw new Error("GitHub repositories need owner/name.");
-        const result = await daemonCreateTask(daemon.id, {
-         request: trimmed,
-         repositories: repositories.map((repository) => repository.type === "local"
-           ? { type: "local", path: repository.value.trim(), ...(repository.name.trim() ? { name: repository.name.trim() } : {}), primary: repository.primary }
-           : { type: "github", repo: repository.value.trim(), ...(repository.name.trim() ? { name: repository.name.trim() } : {}), primary: repository.primary }),
+      if (repositories.some((repository) => !repository.value.trim())) throw new Error("Complete every repository before creating the task.");
+      if (repositories.some((repository) => repository.type === "local" && !repository.value.trim().startsWith("/"))) throw new Error("Local repositories need an absolute daemon path.");
+      if (repositories.some((repository) => repository.type === "github" && !/^[^/\s]+\/[^/\s]+$/.test(repository.value.trim()))) throw new Error("GitHub repositories need owner/name.");
+      const result = await daemonCreateTask(daemon.id, {
+        request: trimmed,
+        repositories: repositories.map((repository) => repository.type === "local"
+          ? { type: "local", path: repository.value.trim(), ...(repository.name.trim() ? { name: repository.name.trim() } : {}), primary: repository.primary }
+          : { type: "github", repo: repository.value.trim(), ...(repository.name.trim() ? { name: repository.name.trim() } : {}), primary: repository.primary }),
         ...(harness ? { coding_agent: harness } : {}),
         ...(model ? { model } : {}),
         ...(thinking ? { thinking } : {}),
-       }, controller.signal);
-       if (repositories.some((repository) => repository.type === "local")) {
-         try {
-           const recent = JSON.parse(localStorage.getItem(recentKey(daemon.id)) ?? "[]") as unknown;
-           const values = [...repositories.filter((repository) => repository.type === "local").map((repository) => repository.value.trim()), ...(Array.isArray(recent) ? recent.filter((entry): entry is string => typeof entry === "string") : [])].slice(0, 6);
+      }, controller.signal);
+      if (repositories.some((repository) => repository.type === "local")) {
+        try {
+          const recent = JSON.parse(localStorage.getItem(recentKey(daemon.id)) ?? "[]") as unknown;
+          const values = [...repositories.filter((repository) => repository.type === "local").map((repository) => repository.value.trim()), ...(Array.isArray(recent) ? recent.filter((entry): entry is string => typeof entry === "string") : [])].slice(0, 6);
           localStorage.setItem(recentKey(daemon.id), JSON.stringify([...new Set(values)]));
         } catch {
           // Recent paths are a convenience; creation already succeeded.
         }
       }
       setRequest("");
-       if (!controller.signal.aborted) onCreated(result.task);
+      if (!controller.signal.aborted) onCreated(result.task);
     } catch (failure) {
       if (controller.signal.aborted) return;
       setError(failure instanceof Error ? failure.message : "Could not create the task.");
@@ -150,47 +169,86 @@ export function TaskCreation({ daemon, offline, onCreated }: { daemon: DaemonCon
   }
 
   return (
-    <form className="task-composer-create" onSubmit={submit} aria-label={`Create a task on ${daemon.name}`}>
-      <p className="eyebrow">{daemon.name} / New task</p>
-      <h1>What should the factory build?</h1>
-      {offline ? <p role="alert" className="notice">Daemon offline. Reconnect before creating a task.</p> : null}
-      {error ? <p role="alert" className="notice">{error}</p> : null}
-      <label className="composer-prompt"><span className="sr-only">Task request</span><textarea value={request} onChange={(event) => setRequest(event.target.value)} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} required maxLength={20000} placeholder="Coordinate the change..." /></label>
-      <details className="composer-details" open><summary>Repository sources</summary><div className="repository-drafts">
-         {repositories.map((repository, index) => (
-           <div className="form-row repository-draft" key={index}>
-             <button type="button" aria-label={`Make repository ${index + 1} primary`} aria-pressed={repository.primary} onClick={() => selectPrimary(index)}>{repository.primary ? "Primary" : "Secondary"}</button>
-             <label>Name<input value={repository.name} onChange={(event) => updateRepository(index, { name: event.target.value })} placeholder="optional" /></label>
-             <label>Type<select value={repository.type} onChange={(event) => updateRepository(index, { type: event.target.value as RepositoryDraft["type"] })}><option value="github">GitHub</option><option value="local">Local daemon path</option></select></label>
-              <label>{repository.type === "local" ? "Absolute daemon path" : "owner/repository"}<input value={repository.value} onChange={(event) => updateRepository(index, { value: event.target.value })} list={repository.type === "local" ? `recent-directories-${daemon.id}` : undefined} required placeholder={repository.type === "local" ? "/srv/sandbox/repo" : "owner/app"} /></label>
-             <button type="button" disabled={repositories.length === 1} onClick={() => removeRepository(index)}>Remove</button>
+    <form className="mx-auto my-[clamp(4rem,13vh,11rem)] w-[min(68rem,calc(100%-4rem))]" onSubmit={submit} aria-label={`Create a task on ${daemon.name}`}>
+      <p className="text-primary text-xs uppercase tracking-[0.12em]">{daemon.name} / New task</p>
+      <h1 className="my-2 mb-8 text-center text-4xl font-medium tracking-tight">What should the factory build?</h1>
+      {offline ? <Alert role="alert" className="mb-3 border-l-2 border-l-info"><AlertDescription>Daemon offline. Reconnect before creating a task.</AlertDescription></Alert> : null}
+      {error ? <Alert role="alert" variant="destructive" className="mb-3"><AlertDescription>{error}</AlertDescription></Alert> : null}
+
+      <Label className="bg-secondary block border-l-2 border-l-primary">
+        <span className="sr-only">Task request</span>
+        <Textarea
+          value={request}
+          onChange={(event) => setRequest(event.target.value)}
+          onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }}
+          required
+          maxLength={20000}
+          placeholder="Coordinate the change..."
+          className="min-h-48 resize-y rounded-none border-0 bg-transparent p-6 text-base shadow-none focus-visible:ring-0 dark:bg-transparent"
+        />
+      </Label>
+
+      <Section title="Repository sources" defaultOpen>
+        <div className="grid gap-3 border-t pt-3">
+          {repositories.map((repository, index) => (
+            <div className="grid items-end gap-3 md:grid-cols-[auto_minmax(7rem,.5fr)_minmax(8rem,.6fr)_minmax(0,1fr)_auto]" key={index}>
+              <Button type="button" variant="outline" size="sm" aria-label={`Make repository ${index + 1} primary`} aria-pressed={repository.primary} className={repository.primary ? "border-primary text-primary" : ""} onClick={() => selectPrimary(index)}>{repository.primary ? "Primary" : "Secondary"}</Button>
+              <div className="grid gap-1.5"><Label htmlFor={`repository-name-${index}`}>Name</Label><Input id={`repository-name-${index}`} value={repository.name} onChange={(event) => updateRepository(index, { name: event.target.value })} placeholder="optional" /></div>
+              <div className="grid gap-1.5">
+                <Label htmlFor={`repository-type-${index}`}>Type</Label>
+                <Select value={repository.type} onValueChange={(value) => updateRepository(index, { type: value as RepositoryDraft["type"] })}>
+                  <SelectTrigger id={`repository-type-${index}`} className="w-full"><SelectValue /></SelectTrigger>
+                  <SelectContent><SelectItem value="github">GitHub</SelectItem><SelectItem value="local">Local daemon path</SelectItem></SelectContent>
+                </Select>
+              </div>
+              <div className="grid gap-1.5">
+                <Label htmlFor={`repository-value-${index}`}>{repository.type === "local" ? "Absolute daemon path" : "owner/repository"}</Label>
+                <Input id={`repository-value-${index}`} value={repository.value} onChange={(event) => updateRepository(index, { value: event.target.value })} list={repository.type === "local" ? `recent-directories-${daemon.id}` : undefined} required placeholder={repository.type === "local" ? "/srv/sandbox/repo" : "owner/app"} />
+              </div>
+              <Button type="button" variant="outline" size="sm" disabled={repositories.length === 1} onClick={() => removeRepository(index)}>Remove</Button>
+            </div>
+          ))}
+          <Button type="button" variant="outline" size="sm" className="justify-self-start" onClick={addRepository}>Add repository</Button>
+        </div>
+      </Section>
+
+      {recentDirectories.length ? <datalist id={`recent-directories-${daemon.id}`}>{recentDirectories.map((path) => <option key={path} value={path} />)}</datalist> : null}
+
+      {loading ? <p className="text-subtle mt-3">Loading harness options…</p> : (
+        <Section title="Harness and model">
+          <div className="grid gap-3 border-t pt-3 md:grid-cols-3">
+            <div className="grid gap-1.5">
+              <Label htmlFor="harness">Harness</Label>
+              <Select value={harness} onValueChange={setHarness}>
+                <SelectTrigger id="harness" className="w-full"><SelectValue /></SelectTrigger>
+                <SelectContent>{harnesses.map((entry) => <SelectItem key={entry} value={entry}>{entry}</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="model">Model</Label>
+              <Select value={model} onValueChange={setModel} disabled={modelOptions.length === 0 && !showCustomModel}>
+                <SelectTrigger id="model" className="w-full"><SelectValue placeholder="No models available" /></SelectTrigger>
+                <SelectContent>
+                  {showCustomModel ? <SelectItem key={model} value={model}>{model}</SelectItem> : null}
+                  {modelOptions.map((entry) => <SelectItem key={entry} value={entry}>{entry}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid gap-1.5">
+              <Label htmlFor="thinking">Thinking</Label>
+              <Select value={thinking} onValueChange={setThinking}>
+                <SelectTrigger id="thinking" className="w-full"><SelectValue /></SelectTrigger>
+                <SelectContent>{thinkingLevels.map((level) => <SelectItem key={level} value={level}>{level}</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
           </div>
-         ))}
-         <button type="button" onClick={addRepository}>Add repository</button>
-         </div></details>
-        {recentDirectories.length ? <datalist id={`recent-directories-${daemon.id}`}>{recentDirectories.map((path) => <option key={path} value={path} />)}</datalist> : null}
-      {loading ? <p>Loading harness options…</p> : (
-         <details className="composer-details"><summary>Harness and model</summary><div className="form-row">
-          <label>Harness
-            <select value={harness} onChange={(event) => setHarness(event.target.value)}>
-              {harnesses.map((entry) => <option key={entry} value={entry}>{entry}</option>)}
-            </select>
-          </label>
-          <label>Model
-            <select value={model} onChange={(event) => setModel(event.target.value)} disabled={modelOptions.length === 0}>
-              {showCustomModel ? <option key={model} value={model}>{model}</option> : null}
-              {modelOptions.map((entry) => <option key={entry} value={entry}>{entry}</option>)}
-              {modelOptions.length === 0 && !showCustomModel ? <option value="">No models available</option> : null}
-            </select>
-          </label>
-          <label>Thinking
-            <select value={thinking} onChange={(event) => setThinking(event.target.value)}>
-              {thinkingLevels.map((level) => <option key={level} value={level}>{level}</option>)}
-            </select>
-          </label>
-         </div></details>
-             )}
-       <footer className="composer-footer"><span>Ctrl/Cmd + Enter to create</span><button type="submit" disabled={offline || submitting || loading}>{submitting ? "Creating..." : "Create draft"}</button></footer>
+        </Section>
+      )}
+
+      <footer className="bg-secondary text-muted-foreground mt-3 flex items-center gap-4 rounded-md border px-3 py-2.5 text-xs">
+        <span>Ctrl/Cmd + Enter to create</span>
+        <Button type="submit" variant="outline" size="sm" className="border-primary text-primary ml-auto" disabled={offline || submitting || loading}>{submitting ? "Creating..." : "Create draft"}</Button>
+      </footer>
     </form>
   );
 }

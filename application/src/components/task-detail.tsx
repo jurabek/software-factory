@@ -1,5 +1,6 @@
 "use client";
 
+import { Archive, Brain, ChevronRight, Columns2, Copy, ExternalLink, FastForward, File, Folder, GitBranch, Monitor, Pencil, PanelLeftClose, Plus, Send, Shield, SkipForward, Terminal, Users } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
   daemonArtifacts,
@@ -27,9 +28,22 @@ import {
   type TaskEvent,
   type TaskIntervention,
   type TaskResult,
-} from "../client/daemon-api.ts";
-import { qualifiedEventKey, relativeTime, RequestScope, statePresentation } from "../client/daemon-ui-state.ts";
-import { IconArchive, IconBranch, IconBrain, IconChevron, IconCollapse, IconCopy, IconExternalLink, IconFastForward, IconFile, IconFolder, IconMonitor, IconPencil, IconPeople, IconPlus, IconSend, IconShield, IconSkip, IconSplit, IconTerminal } from "./icons.tsx";
+} from "@/client/daemon-api.ts";
+import { qualifiedEventKey, relativeTime, RequestScope } from "@/client/daemon-ui-state.ts";
+import { Alert, AlertDescription } from "@/components/ui/alert.tsx";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar.tsx";
+import { Badge } from "@/components/ui/badge.tsx";
+import { Button } from "@/components/ui/button.tsx";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible.tsx";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog.tsx";
+import { Label } from "@/components/ui/label.tsx";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select.tsx";
+import { SidebarTrigger } from "@/components/ui/sidebar.tsx";
+import { Switch } from "@/components/ui/switch.tsx";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs.tsx";
+import { Textarea } from "@/components/ui/textarea.tsx";
+import { stateTextClass } from "@/lib/state-style.ts";
+import { cn } from "@/lib/utils.ts";
 
 const commands = ["start", "approve", "pause", "resume", "abort"] as const;
 const interventionActions = ["comment", "steer", "follow_up", "retry", "revise", "repair"] as const;
@@ -42,6 +56,7 @@ const actionLabels: Record<InterventionAction, string> = {
   revise: "Revise and retry",
   repair: "Continue repair",
 };
+const liveTone: Record<string, string> = { live: "bg-success shadow-[0_0_0.4rem_var(--success)]", reconnecting: "bg-warning", connecting: "bg-warning", offline: "bg-destructive" };
 const transientEventTypes = new Set(["message_start", "message_update", "tool_execution_update"]);
 const outputKeys = ["result", "output", "text", "message", "error"];
 const visibleEventLimit = 500;
@@ -266,25 +281,21 @@ export function TaskDetail({ daemonId, daemonName, task, rootTask, login, offlin
   const [artifactMode, setArtifactMode] = useState<"rendered" | "raw">("rendered");
   const [artifactQuote, setArtifactQuote] = useState("");
   const [selectedEvent, setSelectedEvent] = useState<TaskEvent | null>(null);
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
-  const [autoScroll, setAutoScroll] = useState(true);
+  const [autoScroll] = useState(true);
   const [events, setEvents] = useState<TaskEvent[]>([]);
   const [availableActions, setAvailableActions] = useState<string[]>([]);
-  const [cursor, setCursor] = useState<number | undefined>(undefined);
+  const [, setCursor] = useState<number | undefined>(undefined);
   const [live, setLive] = useState<"connecting" | "live" | "reconnecting" | "offline">("connecting");
   const [error, setError] = useState<string | null>(null);
   const [pendingCommand, setPendingCommand] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [message, setMessage] = useState("");
   const [action, setAction] = useState<InterventionAction>("comment");
-  const [sidebarTab, setSidebarTab] = useState<"artifacts" | "workspace" | "minimap">("artifacts");
   const chatScroll = useRef<HTMLDivElement | null>(null);
   const scope = useRef(new RequestScope());
   const mutationScope = useRef(new RequestScope());
   const mutationController = useRef<AbortController | null>(null);
-  const eventDialog = useRef<HTMLElement | null>(null);
   const eventScroll = useRef<HTMLDivElement | null>(null);
-  const eventTrigger = useRef<HTMLButtonElement | null>(null);
   const cursorRef = useRef<number | undefined>(undefined);
   const seen = useRef(new Set<string>());
 
@@ -308,19 +319,6 @@ export function TaskDetail({ daemonId, daemonName, task, rootTask, login, offlin
   const otherCount = results.length + checks.length + diff.repositories.length;
   const workspacePath = currentTask.workspace_path ?? "Daemon sandbox";
   const canSend = !offline && !pending && pendingCommand === null;
-
-  function toggleGroup(key: string) {
-    setCollapsedGroups((previous) => {
-      const next = new Set(previous);
-      if (next.has(key)) next.delete(key); else next.add(key);
-      return next;
-    });
-  }
-
-  function closeEvent() {
-    setSelectedEvent(null);
-    eventTrigger.current?.focus();
-  }
 
   function beginMutation(): { generation: number; controller: AbortController } {
     mutationController.current?.abort();
@@ -400,26 +398,13 @@ export function TaskDetail({ daemonId, daemonName, task, rootTask, login, offlin
     if (autoScroll && chatScroll.current) chatScroll.current.scrollTop = chatScroll.current.scrollHeight;
   }, [autoScroll, events, interventions]);
 
+  // The dialog traps focus and handles Escape; only the reading shortcuts stay.
   useEffect(() => {
     if (!selectedEvent) return;
-    eventDialog.current?.focus();
     function handleDialogKeyboard(event: KeyboardEvent) {
-      if (event.key === "Escape" || event.key === "i") {
-        event.preventDefault();
-        setSelectedEvent(null);
-        eventTrigger.current?.focus();
-        return;
-      }
+      if (event.key === "i") { event.preventDefault(); setSelectedEvent(null); return; }
       if (event.key === "j" || event.key === "ArrowDown") { event.preventDefault(); eventScroll.current?.scrollBy({ top: 64 }); return; }
-      if (event.key === "k" || event.key === "ArrowUp") { event.preventDefault(); eventScroll.current?.scrollBy({ top: -64 }); return; }
-      if (event.key === "Tab" && eventDialog.current) {
-        const focusable = Array.from(eventDialog.current.querySelectorAll<HTMLElement>("button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])")).filter((element) => !element.hasAttribute("disabled"));
-        const first = focusable[0];
-        const last = focusable.at(-1);
-        if (!first || !last) return;
-        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
-      }
+      if (event.key === "k" || event.key === "ArrowUp") { event.preventDefault(); eventScroll.current?.scrollBy({ top: -64 }); }
     }
     document.addEventListener("keydown", handleDialogKeyboard);
     return () => document.removeEventListener("keydown", handleDialogKeyboard);
@@ -616,173 +601,249 @@ export function TaskDetail({ daemonId, daemonName, task, rootTask, login, offlin
   }
 
   return (
-    <section className="chat-view" aria-label={`Session ${task.id} on ${daemonName}`}>
-      <div className="chat-main">
-        <header className="page-topbar">
-          <nav className="crumbs" aria-label="Breadcrumb">
-            <button type="button" onClick={onOpenTask}>Tasks</button><i>›</i>
-            <button type="button" onClick={onOpenTask}>{rootTask.request}</button><i>›</i>
-            <strong>{currentTask.request}</strong>
-            <button type="button" className="icon-button" aria-label="Rename session"><IconPencil /></button>
+    <section className="grid h-dvh min-w-0 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_22rem]" aria-label={`Session ${task.id} on ${daemonName}`}>
+      <div className="flex min-w-0 flex-col overflow-hidden">
+        <header className="border-rail-line bg-background flex h-14 items-center justify-between gap-3 border-t-2 border-b px-4">
+          <nav className="text-muted-foreground flex min-w-0 items-center gap-1.5" aria-label="Breadcrumb">
+            <SidebarTrigger className="mr-1" />
+            <button type="button" className="hover:text-foreground" onClick={onOpenTask}>Tasks</button><span aria-hidden="true">›</span>
+            <button type="button" className="hover:text-foreground max-w-40 truncate" onClick={onOpenTask}>{rootTask.request}</button><span aria-hidden="true">›</span>
+            <strong className="text-foreground truncate font-medium">{currentTask.request}</strong>
+            <Button type="button" variant="ghost" size="icon-xs" aria-label="Rename session"><Pencil /></Button>
           </nav>
-          <div className="topbar-tools"><span className="live-dot" data-live={live} title={live} aria-label={`Stream ${live}`} /><button type="button" className="icon-button" aria-label="Collapse panel"><IconCollapse /></button><button type="button" className="icon-button" aria-label="New task"><IconPlus /></button></div>
+          <div className="flex items-center gap-1">
+            <span className={cn("size-2 rounded-full", liveTone[live])} title={live} aria-label={`Stream ${live}`} />
+            <Button type="button" variant="ghost" size="icon-sm" aria-label="Collapse panel"><PanelLeftClose /></Button>
+            <Button type="button" variant="ghost" size="icon-sm" aria-label="New task"><Plus /></Button>
+          </div>
         </header>
 
-        <div className="chat-subbar">
-          <div className="path-crumb"><code title={workspacePath}>{workspacePath}</code><button type="button" className="icon-button" aria-label="Copy path"><IconCopy /></button><button type="button" className="icon-button" aria-label="Open folder"><IconFolder /></button><button type="button" className="icon-button" aria-label="Split view"><IconSplit /></button><button type="button" className="icon-button" aria-label="Open terminal"><IconTerminal /></button></div>
-          <span className="tag accent">{currentTask.coding_agent ?? "session"}</span>
+        <div className="bg-background flex items-center justify-between gap-4 border-b px-4 py-2">
+          <div className="flex min-w-0 items-center gap-1">
+            <code className="text-info truncate text-[0.78rem]" title={workspacePath}>{workspacePath}</code>
+            <Button type="button" variant="ghost" size="icon-xs" aria-label="Copy path"><Copy /></Button>
+            <Button type="button" variant="ghost" size="icon-xs" aria-label="Open folder"><Folder /></Button>
+            <Button type="button" variant="ghost" size="icon-xs" aria-label="Split view"><Columns2 /></Button>
+            <Button type="button" variant="ghost" size="icon-xs" aria-label="Open terminal"><Terminal /></Button>
+          </div>
+          <Badge variant="outline" className="text-info border-info shrink-0">{currentTask.coding_agent ?? "session"}</Badge>
         </div>
 
-        {error ? <p role="alert" className="notice chat-notice">{error}</p> : null}
-        {offline ? <p role="alert" className="notice chat-notice">Daemon offline. Actions are disabled until it reconnects.</p> : null}
+        {error ? <Alert role="alert" variant="destructive" className="mx-4 mt-3 w-auto"><AlertDescription>{error}</AlertDescription></Alert> : null}
+        {offline ? <Alert role="alert" className="mx-4 mt-3 w-auto border-l-2 border-l-info"><AlertDescription>Daemon offline. Actions are disabled until it reconnects.</AlertDescription></Alert> : null}
 
         {(["completed", "aborted"] as string[]).includes(currentTask.state) || commands.some((command) => commandEnabled(command, currentTask.state)) ? (
-          <div className="chat-commands" role="group" aria-label="Task commands">
+          <div className="flex flex-wrap gap-2 border-b px-4 py-2.5" role="group" aria-label="Task commands">
             {commands.map((command) => commandEnabled(command, currentTask.state) ? (
-              <button key={`${daemonId}:${task.id}:${command}`} type="button" disabled={offline || pendingCommand !== null || pending} onClick={() => void sendCommand(command)}>{pendingCommand === command ? `${command}…` : command}</button>
+              <Button key={`${daemonId}:${task.id}:${command}`} type="button" variant="outline" size="sm" className="uppercase" disabled={offline || pendingCommand !== null || pending} onClick={() => void sendCommand(command)}>{pendingCommand === command ? `${command}…` : command}</Button>
             ) : null)}
-            {(["completed", "aborted"] as string[]).includes(currentTask.state) ? <button type="button" disabled={offline || pending} onClick={() => void removeTask()}>{pending ? "Working…" : "delete"}</button> : null}
+            {(["completed", "aborted"] as string[]).includes(currentTask.state) ? <Button type="button" variant="outline" size="sm" className="uppercase" disabled={offline || pending} onClick={() => void removeTask()}>{pending ? "Working…" : "delete"}</Button> : null}
           </div>
         ) : null}
 
-        <div className="chat-scroll" ref={chatScroll}>
-          {hiddenEventCount ? <p className="hint chat-hint">{hiddenEventCount} older events hidden to keep this view responsive.</p> : null}
+        <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-4 pt-6 pb-8" ref={chatScroll}>
+          {hiddenEventCount ? <p className="text-muted-foreground text-xs">{hiddenEventCount} older events hidden to keep this view responsive.</p> : null}
           {timelineBlocks.map((block) => {
             if (block.kind === "user") {
               const author = block.item.author ?? login;
               return (
-                <article className="msg msg-user" key={block.item.key}>
-                  <span className="avatar" aria-hidden="true">{monogram(author)}</span>
-                  <div className="msg-body">
-                    <div className="msg-head"><strong>{displayName(author)}</strong><button type="button" className="icon-button msg-copy" aria-label="Copy message" onClick={() => void navigator.clipboard?.writeText(block.item.text ?? "")}><IconCopy /></button><time>{relativeTime(block.item.iso)}</time></div>
-                    <p className="msg-text">{block.item.text}</p>
+                <article className="grid grid-cols-[1.9rem_minmax(0,1fr)] items-start gap-3" key={block.item.key}>
+                  <Avatar className="size-8 rounded-md"><AvatarFallback className="rounded-md bg-gradient-to-br from-[#5b4b78] to-[#37506a] text-[0.62rem] font-semibold text-[#efe9ff]">{monogram(author)}</AvatarFallback></Avatar>
+                  <div className="grid min-w-0 gap-1">
+                    <div className="flex items-baseline gap-2">
+                      <strong className="text-subtle text-[0.8rem] font-medium">{displayName(author)}</strong>
+                      <Button type="button" variant="ghost" size="icon-xs" aria-label="Copy message" onClick={() => void navigator.clipboard?.writeText(block.item.text ?? "")}><Copy /></Button>
+                      <time className="text-muted-foreground ml-auto text-[0.68rem]">{relativeTime(block.item.iso)}</time>
+                    </div>
+                    <p className="whitespace-pre-wrap break-words">{block.item.text}</p>
                   </div>
                 </article>
               );
             }
-            const collapsed = collapsedGroups.has(block.key);
             return (
-              <section className="work-group" key={block.key}>
-                <button type="button" className="work-group-head" aria-expanded={!collapsed} onClick={() => toggleGroup(block.key)}>
-                  <IconChevron /><span>Worked for {formatSpan(block.span)}</span>
-                </button>
-                {collapsed ? null : (
-                  <div className="work-items">
-                    {block.items.map((item) => {
-                      if (item.role === "tool" && item.event) {
-                        const event = item.event;
-                        return (
-                          <button className="work-row work-tool" key={item.key} type="button" aria-haspopup="dialog" onClick={(clickEvent) => { eventTrigger.current = clickEvent.currentTarget; setSelectedEvent(event); }}>
-                            <span className="work-icon" data-success={eventSuccess(event)} aria-hidden="true"><IconFile /></span>
-                            <span className="work-body">
-                              <span className="work-title"><strong>{eventTitle(event)}</strong>{eventTarget(event) ? <span className="work-path">{eventTarget(event)}</span> : null}<IconExternalLink className="work-ext" /></span>
-                              {eventResultLine(event) ? <span className="work-preview"><i aria-hidden="true">└</i>{eventResultLine(event)}</span> : null}
-                            </span>
-                            <time className="work-time">{relativeTime(item.iso)}</time>
-                          </button>
-                        );
-                      }
-                      const isResponse = !!item.text && (item.text.includes("\n") || item.text.length > 160);
+              <Collapsible defaultOpen className="group/work grid gap-1" key={block.key}>
+                <CollapsibleTrigger className="text-muted-foreground hover:text-subtle inline-flex items-center gap-2 justify-self-start px-1 text-[0.68rem] uppercase tracking-[0.08em]">
+                  <ChevronRight className="size-3.5 transition-transform group-data-[state=open]/work:rotate-90" /><span>Worked for {formatSpan(block.span)}</span>
+                </CollapsibleTrigger>
+                <CollapsibleContent className="grid gap-5 pt-3 pb-1">
+                  {block.items.map((item) => {
+                    if (item.role === "tool" && item.event) {
+                      const event = item.event;
+                      const failed = eventSuccess(event) === false;
                       return (
-                        <div className={`work-row work-think${item.role === "system" ? " work-error" : ""}`} key={item.key}>
-                          <span className="work-icon think" aria-hidden="true"><IconBrain /></span>
-                          <p className={`work-think-text${isResponse ? " is-response" : ""}`}>{item.text}</p>
-                          <time className="work-time">{relativeTime(item.iso)}</time>
-                        </div>
+                        <button className="hover:bg-secondary grid w-full grid-cols-[1.5rem_minmax(0,1fr)_auto] items-start gap-3 rounded-md px-1 py-0.5 text-left" key={item.key} type="button" aria-haspopup="dialog" onClick={() => setSelectedEvent(event)}>
+                          <span className={cn("grid size-6 place-items-center", failed ? "text-destructive" : "text-subtle")} aria-hidden="true"><File className="size-4" /></span>
+                          <span className="grid min-w-0 gap-1">
+                            <span className="flex min-w-0 items-center gap-2">
+                              <strong className="text-foreground shrink-0 font-semibold">{eventTitle(event)}</strong>
+                              {eventTarget(event) ? <span className="text-subtle truncate">{eventTarget(event)}</span> : null}
+                              <ExternalLink className="text-muted-foreground size-3.5 shrink-0" />
+                            </span>
+                            {eventResultLine(event) ? <span className="text-muted-foreground flex min-w-0 gap-2 truncate text-[0.82rem]"><i aria-hidden="true" className="text-input not-italic">└</i>{eventResultLine(event)}</span> : null}
+                          </span>
+                          <time className="text-muted-foreground pt-0.5 text-[0.7rem] whitespace-nowrap">{relativeTime(item.iso)}</time>
+                        </button>
                       );
-                    })}
-                  </div>
-                )}
-              </section>
+                    }
+                    const isResponse = !!item.text && (item.text.includes("\n") || item.text.length > 160);
+                    return (
+                      <div className="grid w-full grid-cols-[1.5rem_minmax(0,1fr)_auto] items-start gap-3 px-1 py-0.5" key={item.key}>
+                        <span className="text-primary grid size-6 place-items-center" aria-hidden="true"><Brain className="size-4" /></span>
+                        <p className={cn("m-0 min-w-0 break-words", item.role === "system" ? "text-warning" : isResponse ? "text-subtle whitespace-pre-wrap" : "text-muted-foreground italic")}>{item.text}</p>
+                        <time className="text-muted-foreground pt-0.5 text-[0.7rem] whitespace-nowrap">{relativeTime(item.iso)}</time>
+                      </div>
+                    );
+                  })}
+                </CollapsibleContent>
+              </Collapsible>
             );
           })}
-          {!timeline.length ? <p className="chat-empty">No messages yet. The stream stays open while this session is selected.</p> : null}
+          {!timeline.length ? <p className="text-muted-foreground m-auto text-center">No messages yet. The stream stays open while this session is selected.</p> : null}
         </div>
 
-        <form className="composer" onSubmit={currentTask.state === "awaiting_plan_approval" ? revisePlan : submitMessage}>
-          <div className="composer-status">
-            <span className="status-pill" data-state={statePresentation(currentTask.state)}>{currentTask.state.replaceAll("_", " ").toUpperCase()}</span>
-            <button type="button" className="chip"><span>{modelLabel(currentTask.model)}</span><IconPencil /></button>
-            <button type="button" className="chip"><span>{(currentTask.thinking ?? "medium").toUpperCase()}</span><IconPencil /></button>
-            <span className="token-meter">{typeof currentTask.total_cost === "number" && currentTask.total_cost > 0 ? `$${currentTask.total_cost.toFixed(2)}` : "0 tokens"}</span>
-            <label className="composer-action"><span className="sr-only">Intervention action</span><select value={action} onChange={(event) => setAction(event.target.value as InterventionAction)} disabled={!canSend || currentTask.state === "awaiting_plan_approval"}>{interventionChoices(currentTask.state, availableActions).map((item) => <option key={item} value={item}>{actionLabels[item]}</option>)}</select></label>
-          </div>
-          <textarea value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} disabled={offline || pending || pendingCommand !== null} placeholder={currentTask.state === "awaiting_plan_approval" ? "Explain what the planner should revise…" : "ENTER to start typing…"} />
-          <div className="composer-bar">
-            <div className="composer-icons" aria-label="Session controls">
-              <button type="button" className="icon-button" disabled aria-label="Permissions"><IconShield /></button>
-              <button type="button" className="icon-button" disabled={!canSend || !commandEnabled("resume", currentTask.state)} aria-label="Resume" onClick={() => void sendCommand("resume")}><IconFastForward /></button>
-              <button type="button" className="icon-button" disabled={!canSend || !commandEnabled("approve", currentTask.state)} aria-label="Approve" onClick={() => void sendCommand("approve")}><IconSkip /></button>
-              <button type="button" className="icon-button" disabled={!canSend || !commandEnabled("abort", currentTask.state)} aria-label="Abort" onClick={() => void sendCommand("abort")}><IconArchive /></button>
-              <button type="button" className="icon-button" disabled aria-label="Branches"><IconBranch /></button>
-              <button type="button" className="icon-button" disabled aria-label="Files"><IconFolder /></button>
-              <button type="button" className="icon-button" disabled aria-label="Collaborators"><IconPeople /></button>
+        <form className="bg-background grid gap-2.5 border-t px-4 pt-3 pb-4" onSubmit={currentTask.state === "awaiting_plan_approval" ? revisePlan : submitMessage}>
+          <div className="flex flex-wrap items-center gap-2.5">
+            <Badge variant="outline" className={cn("border-current tracking-[0.07em]", stateTextClass(currentTask.state))}>{currentTask.state.replaceAll("_", " ").toUpperCase()}</Badge>
+            <Button type="button" variant="outline" size="xs" className="text-primary">{modelLabel(currentTask.model)}<Pencil className="text-muted-foreground" /></Button>
+            <Button type="button" variant="outline" size="xs" className="text-primary">{(currentTask.thinking ?? "medium").toUpperCase()}<Pencil className="text-muted-foreground" /></Button>
+            <span className="text-muted-foreground text-[0.7rem]">{typeof currentTask.total_cost === "number" && currentTask.total_cost > 0 ? `$${currentTask.total_cost.toFixed(2)}` : "0 tokens"}</span>
+            <div className="ml-auto">
+              <Label className="sr-only" htmlFor="intervention-action">Intervention action</Label>
+              <Select value={action} onValueChange={(value) => setAction(value as InterventionAction)} disabled={!canSend || currentTask.state === "awaiting_plan_approval"}>
+                <SelectTrigger id="intervention-action" size="sm" className="text-xs"><SelectValue /></SelectTrigger>
+                <SelectContent>{interventionChoices(currentTask.state, availableActions).map((item) => <SelectItem key={item} value={item}>{actionLabels[item]}</SelectItem>)}</SelectContent>
+              </Select>
             </div>
-            <button type="submit" className="send-button" disabled={offline || pending || pendingCommand !== null || (!message.trim() && action !== "retry")}><IconSend />{pending ? "SENDING…" : "SEND"}<kbd>⌘+ENTER</kbd></button>
+          </div>
+          <Textarea value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} disabled={offline || pending || pendingCommand !== null} placeholder={currentTask.state === "awaiting_plan_approval" ? "Explain what the planner should revise…" : "ENTER to start typing…"} className="min-h-14" />
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-0.5" aria-label="Session controls">
+              <Button type="button" variant="ghost" size="icon-sm" className="text-destructive" disabled aria-label="Permissions"><Shield /></Button>
+              <Button type="button" variant="ghost" size="icon-sm" disabled={!canSend || !commandEnabled("resume", currentTask.state)} aria-label="Resume" onClick={() => void sendCommand("resume")}><FastForward /></Button>
+              <Button type="button" variant="ghost" size="icon-sm" disabled={!canSend || !commandEnabled("approve", currentTask.state)} aria-label="Approve" onClick={() => void sendCommand("approve")}><SkipForward /></Button>
+              <Button type="button" variant="ghost" size="icon-sm" disabled={!canSend || !commandEnabled("abort", currentTask.state)} aria-label="Abort" onClick={() => void sendCommand("abort")}><Archive /></Button>
+              <Button type="button" variant="ghost" size="icon-sm" disabled aria-label="Branches"><GitBranch /></Button>
+              <Button type="button" variant="ghost" size="icon-sm" disabled aria-label="Files"><Folder /></Button>
+              <Button type="button" variant="ghost" size="icon-sm" disabled aria-label="Collaborators"><Users /></Button>
+            </div>
+            <Button type="submit" variant="outline" size="sm" className="bg-secondary tracking-[0.05em]" disabled={offline || pending || pendingCommand !== null || (!message.trim() && action !== "retry")}>
+              <Send className="text-primary" />{pending ? "SENDING…" : "SEND"}<kbd className="border-input text-subtle rounded-sm border px-1 text-[0.65rem]">⌘+ENTER</kbd>
+            </Button>
           </div>
         </form>
       </div>
 
-      <aside className="context-sidebar" aria-label="Session context">
-        <header className="sidebar-head"><IconMonitor /><strong title={daemonName}>{daemonName}</strong><button type="button" className="icon-button" aria-label="Collapse sidebar"><IconSplit /></button></header>
-        <div className="sidebar-tabs" role="tablist">
-          <button type="button" role="tab" aria-selected={sidebarTab === "artifacts"} onClick={() => setSidebarTab("artifacts")}>Artifacts</button>
-          <button type="button" role="tab" aria-selected={sidebarTab === "workspace"} onClick={() => setSidebarTab("workspace")}>Workspace</button>
-          <button type="button" role="tab" aria-selected={sidebarTab === "minimap"} onClick={() => setSidebarTab("minimap")}>Minimap</button>
-        </div>
-        {sidebarTab === "artifacts" ? (
-          <div className="sidebar-body">
-            <p className="artifact-counts"><strong>0</strong> src · <strong>{editCount}</strong> edit · <strong>{artifacts.length}</strong> new · <strong>{otherCount}</strong> other</p>
-            <label className="grouped-toggle"><span className="switch" aria-hidden="true" /> Grouped</label>
-            <p className="group-label">Unreferenced ({artifactViews.length})</p>
-            <ul className="artifact-cards">{artifactViews.map((artifact) => {
+      <aside className="bg-card hidden min-w-0 flex-col overflow-hidden border-l lg:flex" aria-label="Session context">
+        <header className="border-rail-line text-muted-foreground flex h-14 shrink-0 items-center gap-2 border-t-2 border-b px-3">
+          <Monitor className="size-4 shrink-0" />
+          <strong className="text-subtle truncate text-[0.78rem] font-medium" title={daemonName}>{daemonName}</strong>
+          <Button type="button" variant="ghost" size="icon-sm" className="ml-auto" aria-label="Collapse sidebar"><Columns2 /></Button>
+        </header>
+        <Tabs defaultValue="artifacts" className="min-h-0 flex-1 gap-0 overflow-hidden">
+          <TabsList variant="line" className="w-full justify-start gap-4 border-b px-3">
+            <TabsTrigger value="artifacts" className="text-[0.68rem] uppercase tracking-[0.07em]">Artifacts</TabsTrigger>
+            <TabsTrigger value="workspace" className="text-[0.68rem] uppercase tracking-[0.07em]">Workspace</TabsTrigger>
+            <TabsTrigger value="minimap" className="text-[0.68rem] uppercase tracking-[0.07em]">Minimap</TabsTrigger>
+          </TabsList>
+          <TabsContent value="artifacts" className="min-h-0 flex-1 overflow-y-auto p-3.5">
+            <p className="text-muted-foreground mb-3 text-[0.74rem]"><strong className="text-subtle font-semibold">0</strong> src · <strong className="text-subtle font-semibold">{editCount}</strong> edit · <strong className="text-subtle font-semibold">{artifacts.length}</strong> new · <strong className="text-subtle font-semibold">{otherCount}</strong> other</p>
+            <Label className="text-muted-foreground mb-4 flex items-center gap-2 text-[0.7rem] uppercase tracking-[0.06em]"><Switch className="h-4 w-7" />Grouped</Label>
+            <p className="text-muted-foreground mb-2 text-[0.66rem] uppercase tracking-[0.07em]">Unreferenced ({artifactViews.length})</p>
+            <ul className="grid gap-1.5">{artifactViews.map((artifact) => {
               const label = artifact.kind === "file" ? (artifact.subtitle.split("/").pop() || artifact.subtitle) : artifact.title;
-              return <li key={artifact.id}><button type="button" aria-pressed={selectedArtifact === artifact.id} onClick={() => { setSelectedArtifact(artifact.id); setArtifactMode("rendered"); setArtifactQuote(""); }}><IconFile /><span className="artifact-name">{label}</span><span className="chip-count">0</span><span className="dots" aria-hidden="true">···</span></button></li>;
+              return (
+                <li key={artifact.id}>
+                  <button type="button" className="bg-background hover:bg-secondary aria-pressed:bg-secondary aria-pressed:border-input grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-md border px-2 py-2 text-left" aria-pressed={selectedArtifact === artifact.id} onClick={() => { setSelectedArtifact(artifact.id); setArtifactMode("rendered"); setArtifactQuote(""); }}>
+                    <File className="text-muted-foreground size-4" />
+                    <span className="text-foreground truncate text-[0.78rem]">{label}</span>
+                    <span className="text-muted-foreground text-[0.66rem]">···</span>
+                  </button>
+                </li>
+              );
             })}</ul>
-            {!artifactViews.length ? <p className="sidebar-empty">No artifacts yet.</p> : null}
-            {selectedArtifactValue ? <article className="artifact-preview"><div className="section-heading"><strong>{selectedArtifactValue.title}</strong><div className="actions"><button type="button" aria-pressed={artifactMode === "rendered"} onClick={() => setArtifactMode("rendered")}>Rendered</button><button type="button" aria-pressed={artifactMode === "raw"} onClick={() => setArtifactMode("raw")}>Raw</button><button type="button" onClick={() => { setSelectedArtifact(null); setArtifactQuote(""); }}>Close</button></div></div><pre onMouseUp={() => setArtifactQuote(window.getSelection()?.toString().trim() ?? "")}>{artifactMode === "rendered" ? renderedArtifactContent(selectedArtifactValue) : selectedArtifactValue.content}</pre>{artifactQuote ? <div className="selection-action"><span>“{artifactQuote.slice(0, 60)}{artifactQuote.length > 60 ? "…" : ""}”</span><button type="button" onClick={() => { setAction("comment"); setMessage((current) => current ? `${current}\nRegarding “${artifactQuote}”` : `Regarding “${artifactQuote}”\n`); }}>Comment</button></div> : null}</article> : null}
-          </div>
-        ) : sidebarTab === "workspace" ? (
-          <div className="sidebar-body">
-            <dl className="sidebar-facts">
-              <div><dt>Workspace</dt><dd title={workspacePath}>{workspacePath}</dd></div>
-              <div><dt>State</dt><dd>{currentTask.state}</dd></div>
-              <div><dt>Branch</dt><dd>{selectedBranch?.id?.slice(0, 8) ?? "-"} · head {selectedBranch?.head_attempt_id?.slice(0, 8) ?? "-"}</dd></div>
-              <div><dt>Attempt</dt><dd>{attempts.at(-1)?.name ?? "not started"}</dd></div>
-              <div><dt>Checks</dt><dd>{checks.filter((check) => check.status === "passed").length}/{checks.length} passed</dd></div>
+            {!artifactViews.length ? <p className="text-muted-foreground text-[0.78rem]">No artifacts yet.</p> : null}
+            {selectedArtifactValue ? (
+              <article className="border-primary mt-4 rounded-md border p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <strong className="font-medium">{selectedArtifactValue.title}</strong>
+                  <div className="flex gap-1.5">
+                    <Button type="button" variant="outline" size="xs" aria-pressed={artifactMode === "rendered"} onClick={() => setArtifactMode("rendered")}>Rendered</Button>
+                    <Button type="button" variant="outline" size="xs" aria-pressed={artifactMode === "raw"} onClick={() => setArtifactMode("raw")}>Raw</Button>
+                    <Button type="button" variant="outline" size="xs" onClick={() => { setSelectedArtifact(null); setArtifactQuote(""); }}>Close</Button>
+                  </div>
+                </div>
+                <pre className="text-muted-foreground mt-2.5 max-h-72 overflow-auto text-xs leading-relaxed break-words whitespace-pre-wrap" onMouseUp={() => setArtifactQuote(window.getSelection()?.toString().trim() ?? "")}>{artifactMode === "rendered" ? renderedArtifactContent(selectedArtifactValue) : selectedArtifactValue.content}</pre>
+                {artifactQuote ? (
+                  <div className="text-muted-foreground mt-2.5 flex items-center justify-between gap-3 border-t pt-2.5 text-xs">
+                    <span className="truncate">“{artifactQuote.slice(0, 60)}{artifactQuote.length > 60 ? "…" : ""}”</span>
+                    <Button type="button" variant="outline" size="xs" onClick={() => { setAction("comment"); setMessage((current) => current ? `${current}\nRegarding “${artifactQuote}”` : `Regarding “${artifactQuote}”\n`); }}>Comment</Button>
+                  </div>
+                ) : null}
+              </article>
+            ) : null}
+          </TabsContent>
+          <TabsContent value="workspace" className="min-h-0 flex-1 overflow-y-auto p-3.5">
+            <dl className="grid gap-2.5">
+              <div className="grid gap-0.5 border-t pt-2"><dt className="text-muted-foreground text-[0.66rem] uppercase tracking-[0.06em]">Workspace</dt><dd className="text-subtle truncate text-[0.78rem]" title={workspacePath}>{workspacePath}</dd></div>
+              <div className="grid gap-0.5 border-t pt-2"><dt className="text-muted-foreground text-[0.66rem] uppercase tracking-[0.06em]">State</dt><dd className="text-subtle truncate text-[0.78rem]">{currentTask.state}</dd></div>
+              <div className="grid gap-0.5 border-t pt-2"><dt className="text-muted-foreground text-[0.66rem] uppercase tracking-[0.06em]">Branch</dt><dd className="text-subtle truncate text-[0.78rem]">{selectedBranch?.id?.slice(0, 8) ?? "-"} · head {selectedBranch?.head_attempt_id?.slice(0, 8) ?? "-"}</dd></div>
+              <div className="grid gap-0.5 border-t pt-2"><dt className="text-muted-foreground text-[0.66rem] uppercase tracking-[0.06em]">Attempt</dt><dd className="text-subtle truncate text-[0.78rem]">{attempts.at(-1)?.name ?? "not started"}</dd></div>
+              <div className="grid gap-0.5 border-t pt-2"><dt className="text-muted-foreground text-[0.66rem] uppercase tracking-[0.06em]">Checks</dt><dd className="text-subtle truncate text-[0.78rem]">{checks.filter((check) => check.status === "passed").length}/{checks.length} passed</dd></div>
+              <div className="grid gap-0.5 border-t pt-2"><dt className="text-muted-foreground text-[0.66rem] uppercase tracking-[0.06em]">Sessions</dt><dd className="text-subtle truncate text-[0.78rem]">{sessions.length}</dd></div>
             </dl>
-            {branches.length > 1 ? <label className="branch-select">Branch<select value={selectedBranch?.id ?? ""} disabled={offline || pending} onChange={(event) => { setSelectedBranchId(event.target.value); setSelectedAttempt(null); }}>{branches.map((branch) => <option key={branch.id} value={branch.id}>{branch.id.slice(0, 8)} · {branch.status}</option>)}</select></label> : null}
-            {repositories.length ? <div className="repository-chips">{repositories.map((repository) => <span key={repository.id}><strong>{repository.primary ? "◆" : "◇"} {repository.name}</strong><small>{repository.source_type}</small></span>)}</div> : null}
-          </div>
-        ) : (
-          <div className="sidebar-body"><p className="sidebar-empty">Minimap is not available yet.</p></div>
-        )}
+            {branches.length > 1 ? (
+              <div className="mt-4 grid gap-1.5">
+                <Label htmlFor="branch">Branch</Label>
+                <Select value={selectedBranch?.id ?? ""} disabled={offline || pending} onValueChange={(value) => { setSelectedBranchId(value); setSelectedAttempt(null); }}>
+                  <SelectTrigger id="branch" size="sm" className="w-full"><SelectValue /></SelectTrigger>
+                  <SelectContent>{branches.map((branch) => <SelectItem key={branch.id} value={branch.id}>{branch.id.slice(0, 8)} · {branch.status}</SelectItem>)}</SelectContent>
+                </Select>
+              </div>
+            ) : null}
+            {repositories.length ? (
+              <div className="mt-4 flex flex-wrap gap-2">
+                {repositories.map((repository) => (
+                  <span key={repository.id} className="grid gap-0.5 rounded-md border px-2 py-1.5">
+                    <strong className="text-[0.75rem] font-medium">{repository.primary ? "◆" : "◇"} {repository.name}</strong>
+                    <small className="text-muted-foreground text-[0.7rem]">{repository.source_type}</small>
+                  </span>
+                ))}
+              </div>
+            ) : null}
+          </TabsContent>
+          <TabsContent value="minimap" className="min-h-0 flex-1 overflow-y-auto p-3.5">
+            <p className="text-muted-foreground text-[0.78rem]">Minimap is not available yet.</p>
+          </TabsContent>
+        </Tabs>
       </aside>
 
-      {selectedEvent ? (() => {
-        const params = eventArguments(selectedEvent);
-        const paramsText = Object.keys(params).length ? JSON.stringify(params, null, 2) : "";
-        const result = eventResult(selectedEvent);
-        const fallback = !paramsText && !result ? readable(selectedEvent.payload) : "";
-        return (
-          <div className="event-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) closeEvent(); }}>
-            <section ref={eventDialog} className="event-modal" role="dialog" aria-modal="true" aria-label={`${eventTitle(selectedEvent)} event details`} tabIndex={-1}>
-              <header className="event-modal-head">
-                <IconFile />
-                <strong>{eventToolName(selectedEvent)}</strong>
-                {eventTarget(selectedEvent) ? <code className="event-modal-path">{eventTarget(selectedEvent)}</code> : null}
-                <button type="button" className="event-modal-close" aria-label="Close event details" onClick={closeEvent}>×</button>
-              </header>
-              <div className="event-modal-body" ref={eventScroll}>
-                {paramsText ? <pre className="event-params">{paramsText}</pre> : null}
-                {result ? <><p className="event-result-label">Result</p><pre className="event-result-body">{result}</pre></> : null}
-                {fallback ? <pre className="event-result-body">{fallback}</pre> : null}
-              </div>
-              <footer className="event-modal-foot"><span>j/k or ↓/↑ to scroll</span><span>i or ESC to close</span></footer>
-            </section>
-          </div>
-        );
-      })() : null}
+      <Dialog open={Boolean(selectedEvent)} onOpenChange={(open) => { if (!open) setSelectedEvent(null); }}>
+        <DialogContent showCloseButton className="flex h-[min(88dvh,52rem)] w-[min(100%,62rem)] max-w-none flex-col gap-0 p-0 sm:max-w-none">
+          {selectedEvent ? (() => {
+            const params = eventArguments(selectedEvent);
+            const paramsText = Object.keys(params).length ? JSON.stringify(params, null, 2) : "";
+            const result = eventResult(selectedEvent);
+            const fallback = !paramsText && !result ? readable(selectedEvent.payload) : "";
+            return (
+              <>
+                <DialogHeader className="flex-row items-center gap-2 border-b px-4 py-3">
+                  <File className="text-subtle size-4 shrink-0" />
+                  <DialogTitle className="shrink-0 text-sm font-semibold">{eventToolName(selectedEvent)}</DialogTitle>
+                  {eventTarget(selectedEvent) ? <code className="text-muted-foreground min-w-0 truncate text-[0.8rem]">{eventTarget(selectedEvent)}</code> : null}
+                </DialogHeader>
+                <div className="min-h-0 flex-1 overflow-auto px-5 py-4" ref={eventScroll}>
+                  {paramsText ? <pre className="text-subtle mb-6 text-[0.82rem] leading-relaxed break-words whitespace-pre-wrap">{paramsText}</pre> : null}
+                  {result ? <><p className="text-muted-foreground mb-2.5 text-[0.82rem]">Result</p><pre className="text-subtle text-[0.82rem] leading-relaxed break-words whitespace-pre-wrap">{result}</pre></> : null}
+                  {fallback ? <pre className="text-subtle text-[0.82rem] leading-relaxed break-words whitespace-pre-wrap">{fallback}</pre> : null}
+                </div>
+                <DialogFooter className="text-muted-foreground flex-row items-center justify-between border-t px-4 py-2 text-[0.72rem] sm:justify-between">
+                  <span>j/k or ↓/↑ to scroll</span><span>i or ESC to close</span>
+                </DialogFooter>
+              </>
+            );
+          })() : null}
+        </DialogContent>
+      </Dialog>
     </section>
   );
 }

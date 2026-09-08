@@ -1,9 +1,0 @@
-"use client";
-
-import type { TaskEvent } from "../client/daemon-api.ts";
-import { eventDuration, eventPreview, eventSuccess, eventTarget, eventTitle, visibleWorkEvents } from "../client/work-log.ts";
-
-export function SessionLog({ daemonId, taskId, events, attemptId, live, followTail, onFollowTail, onOpen }: { daemonId: string; taskId: string; events: TaskEvent[]; attemptId: string | null; live: string; followTail: boolean; onFollowTail: (value: boolean) => void; onOpen: (event: TaskEvent, trigger: HTMLButtonElement) => void }) {
-  const visible = visibleWorkEvents(events, attemptId);
-  return <section className="session-log-panel"><header className="panel-head"><div><h2>Work log</h2><p>{visible.length} recorded events</p></div><label className="follow-tail"><input type="checkbox" checked={followTail} onChange={(event) => onFollowTail(event.target.checked)} /> follow tail</label><span className="badge">{live}</span></header><ul className="session-log">{visible.map((event) => <li key={`${daemonId}:${taskId}:${event.sequence}`}><button className="log-event" type="button" data-success={eventSuccess(event)} onClick={(click) => onOpen(event, click.currentTarget)}><span className="log-track"><i>{eventSuccess(event) === false ? "!" : event.type === "tool_call" ? eventTitle(event).slice(0, 1) : ">"}</i></span><span className="log-content"><span className="log-heading"><strong>{eventTitle(event)}</strong>{eventTarget(event) ? <span className="log-target">{eventTarget(event)}</span> : null}</span>{eventPreview(event) ? <small className="log-preview">{eventPreview(event)}</small> : null}<small className="log-meta">{eventDuration(event)} · {new Date(event.started_at).toLocaleTimeString()}</small></span></button></li>)}</ul>{!visible.length ? <p className="empty-state">No events yet. The stream stays open while this session is selected.</p> : null}</section>;
-}

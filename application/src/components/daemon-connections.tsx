@@ -2,11 +2,12 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { daemonTasks, listDaemons, registerDaemon, type QualifiedTask } from "../client/daemon-api.ts";
-import { normalizeWorkspaceSelection, RequestScope, workspaceSearch, type WorkspaceSelection } from "../client/daemon-ui-state.ts";
-import type { DaemonConnection } from "../server/daemon-registry.ts";
+import { daemonTasks, listDaemons, registerDaemon, type QualifiedTask } from "@/client/daemon-api.ts";
+import { normalizeWorkspaceSelection, RequestScope, workspaceSearch, type WorkspaceSelection } from "@/client/daemon-ui-state.ts";
+import type { DaemonConnection } from "@/server/daemon-registry.ts";
+import { Alert, AlertDescription } from "@/components/ui/alert.tsx";
+import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar.tsx";
 import { DaemonSetup } from "./daemon-setup.tsx";
-import { IconExpand } from "./icons.tsx";
 import { TaskCreation } from "./task-creation.tsx";
 import { TaskDetail } from "./task-detail.tsx";
 import { TaskOverview } from "./task-overview.tsx";
@@ -22,8 +23,6 @@ export function DaemonConnections({ login }: { login: string }) {
   const [taskStates, setTaskStates] = useState<Record<string, TaskState>>({});
   const [failure, setFailure] = useState<string | null>(null);
   const [sessionExpired, setSessionExpired] = useState(false);
-  // null keeps the CSS default: expanded on desktop, hidden on mobile.
-  const [railOpen, setRailOpen] = useState<boolean | null>(null);
   const scopes = useRef(new Map<string, RequestScope>());
   const controllers = useRef(new Map<string, AbortController>());
   const pendingSelectionIds = useRef(new Map<string, number>());
@@ -78,5 +77,19 @@ export function DaemonConnections({ login }: { login: string }) {
   function handleRemoved(parentTaskId?: string) { navigate({ daemonId: selected?.id ?? null, taskId: parentTaskId ?? null, sessionId: null }); }
   const tasksByDaemon = Object.fromEntries(connections.map((connection) => [connection.id, taskStates[connection.id]?.tasks ?? []]));
   const offlineByDaemon = Object.fromEntries(connections.map((connection) => [connection.id, Boolean(taskStates[connection.id]?.offline)]));
-  return <div className="task-shell" data-rail-open={railOpen === null ? undefined : String(railOpen)}><button className="rail-toggle" type="button" onClick={() => setRailOpen(true)} aria-label="Show task navigation"><IconExpand /></button><TaskRail connections={connections} tasksByDaemon={tasksByDaemon} offlineByDaemon={offlineByDaemon} selection={selection} login={login} open={railOpen === true} onClose={() => setRailOpen(false)} /><section className="workspace-content">{sessionExpired ? <p className="notice" role="alert">Session expired. Sign in again to continue.</p> : null}{failure ? <p className="notice" role="alert">{failure}</p> : null}{!connections.length ? <DaemonSetup onRegister={register} /> : !selected ? <DaemonSetup compact onRegister={register} /> : !rootTask ? <TaskCreation key={selected.id} daemon={selected} offline={Boolean(selectedState?.offline)} onCreated={(task) => { selectRecord(task); void loadTasks(selected); }} /> : !selection.sessionId ? <TaskOverview key={`${selected.id}:${rootTask.id}`} daemon={selected} task={rootTask} login={login} offline={Boolean(selectedState?.offline)} onOpenSession={(sessionId) => openSession(sessionId, rootTask.id)} onCreated={(session) => { openSession(session.id, rootTask.id); void loadTasks(selected); }} /> : selectedTask ? <TaskDetail key={`${selected.id}:${selectedTask.id}`} daemonId={selected.id} daemonName={selected.name} task={selectedTask} rootTask={rootTask} login={login} offline={Boolean(selectedState?.offline)} onChanged={() => loadTasks(selected)} onOpenTask={() => selectTaskId(rootTask.id)} onRemoved={handleRemoved} /> : <p className="workspace-empty">Selected session is no longer available.</p>}</section></div>;
+  return (
+    <SidebarProvider style={{ "--sidebar-width": "18rem" } as React.CSSProperties}>
+      <TaskRail connections={connections} tasksByDaemon={tasksByDaemon} offlineByDaemon={offlineByDaemon} selection={selection} login={login} />
+      <SidebarInset className="min-w-0">
+        {sessionExpired ? <Alert role="alert" variant="destructive" className="m-4 w-auto"><AlertDescription>Session expired. Sign in again to continue.</AlertDescription></Alert> : null}
+        {failure ? <Alert role="alert" variant="destructive" className="m-4 w-auto"><AlertDescription>{failure}</AlertDescription></Alert> : null}
+        {!connections.length ? <DaemonSetup onRegister={register} />
+          : !selected ? <DaemonSetup compact onRegister={register} />
+          : !rootTask ? <TaskCreation key={selected.id} daemon={selected} offline={Boolean(selectedState?.offline)} onCreated={(task) => { selectRecord(task); void loadTasks(selected); }} />
+          : !selection.sessionId ? <TaskOverview key={`${selected.id}:${rootTask.id}`} daemon={selected} task={rootTask} login={login} offline={Boolean(selectedState?.offline)} onOpenSession={(sessionId) => openSession(sessionId, rootTask.id)} onCreated={(session) => { openSession(session.id, rootTask.id); void loadTasks(selected); }} />
+          : selectedTask ? <TaskDetail key={`${selected.id}:${selectedTask.id}`} daemonId={selected.id} daemonName={selected.name} task={selectedTask} rootTask={rootTask} login={login} offline={Boolean(selectedState?.offline)} onChanged={() => loadTasks(selected)} onOpenTask={() => selectTaskId(rootTask.id)} onRemoved={handleRemoved} />
+          : <p className="text-muted-foreground m-4 text-center">Selected session is no longer available.</p>}
+      </SidebarInset>
+    </SidebarProvider>
+  );
 }

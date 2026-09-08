@@ -31,6 +31,12 @@
       "skillPath": "skills/next-partial-prefetching-adoption/SKILL.md",
       "computedHash": "0e8e6cfdc21684b7a359ffc5bbe1ba3b7ae7f26a068b9e7dc6b1d0f170c9e98d"
     },
+    "shadcn": {
+      "source": "shadcn/ui",
+      "sourceType": "github",
+      "skillPath": "skills/shadcn/SKILL.md",
+      "computedHash": "f615de216e085a84e31593ad0fa9062232adc40cd87b7c7ab2b8e49abf6500be"
+    },
     "show-me": {
       "source": "humanlayer/skills",
       "sourceType": "github",

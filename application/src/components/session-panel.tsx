@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { Button } from "@/components/ui/button.tsx";
 
 export function SessionPanel({ login }: { login: string }) {
   const [pending, setPending] = useState(false);
@@ -20,12 +21,10 @@ export function SessionPanel({ login }: { login: string }) {
   }
 
   return (
-    <section className="account-panel">
-      <span>Signed in as <strong>{login}</strong></span>
-      {failure ? <p role="alert" className="notice">{failure}</p> : null}
-      <div className="actions">
-        <button type="button" disabled={pending} onClick={signOut}>{pending ? "Signing out..." : "Sign out"}</button>
-      </div>
+    <section className="text-muted-foreground flex items-center gap-2 text-xs">
+      <span className="min-w-0 truncate">Signed in as <strong className="text-subtle font-medium">{login}</strong></span>
+      {failure ? <p role="alert" className="text-destructive">{failure}</p> : null}
+      <Button type="button" variant="ghost" size="xs" className="ml-auto" disabled={pending} onClick={signOut}>{pending ? "Signing out..." : "Sign out"}</Button>
     </section>
   );
 }

@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
-import { validateAuthenticationEnvironment } from "../src/server/environment.ts";
-import { getCurrentSession } from "../src/server/session.ts";
+import { validateAuthenticationEnvironment } from "@/server/environment.ts";
+import { getCurrentSession } from "@/server/session.ts";
 
 // Never validate deployment secrets during prerendering or share setup state in a cache.
 export const dynamic = "force-dynamic";

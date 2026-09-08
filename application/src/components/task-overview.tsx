@@ -1,10 +1,19 @@
 "use client";
 
+import { Copy, Folder, Pencil, Plus, Share2, Terminal } from "lucide-react";
 import { useEffect, useState } from "react";
-import { daemonCreateSession, daemonSessions, daemonTask, type QualifiedTask, type TaskDetails } from "../client/daemon-api.ts";
-import { relativeTime, statePresentation } from "../client/daemon-ui-state.ts";
-import type { DaemonConnection } from "../server/daemon-registry.ts";
-import { IconCopy, IconFolder, IconPencil, IconPlus, IconShare, IconTerminal } from "./icons.tsx";
+import { daemonCreateSession, daemonSessions, daemonTask, type QualifiedTask, type TaskDetails } from "@/client/daemon-api.ts";
+import { relativeTime } from "@/client/daemon-ui-state.ts";
+import type { DaemonConnection } from "@/server/daemon-registry.ts";
+import { Alert, AlertDescription } from "@/components/ui/alert.tsx";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar.tsx";
+import { Badge } from "@/components/ui/badge.tsx";
+import { Button } from "@/components/ui/button.tsx";
+import { SidebarTrigger } from "@/components/ui/sidebar.tsx";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table.tsx";
+import { Textarea } from "@/components/ui/textarea.tsx";
+import { stateDotClass, stateTextClass } from "@/lib/state-style.ts";
+import { cn } from "@/lib/utils.ts";
 
 function monogram(name: string): string {
   const parts = name.replace(/@.*/, "").split(/[.\s_-]+/).filter(Boolean);
@@ -66,52 +75,91 @@ export function TaskOverview({ daemon, task, login, offline, onOpenSession, onCr
   }
 
   return (
-    <main className="task-page">
-      <header className="page-topbar">
-        <nav className="crumbs" aria-label="Breadcrumb"><span>Tasks</span><i>›</i><strong>{current.request}</strong></nav>
-        <div className="topbar-tools"><button type="button" className="icon-button" aria-label="New task"><IconPlus /></button></div>
+    <main className="flex min-w-0 flex-1 flex-col">
+      <header className="border-rail-line bg-background flex h-14 items-center justify-between gap-3 border-t-2 border-b px-4">
+        <nav className="text-muted-foreground flex min-w-0 items-center gap-1.5" aria-label="Breadcrumb">
+          <SidebarTrigger className="mr-1" />
+          <span>Tasks</span><span aria-hidden="true">›</span><strong className="text-foreground truncate font-medium">{current.request}</strong>
+        </nav>
+        <Button type="button" variant="ghost" size="icon-sm" aria-label="New task"><Plus /></Button>
       </header>
 
-      {error ? <p className="notice" role="alert">{error}</p> : null}
-      {offline ? <p className="notice" role="alert">Daemon offline. Showing last-known task data.</p> : null}
+      {error ? <Alert role="alert" variant="destructive" className="m-4 w-auto"><AlertDescription>{error}</AlertDescription></Alert> : null}
+      {offline ? <Alert role="alert" className="m-4 w-auto border-l-2 border-l-info"><AlertDescription>Daemon offline. Showing last-known task data.</AlertDescription></Alert> : null}
 
-      <section className="task-meta">
-        <div className="meta-field">
-          <div className="meta-label">Task name <span className="tag">Freeform</span><span className="tag">Shared with org</span></div>
-          <div className="meta-value"><span className="meta-strong">{current.request}</span><button type="button" className="icon-button" aria-label="Rename task"><IconPencil /></button><button type="button" className="icon-button" aria-label="Share task"><IconShare /></button></div>
+      <section className="mx-6 my-5 grid gap-4">
+        <div className="grid gap-1.5">
+          <div className="text-muted-foreground flex items-center gap-2 text-[0.68rem] uppercase tracking-[0.08em]">Task name <Badge variant="outline">Freeform</Badge><Badge variant="outline">Shared with org</Badge></div>
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="text-foreground text-base">{current.request}</span>
+            <Button type="button" variant="ghost" size="icon-xs" aria-label="Rename task"><Pencil /></Button>
+            <Button type="button" variant="ghost" size="icon-xs" aria-label="Share task"><Share2 /></Button>
+          </div>
         </div>
-        <div className="meta-field">
-          <div className="meta-label">Owner</div>
-          <div className="meta-value"><span className="avatar" aria-hidden="true">{monogram(login)}</span><span>{ownerName(login)}</span><button type="button" className="icon-button" aria-label="Change owner"><IconPencil /></button></div>
+        <div className="grid gap-1.5">
+          <div className="text-muted-foreground text-[0.68rem] uppercase tracking-[0.08em]">Owner</div>
+          <div className="flex min-w-0 items-center gap-2">
+            <Avatar className="size-6 rounded-md"><AvatarFallback className="rounded-md bg-gradient-to-br from-[#5b4b78] to-[#37506a] text-[0.62rem] font-semibold text-[#efe9ff]">{monogram(login)}</AvatarFallback></Avatar>
+            <span>{ownerName(login)}</span>
+            <Button type="button" variant="ghost" size="icon-xs" aria-label="Change owner"><Pencil /></Button>
+          </div>
         </div>
-        <div className="meta-field">
-          <div className="meta-label">Default directory</div>
-          <div className="meta-value"><IconFolder /><code title={workspace}>{truncatePath(workspace)}</code><button type="button" className="icon-button" aria-label="Edit directory"><IconPencil /></button><button type="button" className="icon-button" aria-label="Copy directory"><IconCopy /></button><button type="button" className="icon-button" aria-label="Open directory"><IconFolder /></button><button type="button" className="icon-button" aria-label="Open terminal"><IconTerminal /></button></div>
+        <div className="grid gap-1.5">
+          <div className="text-muted-foreground text-[0.68rem] uppercase tracking-[0.08em]">Default directory</div>
+          <div className="flex min-w-0 items-center gap-2">
+            <Folder className="size-4 shrink-0" />
+            <code className="truncate" title={workspace}>{truncatePath(workspace)}</code>
+            <Button type="button" variant="ghost" size="icon-xs" aria-label="Edit directory"><Pencil /></Button>
+            <Button type="button" variant="ghost" size="icon-xs" aria-label="Copy directory"><Copy /></Button>
+            <Button type="button" variant="ghost" size="icon-xs" aria-label="Open directory"><Folder /></Button>
+            <Button type="button" variant="ghost" size="icon-xs" aria-label="Open terminal"><Terminal /></Button>
+          </div>
         </div>
         {composing ? (
-          <form className="session-compose" onSubmit={createSession}>
-            <textarea value={request} onChange={(event) => setRequest(event.target.value)} disabled={offline || pending} placeholder="Describe the session work…" autoFocus />
-            <div className="actions"><button type="button" onClick={() => { setComposing(false); setRequest(""); }}>Cancel</button><button type="submit" disabled={offline || pending || !request.trim()}>{pending ? "Creating…" : "Create session"}</button></div>
+          <form className="bg-secondary border-primary grid max-w-3xl gap-2.5 rounded-md border p-3" onSubmit={createSession}>
+            <Textarea value={request} onChange={(event) => setRequest(event.target.value)} disabled={offline || pending} placeholder="Describe the session work…" autoFocus className="min-h-20" />
+            <div className="flex justify-end gap-3">
+              <Button type="button" variant="outline" size="sm" onClick={() => { setComposing(false); setRequest(""); }}>Cancel</Button>
+              <Button type="submit" variant="outline" size="sm" className="border-primary text-primary" disabled={offline || pending || !request.trim()}>{pending ? "Creating…" : "Create session"}</Button>
+            </div>
           </form>
         ) : (
-          <button type="button" className="cta-button" disabled={offline} onClick={() => setComposing(true)}>Create session <kbd>C</kbd></button>
+          <Button type="button" variant="outline" className="border-primary text-primary bg-primary/10 justify-self-start" disabled={offline} onClick={() => setComposing(true)}>
+            Create session <kbd className="border-primary text-primary rounded-sm border px-1 text-[0.65rem]">C</kbd>
+          </Button>
         )}
       </section>
 
-      <section className="session-table" aria-label="Sessions">
-        <div className="session-row session-head">
-          <span>Status</span><span>Title</span><span>Labels</span><span>Working directory</span><span>Updated</span>
-        </div>
-        {sessions.map((session) => (
-          <button type="button" className="session-row" key={session.id} onClick={() => onOpenSession(session.id)}>
-            <span className="status-cell" data-state={statePresentation(session.state)}><i aria-hidden="true" />{session.state}</span>
-            <span className="title-cell">{session.request}</span>
-            <span className="labels-cell">{session.coding_agent ? <span className="tag accent">{session.coding_agent}</span> : null}</span>
-            <span className="dir-cell" title={session.workspace_path ?? workspace}>{truncatePath(session.workspace_path ?? workspace)}</span>
-            <span className="updated-cell">{relativeTime(session.created_at)}</span>
-          </button>
-        ))}
-        {!sessions.length ? <p className="workspace-empty">No sessions yet. Create one to begin work.</p> : null}
+      <section className="mx-6 mb-8" aria-label="Sessions">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead className="w-32">Status</TableHead>
+              <TableHead>Title</TableHead>
+              <TableHead className="hidden w-40 md:table-cell">Labels</TableHead>
+              <TableHead className="hidden max-w-56 md:table-cell">Working directory</TableHead>
+              <TableHead className="w-20 text-right">Updated</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {sessions.map((session) => (
+              <TableRow key={session.id} className="hover:bg-secondary cursor-pointer" onClick={() => onOpenSession(session.id)}>
+                <TableCell>
+                  <span className={cn("inline-flex items-center gap-1.5 text-[0.78rem]", stateTextClass(session.state))}>
+                    <i aria-hidden="true" className={cn("size-2 rounded-full border border-current", stateDotClass(session.state))} />{session.state}
+                  </span>
+                </TableCell>
+                <TableCell className="max-w-0 truncate">
+                  <button type="button" className="w-full truncate text-left outline-none" onClick={(event) => { event.stopPropagation(); onOpenSession(session.id); }}>{session.request}</button>
+                </TableCell>
+                <TableCell className="hidden md:table-cell">{session.coding_agent ? <Badge variant="outline" className="text-info border-info">{session.coding_agent}</Badge> : null}</TableCell>
+                <TableCell className="text-muted-foreground hidden max-w-56 truncate text-xs md:table-cell" title={session.workspace_path ?? workspace}>{truncatePath(session.workspace_path ?? workspace)}</TableCell>
+                <TableCell className="text-muted-foreground text-right text-xs">{relativeTime(session.created_at)}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+        {!sessions.length ? <p className="text-muted-foreground mt-4 text-center">No sessions yet. Create one to begin work.</p> : null}
       </section>
     </main>
   );
