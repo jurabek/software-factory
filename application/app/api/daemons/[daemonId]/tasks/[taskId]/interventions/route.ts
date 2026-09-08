@@ -1,7 +1,7 @@
 import {
 	getTaskResource,
 	postTaskResource,
-} from "../../../../../../../src/server/task-resource-route.ts";
+} from "@/server/task-resource-route.ts";
 
 export const runtime = "nodejs";
 

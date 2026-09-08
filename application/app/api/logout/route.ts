@@ -3,9 +3,9 @@ import {
 	getAuth,
 	sessionCookieName,
 	sessionTokenFromCookie,
-} from "../../../src/server/auth.ts";
-import { readAuthenticationEnvironment } from "../../../src/server/environment.ts";
-import { hasTrustedOrigin } from "../../../src/server/request-origin.ts";
+} from "@/server/auth.ts";
+import { readAuthenticationEnvironment } from "@/server/environment.ts";
+import { hasTrustedOrigin } from "@/server/request-origin.ts";
 
 export const runtime = "nodejs";
 
