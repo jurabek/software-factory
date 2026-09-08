@@ -10,13 +10,12 @@ CREATE TABLE IF NOT EXISTS owner_session (
 
 CREATE INDEX IF NOT EXISTS owner_session_expires_at_idx ON owner_session (expires_at);
 
--- Daemon registrations. Credentials are encrypted before insertion and are
--- never returned by browser-facing queries.
+-- Daemon registrations. Credentials are never returned by browser-facing queries.
 CREATE TABLE IF NOT EXISTS daemon_connection (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL UNIQUE,
   endpoint TEXT NOT NULL UNIQUE,
   daemon_identity TEXT NOT NULL UNIQUE,
-  credential_ciphertext TEXT NOT NULL,
+  credential TEXT NOT NULL,
   created_at TEXT NOT NULL
 );

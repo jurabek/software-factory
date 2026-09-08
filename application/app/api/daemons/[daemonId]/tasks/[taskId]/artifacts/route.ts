@@ -2,7 +2,10 @@ import { getTaskResource } from "../../../../../../../src/server/task-resource-r
 
 export const runtime = "nodejs";
 
-export async function GET(request: Request, context: RouteContext<"/api/daemons/[daemonId]/tasks/[taskId]/artifacts">) {
-  const { daemonId, taskId } = await context.params;
-  return getTaskResource(request, daemonId, taskId, "artifacts");
+export async function GET(
+	request: Request,
+	context: RouteContext<"/api/daemons/[daemonId]/tasks/[taskId]/artifacts">,
+) {
+	const { daemonId, taskId } = await context.params;
+	return getTaskResource(request, daemonId, taskId, "artifacts");
 }

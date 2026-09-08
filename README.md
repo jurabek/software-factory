@@ -17,10 +17,9 @@ PostgreSQL runs in Compose; the application runs via pure npm. Create configurat
 ```bash
 cp .env.example .env
 cp application/.env.example application/.env.local
-openssl rand -hex 32
 ```
 
-Put the generated value in `DAEMON_CREDENTIAL_KEY` inside `application/.env.local`, replace the other placeholders, then start PostgreSQL, apply the application schema, and start the application:
+Replace the placeholders in `application/.env.local`, then start PostgreSQL, apply the application schema, and start the application:
 
 ```bash
 docker compose up -d

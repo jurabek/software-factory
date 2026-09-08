@@ -63,15 +63,15 @@ sequenceDiagram
     S-->>D: Identity and health
     D-->>T: Identity + health response
     T-->>R: Verify reachable daemon
-    R->>PG: Store registration and encrypted credential
+    R->>PG: Store registration and credential
     PG-->>R: daemon ID, endpoint, expected identity
     R-->>N: Public connection metadata only
     N-->>B: Registration result
 
     B->>N: GET /api/daemons/:daemonId/tasks
     N->>PG: Validate login session and resolve registration
-    PG-->>N: Endpoint, encrypted credential, expected daemon identity
-    N->>R: Resolve and decrypt server-side credential
+    PG-->>N: Endpoint, credential, expected daemon identity
+    N->>R: Resolve server-side credential
     R->>T: GET /api/v1/tasks
     T->>D: Authorization: Bearer daemon-token
     D->>S: Read Tasks

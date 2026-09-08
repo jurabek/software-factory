@@ -11,7 +11,6 @@ if [[ ! -f "$ENV_FILE" ]]; then
   umask 077
   postgres_password="$(openssl rand -hex 32)"
   initial_user_password="$(openssl rand -hex 24)"
-  daemon_credential_key="$(openssl rand -hex 32)"
 
   cat > "$ENV_FILE" <<EOF
 POSTGRES_USER=factory
@@ -22,7 +21,6 @@ APPLICATION_ORIGIN=http://localhost:3000
 DATABASE_URL=postgresql://factory:$postgres_password@localhost:5432/factory_application
 INITIAL_USER_LOGIN=owner
 INITIAL_USER_PASSWORD=$initial_user_password
-DAEMON_CREDENTIAL_KEY=$daemon_credential_key
 DAEMON_ALLOWED_ORIGINS=http://127.0.0.1:8080
 EOF
   echo "Created $ENV_FILE with generated local credentials."
@@ -39,7 +37,6 @@ set +a
 : "${DATABASE_URL:?Set DATABASE_URL in local.env}"
 : "${INITIAL_USER_LOGIN:?Set INITIAL_USER_LOGIN in local.env}"
 : "${INITIAL_USER_PASSWORD:?Set INITIAL_USER_PASSWORD in local.env}"
-: "${DAEMON_CREDENTIAL_KEY:?Set DAEMON_CREDENTIAL_KEY in local.env}"
 : "${DAEMON_ALLOWED_ORIGINS:?Set DAEMON_ALLOWED_ORIGINS in local.env}"
 
 docker-compose up -d postgres
