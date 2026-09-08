@@ -41,6 +41,20 @@ type Review struct {
 	Blocking []string  `json:"blocking"`
 }
 
+func envelopeInstructions(role string) string {
+	const common = `"status":"success","summary":"...","artifacts":[],"notes_for_next_agent":""`
+	switch role {
+	case "planner":
+		return `Return exactly one JSON object with no Markdown: {` + common + `,"steps":[{"id":"...","description":"...","expected_files":[],"acceptance_criteria":[]}],"questions":[]}`
+	case "builder":
+		return `Return exactly one JSON object with no Markdown: {` + common + `,"changed_files":[],"commit_message":"..."}`
+	case "reviewer":
+		return `Return exactly one JSON object with no Markdown: {` + common + `,"approved":true,"findings":[],"blocking":[]}. Finding objects require "requirement", "met", and "evidence". A rejected review requires approved=false and a non-empty blocking array.`
+	default:
+		return "Return exactly one JSON object with every required field and no Markdown."
+	}
+}
+
 func object(text string) ([]byte, error) {
 	trimmed := strings.TrimSpace(text)
 	if strings.HasPrefix(trimmed, "```") {

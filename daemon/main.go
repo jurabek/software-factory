@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"embed"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -27,9 +30,6 @@ import (
 	"github.com/jurabek/software-factory/daemon/internal/store"
 )
 
-//go:embed web/dist/*
-var frontend embed.FS
-
 //go:embed templates
 var defaultTemplates embed.FS
 
@@ -38,6 +38,7 @@ var swaggerSpec []byte
 
 const (
 	defaultPort = "8080"
+	defaultBind = "127.0.0.1"
 	swaggerUI   = `<!doctype html>
 <html lang="en">
 <head>
@@ -51,7 +52,7 @@ const (
   <script src="https://unpkg.com/swagger-ui-dist@5.32.15/swagger-ui-bundle.js"></script>
   <script>
     window.onload = function () {
-      const ui = SwaggerUIBundle({
+      SwaggerUIBundle({
         url: "/swagger.yaml",
         dom_id: "#swagger-ui",
         deepLinking: true,
@@ -59,11 +60,6 @@ const (
         persistAuthorization: true,
         tryItOutEnabled: true
       });
-      fetch("/api/v1/control", {cache: "no-store"})
-        .then(function (response) { return response.json(); })
-        .then(function (control) {
-          if (control.token) ui.preauthorizeApiKey("MutationToken", control.token);
-        });
     };
   </script>
 </body>
@@ -94,6 +90,22 @@ func run() error {
 		return err
 	}
 	defer lock.Close()
+	daemonID, err := loadDaemonID(root)
+	if err != nil {
+		return fmt.Errorf("load daemon identity: %w", err)
+	}
+	tokenPath := filepath.Join(root, "daemon-token")
+	daemonToken, err := loadDaemonToken(tokenPath)
+	if err != nil {
+		return fmt.Errorf("load daemon token: %w", err)
+	}
+	address, err := daemonNetworkConfig(
+		envOrDefault("SOFTWARE_FACTORY_BIND", defaultBind),
+		envOrDefault("PORT", defaultPort),
+	)
+	if err != nil {
+		return err
+	}
 	db, err := store.Open(filepath.Join(root, "factory.db"))
 	if err != nil {
 		return err
@@ -145,11 +157,7 @@ func run() error {
 		}
 	}
 	service := factory.NewService(root, db, configured, configPath, registry, factorygit.OSRunner{})
-	apiServer, err := api.New(db, service, configured, problems, loadErr, harnessNames, catalog)
-	if err != nil {
-		return err
-	}
-	staticFS, err := fs.Sub(frontend, "web/dist")
+	apiServer, err := api.New(db, service, configured, problems, loadErr, harnessNames, catalog, api.Access{DaemonID: daemonID, Token: daemonToken})
 	if err != nil {
 		return err
 	}
@@ -158,8 +166,6 @@ func run() error {
 	mux.HandleFunc("GET /swagger.yaml", serveSwaggerSpec)
 	mux.HandleFunc("GET /docs", serveSwaggerUI)
 	mux.HandleFunc("GET /docs/", serveSwaggerUI)
-	mux.Handle("/", spaHandler{files: staticFS})
-	address := "127.0.0.1:" + envOrDefault("PORT", defaultPort)
 	server := &http.Server{
 		Addr:              address,
 		Handler:           requestLog(logger, staticSecurityHeaders(mux)),
@@ -169,7 +175,8 @@ func run() error {
 	defer stop()
 	done := make(chan error, 1)
 	go func() {
-		logger.Info("server started", "address", "http://"+address, "root", root, "validation_errors", len(problems))
+		fmt.Fprintf(os.Stdout, "daemon token: %s\ndaemon token file: %s\n", daemonToken, tokenPath)
+		logger.Info("server started", "address", "http://"+address, "root", root, "validation_errors", len(problems), "token_file", tokenPath)
 		done <- server.ListenAndServe()
 	}()
 	select {
@@ -184,6 +191,71 @@ func run() error {
 		service.Shutdown(shutdownCtx)
 		return server.Shutdown(shutdownCtx)
 	}
+}
+
+func daemonNetworkConfig(bind, port string) (string, error) {
+	address := net.ParseIP(bind)
+	if address == nil {
+		return "", fmt.Errorf("SOFTWARE_FACTORY_BIND must be an IP address")
+	}
+	if !address.IsLoopback() {
+		return "", fmt.Errorf("SOFTWARE_FACTORY_BIND must remain loopback; use an encrypted tunnel for remote access")
+	}
+	return net.JoinHostPort(bind, port), nil
+}
+
+func loadDaemonToken(path string) (string, error) {
+	value, err := os.ReadFile(path)
+	if err == nil {
+		return validateDaemonID(string(value))
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	var random [16]byte
+	if _, err = rand.Read(random[:]); err != nil {
+		return "", err
+	}
+	if err = createIfMissing(path, []byte(hex.EncodeToString(random[:])+"\n")); err != nil {
+		return "", err
+	}
+	value, err = os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return validateDaemonID(string(value))
+}
+
+func loadDaemonID(root string) (string, error) {
+	path := filepath.Join(root, "daemon-id")
+	value, err := os.ReadFile(path)
+	if err == nil {
+		return validateDaemonID(string(value))
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	var random [16]byte
+	if _, err = rand.Read(random[:]); err != nil {
+		return "", err
+	}
+	if err = createIfMissing(path, []byte(hex.EncodeToString(random[:])+"\n")); err != nil {
+		return "", err
+	}
+	value, err = os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return validateDaemonID(string(value))
+}
+
+func validateDaemonID(value string) (string, error) {
+	id := strings.TrimSpace(value)
+	decoded, err := hex.DecodeString(id)
+	if err != nil || len(decoded) != 16 || id != strings.ToLower(id) {
+		return "", fmt.Errorf("daemon-id must contain 32 lowercase hexadecimal characters")
+	}
+	return id, nil
 }
 
 func factoryRoot() (string, error) {
@@ -288,19 +360,6 @@ func serveSwaggerSpec(w http.ResponseWriter, _ *http.Request) {
 func serveSwaggerUI(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = io.WriteString(w, swaggerUI)
-}
-
-type spaHandler struct{ files fs.FS }
-
-func (handler spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	path := filepath.Clean(r.URL.Path)
-	if path == "." || path == "/" {
-		path = "/index.html"
-	}
-	if _, err := fs.Stat(handler.files, path[1:]); err != nil {
-		path = "/index.html"
-	}
-	http.ServeFileFS(w, r, handler.files, path)
 }
 
 func staticSecurityHeaders(next http.Handler) http.Handler {

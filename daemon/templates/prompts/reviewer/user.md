@@ -11,3 +11,9 @@ Git-derived changed files:
 {{.ChangedFiles}}
 
 Changed files are qualified by Task Workspace repository name.
+
+Git diff:
+{{range .Diff}}
+Repository {{.Name}}:
+{{.Patch}}
+{{end}}
