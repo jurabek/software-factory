@@ -1,7 +1,0 @@
-@layer reset, tokens, base, primitives, patterns, views, utilities;
-@import "./tokens.css";
-@import "./foundation.css";
-@import "./primitives.css";
-@import "./task-shell.css";
-@import "./artifact-view.css";
-@import "./factory-views.css";

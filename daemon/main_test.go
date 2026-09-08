@@ -3,6 +3,8 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -37,11 +39,11 @@ func TestSwaggerSpecDocumentsAPIRoutes(t *testing.T) {
 	}
 
 	routes := map[string][]string{
+		"/identity":                 {"get"},
 		"/health":                   {"get"},
 		"/config":                   {"get"},
 		"/harnesses":                {"get"},
 		"/models":                   {"get"},
-		"/control":                  {"get"},
 		"/tasks":                    {"get", "post"},
 		"/tasks/{id}":               {"get", "delete"},
 		"/tasks/{id}/sessions":      {"get", "post"},
@@ -71,6 +73,78 @@ func TestSwaggerSpecDocumentsAPIRoutes(t *testing.T) {
 			}
 		}
 	}
+	if !strings.Contains(response.Body.String(), "DaemonToken") {
+		t.Fatal("swagger spec does not document daemon bearer authentication")
+	}
+}
+
+func TestDaemonIdentityPersistsInFactoryRoot(t *testing.T) {
+	root := t.TempDir()
+	first, err := loadDaemonID(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := loadDaemonID(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != second || len(first) != 32 {
+		t.Fatalf("identities = %q and %q", first, second)
+	}
+	info, err := os.Stat(filepath.Join(root, "daemon-id"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode = %o, want 600", info.Mode().Perm())
+	}
+}
+
+func TestDaemonTokenPersistsInFactoryRoot(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "daemon-token")
+	first, err := loadDaemonToken(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := loadDaemonToken(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != second || len(first) != 32 {
+		t.Fatalf("tokens = %q and %q", first, second)
+	}
+}
+
+func TestMalformedDaemonIdentityFailsClosed(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "daemon-id"), []byte("not-an-identity\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadDaemonID(root); err == nil {
+		t.Fatal("loadDaemonID succeeded with malformed identity")
+	}
+}
+
+func TestDaemonNetworkConfiguration(t *testing.T) {
+	for _, test := range []struct {
+		name, bind, port, wantAddress string
+		wantError                     bool
+	}{
+		{name: "loopback default", bind: "127.0.0.1", port: "8080", wantAddress: "127.0.0.1:8080"},
+		{name: "IPv6 loopback", bind: "::1", port: "8080", wantAddress: "[::1]:8080"},
+		{name: "remote bind", bind: "0.0.0.0", port: "9000", wantError: true},
+		{name: "hostname rejected", bind: "localhost", port: "8080", wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			address, err := daemonNetworkConfig(test.bind, test.port)
+			if (err != nil) != test.wantError {
+				t.Fatalf("error = %v, wantError %v", err, test.wantError)
+			}
+			if !test.wantError && address != test.wantAddress {
+				t.Fatalf("address = %q, want %q", address, test.wantAddress)
+			}
+		})
+	}
 }
 
 func TestSwaggerUIUsesSameOriginAPI(t *testing.T) {
@@ -80,10 +154,8 @@ func TestSwaggerUIUsesSameOriginAPI(t *testing.T) {
 	handler.ServeHTTP(response, request)
 
 	body := response.Body.String()
-	for _, expected := range []string{"/swagger.yaml", "/api/v1/control", "MutationToken"} {
-		if !strings.Contains(body, expected) {
-			t.Errorf("body missing %q", expected)
-		}
+	if !strings.Contains(body, "/swagger.yaml") {
+		t.Errorf("body missing /swagger.yaml")
 	}
 	if policy := response.Header().Get("Content-Security-Policy"); !strings.Contains(policy, "https://unpkg.com") {
 		t.Fatalf("documentation CSP does not allow Swagger UI assets: %q", policy)

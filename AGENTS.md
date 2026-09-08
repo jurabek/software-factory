@@ -1,11 +1,14 @@
 ## Software Factory
+
+- In this current phase all Database or Modules can be destructive. If you change schemas or DB. You don't need to deal with migrations.
+
 <!-- software-factory:start -->
 ```yaml
 checks:
   - id: go-test
-    command: go test ./...
+    command: go -C daemon test ./...
   - id: go-race
-    command: go test -race ./...
+    command: go -C daemon test -race ./...
   - id: typecheck
     command: npm run typecheck
   - id: build

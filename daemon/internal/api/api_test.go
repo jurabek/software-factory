@@ -16,6 +16,16 @@ import (
 	"github.com/jurabek/software-factory/daemon/internal/store"
 )
 
+const testToken = "0123456789abcdef0123456789abcdef"
+
+func newTestAccess() Access {
+	return Access{DaemonID: "0123456789abcdef0123456789abcdef", Token: testToken}
+}
+
+func authorize(request *http.Request) {
+	request.Header.Set("Authorization", "Bearer "+testToken)
+}
+
 func TestEventsTailReturnsNewestEventsInSequenceOrder(t *testing.T) {
 	db, err := store.Open(filepath.Join(t.TempDir(), "factory.db"))
 	if err != nil {
@@ -43,11 +53,12 @@ func TestEventsTailReturnsNewestEventsInSequenceOrder(t *testing.T) {
 		}
 	}
 
-	server, err := New(db, nil, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil })
+	server, err := New(db, nil, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil }, newTestAccess())
 	if err != nil {
 		t.Fatal(err)
 	}
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/tasks/task-1/events?tail=2", nil)
+	authorize(request)
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
@@ -74,7 +85,7 @@ func TestEmptyCollectionsAreJSONArrays(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	server, err := New(db, nil, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil })
+	server, err := New(db, nil, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil }, newTestAccess())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,6 +96,7 @@ func TestEmptyCollectionsAreJSONArrays(t *testing.T) {
 	} {
 		t.Run(test.path, func(t *testing.T) {
 			request := httptest.NewRequest(http.MethodGet, test.path, nil)
+			authorize(request)
 			response := httptest.NewRecorder()
 			server.Handler().ServeHTTP(response, request)
 			if response.Code != http.StatusOK {
@@ -105,13 +117,13 @@ func TestCreateTaskAcceptsMultipleRepositories(t *testing.T) {
 	}
 	defer db.Close()
 	service := factory.NewService(root, db, config.Config{}, "", nil, nil)
-	server, err := New(db, service, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil })
+	server, err := New(db, service, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil }, newTestAccess())
 	if err != nil {
 		t.Fatal(err)
 	}
 	body := []byte(`{"request":"Coordinate changes","repositories":[{"name":"api","type":"github","repo":"owner/api","primary":true},{"name":"web","type":"github","repo":"owner/web"}]}`)
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/tasks", bytes.NewReader(body))
-	request.Header.Set("X-Software-Factory-Token", server.token)
+	authorize(request)
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
 	if response.Code != http.StatusCreated {
@@ -134,7 +146,7 @@ func TestCreateAndListTaskSessions(t *testing.T) {
 	}
 	defer db.Close()
 	service := factory.NewService(root, db, config.Config{}, "", nil, nil)
-	server, err := New(db, service, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil })
+	server, err := New(db, service, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil }, newTestAccess())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +156,7 @@ func TestCreateAndListTaskSessions(t *testing.T) {
 	}
 
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+task.ID+"/sessions", bytes.NewBufferString(`{"request":"Investigate another approach"}`))
-	request.Header.Set("X-Software-Factory-Token", server.token)
+	authorize(request)
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
 	if response.Code != http.StatusCreated {
@@ -159,6 +171,7 @@ func TestCreateAndListTaskSessions(t *testing.T) {
 	}
 
 	request = httptest.NewRequest(http.MethodGet, "/api/v1/tasks/"+task.ID+"/sessions", nil)
+	authorize(request)
 	response = httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
@@ -173,7 +186,7 @@ func TestCreateAndListTaskSessions(t *testing.T) {
 	}
 
 	request = httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+task.ID+"/sessions", bytes.NewBufferString(`{"request":" "}`))
-	request.Header.Set("X-Software-Factory-Token", server.token)
+	authorize(request)
 	response = httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
 	if response.Code != http.StatusUnprocessableEntity {
@@ -187,14 +200,64 @@ func TestLegacyRouteHasNoAlias(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	server, err := New(db, nil, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil })
+	server, err := New(db, nil, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil }, newTestAccess())
 	if err != nil {
 		t.Fatal(err)
 	}
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/campaigns", nil)
+	authorize(request)
 	response := httptest.NewRecorder()
 	server.Handler().ServeHTTP(response, request)
 	if response.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", response.Code)
+	}
+}
+
+func TestTokenRequiredForAPI(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "factory.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	server, err := New(db, nil, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil }, newTestAccess())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		name          string
+		path          string
+		authorization string
+		wantStatus    int
+	}{
+		{name: "missing", path: "/api/v1/tasks", wantStatus: http.StatusUnauthorized},
+		{name: "wrong", path: "/api/v1/tasks", authorization: "Bearer wrong", wantStatus: http.StatusUnauthorized},
+		{name: "no prefix", path: "/api/v1/tasks", authorization: testToken, wantStatus: http.StatusUnauthorized},
+		{name: "valid", path: "/api/v1/tasks", authorization: "Bearer " + testToken, wantStatus: http.StatusOK},
+		{name: "identity valid", path: "/api/v1/identity", authorization: "Bearer " + testToken, wantStatus: http.StatusOK},
+		{name: "health public", path: "/api/v1/health", wantStatus: http.StatusOK},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, test.path, nil)
+			if test.authorization != "" {
+				request.Header.Set("Authorization", test.authorization)
+			}
+			response := httptest.NewRecorder()
+			server.Handler().ServeHTTP(response, request)
+			if response.Code != test.wantStatus {
+				t.Fatalf("status = %d, want %d: %s", response.Code, test.wantStatus, response.Body.String())
+			}
+		})
+	}
+}
+
+func TestNewRequiresToken(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "factory.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := New(db, nil, config.Config{}, nil, nil, nil, nil, Access{DaemonID: "x"}); err == nil {
+		t.Fatal("New succeeded without token")
 	}
 }

@@ -2,15 +2,12 @@ package api
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/subtle"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -29,16 +26,22 @@ type Server struct {
 	harnesses        []string
 	models           func(context.Context, string) ([]config.Model, error)
 	token            string
+	daemonID         string
 }
+
+type Access struct {
+	DaemonID string
+	Token    string
+}
+
 type APIError struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
 }
 
-func New(db *store.DB, service *factory.Service, cfg config.Config, problems []string, loadErr error, harnesses []string, models func(context.Context, string) ([]config.Model, error)) (*Server, error) {
-	token, err := newToken()
-	if err != nil {
-		return nil, err
+func New(db *store.DB, service *factory.Service, cfg config.Config, problems []string, loadErr error, harnesses []string, models func(context.Context, string) ([]config.Model, error), access Access) (*Server, error) {
+	if access.Token == "" {
+		return nil, errors.New("daemon token is required")
 	}
 	if harnesses == nil {
 		harnesses = []string{"pi"}
@@ -46,26 +49,26 @@ func New(db *store.DB, service *factory.Service, cfg config.Config, problems []s
 	if models == nil {
 		models = func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil }
 	}
-	return &Server{db: db, factory: service, config: cfg, validationErrors: problems, loadError: loadErr, harnesses: harnesses, models: models, token: token}, nil
+	return &Server{db: db, factory: service, config: cfg, validationErrors: problems, loadError: loadErr, harnesses: harnesses, models: models, token: access.Token, daemonID: access.DaemonID}, nil
 }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/v1/identity", s.identity)
 	mux.HandleFunc("GET /api/v1/health", s.health)
 	mux.HandleFunc("GET /api/v1/config", s.configRead)
 	mux.HandleFunc("GET /api/v1/harnesses", s.harnessesRead)
 	mux.HandleFunc("GET /api/v1/models", s.modelsRead)
-	mux.HandleFunc("GET /api/v1/control", s.control)
-	mux.HandleFunc("POST /api/v1/tasks", s.mutation(s.create))
+	mux.HandleFunc("POST /api/v1/tasks", s.create)
 	mux.HandleFunc("GET /api/v1/tasks", s.tasks)
 	mux.HandleFunc("GET /api/v1/tasks/{id}", s.task)
-	mux.HandleFunc("POST /api/v1/tasks/{id}/sessions", s.mutation(s.createSession))
+	mux.HandleFunc("POST /api/v1/tasks/{id}/sessions", s.createSession)
 	mux.HandleFunc("GET /api/v1/tasks/{id}/sessions", s.taskSessions)
-	mux.HandleFunc("POST /api/v1/tasks/{id}/{command}", s.mutation(s.command))
-	mux.HandleFunc("POST /api/v1/tasks/{id}/feedback", s.mutation(s.feedback))
-	mux.HandleFunc("POST /api/v1/tasks/{id}/interventions", s.mutation(s.createIntervention))
+	mux.HandleFunc("POST /api/v1/tasks/{id}/{command}", s.command)
+	mux.HandleFunc("POST /api/v1/tasks/{id}/feedback", s.feedback)
+	mux.HandleFunc("POST /api/v1/tasks/{id}/interventions", s.createIntervention)
 	mux.HandleFunc("GET /api/v1/tasks/{id}/interventions", s.interventions)
-	mux.HandleFunc("DELETE /api/v1/tasks/{id}", s.mutation(s.delete))
+	mux.HandleFunc("DELETE /api/v1/tasks/{id}", s.delete)
 	mux.HandleFunc("GET /api/v1/tasks/{id}/attempts", s.attempts)
 	mux.HandleFunc("GET /api/v1/tasks/{id}/attempts/{attemptID}", s.attempt)
 	mux.HandleFunc("GET /api/v1/tasks/{id}/branches", s.branches)
@@ -75,7 +78,36 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/tasks/{id}/results", s.results)
 	mux.HandleFunc("GET /api/v1/tasks/{id}/checks", s.checks)
 	mux.HandleFunc("GET /api/v1/tasks/{id}/diff", s.diff)
-	return headers(mux)
+	return headers(s.authenticate(mux))
+}
+
+func (s *Server) authenticate(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/api/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if r.URL.Path == "/api/v1/health" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		const prefix = "Bearer "
+		authorization := r.Header.Get("Authorization")
+		if !strings.HasPrefix(authorization, prefix) {
+			fail(w, http.StatusUnauthorized, "invalid_credential", "daemon token missing or invalid")
+			return
+		}
+		provided := strings.TrimPrefix(authorization, prefix)
+		if subtle.ConstantTimeCompare([]byte(provided), []byte(s.token)) != 1 {
+			fail(w, http.StatusUnauthorized, "invalid_credential", "daemon token missing or invalid")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) identity(w http.ResponseWriter, _ *http.Request) {
+	write(w, http.StatusOK, map[string]string{"id": s.daemonID})
 }
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
@@ -136,10 +168,6 @@ func (s *Server) modelsRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	write(w, http.StatusOK, map[string]any{"harness": harness, "models": models})
-}
-
-func (s *Server) control(w http.ResponseWriter, _ *http.Request) {
-	write(w, http.StatusOK, map[string]any{"enabled": true, "token": s.token})
 }
 
 func (s *Server) create(w http.ResponseWriter, r *http.Request) {
@@ -476,35 +504,12 @@ func (s *Server) exists(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
-func (s *Server) mutation(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		provided := r.Header.Get("X-Software-Factory-Token")
-		if subtle.ConstantTimeCompare([]byte(provided), []byte(s.token)) != 1 {
-			fail(w, http.StatusForbidden, "invalid_token", "mutation token missing or invalid")
-			return
-		}
-		if origin := r.Header.Get("Origin"); origin != "" && !sameOrigin(origin, r) {
-			fail(w, http.StatusForbidden, "foreign_origin", "foreign origin rejected")
-			return
-		}
-		next(w, r)
-	}
-}
-
 func (s *Server) ready(w http.ResponseWriter) bool {
 	if s.loadError != nil || len(s.validationErrors) > 0 {
 		fail(w, http.StatusUnprocessableEntity, "configuration_invalid", "factory configuration is invalid")
 		return false
 	}
 	return true
-}
-
-func sameOrigin(origin string, r *http.Request) bool {
-	parsed, err := url.Parse(origin)
-	if err != nil {
-		return false
-	}
-	return parsed.Host == r.Host && (parsed.Scheme == "http" || parsed.Scheme == "https")
 }
 
 func headers(next http.Handler) http.Handler {
@@ -595,12 +600,4 @@ func containsSubstring(haystack, needle string) bool {
 		}
 	}
 	return false
-}
-
-func newToken() (string, error) {
-	var value [32]byte
-	if _, err := rand.Read(value[:]); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(value[:]), nil
 }
