@@ -160,14 +160,18 @@ paths:
     get:
       tags: [Tasks]
       operationId: listTaskSessions
-      summary: List a task's sessions
+      summary: List a task's sessions with per-role agent session metadata
+      description: |
+        Bare array of tasks extended with `agent_sessions` per item.
+        Each agent session reports harness identity, model/thinking, usage,
+        cost, and accounting completeness for its role.
       responses:
         "200":
           description: Sessions ordered oldest first, including the initial session
           schema:
             type: array
             items:
-              $ref: "#/definitions/Task"
+              $ref: "#/definitions/TaskSession"
         "404":
           $ref: "#/responses/NotFound"
         "500":
@@ -558,6 +562,11 @@ definitions:
       context_window:
         type: integer
         minimum: 0
+      thinking:
+        type: array
+        items:
+          type: string
+        description: Validated thinking levels for this harness model
   ModelsResponse:
     type: object
     required: [harness, models]
@@ -606,7 +615,7 @@ definitions:
     properties:
       coding_agent:
         type: string
-        enum: [pi, codex]
+        enum: [pi, codex, claude]
       model:
         type: string
       thinking:
@@ -693,7 +702,7 @@ definitions:
           $ref: "#/definitions/Repository"
       coding_agent:
         type: string
-        enum: [pi, codex]
+        enum: [pi, codex, claude]
         description: Coding agent harness for the task (defaults to server config)
       model:
         type: string
@@ -751,6 +760,10 @@ definitions:
         type: string
       thinking:
         type: string
+      agent_sessions:
+        type: array
+        items:
+          $ref: "#/definitions/AgentSession"
       created_at:
         type: string
         format: date-time
@@ -794,7 +807,7 @@ definitions:
         format: date-time
   Event:
     type: object
-    required: [sequence, id, task_id, type, payload, started_at]
+    required: [sequence, id, task_id, kind, format_version, payload, display, started_at]
     properties:
       sequence:
         type: integer
@@ -805,14 +818,30 @@ definitions:
         type: string
       phase_id:
         type: string
+      attempt_id:
+        type: string
+      artifact_id:
+        type: string
+      branch_id:
+        type: string
       parent_event_id:
         type: string
-      type:
+      kind:
         type: string
+        enum: [message, tool_call, process_start, process_end, phase_start, phase_end, intervention, plan_feedback, custom]
+      format_version:
+        type: integer
+        minimum: 1
       name:
         type: string
       payload:
         type: object
+      display:
+        $ref: "#/definitions/SessionDisplay"
+      available_actions:
+        type: array
+        items:
+          type: string
       token_count:
         type: integer
       started_at:
@@ -821,9 +850,99 @@ definitions:
       ended_at:
         type: string
         format: date-time
+  SessionDisplay:
+    type: object
+    required: [role, status, title]
+    properties:
+      role:
+        type: string
+        enum: [user, agent, system, tool, event]
+      status:
+        type: string
+        enum: [success, failure, neutral, running]
+      title:
+        type: string
+      target:
+        type: string
+      result:
+        type: string
+      preview:
+        type: string
+      duration_ms:
+        type: integer
+        format: int64
+  SessionUsage:
+    type: object
+    required: [input, output, total_tokens]
+    properties:
+      input:
+        type: integer
+      output:
+        type: integer
+      cache_read:
+        type: integer
+      cache_write:
+        type: integer
+      reasoning:
+        type: integer
+      total_tokens:
+        type: integer
+  AgentSession:
+    type: object
+    required: [role, harness, harness_session_id, session_directory, session_ready, usage, cost, accounting_complete, created_at, last_used_at]
+    properties:
+      role:
+        type: string
+      harness:
+        type: string
+      provider:
+        type: string
+      model:
+        type: string
+      thinking:
+        type: string
+      color:
+        type: string
+      harness_session_id:
+        type: string
+        format: uuid
+      session_directory:
+        type: string
+      session_ready:
+        type: boolean
+      native_transcript_path:
+        type: string
+      context_tokens:
+        type: integer
+      context_window:
+        type: integer
+      usage:
+        $ref: "#/definitions/SessionUsage"
+      cost:
+        type: number
+        format: double
+      accounting_complete:
+        type: boolean
+        description: False while an invocation is pending, after crash recovery with unrecorded spend, or when terminal accounting was incomplete
+      created_at:
+        type: string
+        format: date-time
+      last_used_at:
+        type: string
+        format: date-time
+  TaskSession:
+    allOf:
+      - $ref: "#/definitions/Task"
+      - type: object
+        required: [agent_sessions]
+        properties:
+          agent_sessions:
+            type: array
+            items:
+              $ref: "#/definitions/AgentSession"
   EventsResponse:
     type: object
-    required: [events, cursor]
+    required: [events, cursor, format_version]
     properties:
       events:
         type: array
@@ -832,6 +951,9 @@ definitions:
       cursor:
         type: integer
         format: int64
+      format_version:
+        type: integer
+        minimum: 1
   Envelope:
     type: object
     required: [id, task_id, phase_id, agent_role, output_type, payload, created_at, valid, attempt]

@@ -14,6 +14,7 @@ import (
 
 	"github.com/jurabek/software-factory/daemon/internal/config"
 	"github.com/jurabek/software-factory/daemon/internal/factory"
+	"github.com/jurabek/software-factory/daemon/internal/session"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 )
 
@@ -227,7 +228,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) taskSessions(w http.ResponseWriter, r *http.Request) {
-	values, err := s.db.TaskSessions(r.Context(), r.PathValue("id"))
+	values, err := s.db.TaskSessionsWithAgents(r.Context(), r.PathValue("id"))
 	if err != nil {
 		storeError(w, err)
 		return
@@ -439,7 +440,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	if len(values) > 0 {
 		cursor = values[len(values)-1].Sequence
 	}
-	write(w, http.StatusOK, map[string]any{"events": values, "cursor": cursor})
+	write(w, http.StatusOK, map[string]any{"events": values, "cursor": cursor, "format_version": session.FormatVersion})
 }
 
 func (s *Server) stream(w http.ResponseWriter, r *http.Request) {

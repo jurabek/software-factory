@@ -29,7 +29,7 @@ openai-codex gpt-5.6-sol 272K 128K yes yes
 	}
 
 	want := Model{Provider: "openai-codex", ID: "gpt-5.6-luna", ContextWindow: 272000}
-	if models[0] != want {
+	if models[0].Provider != want.Provider || models[0].ID != want.ID || models[0].ContextWindow != want.ContextWindow {
 		t.Errorf("Catalog() first model = %#v, want %#v", models[0], want)
 	}
 	if _, err := ResolveModel("openai-codex/gpt-5.6-luna", models); err != nil {
