@@ -1,3 +1,8 @@
+import type {
+	SessionDisplay,
+	SessionKind,
+} from "@/client/session-contract.ts";
+
 const requestTimeoutMilliseconds = 5_000;
 const daemonActorHeader = "X-Software-Factory-Actor";
 
@@ -26,6 +31,7 @@ export type DaemonRequestOptions = {
 };
 export type EventQuery = { after?: number; limit?: number; tail?: number };
 export type DaemonEvent = {
+	format_version: number;
 	sequence: number;
 	id: string;
 	task_id: string;
@@ -33,15 +39,25 @@ export type DaemonEvent = {
 	attempt_id?: string;
 	artifact_id?: string;
 	branch_id?: string;
-	type: string;
+	parent_event_id?: string;
+	kind: SessionKind;
 	name?: string;
 	payload: unknown;
+	display: SessionDisplay;
 	available_actions?: string[];
+	token_count?: number;
 	started_at: string;
+	ended_at?: string;
+};
+export type DaemonHarnessModel = {
+	provider: string;
+	id: string;
+	context_window?: number;
+	thinking?: string[];
 };
 export type DaemonHarnessModels = {
 	harness: string;
-	models: { provider: string; id: string }[];
+	models: DaemonHarnessModel[];
 };
 export type DaemonCreationDefaults = {
 	coding_agent: string;
@@ -459,7 +475,12 @@ export function createDaemonClient(fetcher: typeof fetch = fetch) {
 				const entry = model as Record<string, unknown>;
 				if (
 					typeof entry.provider !== "string" ||
-					typeof entry.id !== "string"
+					typeof entry.id !== "string" ||
+					(entry.context_window !== undefined &&
+						typeof entry.context_window !== "number") ||
+					(entry.thinking !== undefined &&
+						(!Array.isArray(entry.thinking) ||
+							entry.thinking.some((level) => typeof level !== "string")))
 				) {
 					throw new DaemonRequestError(
 						502,
@@ -470,9 +491,16 @@ export function createDaemonClient(fetcher: typeof fetch = fetch) {
 			}
 			return {
 				harness: value.harness,
-				models: (value.models as { provider: string; id: string }[]).map(
-					(model) => ({ provider: model.provider, id: model.id }),
-				),
+				models: (value.models as DaemonHarnessModel[]).map((model) => ({
+					provider: model.provider,
+					id: model.id,
+					...(typeof model.context_window === "number"
+						? { context_window: model.context_window }
+						: {}),
+					...(Array.isArray(model.thinking)
+						? { thinking: model.thinking.filter((level) => typeof level === "string") }
+						: {}),
+				})),
 			};
 		},
 		async createTask(
@@ -735,7 +763,11 @@ export function createDaemonClient(fetcher: typeof fetch = fetch) {
 			taskId: string,
 			query: EventQuery,
 			options: DaemonRequestOptions = {},
-		): Promise<{ events: DaemonEvent[]; cursor: number }> {
+		): Promise<{
+			events: DaemonEvent[];
+			cursor: number;
+			format_version: number;
+		}> {
 			const parameters = new URLSearchParams();
 			if (query.after !== undefined)
 				parameters.set("after", String(query.after));
@@ -750,11 +782,16 @@ export function createDaemonClient(fetcher: typeof fetch = fetch) {
 				`/api/v1/tasks/${encodeURIComponent(taskId)}/events${suffix}`,
 				options,
 			);
-			const value = body as { events?: unknown; cursor?: unknown } | null;
+			const value = body as {
+				events?: unknown;
+				cursor?: unknown;
+				format_version?: unknown;
+			} | null;
 			if (
 				!value ||
 				!Array.isArray(value.events) ||
-				typeof value.cursor !== "number"
+				typeof value.cursor !== "number" ||
+				typeof value.format_version !== "number"
 			) {
 				throw new DaemonRequestError(
 					502,
@@ -771,10 +808,14 @@ export function createDaemonClient(fetcher: typeof fetch = fetch) {
 					);
 				const entry = event as Record<string, unknown>;
 				if (
+					typeof entry.format_version !== "number" ||
 					typeof entry.sequence !== "number" ||
 					typeof entry.id !== "string" ||
 					typeof entry.task_id !== "string" ||
-					typeof entry.type !== "string" ||
+					typeof entry.kind !== "string" ||
+					!entry.display ||
+					typeof entry.display !== "object" ||
+					Array.isArray(entry.display) ||
 					typeof entry.started_at !== "string"
 				) {
 					throw new DaemonRequestError(
@@ -786,6 +827,7 @@ export function createDaemonClient(fetcher: typeof fetch = fetch) {
 			}
 			return {
 				events: (value.events as DaemonEvent[]).map((event) => ({
+					format_version: event.format_version,
 					sequence: event.sequence,
 					id: event.id,
 					task_id: event.task_id,
@@ -801,9 +843,13 @@ export function createDaemonClient(fetcher: typeof fetch = fetch) {
 					...(typeof event.branch_id === "string"
 						? { branch_id: event.branch_id }
 						: {}),
-					type: event.type,
+					...(typeof event.parent_event_id === "string"
+						? { parent_event_id: event.parent_event_id }
+						: {}),
+					kind: event.kind,
 					...(typeof event.name === "string" ? { name: event.name } : {}),
 					payload: event.payload,
+					display: event.display,
 					...(Array.isArray(event.available_actions)
 						? {
 								available_actions: event.available_actions.filter(
@@ -811,9 +857,16 @@ export function createDaemonClient(fetcher: typeof fetch = fetch) {
 								),
 							}
 						: {}),
+					...(typeof event.token_count === "number"
+						? { token_count: event.token_count }
+						: {}),
 					started_at: event.started_at,
+					...(typeof event.ended_at === "string"
+						? { ended_at: event.ended_at }
+						: {}),
 				})),
 				cursor: value.cursor,
+				format_version: value.format_version,
 			};
 		},
 		async eventStream(

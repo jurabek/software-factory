@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/jurabek/software-factory/daemon/internal/session"
 	_ "modernc.org/sqlite"
 )
 
@@ -30,11 +31,11 @@ create table if not exists task_repositories (
  unique(task_id, name)
 );
 create table if not exists phases (id text primary key, task_id text not null references tasks(id) on delete cascade, sequence integer not null, name text not null, kind text not null, owner text not null, description text, status text not null, attempt integer not null default 1, retries integer not null default 0, error text, started_at text, ended_at text);
-create table if not exists events (sequence integer primary key autoincrement, id text not null unique, task_id text not null references tasks(id) on delete cascade, phase_id text, parent_event_id text, type text not null, name text, payload_json text not null, token_count integer not null default 0, started_at text not null, ended_at text);
+create table if not exists events (sequence integer primary key autoincrement, id text not null unique, task_id text not null references tasks(id) on delete cascade, phase_id text, parent_event_id text, kind text not null, format_version integer not null default 1, name text, payload_json text not null, display_json text not null default '{}', token_count integer not null default 0, started_at text not null, ended_at text);
 create table if not exists envelopes (id text primary key, task_id text not null references tasks(id) on delete cascade, phase_id text, agent_role text not null, output_type text not null, payload_json text not null, valid integer not null, attempt integer not null, created_at text not null);
 create table if not exists checks (id text not null, task_id text not null references tasks(id) on delete cascade, phase_id text, name text not null, command text not null, attempt integer not null, status text not null, exit_code integer, output text, artifact_path text, duration_ms integer, started_at text, ended_at text, primary key (task_id, id, attempt));
 create table if not exists processes (id integer primary key autoincrement, task_id text not null references tasks(id) on delete cascade, phase_id text, kind text not null, name text not null, pid integer not null, display_command text not null, status text not null, exit_code integer, started_at text not null, ended_at text);
-create table if not exists agent_sessions (task_id text not null references tasks(id) on delete cascade, role text not null, harness text not null, provider text, model text, thinking text, color text, pi_session_id text not null, session_directory text not null, context_tokens integer, context_window integer, usage_json text, cost real, created_at text not null, last_used_at text not null, primary key(task_id, role));
+create table if not exists agent_sessions (task_id text not null references tasks(id) on delete cascade, role text not null, harness text not null, provider text, model text, thinking text, color text, harness_session_id text not null, session_directory text not null, session_ready integer not null default 0, native_transcript_path text, pending_invocation_id text, context_tokens integer, context_window integer, usage_json text, cost real not null default 0, accounting_complete integer not null default 1, created_at text not null, last_used_at text not null, primary key(task_id, role));
 create table if not exists feedback (id text primary key, task_id text not null references tasks(id) on delete cascade, actor text not null, plan_digest text not null, text text not null, created_at text not null);
 create table if not exists interventions (
  id text primary key, task_id text not null references tasks(id) on delete cascade,
@@ -98,11 +99,16 @@ func Open(path string) (*DB, error) {
 		db.Close()
 		return nil, err
 	}
+	wrapped := &DB{DB: db}
+	if err = wrapped.RecoverPendingAgentSessions(context.Background()); err != nil {
+		db.Close()
+		return nil, err
+	}
 	if err := os.Chmod(path, 0o600); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("secure database: %w", err)
 	}
-	return &DB{DB: db}, nil
+	return wrapped, nil
 }
 
 func incompatibleSchema(ctx context.Context, db *sql.DB) (bool, error) {
@@ -127,7 +133,22 @@ func incompatibleSchema(ctx context.Context, db *sql.DB) (bool, error) {
 		return true, err
 	}
 	snapshots, err := tableExists(ctx, db, "workspace_snapshots")
-	return !snapshots, err
+	if err != nil || !snapshots {
+		return true, err
+	}
+	for _, column := range []string{"kind", "format_version", "display_json"} {
+		exists, columnErr := columnExists(ctx, db, "events", column)
+		if columnErr != nil || !exists {
+			return true, columnErr
+		}
+	}
+	for _, column := range []string{"harness_session_id", "session_ready", "native_transcript_path", "pending_invocation_id", "accounting_complete"} {
+		exists, columnErr := columnExists(ctx, db, "agent_sessions", column)
+		if columnErr != nil || !exists {
+			return true, columnErr
+		}
+	}
+	return false, nil
 }
 
 func ensureRetriableColumns(ctx context.Context, db *sql.DB) error {
@@ -198,6 +219,12 @@ func tableExists(ctx context.Context, db *sql.DB, name string) (bool, error) {
 	return count > 0, err
 }
 
+func columnExists(ctx context.Context, db *sql.DB, table, column string) (bool, error) {
+	var count int
+	err := db.QueryRowContext(ctx, `select count(*) from pragma_table_info(?) where name=?`, table, column).Scan(&count)
+	return count > 0, err
+}
+
 type Task struct {
 	ID                    string           `json:"id"`
 	ParentTaskID          string           `json:"parent_task_id,omitempty"`
@@ -237,22 +264,50 @@ type TaskRepository struct {
 	CreatedAt     string `json:"created_at"`
 }
 
+type AgentSession struct {
+	Role                 string        `json:"role"`
+	Harness              string        `json:"harness"`
+	Provider             string        `json:"provider,omitempty"`
+	Model                string        `json:"model,omitempty"`
+	Thinking             string        `json:"thinking,omitempty"`
+	Color                string        `json:"color,omitempty"`
+	HarnessSessionID     string        `json:"harness_session_id"`
+	SessionDirectory     string        `json:"session_directory"`
+	SessionReady         bool          `json:"session_ready"`
+	NativeTranscriptPath string        `json:"native_transcript_path,omitempty"`
+	PendingInvocationID  string        `json:"-"`
+	ContextTokens        int           `json:"context_tokens,omitempty"`
+	ContextWindow        int           `json:"context_window,omitempty"`
+	Usage                session.Usage `json:"usage"`
+	Cost                 float64       `json:"cost"`
+	AccountingComplete   bool          `json:"accounting_complete"`
+	CreatedAt            string        `json:"created_at"`
+	LastUsedAt           string        `json:"last_used_at"`
+}
+
+type TaskSession struct {
+	Task
+	AgentSessions []AgentSession `json:"agent_sessions"`
+}
+
 type Event struct {
-	Sequence         int64      `json:"sequence"`
-	ID               string     `json:"id"`
-	TaskID           string     `json:"task_id"`
-	PhaseID          string     `json:"phase_id,omitempty"`
-	AttemptID        string     `json:"attempt_id,omitempty"`
-	ArtifactID       string     `json:"artifact_id,omitempty"`
-	BranchID         string     `json:"branch_id,omitempty"`
-	ParentEventID    string     `json:"parent_event_id,omitempty"`
-	Type             string     `json:"type"`
-	Name             string     `json:"name,omitempty"`
-	Payload          any        `json:"payload"`
-	AvailableActions []string   `json:"available_actions,omitempty"`
-	TokenCount       int        `json:"token_count,omitempty"`
-	StartedAt        time.Time  `json:"started_at"`
-	EndedAt          *time.Time `json:"ended_at,omitempty"`
+	Sequence         int64           `json:"sequence"`
+	ID               string          `json:"id"`
+	TaskID           string          `json:"task_id"`
+	PhaseID          string          `json:"phase_id,omitempty"`
+	AttemptID        string          `json:"attempt_id,omitempty"`
+	ArtifactID       string          `json:"artifact_id,omitempty"`
+	BranchID         string          `json:"branch_id,omitempty"`
+	ParentEventID    string          `json:"parent_event_id,omitempty"`
+	Kind             session.Kind    `json:"kind"`
+	FormatVersion    int             `json:"format_version"`
+	Name             string          `json:"name,omitempty"`
+	Payload          any             `json:"payload"`
+	Display          session.Display `json:"display"`
+	AvailableActions []string        `json:"available_actions,omitempty"`
+	TokenCount       int             `json:"token_count,omitempty"`
+	StartedAt        time.Time       `json:"started_at"`
+	EndedAt          *time.Time      `json:"ended_at,omitempty"`
 }
 
 type Phase struct {
@@ -347,20 +402,20 @@ type Feedback struct {
 }
 
 type Intervention struct {
-	ID                string `json:"id"`
-	TaskID            string `json:"task_id"`
-	TargetType        string `json:"target_type"`
-	TargetID          string `json:"target_id"`
-	Actor             string `json:"actor"`
-	Intent            string `json:"intent"`
-	Text              string `json:"text"`
-	Delivery          string `json:"delivery"`
-	IdempotencyKey    string `json:"idempotency_key"`
-	Anchor            string `json:"anchor_json,omitempty"`
-	ExpectedHead      string `json:"expected_branch_head,omitempty"`
-	BranchID          string `json:"branch_id,omitempty"`
-	AttemptID         string `json:"attempt_id,omitempty"`
-	CreatedAt         string `json:"created_at"`
+	ID             string `json:"id"`
+	TaskID         string `json:"task_id"`
+	TargetType     string `json:"target_type"`
+	TargetID       string `json:"target_id"`
+	Actor          string `json:"actor"`
+	Intent         string `json:"intent"`
+	Text           string `json:"text"`
+	Delivery       string `json:"delivery"`
+	IdempotencyKey string `json:"idempotency_key"`
+	Anchor         string `json:"anchor_json,omitempty"`
+	ExpectedHead   string `json:"expected_branch_head,omitempty"`
+	BranchID       string `json:"branch_id,omitempty"`
+	AttemptID      string `json:"attempt_id,omitempty"`
+	CreatedAt      string `json:"created_at"`
 }
 
 type InterventionResult struct {
@@ -473,6 +528,22 @@ func (db *DB) TaskSessions(ctx context.Context, taskID string) ([]Task, error) {
 	return values, rows.Err()
 }
 
+func (db *DB) TaskSessionsWithAgents(ctx context.Context, taskID string) ([]TaskSession, error) {
+	tasks, err := db.TaskSessions(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+	values := make([]TaskSession, 0, len(tasks))
+	for _, task := range tasks {
+		agents, agentsErr := db.AgentSessions(ctx, task.ID)
+		if agentsErr != nil {
+			return nil, agentsErr
+		}
+		values = append(values, TaskSession{Task: task, AgentSessions: agents})
+	}
+	return values, nil
+}
+
 func (db *DB) Claim(ctx context.Context, id string, from, to string) error {
 	result, err := db.ExecContext(ctx, `update tasks set previous_state=state,state=?,started_at=coalesce(started_at,?),ended_at=null,error=null where id=? and state=? and not exists(select 1 from tasks where state in ('preparing','planning','awaiting_plan_approval','building','checking','reviewing') and id<>?)`, to, now(), id, from, id)
 	if err != nil {
@@ -573,17 +644,148 @@ func (db *DB) PhaseByID(ctx context.Context, taskID, phaseID string) (Phase, err
 	return value, wrap("read phase", err)
 }
 
-func (db *DB) SaveAgentSession(ctx context.Context, taskID, role, harnessName, provider, model, thinking, color, sessionID, directory string, contextTokens, contextWindow int, usage any, cost float64) error {
-	encoded, err := json.Marshal(usage)
-	if err != nil {
-		return err
-	}
+func (db *DB) ReserveAgentSession(ctx context.Context, taskID string, value AgentSession) (AgentSession, error) {
 	timestamp := now()
-	_, err = db.ExecContext(ctx, `insert into agent_sessions(task_id,role,harness,provider,model,thinking,color,pi_session_id,session_directory,context_tokens,context_window,usage_json,cost,created_at,last_used_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) on conflict(task_id,role) do update set provider=excluded.provider,model=excluded.model,thinking=excluded.thinking,color=excluded.color,context_tokens=excluded.context_tokens,context_window=excluded.context_window,usage_json=excluded.usage_json,cost=coalesce(agent_sessions.cost,0)+excluded.cost,last_used_at=excluded.last_used_at`, taskID, role, harnessName, provider, model, thinking, color, sessionID, directory, contextTokens, contextWindow, string(encoded), cost, timestamp, timestamp)
-	if err == nil {
-		_, err = db.ExecContext(ctx, `update tasks set total_cost=total_cost+? where id=?`, cost, taskID)
+	_, err := db.ExecContext(ctx, `insert into agent_sessions(task_id,role,harness,provider,model,thinking,color,harness_session_id,session_directory,session_ready,usage_json,cost,accounting_complete,created_at,last_used_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) on conflict(task_id,role) do nothing`, taskID, value.Role, value.Harness, nullIfEmpty(value.Provider), nullIfEmpty(value.Model), nullIfEmpty(value.Thinking), nullIfEmpty(value.Color), value.HarnessSessionID, value.SessionDirectory, boolToInt(value.SessionReady), `{}`, value.Cost, boolToInt(value.AccountingComplete), timestamp, timestamp)
+	if err != nil {
+		return AgentSession{}, wrap("reserve agent session", err)
 	}
-	return wrap("save agent session", err)
+	stored, err := db.AgentSession(ctx, taskID, value.Role)
+	if err != nil {
+		return AgentSession{}, err
+	}
+	if stored.Harness != value.Harness || stored.HarnessSessionID != value.HarnessSessionID || stored.SessionDirectory != value.SessionDirectory {
+		return AgentSession{}, ErrConflict
+	}
+	return stored, nil
+}
+
+func (db *DB) AgentSession(ctx context.Context, taskID, role string) (AgentSession, error) {
+	var value AgentSession
+	var usage string
+	var ready, complete int
+	err := db.QueryRowContext(ctx, `select role,harness,coalesce(provider,''),coalesce(model,''),coalesce(thinking,''),coalesce(color,''),harness_session_id,session_directory,session_ready,coalesce(native_transcript_path,''),coalesce(pending_invocation_id,''),coalesce(context_tokens,0),coalesce(context_window,0),coalesce(usage_json,'{}'),coalesce(cost,0),accounting_complete,created_at,last_used_at from agent_sessions where task_id=? and role=?`, taskID, role).Scan(&value.Role, &value.Harness, &value.Provider, &value.Model, &value.Thinking, &value.Color, &value.HarnessSessionID, &value.SessionDirectory, &ready, &value.NativeTranscriptPath, &value.PendingInvocationID, &value.ContextTokens, &value.ContextWindow, &usage, &value.Cost, &complete, &value.CreatedAt, &value.LastUsedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return AgentSession{}, ErrNotFound
+	}
+	if err != nil {
+		return AgentSession{}, wrap("read agent session", err)
+	}
+	value.SessionReady = ready != 0
+	value.AccountingComplete = complete != 0 && value.PendingInvocationID == ""
+	if err := json.Unmarshal([]byte(usage), &value.Usage); err != nil {
+		return AgentSession{}, wrap("decode agent session usage", err)
+	}
+	return value, nil
+}
+
+func (db *DB) AgentSessions(ctx context.Context, taskID string) ([]AgentSession, error) {
+	rows, err := db.QueryContext(ctx, `select role from agent_sessions where task_id=? order by role`, taskID)
+	if err != nil {
+		return nil, wrap("list agent sessions", err)
+	}
+	defer rows.Close()
+	roles := make([]string, 0)
+	for rows.Next() {
+		var role string
+		if err := rows.Scan(&role); err != nil {
+			return nil, err
+		}
+		roles = append(roles, role)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	values := make([]AgentSession, 0, len(roles))
+	for _, role := range roles {
+		value, readErr := db.AgentSession(ctx, taskID, role)
+		if readErr != nil {
+			return nil, readErr
+		}
+		values = append(values, value)
+	}
+	return values, nil
+}
+
+func (db *DB) BeginAgentInvocation(ctx context.Context, taskID, role, invocationID string) error {
+	result, err := db.ExecContext(ctx, `update agent_sessions set pending_invocation_id=?,last_used_at=? where task_id=? and role=? and pending_invocation_id is null`, invocationID, now(), taskID, role)
+	if err != nil {
+		return wrap("begin agent invocation", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return wrap("read agent invocation result", err)
+	}
+	if count != 1 {
+		return ErrConflict
+	}
+	return nil
+}
+
+func (db *DB) FinalizeAgentInvocation(ctx context.Context, taskID, role, invocationID string, value AgentSession) error {
+	usage, err := json.Marshal(value.Usage)
+	if err != nil {
+		return fmt.Errorf("encode agent session usage: %w", err)
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return wrap("begin agent invocation finalization", err)
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `update agent_sessions set provider=?,model=?,thinking=?,color=?,session_ready=?,native_transcript_path=?,context_tokens=?,context_window=?,usage_json=?,cost=cost+?,accounting_complete=accounting_complete and ?,pending_invocation_id=null,last_used_at=? where task_id=? and role=? and pending_invocation_id=? and harness_session_id=?`, nullIfEmpty(value.Provider), nullIfEmpty(value.Model), nullIfEmpty(value.Thinking), nullIfEmpty(value.Color), boolToInt(value.SessionReady), nullIfEmpty(value.NativeTranscriptPath), value.ContextTokens, value.ContextWindow, string(usage), value.Cost, boolToInt(value.AccountingComplete), now(), taskID, role, invocationID, value.HarnessSessionID)
+	if err != nil {
+		return wrap("finalize agent invocation", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return wrap("read agent invocation finalization", err)
+	}
+	if count == 0 {
+		var pending string
+		readErr := tx.QueryRowContext(ctx, `select coalesce(pending_invocation_id,'') from agent_sessions where task_id=? and role=?`, taskID, role).Scan(&pending)
+		if readErr != nil {
+			return wrap("read pending agent invocation", readErr)
+		}
+		if pending != "" {
+			return ErrConflict
+		}
+		return nil
+	}
+	if _, err = tx.ExecContext(ctx, `update tasks set total_cost=total_cost+? where id=?`, value.Cost, taskID); err != nil {
+		return wrap("update task agent cost", err)
+	}
+	return wrap("commit agent invocation", tx.Commit())
+}
+
+func (db *DB) RecoverPendingAgentSessions(ctx context.Context) error {
+	_, err := db.ExecContext(ctx, `update agent_sessions set accounting_complete=0,pending_invocation_id=null where pending_invocation_id is not null`)
+	return wrap("recover pending agent sessions", err)
+}
+
+// ReplaceAgentSession allocates a fresh native conversation after a repository
+// rewind/branch while preserving prior cost and completeness history. The
+// prior UUID is returned for audit metadata. Only idle sessions rotate.
+func (db *DB) ReplaceAgentSession(ctx context.Context, taskID, role, newSessionID, newDirectory string) (priorID string, err error) {
+	var current AgentSession
+	current, err = db.AgentSession(ctx, taskID, role)
+	if err != nil {
+		return "", err
+	}
+	if current.PendingInvocationID != "" {
+		return "", ErrConflict
+	}
+	result, err := db.ExecContext(ctx, `update agent_sessions set harness_session_id=?,session_directory=?,session_ready=0,native_transcript_path=null,last_used_at=? where task_id=? and role=? and harness_session_id=? and pending_invocation_id is null`, newSessionID, newDirectory, now(), taskID, role, current.HarnessSessionID)
+	if err != nil {
+		return "", wrap("replace agent session", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return "", wrap("read agent session replacement", err)
+	}
+	if count != 1 {
+		return "", ErrConflict
+	}
+	return current.HarnessSessionID, nil
 }
 
 func (db *DB) SaveEnvelope(ctx context.Context, id, taskID, phaseID, role, outputType, payload string, valid bool, attempt int) error {
@@ -657,9 +859,16 @@ func (db *DB) Checks(ctx context.Context, taskID string) ([]Check, error) {
 }
 
 func (db *DB) AppendEvent(ctx context.Context, taskDir string, event Event) (int64, error) {
+	if event.FormatVersion == 0 {
+		event.FormatVersion = session.FormatVersion
+	}
 	payload, err := json.Marshal(event.Payload)
 	if err != nil {
 		return 0, fmt.Errorf("marshal event payload: %w", err)
+	}
+	display, err := json.Marshal(event.Display)
+	if err != nil {
+		return 0, fmt.Errorf("marshal event display: %w", err)
 	}
 	started := event.StartedAt.UTC().Format(time.RFC3339Nano)
 	var ended any
@@ -670,7 +879,7 @@ func (db *DB) AppendEvent(ctx context.Context, taskDir string, event Event) (int
 	if string(actions) == "null" {
 		actions = []byte("[]")
 	}
-	result, err := db.ExecContext(ctx, `insert into events (id,task_id,phase_id,parent_event_id,type,name,payload_json,token_count,started_at,ended_at,attempt_id,artifact_id,branch_id,actions_json) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, event.ID, event.TaskID, nullIfEmpty(event.PhaseID), nullIfEmpty(event.ParentEventID), event.Type, nullIfEmpty(event.Name), string(payload), event.TokenCount, started, ended, nullIfEmpty(event.AttemptID), nullIfEmpty(event.ArtifactID), nullIfEmpty(event.BranchID), string(actions))
+	result, err := db.ExecContext(ctx, `insert into events (id,task_id,phase_id,parent_event_id,kind,format_version,name,payload_json,display_json,token_count,started_at,ended_at,attempt_id,artifact_id,branch_id,actions_json) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, event.ID, event.TaskID, nullIfEmpty(event.PhaseID), nullIfEmpty(event.ParentEventID), event.Kind, event.FormatVersion, nullIfEmpty(event.Name), string(payload), string(display), event.TokenCount, started, ended, nullIfEmpty(event.AttemptID), nullIfEmpty(event.ArtifactID), nullIfEmpty(event.BranchID), string(actions))
 	if err != nil {
 		return 0, fmt.Errorf("insert event: %w", err)
 	}
@@ -702,7 +911,7 @@ func AppendEvent(ctx context.Context, db *sql.DB, taskDir string, event Event) e
 
 func (db *DB) Events(ctx context.Context, taskID string, after int64, limit int) ([]Event, error) {
 	limit = eventLimit(limit)
-	rows, err := db.QueryContext(ctx, `select sequence,id,task_id,coalesce(phase_id,''),coalesce(parent_event_id,''),type,coalesce(name,''),payload_json,token_count,started_at,ended_at,coalesce(attempt_id,''),coalesce(artifact_id,''),coalesce(branch_id,''),coalesce(actions_json,'[]') from events where task_id=? and sequence>? order by sequence limit ?`, taskID, after, limit)
+	rows, err := db.QueryContext(ctx, `select sequence,id,task_id,coalesce(phase_id,''),coalesce(parent_event_id,''),kind,format_version,coalesce(name,''),payload_json,display_json,token_count,started_at,ended_at,coalesce(attempt_id,''),coalesce(artifact_id,''),coalesce(branch_id,''),coalesce(actions_json,'[]') from events where task_id=? and sequence>? order by sequence limit ?`, taskID, after, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -712,7 +921,7 @@ func (db *DB) Events(ctx context.Context, taskID string, after int64, limit int)
 
 func (db *DB) RecentEvents(ctx context.Context, taskID string, limit int) ([]Event, error) {
 	limit = eventLimit(limit)
-	rows, err := db.QueryContext(ctx, `select sequence,id,task_id,phase_id,parent_event_id,type,name,payload_json,token_count,started_at,ended_at,attempt_id,artifact_id,branch_id,actions_json from (select sequence,id,task_id,coalesce(phase_id,'') as phase_id,coalesce(parent_event_id,'') as parent_event_id,type,coalesce(name,'') as name,payload_json,token_count,started_at,ended_at,coalesce(attempt_id,'') as attempt_id,coalesce(artifact_id,'') as artifact_id,coalesce(branch_id,'') as branch_id,coalesce(actions_json,'[]') as actions_json from events where task_id=? order by sequence desc limit ?) order by sequence`, taskID, limit)
+	rows, err := db.QueryContext(ctx, `select sequence,id,task_id,phase_id,parent_event_id,kind,format_version,name,payload_json,display_json,token_count,started_at,ended_at,attempt_id,artifact_id,branch_id,actions_json from (select sequence,id,task_id,coalesce(phase_id,'') as phase_id,coalesce(parent_event_id,'') as parent_event_id,kind,format_version,coalesce(name,'') as name,payload_json,display_json,token_count,started_at,ended_at,coalesce(attempt_id,'') as attempt_id,coalesce(artifact_id,'') as artifact_id,coalesce(branch_id,'') as branch_id,coalesce(actions_json,'[]') as actions_json from events where task_id=? order by sequence desc limit ?) order by sequence`, taskID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -722,9 +931,9 @@ func (db *DB) RecentEvents(ctx context.Context, taskID string, limit int) ([]Eve
 
 func (db *DB) EventByID(ctx context.Context, taskID, eventID string) (Event, error) {
 	var event Event
-	var payload, started, actions string
+	var payload, display, started, actions string
 	var ended sql.NullString
-	err := db.QueryRowContext(ctx, `select sequence,id,task_id,coalesce(phase_id,''),coalesce(parent_event_id,''),type,coalesce(name,''),payload_json,token_count,started_at,ended_at,coalesce(attempt_id,''),coalesce(artifact_id,''),coalesce(branch_id,''),coalesce(actions_json,'[]') from events where task_id=? and id=?`, taskID, eventID).Scan(&event.Sequence, &event.ID, &event.TaskID, &event.PhaseID, &event.ParentEventID, &event.Type, &event.Name, &payload, &event.TokenCount, &started, &ended, &event.AttemptID, &event.ArtifactID, &event.BranchID, &actions)
+	err := db.QueryRowContext(ctx, `select sequence,id,task_id,coalesce(phase_id,''),coalesce(parent_event_id,''),kind,format_version,coalesce(name,''),payload_json,display_json,token_count,started_at,ended_at,coalesce(attempt_id,''),coalesce(artifact_id,''),coalesce(branch_id,''),coalesce(actions_json,'[]') from events where task_id=? and id=?`, taskID, eventID).Scan(&event.Sequence, &event.ID, &event.TaskID, &event.PhaseID, &event.ParentEventID, &event.Kind, &event.FormatVersion, &event.Name, &payload, &display, &event.TokenCount, &started, &ended, &event.AttemptID, &event.ArtifactID, &event.BranchID, &actions)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Event{}, ErrNotFound
 	}
@@ -733,6 +942,9 @@ func (db *DB) EventByID(ctx context.Context, taskID, eventID string) (Event, err
 	}
 	if err := json.Unmarshal([]byte(payload), &event.Payload); err != nil {
 		return Event{}, wrap("decode event payload", err)
+	}
+	if err := json.Unmarshal([]byte(display), &event.Display); err != nil {
+		return Event{}, wrap("decode event display", err)
 	}
 	_ = json.Unmarshal([]byte(actions), &event.AvailableActions)
 	event.StartedAt, _ = time.Parse(time.RFC3339Nano, started)
@@ -754,13 +966,16 @@ func scanEvents(rows *sql.Rows) ([]Event, error) {
 	values := make([]Event, 0)
 	for rows.Next() {
 		var event Event
-		var payload, started, actions string
+		var payload, display, started, actions string
 		var ended sql.NullString
-		if err := rows.Scan(&event.Sequence, &event.ID, &event.TaskID, &event.PhaseID, &event.ParentEventID, &event.Type, &event.Name, &payload, &event.TokenCount, &started, &ended, &event.AttemptID, &event.ArtifactID, &event.BranchID, &actions); err != nil {
+		if err := rows.Scan(&event.Sequence, &event.ID, &event.TaskID, &event.PhaseID, &event.ParentEventID, &event.Kind, &event.FormatVersion, &event.Name, &payload, &display, &event.TokenCount, &started, &ended, &event.AttemptID, &event.ArtifactID, &event.BranchID, &actions); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(payload), &event.Payload); err != nil {
 			return nil, fmt.Errorf("decode event payload: %w", err)
+		}
+		if err := json.Unmarshal([]byte(display), &event.Display); err != nil {
+			return nil, fmt.Errorf("decode event display: %w", err)
 		}
 		_ = json.Unmarshal([]byte(actions), &event.AvailableActions)
 		event.StartedAt, _ = time.Parse(time.RFC3339Nano, started)
@@ -989,7 +1204,7 @@ func (db *DB) ApplyIntervention(ctx context.Context, intervention Intervention, 
 	}
 	if phase != nil {
 		if _, err = tx.ExecContext(ctx, `insert into phases(id,task_id,sequence,name,kind,owner,description,status,attempt,retries,started_at,branch_id,definition_id,input_snapshot,output_snapshot,superseded) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, phase.ID, phase.TaskID, phase.Sequence, phase.Name, phase.Kind, phase.Owner, phase.Description, phase.Status, phase.Attempt, phase.Retries, now(), nullIfEmpty(phase.BranchID), nullIfEmpty(phase.DefinitionID), nullIfEmpty(phase.InputSnapshot), nullIfEmpty(phase.OutputSnapshot), 0); err != nil {
-				return AppliedIntervention{}, wrap("queue attempt", err)
+			return AppliedIntervention{}, wrap("queue attempt", err)
 		}
 		if branch != nil {
 			if _, err = tx.ExecContext(ctx, `update branches set head_attempt_id=?,updated_at=? where task_id=? and id=?`, nullIfEmpty(phase.ID), now(), phase.TaskID, branch.ID); err != nil {
