@@ -668,8 +668,12 @@ func (s *Service) buildCheckReview(ctx context.Context, id string) error {
 		return err
 	}
 	checks, _ := s.db.Checks(ctx, id)
-	files, _ := taskChangedFiles(ctx, s.git, task.Repositories)
-	reviewPayload, err := s.runRole(ctx, task, phase, "reviewer", map[string]any{"TaskID": task.ID, "Request": task.Request, "Plan": plan, "Checks": checks, "ChangedFiles": files}, func(text string) (any, error) { return ValidateReview(text) })
+	changes, err := s.Diff(ctx, id)
+	if err != nil {
+		s.failPhase(ctx, phase, err)
+		return err
+	}
+	reviewPayload, err := s.runRole(ctx, task, phase, "reviewer", map[string]any{"TaskID": task.ID, "Request": task.Request, "Plan": plan, "Checks": checks, "ChangedFiles": before, "Diff": changes.Repositories}, func(text string) (any, error) { return ValidateReview(text) })
 	if err != nil {
 		s.failPhase(ctx, phase, err)
 		return err
@@ -717,7 +721,7 @@ func (s *Service) runRole(ctx context.Context, task store.Task, phase store.Phas
 	request := harness.Request{CWD: task.PrimaryRepositoryPath, Prompt: userPrompt, SystemPrompt: systemPrompt, Model: agent.Model, Thinking: agent.Thinking, SessionID: sessionID, SessionDirectory: sessionDir, RawOutputPath: rawPath, DeadlineMS: taskConfig.Runtime.AgentDeadlineMS}
 	for attempt := 0; attempt <= taskConfig.Runtime.JSONFixAttempts; attempt++ {
 		if attempt > 0 {
-			request.Prompt = "Your previous final response was invalid. Return only the required " + role + " JSON object with every required field."
+			request.Prompt = "Your previous final response was invalid: " + err.Error() + "\n" + envelopeInstructions(role)
 		}
 		result, runErr := adapter.Run(ctx, request, s.eventSink(task.ID, phase.ID))
 		if runErr != nil {
@@ -764,6 +768,7 @@ func (s *Service) renderPrompts(agent config.Agent, data map[string]any) (string
 	if err != nil {
 		return "", "", err
 	}
+	system = strings.TrimSpace(system) + "\n\n" + envelopeInstructions(agent.Name)
 	user, err := render(agent.PromptEngineering.User)
 	if err != nil {
 		return "", "", err
@@ -847,8 +852,13 @@ func (s *Service) beginPhase(ctx context.Context, taskID, name, kind, owner, des
 	task, _ := s.db.Task(ctx, taskID)
 	definitionID := s.ensureDefinition(ctx, taskID, name, kind, owner)
 	inputSnapshot := ""
-	if snapshot, captureErr := s.CaptureSnapshot(ctx, store.Task{ID: taskID, WorkspacePath: s.taskDir(taskID)}); captureErr == nil {
-		inputSnapshot = snapshot.Digest
+	if isReadOnlyOwner(owner) && len(phases) > 0 {
+		inputSnapshot = phases[len(phases)-1].OutputSnapshot
+	}
+	if inputSnapshot == "" {
+		if snapshot, captureErr := s.CaptureSnapshot(ctx, store.Task{ID: taskID, WorkspacePath: s.taskDir(taskID)}); captureErr == nil {
+			inputSnapshot = snapshot.Digest
+		}
 	}
 	phase := store.Phase{ID: randomID(), TaskID: taskID, Sequence: len(phases) + 1, Name: name, Kind: kind, Owner: owner, Description: description, Status: "running", Attempt: 1, BranchID: task.SelectedBranchID, DefinitionID: definitionID, InputSnapshot: inputSnapshot}
 	if err = s.db.AddPhase(ctx, phase); err != nil {
@@ -882,12 +892,14 @@ func (s *Service) endPhase(ctx context.Context, phase store.Phase, status string
 		message = cause.Error()
 	}
 	outputSnapshot := phase.InputSnapshot
-	if task, taskErr := s.db.Task(ctx, phase.TaskID); taskErr == nil {
-		if snapshot, captureErr := s.CaptureSnapshot(ctx, task); captureErr == nil {
-			if status == "success" && (phase.Kind == "agent" || phase.Kind == "check" || phase.Kind == "git") {
-				outputSnapshot = snapshot.Digest
-			} else if status != "success" {
-				outputSnapshot = snapshot.Digest
+	if status != "success" || !isReadOnlyOwner(phase.Owner) {
+		if task, taskErr := s.db.Task(ctx, phase.TaskID); taskErr == nil {
+			if snapshot, captureErr := s.CaptureSnapshot(ctx, task); captureErr == nil {
+				if status == "success" && (phase.Kind == "agent" || phase.Kind == "check" || phase.Kind == "git") {
+					outputSnapshot = snapshot.Digest
+				} else if status != "success" {
+					outputSnapshot = snapshot.Digest
+				}
 			}
 		}
 	}
@@ -1130,6 +1142,10 @@ func taskChangedFiles(ctx context.Context, runner factorygit.Runner, repositorie
 		}
 	}
 	return changed, nil
+}
+
+func isReadOnlyOwner(owner string) bool {
+	return owner == "planner" || owner == "reviewer"
 }
 
 func isActive(state State) bool {
