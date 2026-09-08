@@ -31,3 +31,6 @@ export const IconFile = (props: SVGProps<SVGSVGElement>) => <Base {...props}><pa
 export const IconGear = (props: SVGProps<SVGSVGElement>) => <Base {...props}><circle cx="8" cy="8" r="2" /><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.5 3.5l1.4 1.4M11.1 11.1l1.4 1.4M12.5 3.5l-1.4 1.4M4.9 11.1l-1.4 1.4" /></Base>;
 export const IconChat = (props: SVGProps<SVGSVGElement>) => <Base {...props}><path d="M2.5 4a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H6l-3 2.5V11H3.5a1 1 0 0 1-1-1V4z" /></Base>;
 export const IconCollapse = (props: SVGProps<SVGSVGElement>) => <Base {...props}><rect x="2" y="3" width="12" height="10" rx="1" /><path d="M6 3v10M11 6l-2 2 2 2" /></Base>;
+export const IconExpand = (props: SVGProps<SVGSVGElement>) => <Base {...props}><rect x="2" y="3" width="12" height="10" rx="1" /><path d="M6 3v10M9 6l2 2-2 2" /></Base>;
+export const IconBrain = (props: SVGProps<SVGSVGElement>) => <Base {...props}><path d="M6.5 2.5A2 2 0 0 0 4.5 4a1.8 1.8 0 0 0-1.2 3 2 2 0 0 0 .3 3.4A1.8 1.8 0 0 0 6.5 13V2.5z" /><path d="M9.5 2.5A2 2 0 0 1 11.5 4a1.8 1.8 0 0 1 1.2 3 2 2 0 0 1-.3 3.4A1.8 1.8 0 0 1 9.5 13V2.5z" /></Base>;
+export const IconExternalLink = (props: SVGProps<SVGSVGElement>) => <Base {...props}><path d="M9 3h4v4M13 3l-6 6M11 9.5V12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h2.5" /></Base>;

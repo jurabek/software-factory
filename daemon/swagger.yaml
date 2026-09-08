@@ -3,10 +3,10 @@ info:
   title: Software Factory API
   version: "1.0"
   description: |
-    API for creating and controlling Software Factory tasks. It is loopback-only
-    by default. Local mode uses the GET /control mutation token. Remote mode
-    requires the configured bearer credential for every operation and disables
-    /control.
+    API for creating and controlling Software Factory tasks. Loopback-only.
+    All endpoints (except /health) require Authorization: Bearer <daemon-token>.
+    The token is generated on first run and persisted at
+    ~/.software-factory/daemon-token (printed on startup).
 basePath: /api/v1
 schemes:
   - http
@@ -18,23 +18,19 @@ tags:
   - name: System
   - name: Tasks
 securityDefinitions:
-  DaemonCredential:
+  DaemonToken:
     type: apiKey
     name: Authorization
     in: header
-    description: Bearer credential configured through SOFTWARE_FACTORY_DAEMON_TOKEN
-  MutationToken:
-    type: apiKey
-    name: X-Software-Factory-Token
-    in: header
+    description: 'Bearer <daemon-token> from ~/.software-factory/daemon-token'
+security:
+  - DaemonToken: []
 paths:
   /identity:
     get:
       tags: [System]
       operationId: getIdentity
       summary: Get the stable daemon identity
-      parameters:
-        - $ref: "#/parameters/DaemonIdentityHeader"
       responses:
         "200":
           description: Stable identity for this daemon data directory
@@ -92,24 +88,11 @@ paths:
             $ref: "#/definitions/ModelsResponse"
         "503":
           $ref: "#/responses/ServiceUnavailable"
-  /control:
-    get:
-      tags: [System]
-      operationId: getControl
-      summary: Get the per-process mutation token
-      security: []
-      responses:
-        "200":
-          description: Control state and mutation token
-          schema:
-            $ref: "#/definitions/Control"
   /tasks:
     get:
       tags: [Tasks]
       operationId: listTasks
       summary: List tasks
-      parameters:
-        - $ref: "#/parameters/DaemonIdentityHeader"
       responses:
         "200":
           description: Tasks ordered newest first
@@ -123,11 +106,7 @@ paths:
       tags: [Tasks]
       operationId: createTask
       summary: Create a task draft
-      security:
-        - DaemonCredential: []
-        - MutationToken: []
       parameters:
-        - $ref: "#/parameters/DaemonIdentityHeader"
         - in: body
           name: task
           required: true
@@ -162,9 +141,6 @@ paths:
       tags: [Tasks]
       operationId: deleteTask
       summary: Delete an inactive task and its files
-      security:
-        - DaemonCredential: []
-        - MutationToken: []
       responses:
         "200":
           description: Task deleted
@@ -200,9 +176,6 @@ paths:
       tags: [Tasks]
       operationId: createTaskSession
       summary: Create another session in a task
-      security:
-        - DaemonCredential: []
-        - MutationToken: []
       parameters:
         - in: body
           name: session
@@ -227,9 +200,6 @@ paths:
       tags: [Tasks]
       operationId: startTask
       summary: Start repository preparation and planning
-      security:
-        - DaemonCredential: []
-        - MutationToken: []
       responses:
         "202":
           $ref: "#/responses/Accepted"
@@ -248,9 +218,6 @@ paths:
       tags: [Tasks]
       operationId: approveTask
       summary: Approve the plan and continue the task
-      security:
-        - DaemonCredential: []
-        - MutationToken: []
       parameters:
         - in: header
           name: X-Software-Factory-Actor
@@ -276,9 +243,6 @@ paths:
       tags: [Tasks]
       operationId: reviseTaskPlan
       summary: Answer Planner questions and revise the plan
-      security:
-        - DaemonCredential: []
-        - MutationToken: []
       parameters:
         - in: body
           name: feedback
@@ -309,9 +273,6 @@ paths:
       tags: [Tasks]
       operationId: commentOnTaskHistory
       summary: Add an idempotent comment to a Task, Attempt, Event, or Artifact
-      security:
-        - DaemonCredential: []
-        - MutationToken: []
       parameters:
         - in: body
           name: intervention
@@ -330,9 +291,6 @@ paths:
       tags: [Tasks]
       operationId: pauseTask
       summary: Pause an active task
-      security:
-        - DaemonCredential: []
-        - MutationToken: []
       responses:
         "202":
           $ref: "#/responses/Accepted"
@@ -351,9 +309,6 @@ paths:
       tags: [Tasks]
       operationId: resumeTask
       summary: Resume a paused or recoverable blocked task
-      security:
-        - DaemonCredential: []
-        - MutationToken: []
       responses:
         "202":
           $ref: "#/responses/Accepted"
@@ -372,9 +327,6 @@ paths:
       tags: [Tasks]
       operationId: abortTask
       summary: Abort a task
-      security:
-        - DaemonCredential: []
-        - MutationToken: []
       responses:
         "202":
           $ref: "#/responses/Accepted"
@@ -451,7 +403,6 @@ paths:
       produces:
         - text/event-stream
       parameters:
-        - $ref: "#/parameters/DaemonIdentityHeader"
         - in: query
           name: after
           type: integer
@@ -536,13 +487,6 @@ parameters:
     required: true
     pattern: '^SF-[0-9]{8}-[a-f0-9]{8}$'
     description: Task identifier
-  DaemonIdentityHeader:
-    in: header
-    name: X-Software-Factory-Daemon-ID
-    type: string
-    required: false
-    pattern: '^[a-f0-9]{32}$'
-    description: Expected stable daemon identity. Send the identity learned at registration; mismatches fail with 409 daemon_identity_mismatch before dispatch.
 responses:
   Unauthorized:
     description: Daemon credential missing or invalid
@@ -603,15 +547,6 @@ definitions:
         type: array
         items:
           type: string
-  Control:
-    type: object
-    required: [enabled, token]
-    properties:
-      enabled:
-        type: boolean
-      token:
-        type: string
-        description: Per-process token required by mutation operations
   Model:
     type: object
     required: [provider, id]

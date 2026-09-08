@@ -43,16 +43,16 @@ Interactive Swagger API documentation is available at `http://127.0.0.1:8080/doc
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for how the daemon coordinates repositories, agents, checks, events, persistence, recovery, and security. API examples are in [`docs/USAGE.md`](docs/USAGE.md).
 
-The daemon binds only to loopback. Local API mutations require the random token from `/api/v1/control`. To register it with the application, configure `SOFTWARE_FACTORY_DAEMON_TOKEN` and make the daemon reachable through an encrypted tunnel whose exact origin is in `DAEMON_ALLOWED_ORIGINS`. Task workspaces, SQLite WAL state, JSONL traces, prompts, and Pi sessions remain under the factory directory until explicit deletion.
+The daemon binds only to loopback. Every `/api/*` request except `GET /api/v1/health` requires `Authorization: Bearer <daemon-token>`. The token is generated on first run, persisted at `$SOFTWARE_FACTORY_DIR/daemon-token`, and printed to stdout. To reach the daemon from the application, expose it through an encrypted tunnel whose exact origin is in `DAEMON_ALLOWED_ORIGINS`. Task workspaces, SQLite WAL state, JSONL traces, prompts, and Pi sessions remain under the factory directory until explicit deletion.
 
 ## API example
 
 `curl` is an API client, not a product CLI.
 
 ```bash
-TOKEN=$(curl -s http://127.0.0.1:8080/api/v1/control | jq -r .token)
+TOKEN=$(cat ~/.software-factory/daemon-token)
 curl -s -X POST http://127.0.0.1:8080/api/v1/tasks \
-  -H "X-Software-Factory-Token: $TOKEN" \
+  -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"request":"Implement feature X","repositories":[{"type":"local","path":"/absolute/repository","primary":true}]}'
 ```

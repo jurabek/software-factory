@@ -39,11 +39,14 @@ export function eventResult(event: TaskEvent): string {
     if (typeof value === "string" && value.trim()) return value;
     if (key === "message") {
       const message = payloadRecord(value);
-      if (typeof message.content === "string") return message.content;
+      if (typeof message.content === "string" && message.content.trim()) return message.content;
       if (Array.isArray(message.content)) {
         const text = message.content.map((part) => payloadRecord(part).text).filter((part): part is string => typeof part === "string").join("\n");
-        if (text) return text;
+        if (text.trim()) return text;
       }
+      const errorText = message.errorMessage ?? message.error;
+      if (typeof errorText === "string" && errorText.trim()) return errorText;
+      continue;
     }
     if (value !== undefined && value !== null) return eventReadable(value);
   }

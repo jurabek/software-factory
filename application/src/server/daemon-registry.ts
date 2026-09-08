@@ -14,7 +14,7 @@ import type {
   FeedbackInput,
   InterventionInput,
 } from "./daemon-client.ts";
-import { createDaemonClient, daemonCommands, DaemonRequestError } from "./daemon-client.ts";
+import { createDaemonClient, daemonCommands } from "./daemon-client.ts";
 import { getDatabasePool } from "./database.ts";
 import { parseAllowedDaemonOrigins, normalizeDaemonEndpoint } from "./endpoint-policy.ts";
 import { readDeploymentEnvironment } from "./environment.ts";
@@ -105,7 +105,6 @@ export type ResolvedDaemon = {
   connection: DaemonConnection;
   endpoint: string;
   credential: string;
-  expectedIdentity: string;
 };
 
 const thinkingValues = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
@@ -176,14 +175,7 @@ function validatedCreateInput(input: CreateTaskInput): CreateTaskInput {
   };
 }
 
-function identityMismatch(error: unknown): boolean {
-  return error instanceof DaemonRequestError && (error.code === "daemon_identity_mismatch" || error.status === 409 && error.code === "daemon_identity_mismatch");
-}
-
 function remapIdentityMismatch(error: unknown): unknown {
-  if (identityMismatch(error)) {
-    return new DaemonRegistryError(409, "daemon_identity_changed", "Daemon identity no longer matches this registration.");
-  }
   return error;
 }
 
@@ -201,7 +193,6 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
       connection: publicConnection(row),
       endpoint: row.endpoint,
       credential,
-      expectedIdentity: row.daemon_identity,
     };
   }
 
@@ -240,7 +231,7 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
     async tasks(id: string, signal?: AbortSignal): Promise<{ connection: DaemonConnection; tasks: (DaemonTask & { daemonId: string })[] }> {
       const resolved = await resolve(id);
       try {
-        const tasks = await options.client.tasks(resolved.endpoint, resolved.credential, { expectedIdentity: resolved.expectedIdentity, signal });
+        const tasks = await options.client.tasks(resolved.endpoint, resolved.credential, { signal });
         return { connection: resolved.connection, tasks: tasks.map((task) => ({ ...task, daemonId: resolved.connection.id })) };
       } catch (error) {
         throw remapIdentityMismatch(error);
@@ -253,7 +244,7 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
       models: { harness: string; models: { provider: string; id: string }[] };
     }> {
       const resolved = await resolve(id);
-      const operation = { expectedIdentity: resolved.expectedIdentity, signal };
+      const operation = { signal };
       try {
         const [defaults, harnesses] = await Promise.all([
           options.client.configDefaults(resolved.endpoint, resolved.credential, operation),
@@ -273,7 +264,6 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
       const resolved = await resolve(id);
       try {
         const task = await options.client.createTask(resolved.endpoint, resolved.credential, validated, {
-          expectedIdentity: resolved.expectedIdentity,
           signal,
         });
         return { connection: resolved.connection, task: { ...task, daemonId: resolved.connection.id } };
@@ -287,7 +277,6 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
       const resolved = await resolve(id);
       try {
         const task = await options.client.task(resolved.endpoint, resolved.credential, validatedTask, {
-          expectedIdentity: resolved.expectedIdentity,
           signal,
         });
         return { connection: resolved.connection, taskId: validatedTask, task };
@@ -300,7 +289,6 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
       const resolved = await resolve(id);
       try {
         const sessions = await options.client.sessions(resolved.endpoint, resolved.credential, validatedTask, {
-          expectedIdentity: resolved.expectedIdentity,
           signal,
         });
         return { connection: resolved.connection, taskId: validatedTask, sessions };
@@ -316,7 +304,6 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
       const resolved = await resolve(id);
       try {
         const session = await options.client.createSession(resolved.endpoint, resolved.credential, validatedTask, { request: input.request.trim() }, {
-          expectedIdentity: resolved.expectedIdentity,
           signal,
         });
         return { connection: resolved.connection, taskId: validatedTask, session };
@@ -335,7 +322,7 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
         const result = await options.client.feedback(resolved.endpoint, resolved.credential, validatedTask, {
           feedback: input.feedback.trim(),
           ...(input.current_plan_digest ? { current_plan_digest: input.current_plan_digest } : {}),
-        }, { expectedIdentity: resolved.expectedIdentity, actor, signal });
+        }, { actor, signal });
         return { connection: resolved.connection, taskId: validatedTask, result };
       } catch (error) {
         throw remapIdentityMismatch(error);
@@ -347,7 +334,6 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
       const resolved = await resolve(id);
       try {
         const result = await options.client.intervene(resolved.endpoint, resolved.credential, validatedTask, input, {
-          expectedIdentity: resolved.expectedIdentity,
           actor,
           signal,
         });
@@ -361,7 +347,6 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
       const resolved = await resolve(id);
       try {
         const interventions = await options.client.interventions(resolved.endpoint, resolved.credential, validatedTask, {
-          expectedIdentity: resolved.expectedIdentity,
           signal,
         });
         return { connection: resolved.connection, taskId: validatedTask, interventions };
@@ -374,7 +359,6 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
       const resolved = await resolve(id);
       try {
         const result = await options.client.remove(resolved.endpoint, resolved.credential, validatedTask, {
-          expectedIdentity: resolved.expectedIdentity,
           signal,
         });
         return { connection: resolved.connection, taskId: validatedTask, result };
@@ -387,7 +371,6 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
       const resolved = await resolve(id);
       try {
         const attempts = await options.client.attempts(resolved.endpoint, resolved.credential, validatedTask, {
-          expectedIdentity: resolved.expectedIdentity,
           signal,
         });
         return { connection: resolved.connection, taskId: validatedTask, attempts };
@@ -401,7 +384,6 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
       const resolved = await resolve(id);
       try {
         const attempt = await options.client.attempt(resolved.endpoint, resolved.credential, validatedTask, validatedAttempt, {
-          expectedIdentity: resolved.expectedIdentity,
           signal,
         });
         return { connection: resolved.connection, taskId: validatedTask, attemptId: validatedAttempt, attempt };
@@ -414,7 +396,6 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
       const resolved = await resolve(id);
       try {
         const branches = await options.client.branches(resolved.endpoint, resolved.credential, validatedTask, {
-          expectedIdentity: resolved.expectedIdentity,
           signal,
         });
         return { connection: resolved.connection, taskId: validatedTask, branches };
@@ -427,7 +408,6 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
       const resolved = await resolve(id);
       try {
         const artifacts = await options.client.artifacts(resolved.endpoint, resolved.credential, validatedTask, {
-          expectedIdentity: resolved.expectedIdentity,
           signal,
         });
         return { connection: resolved.connection, taskId: validatedTask, artifacts };
@@ -440,7 +420,6 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
       const resolved = await resolve(id);
       try {
         const checks = await options.client.checks(resolved.endpoint, resolved.credential, validatedTask, {
-          expectedIdentity: resolved.expectedIdentity,
           signal,
         });
         return { connection: resolved.connection, taskId: validatedTask, checks };
@@ -453,7 +432,6 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
       const resolved = await resolve(id);
       try {
         const results = await options.client.results(resolved.endpoint, resolved.credential, validatedTask, {
-          expectedIdentity: resolved.expectedIdentity,
           signal,
         });
         return { connection: resolved.connection, taskId: validatedTask, results };
@@ -466,7 +444,6 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
       const resolved = await resolve(id);
       try {
         const diff = await options.client.diff(resolved.endpoint, resolved.credential, validatedTask, {
-          expectedIdentity: resolved.expectedIdentity,
           signal,
         });
         return { connection: resolved.connection, taskId: validatedTask, diff };
@@ -487,7 +464,6 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
       const resolved = await resolve(id);
       try {
         const result = await options.client.command(resolved.endpoint, resolved.credential, validatedTask, command, {
-          expectedIdentity: resolved.expectedIdentity,
           actor,
           signal,
         });
@@ -507,7 +483,6 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
       const resolved = await resolve(id);
       try {
         const result = await options.client.events(resolved.endpoint, resolved.credential, validatedTask, validatedQuery, {
-          expectedIdentity: resolved.expectedIdentity,
           signal,
         });
         return { connection: resolved.connection, taskId: validatedTask, events: result.events, cursor: result.cursor };
@@ -531,7 +506,6 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
       const resolved = await resolve(id);
       try {
         const upstream = await options.client.eventStream(resolved.endpoint, resolved.credential, validatedTask, cursor, {
-          expectedIdentity: resolved.expectedIdentity,
           signal,
         });
         return { connection: resolved.connection, taskId: validatedTask, upstream };

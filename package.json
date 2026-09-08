@@ -3,8 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "workspaces": ["application"],
-  "engines": { "node": ">=24" },
+  "workspaces": [
+    "application"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "build": "npm run build --workspaces",
     "typecheck": "npm run typecheck --workspaces",

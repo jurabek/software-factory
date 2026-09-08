@@ -73,7 +73,7 @@ sequenceDiagram
     PG-->>N: Endpoint, encrypted credential, expected daemon identity
     N->>R: Resolve and decrypt server-side credential
     R->>T: GET /api/v1/tasks
-    T->>D: Authorization: Bearer credential\nX-Software-Factory-Daemon-ID: expected identity
+    T->>D: Authorization: Bearer daemon-token
     D->>S: Read Tasks
     S-->>D: Current daemon-owned task list
     D-->>T: Task list
@@ -138,10 +138,6 @@ sequenceDiagram
     else Daemon offline
         T-->>N: Timeout or unavailable
         N-->>B: Isolated daemon_unavailable failure
-    else Identity mismatch
-        D-->>T: 409 daemon_identity_mismatch before dispatch
-        T-->>N: Identity mismatch
-        N-->>B: Isolated daemon_identity_changed failure
     end
 ```
 
@@ -161,7 +157,7 @@ On startup, the process:
 
 Configuration or Pi validation errors put the daemon in a degraded state. Read endpoints remain available, but new Task work is rejected until configuration is valid.
 
-Non-loopback binding is rejected. Remote application access uses a trusted encrypted tunnel to a loopback-bound daemon and `SOFTWARE_FACTORY_DAEMON_TOKEN` with at least 32 characters. When that credential is configured, every API request requires it, including requests arriving over loopback, and `/api/v1/control` and Swagger routes are disabled. Without a remote credential, local API clients can use the per-process mutation token and Swagger UI.
+Non-loopback binding is rejected. The daemon generates a 32-hex bearer token on first run, persists it at `$SOFTWARE_FACTORY_DIR/daemon-token`, and prints it to stdout. Every `/api/*` request except `GET /api/v1/health` requires `Authorization: Bearer <daemon-token>`. Remote application access reaches the loopback daemon through a trusted encrypted tunnel and sends the same header. Swagger UI is served at `/docs` and its OpenAPI spec at `/swagger.yaml`.
 
 The process handles `SIGINT` and `SIGTERM`. During shutdown it cancels active work, marks active Tasks blocked, shuts down HTTP, closes SQLite, and releases the lock.
 
@@ -361,15 +357,13 @@ The persistence model also supports append-only Interventions, execution branche
 The daemon has local and application-connected security modes.
 
 - The HTTP server always binds to loopback and does not enable CORS. Remote reachability requires an encrypted tunnel.
-- Local mode mutations require a random per-process token from the same-origin `/api/v1/control` endpoint.
-- Application-connected mode requires the configured bearer credential for every API read, mutation, and stream. It disables `/control` and Swagger routes.
-- The application sends the stable identity it learned at registration as `X-Software-Factory-Daemon-ID` on every post-registration read, mutation, and stream. A mismatch fails with 409 `daemon_identity_mismatch` before dispatch, so reusing an endpoint never silently operates on a different sandbox.
-- Requests with a foreign `Origin` are rejected, and API responses are not cached.
+- Every `/api/*` request except `GET /api/v1/health` requires `Authorization: Bearer <daemon-token>`. The token is generated on first run and persisted at `$SOFTWARE_FACTORY_DIR/daemon-token`.
+- API responses are not cached.
 - The state directory, prompts, sessions, raw output, and repository materializations are never exposed through a generic static-file route.
-- Local mode serves only the Swagger document and Swagger UI outside the API.
+- Swagger UI and its spec are served at `/docs` and `/swagger.yaml`.
 - Coding agents and checks have the same host access as the user running the daemon.
 
-The local mutation token and remote bearer credential are not substitutes for host isolation or transport encryption. Run the daemon as a user with only the repositories, credentials, tools, and network access required by its Tasks. Do not expose the loopback service through an unencrypted or public proxy.
+The daemon token is not a substitute for host isolation or transport encryption. Run the daemon as a user with only the repositories, credentials, tools, and network access required by its Tasks. Do not expose the loopback service through an unencrypted or public proxy.
 
 ## Architectural guarantees
 

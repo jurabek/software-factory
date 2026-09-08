@@ -44,7 +44,6 @@ func TestSwaggerSpecDocumentsAPIRoutes(t *testing.T) {
 		"/config":                   {"get"},
 		"/harnesses":                {"get"},
 		"/models":                   {"get"},
-		"/control":                  {"get"},
 		"/tasks":                    {"get", "post"},
 		"/tasks/{id}":               {"get", "delete"},
 		"/tasks/{id}/sessions":      {"get", "post"},
@@ -74,11 +73,8 @@ func TestSwaggerSpecDocumentsAPIRoutes(t *testing.T) {
 			}
 		}
 	}
-	if !strings.Contains(response.Body.String(), "DaemonCredential") {
+	if !strings.Contains(response.Body.String(), "DaemonToken") {
 		t.Fatal("swagger spec does not document daemon bearer authentication")
-	}
-	if !strings.Contains(response.Body.String(), "X-Software-Factory-Daemon-ID") {
-		t.Fatal("swagger spec does not document expected daemon identity header")
 	}
 }
 
@@ -104,6 +100,21 @@ func TestDaemonIdentityPersistsInFactoryRoot(t *testing.T) {
 	}
 }
 
+func TestDaemonTokenPersistsInFactoryRoot(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "daemon-token")
+	first, err := loadDaemonToken(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := loadDaemonToken(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != second || len(first) != 32 {
+		t.Fatalf("tokens = %q and %q", first, second)
+	}
+}
+
 func TestMalformedDaemonIdentityFailsClosed(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "daemon-id"), []byte("not-an-identity\n"), 0o600); err != nil {
@@ -115,25 +126,22 @@ func TestMalformedDaemonIdentityFailsClosed(t *testing.T) {
 }
 
 func TestDaemonNetworkConfiguration(t *testing.T) {
-	const token = "remote-test-credential-with-32-characters"
 	for _, test := range []struct {
-		name, bind, port, token, wantAddress string
-		wantError                            bool
+		name, bind, port, wantAddress string
+		wantError                     bool
 	}{
 		{name: "loopback default", bind: "127.0.0.1", port: "8080", wantAddress: "127.0.0.1:8080"},
 		{name: "IPv6 loopback", bind: "::1", port: "8080", wantAddress: "[::1]:8080"},
-		{name: "remote bind with credential", bind: "0.0.0.0", port: "9000", token: token, wantError: true},
-		{name: "remote without credential", bind: "0.0.0.0", port: "8080", wantError: true},
-		{name: "weak credential", bind: "127.0.0.1", port: "8080", token: "short", wantError: true},
-		{name: "hostname rejected", bind: "localhost", port: "8080", token: token, wantError: true},
+		{name: "remote bind", bind: "0.0.0.0", port: "9000", wantError: true},
+		{name: "hostname rejected", bind: "localhost", port: "8080", wantError: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			address, gotToken, err := daemonNetworkConfig(test.bind, test.port, test.token)
+			address, err := daemonNetworkConfig(test.bind, test.port)
 			if (err != nil) != test.wantError {
 				t.Fatalf("error = %v, wantError %v", err, test.wantError)
 			}
-			if address != test.wantAddress || gotToken != test.token && !test.wantError {
-				t.Fatalf("address, token = %q, %q", address, gotToken)
+			if !test.wantError && address != test.wantAddress {
+				t.Fatalf("address = %q, want %q", address, test.wantAddress)
 			}
 		})
 	}
@@ -146,10 +154,8 @@ func TestSwaggerUIUsesSameOriginAPI(t *testing.T) {
 	handler.ServeHTTP(response, request)
 
 	body := response.Body.String()
-	for _, expected := range []string{"/swagger.yaml", "/api/v1/control", "MutationToken"} {
-		if !strings.Contains(body, expected) {
-			t.Errorf("body missing %q", expected)
-		}
+	if !strings.Contains(body, "/swagger.yaml") {
+		t.Errorf("body missing /swagger.yaml")
 	}
 	if policy := response.Header().Get("Content-Security-Policy"); !strings.Contains(policy, "https://unpkg.com") {
 		t.Fatalf("documentation CSP does not allow Swagger UI assets: %q", policy)

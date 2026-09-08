@@ -29,8 +29,7 @@ import {
   type TaskResult,
 } from "../client/daemon-api.ts";
 import { qualifiedEventKey, relativeTime, RequestScope, statePresentation } from "../client/daemon-ui-state.ts";
-import { eventArgumentEntries } from "../client/work-log.ts";
-import { IconArchive, IconBranch, IconCollapse, IconCopy, IconFastForward, IconFile, IconFolder, IconMonitor, IconPencil, IconPeople, IconPlus, IconRobot, IconSend, IconShield, IconSkip, IconSplit, IconTerminal } from "./icons.tsx";
+import { IconArchive, IconBranch, IconBrain, IconChevron, IconCollapse, IconCopy, IconExternalLink, IconFastForward, IconFile, IconFolder, IconMonitor, IconPencil, IconPeople, IconPlus, IconSend, IconShield, IconSkip, IconSplit, IconTerminal } from "./icons.tsx";
 
 const commands = ["start", "approve", "pause", "resume", "abort"] as const;
 const interventionActions = ["comment", "steer", "follow_up", "retry", "revise", "repair"] as const;
@@ -46,7 +45,6 @@ const actionLabels: Record<InterventionAction, string> = {
 const transientEventTypes = new Set(["message_start", "message_update", "tool_execution_update"]);
 const outputKeys = ["result", "output", "text", "message", "error"];
 const visibleEventLimit = 500;
-const previewLimit = 180;
 type DisplayArtifact = { id: string; kind: "result" | "check" | "diff" | "file"; title: string; subtitle: string; content: string };
 
 function commandEnabled(command: (typeof commands)[number], state: string): boolean {
@@ -93,11 +91,14 @@ function eventResult(event: TaskEvent): string {
     }
     if (key === "message") {
       const message = payloadRecord(value);
-      if (typeof message.content === "string") return message.content;
+      if (typeof message.content === "string" && message.content.trim()) return message.content;
       if (Array.isArray(message.content)) {
         const text = message.content.map((part) => payloadRecord(part).text).filter((part): part is string => typeof part === "string").join("\n");
-        if (text) return text;
+        if (text.trim()) return text;
       }
+      const errorText = message.errorMessage ?? message.error;
+      if (typeof errorText === "string" && errorText.trim()) return errorText;
+      continue;
     }
     if (value !== undefined && value !== null) return readable(value);
   }
@@ -138,22 +139,6 @@ function eventTarget(event: TaskEvent): string {
   return event.type.startsWith("phase_") ? event.name ?? "" : "";
 }
 
-function eventDuration(event: TaskEvent): string {
-  const duration = payloadRecord(event.payload).duration_ms;
-  if (typeof duration !== "number") return "";
-  if (duration < 1_000) return `${duration}ms`;
-  if (duration < 60_000) return `${(duration / 1_000).toFixed(duration < 10_000 ? 1 : 0)}s`;
-  const seconds = Math.round(duration / 1_000);
-  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
-}
-
-function eventPreview(event: TaskEvent): string {
-  const result = eventResult(event).trim();
-  if (!result) return "";
-  const firstLine = result.split("\n").find((line) => line.trim())?.trim() ?? "";
-  return firstLine.length > previewLimit ? `${firstLine.slice(0, previewLimit)}...` : firstLine;
-}
-
 function eventSuccess(event: TaskEvent): boolean | undefined {
   const payload = payloadRecord(event.payload);
   if (typeof payload.success === "boolean") return payload.success;
@@ -166,21 +151,9 @@ function eventSuccess(event: TaskEvent): boolean | undefined {
   return undefined;
 }
 
-function eventIcon(event: TaskEvent): string {
-  if (event.type === "tool_call") return eventTitle(event).slice(0, 1).toUpperCase();
-  if (event.type.includes("error") || eventSuccess(event) === false) return "!";
-  if (event.type.includes("end")) return "+";
-  return ">";
-}
-
 function eventStartedAt(event: TaskEvent): Date {
   const startedAt = payloadRecord(event.payload).started_at;
   return new Date(typeof startedAt === "string" ? startedAt : event.started_at);
-}
-
-function eventDetailEntries(event: TaskEvent): [string, unknown][] {
-  const payload = payloadRecord(event.payload);
-  return Object.entries(payload).filter(([key]) => key !== "arguments" && key !== "args" && !outputKeys.includes(key));
 }
 
 function renderedArtifactContent(artifact: DisplayArtifact): string {
@@ -216,11 +189,55 @@ function buildTimeline(request: string, createdAt: string, author: string, inter
     const at = eventStartedAt(event);
     const iso = Number.isNaN(at.getTime()) ? event.started_at : at.toISOString();
     if (event.type === "tool_call") { items.push({ key: `ev-${event.sequence}`, role: "tool", at: at.getTime() || 0, iso, event }); continue; }
+    const message = payloadRecord(payloadRecord(event.payload).message);
+    const errored = event.type.includes("error") || eventSuccess(event) === false || message.stopReason === "error" || message.stop_reason === "error";
     const text = eventResult(event).trim();
-    if (text) { items.push({ key: `ev-${event.sequence}`, role: "agent", text, at: at.getTime() || 0, iso, event }); continue; }
-    if (event.type.includes("error")) items.push({ key: `ev-${event.sequence}`, role: "system", text: eventTitle(event), at: at.getTime() || 0, iso, event });
+    if (text) { items.push({ key: `ev-${event.sequence}`, role: errored ? "system" : "agent", text, at: at.getTime() || 0, iso, event }); continue; }
+    if (errored) items.push({ key: `ev-${event.sequence}`, role: "system", text: eventTitle(event), at: at.getTime() || 0, iso, event });
   }
   return items.sort((left, right) => left.at - right.at || left.key.localeCompare(right.key));
+}
+
+function formatSpan(ms: number): string {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m`;
+}
+
+function eventResultLine(event: TaskEvent): string {
+  const result = eventResult(event);
+  if (!result.trim()) return "";
+  const lines = result.split("\n");
+  const first = lines.find((line) => line.trim())?.trim() ?? "";
+  const clipped = first.length > 140 ? `${first.slice(0, 140)}...` : first;
+  return lines.length > 1 ? `${clipped} ... (${lines.length} lines)` : clipped;
+}
+
+function eventToolName(event: TaskEvent): string {
+  return String(payloadRecord(event.payload).tool ?? event.name ?? event.type).toLowerCase();
+}
+
+type TimelineBlock = { kind: "user"; item: ChatItem } | { kind: "work"; key: string; items: ChatItem[]; span: number };
+
+function groupTimeline(items: ChatItem[]): TimelineBlock[] {
+  const blocks: TimelineBlock[] = [];
+  let current: ChatItem[] = [];
+  const flush = () => {
+    if (!current.length) return;
+    const first = current[0];
+    const last = current[current.length - 1];
+    blocks.push({ kind: "work", key: first.key, items: current, span: Math.max(0, last.at - first.at) });
+    current = [];
+  };
+  for (const item of items) {
+    if (item.role === "user") { flush(); blocks.push({ kind: "user", item }); continue; }
+    current.push(item);
+  }
+  flush();
+  return blocks;
 }
 
 export function TaskDetail({ daemonId, daemonName, task, rootTask, login, offline, onChanged, onOpenTask, onRemoved }: {
@@ -249,6 +266,7 @@ export function TaskDetail({ daemonId, daemonName, task, rootTask, login, offlin
   const [artifactMode, setArtifactMode] = useState<"rendered" | "raw">("rendered");
   const [artifactQuote, setArtifactQuote] = useState("");
   const [selectedEvent, setSelectedEvent] = useState<TaskEvent | null>(null);
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [autoScroll, setAutoScroll] = useState(true);
   const [events, setEvents] = useState<TaskEvent[]>([]);
   const [availableActions, setAvailableActions] = useState<string[]>([]);
@@ -265,6 +283,7 @@ export function TaskDetail({ daemonId, daemonName, task, rootTask, login, offlin
   const mutationScope = useRef(new RequestScope());
   const mutationController = useRef<AbortController | null>(null);
   const eventDialog = useRef<HTMLElement | null>(null);
+  const eventScroll = useRef<HTMLDivElement | null>(null);
   const eventTrigger = useRef<HTMLButtonElement | null>(null);
   const cursorRef = useRef<number | undefined>(undefined);
   const seen = useRef(new Set<string>());
@@ -284,10 +303,24 @@ export function TaskDetail({ daemonId, daemonName, task, rootTask, login, offlin
   const visibleEvents = meaningfulEvents.slice(-visibleEventLimit);
   const hiddenEventCount = Math.max(0, meaningfulEvents.length - visibleEvents.length);
   const timeline = buildTimeline(currentTask.request, currentTask.created_at, login, interventions, visibleEvents);
+  const timelineBlocks = groupTimeline(timeline);
   const editCount = diff.repositories.reduce((sum, repository) => sum + repository.files.length, 0);
   const otherCount = results.length + checks.length + diff.repositories.length;
   const workspacePath = currentTask.workspace_path ?? "Daemon sandbox";
   const canSend = !offline && !pending && pendingCommand === null;
+
+  function toggleGroup(key: string) {
+    setCollapsedGroups((previous) => {
+      const next = new Set(previous);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  }
+
+  function closeEvent() {
+    setSelectedEvent(null);
+    eventTrigger.current?.focus();
+  }
 
   function beginMutation(): { generation: number; controller: AbortController } {
     mutationController.current?.abort();
@@ -371,12 +404,14 @@ export function TaskDetail({ daemonId, daemonName, task, rootTask, login, offlin
     if (!selectedEvent) return;
     eventDialog.current?.focus();
     function handleDialogKeyboard(event: KeyboardEvent) {
-      if (event.key === "Escape") {
+      if (event.key === "Escape" || event.key === "i") {
         event.preventDefault();
         setSelectedEvent(null);
         eventTrigger.current?.focus();
         return;
       }
+      if (event.key === "j" || event.key === "ArrowDown") { event.preventDefault(); eventScroll.current?.scrollBy({ top: 64 }); return; }
+      if (event.key === "k" || event.key === "ArrowUp") { event.preventDefault(); eventScroll.current?.scrollBy({ top: -64 }); return; }
       if (event.key === "Tab" && eventDialog.current) {
         const focusable = Array.from(eventDialog.current.querySelectorAll<HTMLElement>("button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])")).filter((element) => !element.hasAttribute("disabled"));
         const first = focusable[0];
@@ -612,25 +647,53 @@ export function TaskDetail({ daemonId, daemonName, task, rootTask, login, offlin
 
         <div className="chat-scroll" ref={chatScroll}>
           {hiddenEventCount ? <p className="hint chat-hint">{hiddenEventCount} older events hidden to keep this view responsive.</p> : null}
-          {timeline.map((item) => {
-            if (item.role === "user") return (
-              <article className="msg msg-user" key={item.key}>
-                <span className="avatar" aria-hidden="true">{monogram(item.author ?? login)}</span>
-                <div className="msg-body"><div className="msg-head"><strong>{displayName(item.author ?? login)}</strong><time>{relativeTime(item.iso)}</time></div><p className="msg-text">{item.text}</p></div>
-              </article>
-            );
-            if (item.role === "tool" && item.event) return (
-              <button className="msg msg-tool" key={item.key} type="button" aria-haspopup="dialog" onClick={(clickEvent) => { eventTrigger.current = clickEvent.currentTarget; setSelectedEvent(item.event ?? null); }}>
-                <span className="tool-icon" data-success={eventSuccess(item.event)} aria-hidden="true">{eventIcon(item.event)}</span>
-                <span className="tool-title"><strong>{eventTitle(item.event)}</strong>{eventTarget(item.event) ? <span>{eventTarget(item.event)}</span> : null}{eventPreview(item.event) ? <small>{eventPreview(item.event)}</small> : null}</span>
-                <span className="tool-meta">{eventDuration(item.event)} <time>{relativeTime(item.iso)}</time><em>open</em></span>
-              </button>
-            );
+          {timelineBlocks.map((block) => {
+            if (block.kind === "user") {
+              const author = block.item.author ?? login;
+              return (
+                <article className="msg msg-user" key={block.item.key}>
+                  <span className="avatar" aria-hidden="true">{monogram(author)}</span>
+                  <div className="msg-body">
+                    <div className="msg-head"><strong>{displayName(author)}</strong><button type="button" className="icon-button msg-copy" aria-label="Copy message" onClick={() => void navigator.clipboard?.writeText(block.item.text ?? "")}><IconCopy /></button><time>{relativeTime(block.item.iso)}</time></div>
+                    <p className="msg-text">{block.item.text}</p>
+                  </div>
+                </article>
+              );
+            }
+            const collapsed = collapsedGroups.has(block.key);
             return (
-              <article className={`msg msg-agent${item.role === "system" ? " msg-system" : ""}`} key={item.key}>
-                <span className="bot" aria-hidden="true"><IconRobot /></span>
-                <div className="msg-body"><div className="msg-head"><time>{relativeTime(item.iso)}</time></div><p className="msg-text">{item.text}</p></div>
-              </article>
+              <section className="work-group" key={block.key}>
+                <button type="button" className="work-group-head" aria-expanded={!collapsed} onClick={() => toggleGroup(block.key)}>
+                  <IconChevron /><span>Worked for {formatSpan(block.span)}</span>
+                </button>
+                {collapsed ? null : (
+                  <div className="work-items">
+                    {block.items.map((item) => {
+                      if (item.role === "tool" && item.event) {
+                        const event = item.event;
+                        return (
+                          <button className="work-row work-tool" key={item.key} type="button" aria-haspopup="dialog" onClick={(clickEvent) => { eventTrigger.current = clickEvent.currentTarget; setSelectedEvent(event); }}>
+                            <span className="work-icon" data-success={eventSuccess(event)} aria-hidden="true"><IconFile /></span>
+                            <span className="work-body">
+                              <span className="work-title"><strong>{eventTitle(event)}</strong>{eventTarget(event) ? <span className="work-path">{eventTarget(event)}</span> : null}<IconExternalLink className="work-ext" /></span>
+                              {eventResultLine(event) ? <span className="work-preview"><i aria-hidden="true">└</i>{eventResultLine(event)}</span> : null}
+                            </span>
+                            <time className="work-time">{relativeTime(item.iso)}</time>
+                          </button>
+                        );
+                      }
+                      const isResponse = !!item.text && (item.text.includes("\n") || item.text.length > 160);
+                      return (
+                        <div className={`work-row work-think${item.role === "system" ? " work-error" : ""}`} key={item.key}>
+                          <span className="work-icon think" aria-hidden="true"><IconBrain /></span>
+                          <p className={`work-think-text${isResponse ? " is-response" : ""}`}>{item.text}</p>
+                          <time className="work-time">{relativeTime(item.iso)}</time>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </section>
             );
           })}
           {!timeline.length ? <p className="chat-empty">No messages yet. The stream stays open while this session is selected.</p> : null}
@@ -696,15 +759,30 @@ export function TaskDetail({ daemonId, daemonName, task, rootTask, login, offlin
         )}
       </aside>
 
-      {selectedEvent ? <div className="event-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) { setSelectedEvent(null); eventTrigger.current?.focus(); } }}><section ref={eventDialog} className="event-dialog" role="dialog" aria-modal="true" aria-label={`${eventTitle(selectedEvent)} event details`} tabIndex={-1}>
-        <header className="event-dialog-heading"><span className="event-icon" data-success={eventSuccess(selectedEvent)} aria-hidden="true">{eventIcon(selectedEvent)}</span><div><h3>{eventTitle(selectedEvent)}</h3>{eventTarget(selectedEvent) ? <p>{eventTarget(selectedEvent)}</p> : null}</div><button type="button" aria-label="Close event details" onClick={() => { setSelectedEvent(null); eventTrigger.current?.focus(); }}>Close</button></header>
-        <dl className="event-summary"><div><dt>Status</dt><dd>{eventSuccess(selectedEvent) === false ? "failed" : eventSuccess(selectedEvent) ? "completed" : "recorded"}</dd></div><div><dt>Started</dt><dd>{eventStartedAt(selectedEvent).toLocaleString()}</dd></div><div><dt>Duration</dt><dd>{eventDuration(selectedEvent) || "not reported"}</dd></div><div><dt>Attempt</dt><dd>{selectedEvent.phase_id ?? selectedEvent.attempt_id ?? "controller"}</dd></div></dl>
-        {eventArgumentEntries(selectedEvent).length ? <section><h4>Input</h4><dl className="event-fields">{eventArgumentEntries(selectedEvent).map(([key, value]) => <div key={key}><dt>{key.replaceAll("_", " ")}</dt><dd><pre>{readable(value)}</pre></dd></div>)}</dl></section> : null}
-        {eventResult(selectedEvent) ? <section><h4>Result</h4><pre className="event-result">{eventResult(selectedEvent)}</pre></section> : null}
-        {!eventResult(selectedEvent) && eventDetailEntries(selectedEvent).length ? <section><h4>Details</h4><dl className="event-fields">{eventDetailEntries(selectedEvent).map(([key, value]) => <div key={key}><dt>{key.replaceAll("_", " ")}</dt><dd><pre>{readable(value)}</pre></dd></div>)}</dl></section> : null}
-        <details className="raw-event"><summary>Raw event payload</summary><pre>{readable(selectedEvent.payload)}</pre></details>
-        <footer><span>{selectedEvent.type}</span><span>event {selectedEvent.sequence}</span><span>Esc to close</span></footer>
-      </section></div> : null}
+      {selectedEvent ? (() => {
+        const params = eventArguments(selectedEvent);
+        const paramsText = Object.keys(params).length ? JSON.stringify(params, null, 2) : "";
+        const result = eventResult(selectedEvent);
+        const fallback = !paramsText && !result ? readable(selectedEvent.payload) : "";
+        return (
+          <div className="event-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) closeEvent(); }}>
+            <section ref={eventDialog} className="event-modal" role="dialog" aria-modal="true" aria-label={`${eventTitle(selectedEvent)} event details`} tabIndex={-1}>
+              <header className="event-modal-head">
+                <IconFile />
+                <strong>{eventToolName(selectedEvent)}</strong>
+                {eventTarget(selectedEvent) ? <code className="event-modal-path">{eventTarget(selectedEvent)}</code> : null}
+                <button type="button" className="event-modal-close" aria-label="Close event details" onClick={closeEvent}>×</button>
+              </header>
+              <div className="event-modal-body" ref={eventScroll}>
+                {paramsText ? <pre className="event-params">{paramsText}</pre> : null}
+                {result ? <><p className="event-result-label">Result</p><pre className="event-result-body">{result}</pre></> : null}
+                {fallback ? <pre className="event-result-body">{fallback}</pre> : null}
+              </div>
+              <footer className="event-modal-foot"><span>j/k or ↓/↑ to scroll</span><span>i or ESC to close</span></footer>
+            </section>
+          </div>
+        );
+      })() : null}
     </section>
   );
 }

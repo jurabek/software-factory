@@ -2,29 +2,28 @@
 
 Start a daemon API with `go -C daemon run .`. State defaults to `~/.software-factory`; override it with `SOFTWARE_FACTORY_DIR`. The API binds to loopback and has no CORS support. The daemon does not serve a frontend; users operate it through the separate Next.js application.
 
-To connect the separate application, configure a server credential and expose the loopback daemon through an encrypted tunnel:
+On first run the daemon generates a 32-hex bearer token, persists it at `$SOFTWARE_FACTORY_DIR/daemon-token`, and prints it to stdout:
 
-```bash
-openssl rand -hex 32
-SOFTWARE_FACTORY_DAEMON_TOKEN='replace-with-at-least-32-random-characters' \
-go -C daemon run .
+```
+daemon token: 0123456789abcdef0123456789abcdef
+daemon token file: /Users/you/.software-factory/daemon-token
 ```
 
-Non-loopback binds are rejected, including when a credential is present. Remote clients send `Authorization: Bearer $SOFTWARE_FACTORY_DAEMON_TOKEN` on every tunneled read, mutation, and stream. `GET /api/v1/identity` returns the stable identity stored in `$SOFTWARE_FACTORY_DIR/daemon-id`. Configuring the remote credential disables `/api/v1/control` and local Swagger routes. Without a remote credential, Swagger remains available at `/docs` for local API use.
+Every `/api/*` request except `GET /api/v1/health` requires `Authorization: Bearer <daemon-token>`. Non-loopback binds are rejected. `GET /api/v1/identity` returns the stable identity stored in `$SOFTWARE_FACTORY_DIR/daemon-id`. Swagger UI is served at `/docs`.
 
-Fetch the per-process mutation token:
+Export the token:
 
 ```bash
-TOKEN=$(curl -s http://127.0.0.1:8080/api/v1/control | jq -r .token)
+TOKEN=$(cat ~/.software-factory/daemon-token)
 ```
 
 Create and start a local draft:
 
 ```bash
 TASK_ID=$(curl -s -X POST http://127.0.0.1:8080/api/v1/tasks \
-  -H "X-Software-Factory-Token: $TOKEN" -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"request":"Implement feature X","repositories":[{"type":"local","path":"/absolute/repository","primary":true}]}' | jq -r .id)
-curl -s -X POST "http://127.0.0.1:8080/api/v1/tasks/$TASK_ID/start" -H "X-Software-Factory-Token: $TOKEN"
+curl -s -X POST "http://127.0.0.1:8080/api/v1/tasks/$TASK_ID/start" -H "Authorization: Bearer $TOKEN"
 ```
 
 For GitHub, use `{"type":"github","repo":"owner/repository"}` inside `repositories`. Add more entries for a multi-repository Task and mark exactly one `primary`; repository access starts only after Start.
@@ -35,14 +34,14 @@ Planner results always include `questions`. If questions remain, answer them whi
 
 ```bash
 curl -s -X POST "http://127.0.0.1:8080/api/v1/tasks/$TASK_ID/feedback" \
-  -H "X-Software-Factory-Token: $TOKEN" -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"feedback":"Use PostgreSQL and retain the public API.","current_plan_digest":"DIGEST_FROM_TASK"}'
 ```
 
 After the revised plan has an empty `questions` array, approve it:
 
 ```bash
-curl -s -X POST "http://127.0.0.1:8080/api/v1/tasks/$TASK_ID/approve" -H "X-Software-Factory-Token: $TOKEN"
+curl -s -X POST "http://127.0.0.1:8080/api/v1/tasks/$TASK_ID/approve" -H "Authorization: Bearer $TOKEN"
 ```
 
 The Planner revision reuses its Task session and approval binds to the latest digest.
@@ -60,7 +59,7 @@ The Next.js application owns the initial-user session and daemon registrations. 
 - `GET /api/daemons/{daemonId}/creation-options[?harness=]` returns projected defaults, harnesses, and models for the creation form.
 - `POST /api/daemons/{daemonId}/tasks/{taskId}/{start|approve|pause|resume|abort}` runs one lifecycle command; the approval actor comes from the login session.
 - `GET /api/daemons/{daemonId}/tasks/{taskId}/events[?after=&limit=|?tail=]` replays events; `GET .../events/stream[?after=]` proxies the live SSE feed with `Last-Event-ID` support. Open streams revalidate the login session and close on logout or disconnect.
-- Every read needs the login session; every mutation additionally needs the configured application origin. Guessed registration IDs return 404, and a replaced daemon at a registered endpoint returns 409.
+- Every read needs the login session; every mutation additionally needs the configured application origin. Guessed registration IDs return 404.
 
 ## Application deployment and schema
 

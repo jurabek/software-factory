@@ -52,7 +52,7 @@ const (
   <script src="https://unpkg.com/swagger-ui-dist@5.32.15/swagger-ui-bundle.js"></script>
   <script>
     window.onload = function () {
-      const ui = SwaggerUIBundle({
+      SwaggerUIBundle({
         url: "/swagger.yaml",
         dom_id: "#swagger-ui",
         deepLinking: true,
@@ -60,11 +60,6 @@ const (
         persistAuthorization: true,
         tryItOutEnabled: true
       });
-      fetch("/api/v1/control", {cache: "no-store"})
-        .then(function (response) { return response.json(); })
-        .then(function (control) {
-          if (control.token) ui.preauthorizeApiKey("MutationToken", control.token);
-        });
     };
   </script>
 </body>
@@ -99,10 +94,14 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("load daemon identity: %w", err)
 	}
-	address, remoteToken, err := daemonNetworkConfig(
+	tokenPath := filepath.Join(root, "daemon-token")
+	daemonToken, err := loadDaemonToken(tokenPath)
+	if err != nil {
+		return fmt.Errorf("load daemon token: %w", err)
+	}
+	address, err := daemonNetworkConfig(
 		envOrDefault("SOFTWARE_FACTORY_BIND", defaultBind),
 		envOrDefault("PORT", defaultPort),
-		os.Getenv("SOFTWARE_FACTORY_DAEMON_TOKEN"),
 	)
 	if err != nil {
 		return err
@@ -158,17 +157,15 @@ func run() error {
 		}
 	}
 	service := factory.NewService(root, db, configured, configPath, registry, factorygit.OSRunner{})
-	apiServer, err := api.New(db, service, configured, problems, loadErr, harnessNames, catalog, api.RemoteAccess{DaemonID: daemonID, Token: remoteToken})
+	apiServer, err := api.New(db, service, configured, problems, loadErr, harnessNames, catalog, api.Access{DaemonID: daemonID, Token: daemonToken})
 	if err != nil {
 		return err
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/api/v1/", apiServer.Handler())
-	if remoteToken == "" {
-		mux.HandleFunc("GET /swagger.yaml", serveSwaggerSpec)
-		mux.HandleFunc("GET /docs", serveSwaggerUI)
-		mux.HandleFunc("GET /docs/", serveSwaggerUI)
-	}
+	mux.HandleFunc("GET /swagger.yaml", serveSwaggerSpec)
+	mux.HandleFunc("GET /docs", serveSwaggerUI)
+	mux.HandleFunc("GET /docs/", serveSwaggerUI)
 	server := &http.Server{
 		Addr:              address,
 		Handler:           requestLog(logger, staticSecurityHeaders(mux)),
@@ -178,7 +175,8 @@ func run() error {
 	defer stop()
 	done := make(chan error, 1)
 	go func() {
-		logger.Info("server started", "address", "http://"+address, "root", root, "validation_errors", len(problems))
+		fmt.Fprintf(os.Stdout, "daemon token: %s\ndaemon token file: %s\n", daemonToken, tokenPath)
+		logger.Info("server started", "address", "http://"+address, "root", root, "validation_errors", len(problems), "token_file", tokenPath)
 		done <- server.ListenAndServe()
 	}()
 	select {
@@ -195,21 +193,37 @@ func run() error {
 	}
 }
 
-func daemonNetworkConfig(bind, port, token string) (string, string, error) {
+func daemonNetworkConfig(bind, port string) (string, error) {
 	address := net.ParseIP(bind)
 	if address == nil {
-		return "", "", fmt.Errorf("SOFTWARE_FACTORY_BIND must be an IP address")
-	}
-	if strings.TrimSpace(token) != token {
-		return "", "", fmt.Errorf("SOFTWARE_FACTORY_DAEMON_TOKEN must not have surrounding whitespace")
-	}
-	if token != "" && len(token) < 32 {
-		return "", "", fmt.Errorf("SOFTWARE_FACTORY_DAEMON_TOKEN must contain at least 32 characters")
+		return "", fmt.Errorf("SOFTWARE_FACTORY_BIND must be an IP address")
 	}
 	if !address.IsLoopback() {
-		return "", "", fmt.Errorf("SOFTWARE_FACTORY_BIND must remain loopback; use an encrypted tunnel for remote access")
+		return "", fmt.Errorf("SOFTWARE_FACTORY_BIND must remain loopback; use an encrypted tunnel for remote access")
 	}
-	return net.JoinHostPort(bind, port), token, nil
+	return net.JoinHostPort(bind, port), nil
+}
+
+func loadDaemonToken(path string) (string, error) {
+	value, err := os.ReadFile(path)
+	if err == nil {
+		return validateDaemonID(string(value))
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	var random [16]byte
+	if _, err = rand.Read(random[:]); err != nil {
+		return "", err
+	}
+	if err = createIfMissing(path, []byte(hex.EncodeToString(random[:])+"\n")); err != nil {
+		return "", err
+	}
+	value, err = os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return validateDaemonID(string(value))
 }
 
 func loadDaemonID(root string) (string, error) {

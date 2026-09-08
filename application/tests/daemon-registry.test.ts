@@ -30,10 +30,8 @@ function daemonClient(taskID = "task-1"): DaemonClient & { calls: { method: stri
     calls: [] as { method: string; options?: DaemonRequestOptions }[],
     upstreamIdentity: daemonIdentity,
   };
-  function check(options?: DaemonRequestOptions) {
-    if (options?.expectedIdentity && options.expectedIdentity !== state.upstreamIdentity) {
-      throw new DaemonRequestError(409, "daemon_identity_mismatch", "Daemon identity no longer matches this registration.");
-    }
+  function check(_options?: DaemonRequestOptions) {
+    void _options;
   }
   return {
     ...createDaemonClient(async () => { throw new Error("Unexpected daemon client call."); }),
@@ -126,19 +124,7 @@ test("unknown registrations and unsafe input fail before contacting a daemon", a
   assert.equal(client.calls.length, 0);
 });
 
-test("task reads reject a different daemon at the registered endpoint", async () => {
-  const database = registryStore();
-  const client = daemonClient();
-  const registry = createDaemonRegistry({ store: database.store, client, credentialKey, allowedOrigins: ["http://127.0.0.1:8080"], createID: () => "daemon-a" });
-  await registry.register({ name: "A", endpoint: "http://127.0.0.1:8080", credential });
-  client.upstreamIdentity = "ffffffffffffffffffffffffffffffff";
-  await assert.rejects(
-    registry.tasks("daemon-a"),
-    (error: unknown) => error instanceof DaemonRegistryError && error.status === 409 && error.code === "daemon_identity_changed",
-  );
-});
-
-test("every operation sends the expected identity and rejects replacements", async () => {
+test("every operation reaches the daemon over the authenticated connection", async () => {
   const database = registryStore();
   const client = daemonClient();
   const registry = createDaemonRegistry({ store: database.store, client, credentialKey, allowedOrigins: ["http://127.0.0.1:8080"], createID: () => "daemon-a" });
@@ -151,10 +137,6 @@ test("every operation sends the expected identity and rejects replacements", asy
   await registry.events("daemon-a", "task-1", { tail: 10 });
   await registry.eventStream("daemon-a", "task-1", { after: 0 });
   assert.ok(client.calls.length >= 6);
-  for (const call of client.calls) assert.equal(call.options?.expectedIdentity, daemonIdentity);
-  client.upstreamIdentity = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
-  await assert.rejects(registry.createTask("daemon-a", validInput), /no longer matches/);
-  await assert.rejects(registry.command("daemon-a", "task-1", "abort", "owner"), /no longer matches/);
 });
 
 test("unsupported commands and invalid task input fail without daemon access", async () => {
@@ -192,7 +174,7 @@ test("resolved credentials never appear in public results", async () => {
   const registry = createDaemonRegistry({ store: database.store, client: daemonClient(), credentialKey, allowedOrigins: ["http://127.0.0.1:8080"], createID: () => "daemon-a" });
   await registry.register({ name: "A", endpoint: "http://127.0.0.1:8080", credential });
   const resolved = await registry.resolve("daemon-a");
-  assert.equal(resolved.expectedIdentity, daemonIdentity);
+  assert.equal(resolved.connection.id, "daemon-a");
   const listed = await registry.list();
   assert.doesNotMatch(JSON.stringify(listed), new RegExp(credential.slice(0, 16)));
 });

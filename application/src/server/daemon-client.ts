@@ -1,5 +1,4 @@
 const requestTimeoutMilliseconds = 5_000;
-const daemonIdentityHeader = "X-Software-Factory-Daemon-ID";
 const daemonActorHeader = "X-Software-Factory-Actor";
 
 export type DaemonIdentity = { id: string };
@@ -23,7 +22,6 @@ export type DaemonTask = {
 export type DaemonCommand = "start" | "approve" | "pause" | "resume" | "abort"
 export type DaemonRequestOptions = {
   signal?: AbortSignal;
-  expectedIdentity?: string;
   actor?: string;
 };
 export type EventQuery = { after?: number; limit?: number; tail?: number };
@@ -83,7 +81,6 @@ const safeUpstreamCodes = new Set([
   "stale_plan",
   "stale_branch",
   "stale_anchor",
-  "daemon_identity_mismatch",
 ]);
 
 const safeMessages: Record<string, string> = {
@@ -99,7 +96,6 @@ const safeMessages: Record<string, string> = {
   stale_plan: "Stored plan is stale; refresh and reselect the action.",
   stale_branch: "Selected branch head is stale; refresh lineage and reselect.",
   stale_anchor: "Artifact anchor is stale; reselect the source content.",
-  daemon_identity_mismatch: "Daemon identity no longer matches this registration.",
 };
 
 export class DaemonRequestError extends Error {
@@ -125,7 +121,6 @@ function combinedSignal(caller: AbortSignal | undefined, timeout: boolean): Abor
 
 function requestHeaders(credential: string, options: DaemonRequestOptions, extra?: Record<string, string>): Record<string, string> {
   const headers: Record<string, string> = { Authorization: `Bearer ${credential}` };
-  if (options.expectedIdentity) headers[daemonIdentityHeader] = options.expectedIdentity;
   if (options.actor) headers[daemonActorHeader] = options.actor;
   return { ...headers, ...extra };
 }

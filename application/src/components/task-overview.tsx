@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { daemonCreateSession, daemonSessions, daemonTask, type QualifiedTask, type TaskDetails } from "../client/daemon-api.ts";
 import { relativeTime, statePresentation } from "../client/daemon-ui-state.ts";
 import type { DaemonConnection } from "../server/daemon-registry.ts";
-import { IconCollapse, IconCopy, IconFolder, IconPencil, IconPlus, IconShare, IconTerminal } from "./icons.tsx";
+import { IconCopy, IconFolder, IconPencil, IconPlus, IconShare, IconTerminal } from "./icons.tsx";
 
 function monogram(name: string): string {
   const parts = name.replace(/@.*/, "").split(/[.\s_-]+/).filter(Boolean);
@@ -69,7 +69,7 @@ export function TaskOverview({ daemon, task, login, offline, onOpenSession, onCr
     <main className="task-page">
       <header className="page-topbar">
         <nav className="crumbs" aria-label="Breadcrumb"><span>Tasks</span><i>›</i><strong>{current.request}</strong></nav>
-        <div className="topbar-tools"><button type="button" className="icon-button" aria-label="Collapse panel"><IconCollapse /></button><button type="button" className="icon-button" aria-label="New task"><IconPlus /></button></div>
+        <div className="topbar-tools"><button type="button" className="icon-button" aria-label="New task"><IconPlus /></button></div>
       </header>
 
       {error ? <p className="notice" role="alert">{error}</p> : null}

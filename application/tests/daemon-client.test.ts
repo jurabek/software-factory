@@ -46,14 +46,12 @@ test("commands send the expected identity and server-selected actor", async () =
     return Response.json({ accepted: true }, { status: 202 });
   });
   const result = await client.command("http://127.0.0.1:8080", "credential", "task-1", "approve", {
-    expectedIdentity: "0123456789abcdef0123456789abcdef",
     actor: "owner",
   });
   assert.deepEqual(result, { accepted: true });
   assert.equal(requests[0].input, "http://127.0.0.1:8080/api/v1/tasks/task-1/approve");
   const headers = requests[0].init?.headers as Record<string, string>;
   assert.equal(headers.Authorization, "Bearer credential");
-  assert.equal(headers["X-Software-Factory-Daemon-ID"], "0123456789abcdef0123456789abcdef");
   assert.equal(headers["X-Software-Factory-Actor"], "owner");
   assert.equal(requests[0].init?.method, "POST");
 });
@@ -73,11 +71,11 @@ test("safe upstream conflict codes are preserved without reflecting messages", a
   );
 });
 
-test("identity mismatch responses preserve their safe code", async () => {
+test("identity mismatch responses are treated as generic conflicts", async () => {
   const client = createDaemonClient(async () => Response.json({ code: "daemon_identity_mismatch", message: "mismatch" }, { status: 409 }));
   await assert.rejects(
-    client.tasks("http://127.0.0.1:8080", "credential", { expectedIdentity: "0123456789abcdef0123456789abcdef" }),
-    (error: unknown) => error instanceof DaemonRequestError && error.code === "daemon_identity_mismatch",
+    client.tasks("http://127.0.0.1:8080", "credential", {}),
+    (error: unknown) => error instanceof DaemonRequestError && error.status === 409 && error.code === "daemon_conflict",
   );
 });
 
@@ -91,11 +89,10 @@ test("creation posts JSON bodies with the expected identity", async () => {
     "http://127.0.0.1:8080",
     "credential",
     { request: "Build", repositories: [{ type: "github", repo: "owner/app" }] },
-    { expectedIdentity: "0123456789abcdef0123456789abcdef" },
+    {},
   );
   assert.equal(task.id, "task-1");
   assert.equal(requests[0].init?.method, "POST");
-  assert.equal((requests[0].init?.headers as Record<string, string>)["X-Software-Factory-Daemon-ID"], "0123456789abcdef0123456789abcdef");
   assert.deepEqual(JSON.parse(String(requests[0].init?.body)), { request: "Build", repositories: [{ type: "github", repo: "owner/app" }] });
 });
 
@@ -105,7 +102,7 @@ test("task workflow resources stay on the authenticated daemon connection", asyn
     requests.push({ input: String(input), init });
     return Response.json({});
   });
-  const options = { expectedIdentity: "0123456789abcdef0123456789abcdef", actor: "owner" };
+  const options = { actor: "owner" };
   await client.task("http://127.0.0.1:8080", "credential", "task-1", options);
   await client.sessions("http://127.0.0.1:8080", "credential", "task-1", options);
   await client.createSession("http://127.0.0.1:8080", "credential", "task-1", { request: "Follow up" }, options);
@@ -153,13 +150,12 @@ test("event streams forward cursors without a JSON timeout", async () => {
     requests.push({ input: String(input), init });
     return new Response(stream, { headers: { "Content-Type": "text/event-stream" } });
   });
-  const response = await client.eventStream("http://127.0.0.1:8080", "credential", "task-1", { after: 41, lastEventID: "42" }, { expectedIdentity: "0123456789abcdef0123456789abcdef" });
+  const response = await client.eventStream("http://127.0.0.1:8080", "credential", "task-1", { after: 41, lastEventID: "42" }, {});
   assert.equal(response.headers.get("Content-Type"), "text/event-stream");
   assert.ok(requests[0].input.includes("/api/v1/tasks/task-1/events/stream?after=41"));
   const headers = requests[0].init?.headers as Record<string, string>;
   assert.equal(headers.Accept, "text/event-stream");
   assert.equal(headers["Last-Event-ID"], "42");
-  assert.equal(headers["X-Software-Factory-Daemon-ID"], "0123456789abcdef0123456789abcdef");
 });
 
 test("event reads preserve lineage and available actions", async () => {

@@ -20,7 +20,6 @@ export function TaskRail({ connections, tasksByDaemon, offlineByDaemon, selectio
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [mobile, setMobile] = useState(false);
   const [query, setQuery] = useState("");
-  const [showLabels, setShowLabels] = useState(true);
   const closeButton = useRef<HTMLButtonElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
 
@@ -41,10 +40,9 @@ export function TaskRail({ connections, tasksByDaemon, offlineByDaemon, selectio
   return (
     <aside className="task-rail" aria-label="Tasks" inert={mobile && !open ? true : undefined}>
       <header className="rail-top">
-        <button type="button" className="icon-button" aria-label="Collapse navigation" onClick={onClose}><IconCollapse /></button>
+        <button ref={closeButton} type="button" className="icon-button" aria-label="Collapse navigation" onClick={onClose}><IconCollapse /></button>
         <label className="rail-search"><IconSearch /><input ref={searchInput} value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search" aria-label="Search tasks" /><kbd>⌘K</kbd></label>
         <Link href={`/tasks${workspaceSearch({ daemonId: selection.daemonId, taskId: null, sessionId: null })}`} className="create-task" onClick={onClose}>Create task <kbd>T</kbd></Link>
-        <button ref={closeButton} className="mobile-only icon-button" type="button" onClick={onClose} aria-label="Close task navigation"><IconChevron /></button>
       </header>
 
       <nav className="rail-scroll" aria-label="Task navigation">
@@ -64,7 +62,7 @@ export function TaskRail({ connections, tasksByDaemon, offlineByDaemon, selectio
                     <div className="task-group-row">
                       <button type="button" className="disclosure" aria-expanded={expandedGroup} aria-label={expandedGroup ? "Collapse" : "Expand"} onClick={() => setExpanded((current) => ({ ...current, [key]: !expandedGroup }))}><IconChevron /></button>
                       <Link className="task-row" data-state={statePresentation(root.state)} href={`/tasks${workspaceSearch({ daemonId: daemon.id, taskId: root.id, sessionId: null })}`} onClick={onClose} aria-current={selection.taskId === root.id && !selection.sessionId ? "page" : undefined}>
-                        <span className="task-row-main"><strong>{root.request}</strong>{showLabels && root.coding_agent ? <span className="tag accent">{root.coding_agent}</span> : null}</span>
+                        <span className="task-row-main"><strong>{root.request}</strong>{root.coding_agent ? <span className="tag accent">{root.coding_agent}</span> : null}</span>
                         <small>{relativeTime(root.created_at)}</small>
                       </Link>
                     </div>
@@ -87,10 +85,6 @@ export function TaskRail({ connections, tasksByDaemon, offlineByDaemon, selectio
         })}
       </nav>
 
-      <footer className="rail-foot">
-        <button type="button" className="labels-toggle" aria-pressed={showLabels} onClick={() => setShowLabels((value) => !value)}><span className="switch" aria-hidden="true" data-on={showLabels} /> Labels</button>
-        <span className="foot-hint"><kbd>⌘B</kbd> toggle</span>
-      </footer>
       <div className="rail-account"><SessionPanel login={login} /></div>
     </aside>
   );
