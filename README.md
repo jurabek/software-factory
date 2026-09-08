@@ -1,4 +1,4 @@
-# Software Factory
+# Super Booring Software Factory
 
 Software Factory consists of a self-hosted Next.js application and independent loopback-only Go daemons. The application owns login and daemon registrations in PostgreSQL. Each daemon coordinates Task Workspaces through Planner, Builder, deterministic checks, and Reviewer using its installed `pi` command.
 
