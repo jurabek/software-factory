@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
-import { getDatabasePool } from "../../../src/server/database.ts";
+import { getDatabasePool } from "@/server/database.ts";
 import {
 	readDeploymentEnvironment,
 	validateEnvironment,
-} from "../../../src/server/environment.ts";
+} from "@/server/environment.ts";
 
 export const runtime = "nodejs";
 

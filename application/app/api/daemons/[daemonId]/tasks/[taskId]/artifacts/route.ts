@@ -1,4 +1,4 @@
-import { getTaskResource } from "../../../../../../../src/server/task-resource-route.ts";
+import { getTaskResource } from "@/server/task-resource-route.ts";
 
 export const runtime = "nodejs";
 

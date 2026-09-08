@@ -1,14 +1,11 @@
-import { getDaemonRegistry } from "../../../../../../../../src/server/daemon-registry.ts";
+import { getAuth, sessionTokenFromCookie } from "@/server/auth.ts";
+import { getDaemonRegistry } from "@/server/daemon-registry.ts";
 import {
 	daemonErrorResponse,
 	privateJSON,
 	proxyDaemonStream,
-} from "../../../../../../../../src/server/daemon-route.ts";
-import {
-	getAuth,
-	sessionTokenFromCookie,
-} from "../../../../../../../../src/server/auth.ts";
-import { getRequestSession } from "../../../../../../../../src/server/session.ts";
+} from "@/server/daemon-route.ts";
+import { getRequestSession } from "@/server/session.ts";
 
 export const runtime = "nodejs";
 
