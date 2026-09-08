@@ -30,6 +30,73 @@ For GitHub, use `{"type":"github","repo":"owner/repository"}` inside `repositori
 
 Read routes include Tasks, attempts, events, results, checks, interventions, and repository diffs. Live events use `/api/v1/tasks/{id}/events/stream`; reconnect with `Last-Event-ID` or `?after=`. Mutation routes are `start`, `approve`, `pause`, `resume`, `abort`, `feedback`, and `interventions`; inactive Tasks support `DELETE`.
 
+`GET /api/v1/tasks/{id}/sessions` returns the bare task array extended with
+`agent_sessions` per item: `{role, harness, provider?, model?, thinking?,
+harness_session_id (UUID), session_directory, session_ready,
+native_transcript_path?, usage, cost, accounting_complete, ...}`. `cost` is
+accumulated reported cost (an estimate/lower bound when
+`accounting_complete` is false); `usage` describes the last invocation.
+`accounting_complete` is false while an invocation is pending, after crash
+recovery with unrecorded spend, or when terminal accounting was incomplete.
+
+`GET /api/v1/tasks/{id}/events` returns
+`{"events": [...], "cursor": N, "format_version": 1}`; each event carries
+`kind`, `format_version`, typed `payload`, and daemon-computed `display`
+consumed verbatim by the UI. `GET /api/v1/models?harness=` returns models
+with per-harness validated `thinking` capabilities.
+
+## Claude harness
+
+Select `coding_agent: claude` per task or as the configured default (Pi stays
+the template default). The executable resolves via `CLAUDE_PATH` (default
+`claude`); catalog availability (`GET /api/v1/models?harness=claude`) checks
+presence/version without running a paid prompt and never proves
+authentication or model entitlement. Do not require Pi to be installed when
+the default is Claude, but a broken default configuration still blocks new
+work (readiness is not separated by selected harness in v1).
+
+Supported models are the `anthropic/sonnet` and `anthropic/opus` aliases plus
+explicitly configured full IDs via `claude.models`; other provider prefixes
+(e.g. `github-copilot/...`) are rejected so a Pi model never reaches Claude.
+Effort is the validated `low`/`medium`/`high` subset; `off`/`minimal` are
+rejected rather than silently mapped, and `xhigh`/`max` are unavailable until
+explicitly verified. The runtime records the actual model from CLI metadata.
+
+```yaml
+defaults:
+  coding_agent: claude
+  model: anthropic/sonnet
+  thinking: medium
+agents:
+  - name: planner
+    model: anthropic/sonnet
+    thinking: medium
+    # ... builder, reviewer with compatible values
+claude:
+  allowed_tools: ["Read", "Edit", "Bash"]
+  models: []
+```
+
+Permissions are noninteractive (`--permission-mode dontAsk`,
+`--permission-prompts none`): calls needing approval are denied.
+`claude.allowed_tools` (default empty) is additive to inherited Claude
+permissions, not an exclusive allowlist — built-in read-only allowance,
+inherited rules, and hooks still apply, and a broad inherited Bash allowance
+can permit shell execution. No implicit `--dangerously-skip-permissions`.
+Ordinary print mode loads user/project hooks, skills, and MCP config without
+a trust dialog; only run in trusted task repositories. Never use `--bare`
+(it disables subscription OAuth/keychain auth). Do not copy credentials or
+override `CLAUDE_CONFIG_DIR` to isolate sessions.
+
+Accounting: terminal `total_cost_usd` is the single-invocation estimate added
+once per run (never summed with per-message estimates or whole-session
+totals); transcript replay alone leaves cost unknown. Native transcripts stay
+in Claude's state root and are subject to Claude retention; the daemon
+archives only the task's session after each run. Missing/expired native state
+prevents resume. UUID resume continues the conversation; it does not rewind
+it to a restored Git snapshot — rewinds allocate a fresh conversation (see
+`docs/SESSION-FORMAT.md`).
+
 Planner results always include `questions`. If questions remain, answer them while awaiting approval:
 
 ```bash

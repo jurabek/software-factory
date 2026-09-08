@@ -118,7 +118,7 @@ function daemonClient(taskID = "task-1"): DaemonClient & {
 			check(options);
 			void taskId;
 			void query;
-			return { events: [], cursor: 0 };
+			return { events: [], cursor: 0, format_version: 1 };
 		},
 		async eventStream(_endpoint, _credential, taskId, cursor, options) {
 			state.calls.push({ method: "eventStream", options });

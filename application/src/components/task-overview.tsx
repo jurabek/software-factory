@@ -367,6 +367,20 @@ export function TaskOverview({
 											{session.coding_agent}
 										</Badge>
 									) : null}
+									{session.agent_sessions?.[0]?.model ? (
+										<Badge variant="outline" className="ml-1">
+											{session.agent_sessions[0].model}
+										</Badge>
+									) : null}
+									{typeof session.agent_sessions?.[0]?.cost === "number" &&
+									(session.agent_sessions[0].cost ?? 0) > 0 ? (
+										<span className="text-muted-foreground ml-2 text-xs">
+											${session.agent_sessions[0].cost.toFixed(2)}
+											{session.agent_sessions[0].accounting_complete
+												? ""
+												: " (est.)"}
+										</span>
+									) : null}
 								</TableCell>
 								<TableCell
 									className="text-muted-foreground hidden max-w-56 truncate text-xs md:table-cell"

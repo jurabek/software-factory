@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jurabek/software-factory/daemon/internal/harness"
+	"github.com/jurabek/software-factory/daemon/internal/session"
 )
 
 const (
@@ -60,31 +61,46 @@ func (h Harness) Run(parent context.Context, request harness.Request, sink harne
 	args := []string{"-p", "--mode", "json", "--provider", provider, "--model", model, "--thinking", request.Thinking, "--session-id", request.SessionID, "--session-dir", request.SessionDirectory, "--system-prompt", request.SystemPrompt, "--approve"}
 	args = append(args, request.Prompt)
 
+	// Pi receives an explicit session ID and directory, so a started process
+	// owns an initialized session. Failures before Start leave the reserved
+	// session untouched.
+	notStarted := harness.Result{SessionID: request.SessionID, Provider: provider, Model: model}
 	cmd := exec.Command(h.Path, args...)
 	cmd.Dir = request.CWD
 	cmd.Stdin = nil
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return harness.Result{}, fmt.Errorf("pi stdout: %w", err)
+		return notStarted, fmt.Errorf("pi stdout: %w", err)
 	}
 	stderr := &tailWriter{limit: maxStderr}
 	cmd.Stderr = stderr
 	if err := ensureOutputPaths(request); err != nil {
-		return harness.Result{}, err
+		return notStarted, err
 	}
 	raw, err := openRaw(request.RawOutputPath)
 	if err != nil {
-		return harness.Result{}, err
+		return notStarted, err
 	}
 	if raw != nil {
 		defer raw.Close()
 	}
 	if err := cmd.Start(); err != nil {
-		return harness.Result{}, fmt.Errorf("start pi: %w", err)
+		return notStarted, fmt.Errorf("start pi: %w", err)
 	}
 	started := time.Now()
-	emit(parent, sink, harness.Event{Type: "process_start", Name: "pi", Payload: map[string]any{"pid": cmd.Process.Pid, "command": displayCommand(h.Path, args), "started_at": started.UTC()}})
+	result := harness.Result{
+		SessionID:          request.SessionID,
+		Provider:           provider,
+		Model:              model,
+		SessionReady:       true,
+		AccountingComplete: true,
+	}
+	if err := emit(parent, sink, session.NewProcessStart(session.ProcessStartPayload{PID: cmd.Process.Pid, Command: displayCommand(h.Path, args)})); err != nil {
+		terminateGroup(cmd.Process.Pid)
+		_ = cmd.Wait()
+		return result, fmt.Errorf("emit pi process start: %w", err)
+	}
 
 	terminated := make(chan struct{})
 	go func() {
@@ -95,21 +111,29 @@ func (h Harness) Run(parent context.Context, request harness.Request, sink harne
 		}
 	}()
 
-	result, scanErr := consume(stdout, raw, sink, parent)
+	consumed, scanErr := consume(stdout, raw, sink, parent)
+	consumed.SessionID = result.SessionID
+	consumed.Provider = result.Provider
+	consumed.Model = result.Model
+	consumed.SessionReady = result.SessionReady
+	consumed.AccountingComplete = result.AccountingComplete
+	result = consumed
 	waitErr := cmd.Wait()
 	close(terminated)
-	result.SessionID = request.SessionID
-	result.Provider = provider
-	result.Model = model
 	result.ExitCode = exitCode(waitErr)
-	emit(parent, sink, harness.Event{Type: "process_end", Name: "pi", Payload: map[string]any{"pid": cmd.Process.Pid, "exit_code": result.ExitCode, "duration_ms": time.Since(started).Milliseconds(), "ended_at": time.Now().UTC()}})
+	if err := emit(parent, sink, session.NewProcessEnd(session.ProcessEndPayload{PID: cmd.Process.Pid, ExitCode: result.ExitCode, DurationMS: time.Since(started).Milliseconds()})); err != nil && scanErr == nil {
+		scanErr = fmt.Errorf("emit process end: %w", err)
+	}
 	if scanErr != nil {
+		result.AccountingComplete = false
 		return result, fmt.Errorf("read pi output: %w", scanErr)
 	}
 	if ctx.Err() != nil {
+		result.AccountingComplete = false
 		return result, fmt.Errorf("pi interrupted: %w", ctx.Err())
 	}
 	if waitErr != nil && strings.TrimSpace(result.Text) == "" {
+		result.AccountingComplete = false
 		return result, fmt.Errorf("pi exited %d: %s", result.ExitCode, stderr.String())
 	}
 	return result, nil
@@ -146,38 +170,134 @@ func consume(stdout io.Reader, raw *os.File, sink harness.EventSink, ctx context
 		if json.Unmarshal([]byte(line), &event) != nil {
 			continue
 		}
-		processEvent(event, toolStarts, &result, sink, ctx)
+		if err := processEvent(event, toolStarts, &result, sink, ctx); err != nil {
+			return result, err
+		}
 	}
-	return result, scanner.Err()
+	if err := scanner.Err(); err != nil {
+		return result, err
+	}
+	for id, start := range toolStarts {
+		if start.folded {
+			continue
+		}
+		entry := session.NewToolCall(session.ToolCallPayload{
+			ToolCallID: id,
+			Tool:       start.name,
+			Arguments:  session.BoundedJSON(start.arguments),
+			Incomplete: true,
+			StartedAt:  &start.startedAt,
+		})
+		if err := emit(ctx, sink, entry); err != nil {
+			return result, err
+		}
+	}
+	return result, nil
 }
 
 type toolStart struct {
 	name      string
 	arguments any
 	startedAt time.Time
+	folded    bool
 }
 
-func processEvent(event map[string]any, tools map[string]toolStart, result *harness.Result, sink harness.EventSink, ctx context.Context) {
+func processEvent(event map[string]any, tools map[string]toolStart, result *harness.Result, sink harness.EventSink, ctx context.Context) error {
 	typeName, _ := event["type"].(string)
-	if typeName == "message_end" {
-		if text := assistantText(event); strings.TrimSpace(text) != "" {
+	switch typeName {
+	case "message_start", "message_update", "tool_execution_update":
+		return nil
+	case "tool_execution_start":
+		id := stringValue(event, "toolCallId", "tool_call_id")
+		tools[id] = toolStart{name: stringValue(event, "toolName", "tool_name", "name"), arguments: firstValue(event, "args", "arguments"), startedAt: eventTime(event, time.Now())}
+		return nil
+	case "tool_execution_end":
+		id := stringValue(event, "toolCallId", "tool_call_id")
+		start := tools[id]
+		if start.folded {
+			return nil
+		}
+		ended := eventTime(event, time.Now())
+		success := !boolValue(event, "isError", "error")
+		start.folded = true
+		tools[id] = start
+		return emit(ctx, sink, session.NewToolCall(session.ToolCallPayload{ToolCallID: id, Tool: start.name, Arguments: session.BoundedJSON(start.arguments), Result: session.Truncate(fmt.Sprint(firstValue(event, "result", "output")), maxEventText), Success: &success, StartedAt: &start.startedAt, EndedAt: &ended, DurationMS: ended.Sub(start.startedAt).Milliseconds()}))
+	case "message_end":
+		return processMessageEnd(event, tools, result, sink, ctx)
+	default:
+		return emit(ctx, sink, session.NewCustom(session.CustomPayload{CustomType: customType(typeName), Data: session.BoundedJSON(event)}))
+	}
+}
+
+func processMessageEnd(event map[string]any, tools map[string]toolStart, result *harness.Result, sink harness.EventSink, ctx context.Context) error {
+	message, _ := event["message"].(map[string]any)
+	role := stringValue(message, "role")
+	if role == "" {
+		role = stringValue(event, "role")
+	}
+	if strings.EqualFold(role, "toolResult") || strings.EqualFold(role, "tool_result") {
+		id := stringValue(message, "toolCallId", "tool_call_id")
+		if id == "" {
+			id = stringValue(event, "toolCallId", "tool_call_id")
+		}
+		start := tools[id]
+		if start.folded {
+			return nil
+		}
+		ended := eventTime(event, time.Now())
+		success := !boolValue(message, "isError", "is_error", "error") && !boolValue(event, "isError", "is_error", "error")
+		start.folded = true
+		tools[id] = start
+		return emit(ctx, sink, session.NewToolCall(session.ToolCallPayload{ToolCallID: id, Tool: start.name, Arguments: session.BoundedJSON(start.arguments), Result: session.Truncate(toolResultText(event), maxEventText), Success: &success, StartedAt: &start.startedAt, EndedAt: &ended, DurationMS: ended.Sub(start.startedAt).Milliseconds()}))
+	}
+
+	text := assistantText(event)
+	usage := messageUsage(event)
+	stopReason := stringValue(message, "stopReason", "stop_reason")
+	model := stringValue(message, "model")
+	switch strings.ToLower(role) {
+	case "assistant":
+		if strings.TrimSpace(text) != "" {
 			result.Text = text
 		}
 		accumulateUsage(event, result)
-	}
-	id := stringValue(event, "toolCallId", "tool_call_id")
-	switch typeName {
-	case "tool_execution_start":
-		tools[id] = toolStart{name: stringValue(event, "toolName", "tool_name", "name"), arguments: firstValue(event, "args", "arguments"), startedAt: eventTime(event, time.Now())}
-	case "tool_execution_end":
-		start := tools[id]
-		ended := eventTime(event, time.Now())
-		payload := map[string]any{"tool_call_id": id, "tool": start.name, "arguments": boundedJSON(start.arguments), "label": toolLabel(start.arguments), "started_at": start.startedAt.UTC(), "ended_at": ended.UTC(), "duration_ms": ended.Sub(start.startedAt).Milliseconds(), "success": !boolValue(event, "isError", "error"), "result": truncate(fmt.Sprint(firstValue(event, "result", "output")), maxEventText)}
-		emit(ctx, sink, harness.Event{Type: "tool_call", Name: start.name, Payload: payload})
-		delete(tools, id)
+		return emit(ctx, sink, session.NewMessage(session.MessagePayload{Role: "assistant", Text: text, StopReason: stopReason, Model: model, Usage: usage}))
+	case "user", "system":
+		return emit(ctx, sink, session.NewMessage(session.MessagePayload{Role: strings.ToLower(role), Text: text, StopReason: stopReason, Model: model, Usage: usage}))
 	default:
-		emit(ctx, sink, harness.Event{Type: typeName, Payload: event})
+		return emit(ctx, sink, session.NewCustom(session.CustomPayload{CustomType: "message_end", Data: session.BoundedJSON(event)}))
 	}
+}
+
+func messageUsage(event map[string]any) *session.Usage {
+	message, _ := event["message"].(map[string]any)
+	usage, _ := firstValue(message, "usage").(map[string]any)
+	if usage == nil {
+		usage, _ = event["usage"].(map[string]any)
+	}
+	if usage == nil {
+		return nil
+	}
+	return &session.Usage{Input: intValue(usage, "input"), Output: intValue(usage, "output"), CacheRead: intValue(usage, "cacheRead", "cache_read"), CacheWrite: intValue(usage, "cacheWrite", "cache_write"), Reasoning: intValue(usage, "reasoning"), TotalTokens: intValue(usage, "totalTokens", "total_tokens")}
+}
+
+func toolResultText(event map[string]any) string {
+	message, _ := event["message"].(map[string]any)
+	if value := firstValue(message, "content", "result", "output"); value != nil {
+		if text, ok := value.(string); ok {
+			return text
+		}
+		encoded, _ := json.Marshal(value)
+		return string(encoded)
+	}
+	return fmt.Sprint(firstValue(event, "result", "output"))
+}
+
+func customType(value string) string {
+	if value == "" {
+		return "unknown"
+	}
+	return value
 }
 
 func accumulateUsage(event map[string]any, result *harness.Result) {
@@ -236,10 +356,11 @@ func exitCode(err error) int {
 	return -1
 }
 
-func emit(ctx context.Context, sink harness.EventSink, event harness.Event) {
+func emit(ctx context.Context, sink harness.EventSink, event harness.Event) error {
 	if sink != nil {
-		_ = sink(ctx, event)
+		return sink(ctx, event)
 	}
+	return nil
 }
 
 func splitModel(value string) (string, string) {
@@ -318,23 +439,6 @@ func intValue(values map[string]any, keys ...string) int {
 	default:
 		return 0
 	}
-}
-
-func boundedJSON(value any) string {
-	encoded, _ := json.Marshal(value)
-	return truncate(string(encoded), maxEventText)
-}
-
-func toolLabel(arguments any) string {
-	values, _ := arguments.(map[string]any)
-	return truncate(stringValue(values, "command", "path", "file_path", "pattern", "query", "url"), 160)
-}
-
-func truncate(value string, limit int) string {
-	if len(value) <= limit {
-		return value
-	}
-	return value[len(value)-limit:]
 }
 
 func displayCommand(path string, args []string) string {

@@ -26,6 +26,7 @@ import (
 	"github.com/jurabek/software-factory/daemon/internal/factory"
 	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
 	"github.com/jurabek/software-factory/daemon/internal/harness"
+	claudeharness "github.com/jurabek/software-factory/daemon/internal/harness/claude"
 	piharness "github.com/jurabek/software-factory/daemon/internal/harness/pi"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 )
@@ -117,7 +118,11 @@ func run() error {
 	configPath := filepath.Join(root, "config.yaml")
 	configured, problems, loadErr := config.Load(configPath)
 	piPath := envOrDefault("PI_PATH", "pi")
-	registry := harness.Registry{"pi": piharness.Harness{Path: piPath}}
+	claudePath := envOrDefault("CLAUDE_PATH", "claude")
+	registry := harness.Registry{
+		"pi":     piharness.Harness{Path: piPath},
+		"claude": claudeharness.Harness{Config: claudeharness.Config{Path: claudePath, AllowedTools: configured.Claude.AllowedTools, Models: configured.Claude.Models}},
+	}
 	harnessNames := make([]string, 0, len(registry))
 	for name := range registry {
 		harnessNames = append(harnessNames, name)
@@ -125,7 +130,14 @@ func run() error {
 	sort.Strings(harnessNames)
 	catalog := func(ctx context.Context, harnessName string) ([]config.Model, error) {
 		if harnessName == "" || harnessName == "pi" {
-			return config.Catalog(ctx, config.OSRunner{}, piPath)
+			models, err := config.Catalog(ctx, config.OSRunner{}, piPath)
+			if err != nil {
+				return nil, err
+			}
+			for i := range models {
+				models[i].Thinking = config.ThinkingLevelsFor("pi")
+			}
+			return models, nil
 		}
 		adapter, ok := registry.Get(harnessName)
 		if !ok {
@@ -137,7 +149,11 @@ func run() error {
 		}
 		out := make([]config.Model, 0, len(models))
 		for _, m := range models {
-			out = append(out, config.Model{Provider: m.Provider, ID: m.ID, ContextWindow: m.ContextWindow})
+			thinking := m.Thinking
+			if len(thinking) == 0 {
+				thinking = config.ThinkingLevelsFor(harnessName)
+			}
+			out = append(out, config.Model{Provider: m.Provider, ID: m.ID, ContextWindow: m.ContextWindow, Thinking: thinking})
 		}
 		return out, nil
 	}
@@ -152,6 +168,9 @@ func run() error {
 			for _, agent := range configured.Agents {
 				if _, resolveErr := config.ResolveModel(agent.Model, models); resolveErr != nil {
 					problems = append(problems, agent.Name+": "+resolveErr.Error())
+				}
+				if !config.IsValidThinkingFor(harnessForValidation, agent.Thinking) {
+					problems = append(problems, agent.Name+": thinking "+agent.Thinking+" unsupported for "+harnessForValidation)
 				}
 			}
 		}

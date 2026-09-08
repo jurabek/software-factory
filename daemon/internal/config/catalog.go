@@ -10,9 +10,10 @@ import (
 )
 
 type Model struct {
-	Provider      string `json:"provider"`
-	ID            string `json:"id"`
-	ContextWindow int    `json:"context_window,omitempty"`
+	Provider      string   `json:"provider"`
+	ID            string   `json:"id"`
+	ContextWindow int      `json:"context_window,omitempty"`
+	Thinking      []string `json:"thinking,omitempty"`
 }
 type CommandRunner interface {
 	Run(context.Context, string, ...string) ([]byte, error)
