@@ -2,9 +2,10 @@ import type { TaskEvent } from "./daemon-api.ts";
 
 const outputKeys = ["result", "output", "text", "message", "error"];
 const targetKeys = ["file_path", "path", "url", "command", "pattern", "query", "label"];
+const argumentKeys = ["arguments", "args"];
 export const transientEventTypes = new Set(["message_start", "message_update", "tool_execution_update"]);
 
-function payloadRecord(value: unknown): Record<string, unknown> {
+export function payloadRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
@@ -36,7 +37,10 @@ export function eventResult(event: TaskEvent): string {
   const payload = payloadRecord(event.payload);
   for (const key of outputKeys) {
     const value = payload[key];
-    if (typeof value === "string" && value.trim()) return value;
+    if (typeof value === "string") {
+      if (value.trim()) return value;
+      continue;
+    }
     if (key === "message") {
       const message = payloadRecord(value);
       if (typeof message.content === "string" && message.content.trim()) return message.content;
@@ -98,5 +102,54 @@ export function eventSuccess(event: TaskEvent): boolean | undefined {
 }
 
 export function visibleWorkEvents(events: TaskEvent[], attemptId?: string | null, limit = 500): TaskEvent[] {
-  return events.filter((event) => !transientEventTypes.has(event.type) && (!attemptId || event.attempt_id === attemptId || event.phase_id === attemptId)).slice(-limit);
+  return meaningfulWorkEvents(events, attemptId).slice(-limit);
+}
+
+// Every event the work log is willing to show, before the newest-N window is
+// applied. Callers compare its length against `visibleWorkEvents` to report how
+// many older events are being withheld.
+export function meaningfulWorkEvents(events: TaskEvent[], attemptId?: string | null): TaskEvent[] {
+  return events.filter((event) => !transientEventTypes.has(event.type) && (!attemptId || event.attempt_id === attemptId || event.phase_id === attemptId));
+}
+
+// The daemon reports its own start time for replayed events; fall back to the
+// envelope timestamp so the log never renders an invalid date.
+export function eventStartedAt(event: TaskEvent): Date {
+  const startedAt = payloadRecord(event.payload).started_at;
+  return new Date(typeof startedAt === "string" ? startedAt : event.started_at);
+}
+
+export function eventToolName(event: TaskEvent): string {
+  return String(payloadRecord(event.payload).tool ?? event.name ?? event.type).toLowerCase();
+}
+
+// Single-glyph marker used in the log gutter and the detail dialog: the tool's
+// initial, "!" for failures, "+" for completions, ">" for everything else.
+export function eventIcon(event: TaskEvent): string {
+  if (event.type === "tool_call") return eventTitle(event).slice(0, 1).toUpperCase();
+  if (event.type.includes("error") || eventSuccess(event) === false) return "!";
+  return event.type.includes("end") ? "+" : ">";
+}
+
+export function eventStatusLabel(event: TaskEvent): "failed" | "completed" | "recorded" {
+  const success = eventSuccess(event);
+  if (success === false) return "failed";
+  return success ? "completed" : "recorded";
+}
+
+// Payload fields that neither the input nor the result section already covers,
+// so the dialog can still surface them instead of hiding them in the raw JSON.
+export function eventDetailEntries(event: TaskEvent): [string, unknown][] {
+  return Object.entries(payloadRecord(event.payload)).filter(([key]) => !argumentKeys.includes(key) && !outputKeys.includes(key));
+}
+
+// One-line result summary for the collapsed log row, annotated with the line
+// count when the full result spans more than the line shown.
+export function eventResultLine(event: TaskEvent, limit = 140): string {
+  const result = eventResult(event);
+  if (!result.trim()) return "";
+  const lines = result.split("\n");
+  const first = lines.find((line) => line.trim())?.trim() ?? "";
+  const clipped = first.length > limit ? `${first.slice(0, limit)}...` : first;
+  return lines.length > 1 ? `${clipped} ... (${lines.length} lines)` : clipped;
 }

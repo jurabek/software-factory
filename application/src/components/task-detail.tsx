@@ -30,12 +30,26 @@ import {
   type TaskResult,
 } from "@/client/daemon-api.ts";
 import { qualifiedEventKey, relativeTime, RequestScope } from "@/client/daemon-ui-state.ts";
+import {
+  eventDuration,
+  eventIcon,
+  eventResult,
+  eventResultLine,
+  eventStartedAt,
+  eventSuccess,
+  eventTarget,
+  eventTitle,
+  meaningfulWorkEvents,
+  payloadRecord,
+  visibleWorkEvents,
+} from "@/client/work-log.ts";
+import { AttemptGraph } from "@/components/attempt-graph.tsx";
+import { EventDialog } from "@/components/event-dialog.tsx";
 import { Alert, AlertDescription } from "@/components/ui/alert.tsx";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar.tsx";
 import { Badge } from "@/components/ui/badge.tsx";
 import { Button } from "@/components/ui/button.tsx";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible.tsx";
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog.tsx";
 import { Label } from "@/components/ui/label.tsx";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select.tsx";
 import { SidebarTrigger } from "@/components/ui/sidebar.tsx";
@@ -57,8 +71,6 @@ const actionLabels: Record<InterventionAction, string> = {
   repair: "Continue repair",
 };
 const liveTone: Record<string, string> = { live: "bg-success shadow-[0_0_0.4rem_var(--success)]", reconnecting: "bg-warning", connecting: "bg-warning", offline: "bg-destructive" };
-const transientEventTypes = new Set(["message_start", "message_update", "tool_execution_update"]);
-const outputKeys = ["result", "output", "text", "message", "error"];
 const visibleEventLimit = 500;
 type DisplayArtifact = { id: string; kind: "result" | "check" | "diff" | "file"; title: string; subtitle: string; content: string };
 
@@ -70,11 +82,6 @@ function commandEnabled(command: (typeof commands)[number], state: string): bool
     case "resume": return ["paused", "blocked"].includes(state);
     case "abort": return !["completed", "aborted"].includes(state);
   }
-}
-
-function readable(value: unknown): string {
-  if (typeof value === "string") return value;
-  try { return JSON.stringify(value, null, 2); } catch { return String(value); }
 }
 
 type TaskRepository = { id: string; name: string; source_type: string; primary: boolean };
@@ -90,85 +97,6 @@ function interventionChoices(state: string, availableActions: string[]): Interve
   if (state === "draft") return ["comment"];
   if (state === "blocked" || state === "paused") return [...new Set<InterventionAction>(["comment", ...serverActions.filter((action) => ["retry", "revise", "repair"].includes(action))])];
   return serverActions.length ? serverActions : ["comment"];
-}
-
-function payloadRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
-}
-
-function eventResult(event: TaskEvent): string {
-  const payload = payloadRecord(event.payload);
-  for (const key of outputKeys) {
-    const value = payload[key];
-    if (typeof value === "string") {
-      if (value.trim()) return value;
-      continue;
-    }
-    if (key === "message") {
-      const message = payloadRecord(value);
-      if (typeof message.content === "string" && message.content.trim()) return message.content;
-      if (Array.isArray(message.content)) {
-        const text = message.content.map((part) => payloadRecord(part).text).filter((part): part is string => typeof part === "string").join("\n");
-        if (text.trim()) return text;
-      }
-      const errorText = message.errorMessage ?? message.error;
-      if (typeof errorText === "string" && errorText.trim()) return errorText;
-      continue;
-    }
-    if (value !== undefined && value !== null) return readable(value);
-  }
-  return "";
-}
-
-function eventTitle(event: TaskEvent): string {
-  if (event.type === "tool_call") {
-    const raw = String(payloadRecord(event.payload).tool ?? event.name ?? "Tool");
-    const knownNames: Record<string, string> = { apply_patch: "Edit", bash: "Bash", edit: "Edit", glob: "Files", grep: "Search", read: "Read", web_fetch: "Web Fetch", webfetch: "Web Fetch", write: "Write" };
-    return knownNames[raw.toLowerCase()] ?? raw.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
-  }
-  return ({ message_end: "Agent response", phase_end: "Attempt finished", phase_start: "Attempt started", process_end: "Agent process finished", process_start: "Agent process started" } as Record<string, string>)[event.type] ?? event.name ?? event.type.replaceAll("_", " ");
-}
-
-function eventArguments(event: TaskEvent): Record<string, unknown> {
-  const payload = payloadRecord(event.payload);
-  const value = payload.arguments ?? payload.args;
-  if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
-  if (typeof value === "string") {
-    try {
-      const parsed = JSON.parse(value) as unknown;
-      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
-    } catch {
-      return {};
-    }
-  }
-  return {};
-}
-
-function eventTarget(event: TaskEvent): string {
-  const payload = payloadRecord(event.payload);
-  const argumentsRecord = eventArguments(event);
-  for (const key of ["file_path", "path", "url", "command", "pattern", "query", "label"]) {
-    const value = argumentsRecord[key] ?? payload[key];
-    if (typeof value === "string" && value.trim()) return value;
-  }
-  return event.type.startsWith("phase_") ? event.name ?? "" : "";
-}
-
-function eventSuccess(event: TaskEvent): boolean | undefined {
-  const payload = payloadRecord(event.payload);
-  if (typeof payload.success === "boolean") return payload.success;
-  if (typeof payload.exit_code === "number") return payload.exit_code === 0;
-  if (typeof payload.status === "string") {
-    if (["failed", "error", "aborted"].includes(payload.status)) return false;
-    if (["passed", "completed", "success"].includes(payload.status)) return true;
-  }
-  if (event.type.includes("error")) return false;
-  return undefined;
-}
-
-function eventStartedAt(event: TaskEvent): Date {
-  const startedAt = payloadRecord(event.payload).started_at;
-  return new Date(typeof startedAt === "string" ? startedAt : event.started_at);
 }
 
 function renderedArtifactContent(artifact: DisplayArtifact): string {
@@ -191,7 +119,7 @@ function modelLabel(model?: string): string {
   return (model.split("/").pop() ?? model).toUpperCase();
 }
 
-type ChatItem = { key: string; role: "user" | "agent" | "system" | "tool"; author?: string; text?: string; at: number; iso: string; event?: TaskEvent };
+type ChatItem = { key: string; role: "user" | "agent" | "system" | "tool" | "event"; author?: string; text?: string; at: number; iso: string; event?: TaskEvent };
 
 function buildTimeline(request: string, createdAt: string, author: string, interventions: TaskIntervention[], events: TaskEvent[]): ChatItem[] {
   const items: ChatItem[] = [];
@@ -208,7 +136,9 @@ function buildTimeline(request: string, createdAt: string, author: string, inter
     const errored = event.type.includes("error") || eventSuccess(event) === false || message.stopReason === "error" || message.stop_reason === "error";
     const text = eventResult(event).trim();
     if (text) { items.push({ key: `ev-${event.sequence}`, role: errored ? "system" : "agent", text, at: at.getTime() || 0, iso, event }); continue; }
-    if (errored) items.push({ key: `ev-${event.sequence}`, role: "system", text: eventTitle(event), at: at.getTime() || 0, iso, event });
+    // Lifecycle events carry no prose, but they are still the record of what
+    // the daemon did; they stay in the log as openable one-line markers.
+    items.push({ key: `ev-${event.sequence}`, role: errored ? "system" : "event", text: eventTitle(event), at: at.getTime() || 0, iso, event });
   }
   return items.sort((left, right) => left.at - right.at || left.key.localeCompare(right.key));
 }
@@ -220,19 +150,6 @@ function formatSpan(ms: number): string {
   if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
   const hours = Math.floor(minutes / 60);
   return `${hours}h ${minutes % 60}m`;
-}
-
-function eventResultLine(event: TaskEvent): string {
-  const result = eventResult(event);
-  if (!result.trim()) return "";
-  const lines = result.split("\n");
-  const first = lines.find((line) => line.trim())?.trim() ?? "";
-  const clipped = first.length > 140 ? `${first.slice(0, 140)}...` : first;
-  return lines.length > 1 ? `${clipped} ... (${lines.length} lines)` : clipped;
-}
-
-function eventToolName(event: TaskEvent): string {
-  return String(payloadRecord(event.payload).tool ?? event.name ?? event.type).toLowerCase();
 }
 
 type TimelineBlock = { kind: "user"; item: ChatItem } | { kind: "work"; key: string; items: ChatItem[]; span: number };
@@ -295,7 +212,6 @@ export function TaskDetail({ daemonId, daemonName, task, rootTask, login, offlin
   const scope = useRef(new RequestScope());
   const mutationScope = useRef(new RequestScope());
   const mutationController = useRef<AbortController | null>(null);
-  const eventScroll = useRef<HTMLDivElement | null>(null);
   const cursorRef = useRef<number | undefined>(undefined);
   const seen = useRef(new Set<string>());
 
@@ -310,8 +226,8 @@ export function TaskDetail({ daemonId, daemonName, task, rootTask, login, offlin
     ...artifacts.map((artifact) => ({ id: artifact.id, kind: "file" as const, title: artifact.type, subtitle: artifact.path, content: `This artifact remains on the daemon sandbox.\n\nPath: ${artifact.path}\nDigest: ${artifact.digest}` })),
   ];
   const selectedArtifactValue = artifactViews.find((artifact) => artifact.id === selectedArtifact) ?? null;
-  const meaningfulEvents = events.filter((event) => !transientEventTypes.has(event.type) && (!selectedAttempt || event.attempt_id === selectedAttempt || event.phase_id === selectedAttempt));
-  const visibleEvents = meaningfulEvents.slice(-visibleEventLimit);
+  const meaningfulEvents = meaningfulWorkEvents(events, selectedAttempt);
+  const visibleEvents = visibleWorkEvents(events, selectedAttempt, visibleEventLimit);
   const hiddenEventCount = Math.max(0, meaningfulEvents.length - visibleEvents.length);
   const timeline = buildTimeline(currentTask.request, currentTask.created_at, login, interventions, visibleEvents);
   const timelineBlocks = groupTimeline(timeline);
@@ -397,18 +313,6 @@ export function TaskDetail({ daemonId, daemonName, task, rootTask, login, offlin
   useEffect(() => {
     if (autoScroll && chatScroll.current) chatScroll.current.scrollTop = chatScroll.current.scrollHeight;
   }, [autoScroll, events, interventions]);
-
-  // The dialog traps focus and handles Escape; only the reading shortcuts stay.
-  useEffect(() => {
-    if (!selectedEvent) return;
-    function handleDialogKeyboard(event: KeyboardEvent) {
-      if (event.key === "i") { event.preventDefault(); setSelectedEvent(null); return; }
-      if (event.key === "j" || event.key === "ArrowDown") { event.preventDefault(); eventScroll.current?.scrollBy({ top: 64 }); return; }
-      if (event.key === "k" || event.key === "ArrowUp") { event.preventDefault(); eventScroll.current?.scrollBy({ top: -64 }); }
-    }
-    document.addEventListener("keydown", handleDialogKeyboard);
-    return () => document.removeEventListener("keydown", handleDialogKeyboard);
-  }, [selectedEvent]);
 
   useEffect(() => {
     const current = scope.current.next();
@@ -667,12 +571,15 @@ export function TaskDetail({ daemonId, daemonName, task, rootTask, login, offlin
                 </CollapsibleTrigger>
                 <CollapsibleContent className="grid gap-5 pt-3 pb-1">
                   {block.items.map((item) => {
-                    if (item.role === "tool" && item.event) {
+                    if (item.event && (item.role === "tool" || item.role === "event")) {
                       const event = item.event;
                       const failed = eventSuccess(event) === false;
+                      const duration = eventDuration(event);
                       return (
                         <button className="hover:bg-secondary grid w-full grid-cols-[1.5rem_minmax(0,1fr)_auto] items-start gap-3 rounded-md px-1 py-0.5 text-left" key={item.key} type="button" aria-haspopup="dialog" onClick={() => setSelectedEvent(event)}>
-                          <span className={cn("grid size-6 place-items-center", failed ? "text-destructive" : "text-subtle")} aria-hidden="true"><File className="size-4" /></span>
+                          <span className={cn("grid size-6 place-items-center", failed ? "text-destructive" : "text-subtle")} aria-hidden="true">
+                            {item.role === "tool" ? <File className="size-4" /> : <i className="border-input grid size-5 place-items-center rounded-full border text-[0.6rem] not-italic">{eventIcon(event)}</i>}
+                          </span>
                           <span className="grid min-w-0 gap-1">
                             <span className="flex min-w-0 items-center gap-2">
                               <strong className="text-foreground shrink-0 font-semibold">{eventTitle(event)}</strong>
@@ -681,17 +588,27 @@ export function TaskDetail({ daemonId, daemonName, task, rootTask, login, offlin
                             </span>
                             {eventResultLine(event) ? <span className="text-muted-foreground flex min-w-0 gap-2 truncate text-[0.82rem]"><i aria-hidden="true" className="text-input not-italic">└</i>{eventResultLine(event)}</span> : null}
                           </span>
-                          <time className="text-muted-foreground pt-0.5 text-[0.7rem] whitespace-nowrap">{relativeTime(item.iso)}</time>
+                          <span className="text-muted-foreground flex items-baseline gap-2 pt-0.5 text-[0.7rem] whitespace-nowrap">
+                            {duration ? <span>{duration}</span> : null}
+                            <time>{relativeTime(item.iso)}</time>
+                          </span>
                         </button>
                       );
                     }
                     const isResponse = !!item.text && (item.text.includes("\n") || item.text.length > 160);
-                    return (
-                      <div className="grid w-full grid-cols-[1.5rem_minmax(0,1fr)_auto] items-start gap-3 px-1 py-0.5" key={item.key}>
-                        <span className="text-primary grid size-6 place-items-center" aria-hidden="true"><Brain className="size-4" /></span>
+                    const content = (
+                      <>
+                        <span className={cn("grid size-6 place-items-center", item.role === "system" ? "text-warning" : "text-primary")} aria-hidden="true"><Brain className="size-4" /></span>
                         <p className={cn("m-0 min-w-0 break-words", item.role === "system" ? "text-warning" : isResponse ? "text-subtle whitespace-pre-wrap" : "text-muted-foreground italic")}>{item.text}</p>
                         <time className="text-muted-foreground pt-0.5 text-[0.7rem] whitespace-nowrap">{relativeTime(item.iso)}</time>
-                      </div>
+                      </>
+                    );
+                    if (!item.event) return <div className="grid w-full grid-cols-[1.5rem_minmax(0,1fr)_auto] items-start gap-3 px-1 py-0.5" key={item.key}>{content}</div>;
+                    const source = item.event;
+                    return (
+                      <button className="hover:bg-secondary grid w-full grid-cols-[1.5rem_minmax(0,1fr)_auto] items-start gap-3 rounded-md px-1 py-0.5 text-left" key={item.key} type="button" aria-haspopup="dialog" onClick={() => setSelectedEvent(source)}>
+                        {content}
+                      </button>
                     );
                   })}
                 </CollapsibleContent>
@@ -739,11 +656,11 @@ export function TaskDetail({ daemonId, daemonName, task, rootTask, login, offlin
           <strong className="text-subtle truncate text-[0.78rem] font-medium" title={daemonName}>{daemonName}</strong>
           <Button type="button" variant="ghost" size="icon-sm" className="ml-auto" aria-label="Collapse sidebar"><Columns2 /></Button>
         </header>
-        <Tabs defaultValue="artifacts" className="min-h-0 flex-1 gap-0 overflow-hidden">
+        <Tabs defaultValue="graph" className="min-h-0 flex-1 gap-0 overflow-hidden">
           <TabsList variant="line" className="w-full justify-start gap-4 border-b px-3">
-            <TabsTrigger value="artifacts" className="text-[0.68rem] uppercase tracking-[0.07em]">Artifacts</TabsTrigger>
+            <TabsTrigger value="graph" className="text-[0.68rem] uppercase tracking-[0.07em]">Graph</TabsTrigger>
+            <TabsTrigger value="artifacts" className="text-[0.68rem] uppercase tracking-[0.07em]">Artifacts {artifactViews.length}</TabsTrigger>
             <TabsTrigger value="workspace" className="text-[0.68rem] uppercase tracking-[0.07em]">Workspace</TabsTrigger>
-            <TabsTrigger value="minimap" className="text-[0.68rem] uppercase tracking-[0.07em]">Minimap</TabsTrigger>
           </TabsList>
           <TabsContent value="artifacts" className="min-h-0 flex-1 overflow-y-auto p-3.5">
             <p className="text-muted-foreground mb-3 text-[0.74rem]"><strong className="text-subtle font-semibold">0</strong> src · <strong className="text-subtle font-semibold">{editCount}</strong> edit · <strong className="text-subtle font-semibold">{artifacts.length}</strong> new · <strong className="text-subtle font-semibold">{otherCount}</strong> other</p>
@@ -811,39 +728,13 @@ export function TaskDetail({ daemonId, daemonName, task, rootTask, login, offlin
               </div>
             ) : null}
           </TabsContent>
-          <TabsContent value="minimap" className="min-h-0 flex-1 overflow-y-auto p-3.5">
-            <p className="text-muted-foreground text-[0.78rem]">Minimap is not available yet.</p>
+          <TabsContent value="graph" className="min-h-0 flex-1 overflow-y-auto p-3.5">
+            <AttemptGraph attempts={attempts} branchId={selectedBranch?.id} selectedId={selectedAttempt} onSelect={setSelectedAttempt} />
           </TabsContent>
         </Tabs>
       </aside>
 
-      <Dialog open={Boolean(selectedEvent)} onOpenChange={(open) => { if (!open) setSelectedEvent(null); }}>
-        <DialogContent showCloseButton className="flex h-[min(88dvh,52rem)] w-[min(100%,62rem)] max-w-none flex-col gap-0 p-0 sm:max-w-none">
-          {selectedEvent ? (() => {
-            const params = eventArguments(selectedEvent);
-            const paramsText = Object.keys(params).length ? JSON.stringify(params, null, 2) : "";
-            const result = eventResult(selectedEvent);
-            const fallback = !paramsText && !result ? readable(selectedEvent.payload) : "";
-            return (
-              <>
-                <DialogHeader className="flex-row items-center gap-2 border-b px-4 py-3">
-                  <File className="text-subtle size-4 shrink-0" />
-                  <DialogTitle className="shrink-0 text-sm font-semibold">{eventToolName(selectedEvent)}</DialogTitle>
-                  {eventTarget(selectedEvent) ? <code className="text-muted-foreground min-w-0 truncate text-[0.8rem]">{eventTarget(selectedEvent)}</code> : null}
-                </DialogHeader>
-                <div className="min-h-0 flex-1 overflow-auto px-5 py-4" ref={eventScroll}>
-                  {paramsText ? <pre className="text-subtle mb-6 text-[0.82rem] leading-relaxed break-words whitespace-pre-wrap">{paramsText}</pre> : null}
-                  {result ? <><p className="text-muted-foreground mb-2.5 text-[0.82rem]">Result</p><pre className="text-subtle text-[0.82rem] leading-relaxed break-words whitespace-pre-wrap">{result}</pre></> : null}
-                  {fallback ? <pre className="text-subtle text-[0.82rem] leading-relaxed break-words whitespace-pre-wrap">{fallback}</pre> : null}
-                </div>
-                <DialogFooter className="text-muted-foreground flex-row items-center justify-between border-t px-4 py-2 text-[0.72rem] sm:justify-between">
-                  <span>j/k or ↓/↑ to scroll</span><span>i or ESC to close</span>
-                </DialogFooter>
-              </>
-            );
-          })() : null}
-        </DialogContent>
-      </Dialog>
+      <EventDialog event={selectedEvent} onClose={() => setSelectedEvent(null)} />
     </section>
   );
 }
