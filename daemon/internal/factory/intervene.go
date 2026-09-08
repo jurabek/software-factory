@@ -6,9 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/jurabek/software-factory/daemon/internal/session"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 )
 
@@ -152,7 +155,7 @@ func (s *Service) Intervene(ctx context.Context, taskID, actor string, request I
 		}
 		if created {
 			actions := AvailableActions(phase, task.State)
-			_ = s.traceAttempt(ctx, taskID, phase, stored.ID, "intervention", "Intervention "+request.Intent, map[string]any{"intervention_id": stored.ID, "target_type": stored.TargetType, "target_id": stored.TargetID, "message": stored.Text, "delivery": stored.Delivery}, actions)
+			_ = s.traceAttempt(ctx, taskID, phase, stored.ID, session.NewIntervention(session.InterventionPayload{Actor: stored.Actor, Intent: stored.Intent, Text: stored.Text, Delivery: stored.Delivery, InterventionID: stored.ID, TargetType: stored.TargetType, TargetID: stored.TargetID}), actions)
 		}
 		return store.InterventionResult{Intervention: stored, Action: request.Intent}, nil
 	}
@@ -185,6 +188,10 @@ func (s *Service) Intervene(ctx context.Context, taskID, actor string, request I
 		if err = s.MaterializeSnapshot(ctx, task, snapshotDigest); err != nil {
 			return store.InterventionResult{}, err
 		}
+		// Repository rewind: allocate a fresh Claude conversation per role so
+		// abandoned history is never resumed against rewound files. Pi retains
+		// continuation behavior. Prior UUIDs are retained in audit metadata.
+		s.resetClaudeSessions(ctx, taskID)
 	}
 
 	parentBranch := selected
@@ -233,9 +240,38 @@ func (s *Service) Intervene(ctx context.Context, taskID, actor string, request I
 	}
 	if applied.Created {
 		actions := []string{"comment", "pause", "abort"}
-		_ = s.traceAttempt(ctx, taskID, newPhase, applied.Intervention.ID, "intervention", "Intervention "+request.Intent, map[string]any{"intervention_id": applied.Intervention.ID, "branch_id": branchID, "attempt_id": attemptID, "snapshot": snapshotDigest, "message": request.Message}, actions)
+		_ = s.traceAttempt(ctx, taskID, newPhase, applied.Intervention.ID, session.NewIntervention(session.InterventionPayload{Actor: applied.Intervention.Actor, Intent: applied.Intervention.Intent, Text: applied.Intervention.Text, Delivery: applied.Intervention.Delivery, InterventionID: applied.Intervention.ID, TargetType: applied.Intervention.TargetType, TargetID: applied.Intervention.TargetID}), actions)
 	}
 	return store.InterventionResult{Intervention: applied.Intervention, BranchID: applied.BranchID, AttemptID: applied.AttemptID, Action: request.Intent}, nil
+}
+
+// resetClaudeSessions rotates native Claude identity after a rewind. Cost and
+// completeness history are preserved by ReplaceAgentSession; the reset itself
+// is recorded as a bounded custom audit event retaining prior UUIDs.
+func (s *Service) resetClaudeSessions(ctx context.Context, taskID string) {
+	sessions, err := s.db.AgentSessions(ctx, taskID)
+	if err != nil {
+		return
+	}
+	var resets []string
+	for _, existing := range sessions {
+		if existing.Harness != "claude" {
+			continue
+		}
+		newID := uuid.NewString()
+		newDir := filepath.Join(s.taskDir(taskID), "sessions", existing.Role, existing.Harness)
+		prior, err := s.db.ReplaceAgentSession(ctx, taskID, existing.Role, newID, newDir)
+		if err != nil {
+			continue
+		}
+		resets = append(resets, existing.Role+" "+prior+" -> "+newID)
+	}
+	if len(resets) > 0 {
+		_ = s.trace(ctx, taskID, "", session.NewCustom(session.CustomPayload{
+			CustomType: "claude.session_reset",
+			Data:       session.BoundedJSON(map[string]any{"resets": resets}),
+		}))
+	}
 }
 
 func (s *Service) resolveTarget(ctx context.Context, taskID string, target InterventionTarget) (string, string, *store.Phase, error) {
@@ -375,14 +411,14 @@ func (s *Service) hasActiveTask(ctx context.Context, exclude string) (bool, erro
 	return false, nil
 }
 
-func (s *Service) traceAttempt(ctx context.Context, taskID string, phase *store.Phase, interventionID, eventType, name string, payload map[string]any, actions []string) error {
+func (s *Service) traceAttempt(ctx context.Context, taskID string, phase *store.Phase, interventionID string, entry session.Entry, actions []string) error {
 	phaseID, attemptID, branchID := "", "", ""
 	if phase != nil {
 		phaseID = phase.ID
 		attemptID = phase.ID
 		branchID = phase.BranchID
 	}
-	_, err := s.db.AppendEvent(ctx, s.taskDir(taskID), store.Event{ID: randomID(), TaskID: taskID, PhaseID: phaseID, AttemptID: attemptID, BranchID: branchID, Type: eventType, Name: name, Payload: payload, AvailableActions: actions, StartedAt: time.Now().UTC()})
+	_, err := s.db.AppendEvent(ctx, s.taskDir(taskID), store.Event{ID: randomID(), TaskID: taskID, PhaseID: phaseID, AttemptID: attemptID, BranchID: branchID, Kind: entry.Kind, Name: entry.Name, Payload: entry.Payload, Display: entry.Display, AvailableActions: actions, StartedAt: time.Now().UTC()})
 	_ = interventionID
 	return err
 }

@@ -13,6 +13,7 @@ import (
 
 	"github.com/jurabek/software-factory/daemon/internal/config"
 	"github.com/jurabek/software-factory/daemon/internal/factory"
+	"github.com/jurabek/software-factory/daemon/internal/session"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 )
 
@@ -43,9 +44,10 @@ func TestEventsTailReturnsNewestEventsInSequenceOrder(t *testing.T) {
 		_, err := db.AppendEvent(context.Background(), taskDir, store.Event{
 			ID:        fmt.Sprintf("event-%d", index),
 			TaskID:    task.ID,
-			Type:      "log",
+			Kind:      session.KindCustom,
 			Name:      fmt.Sprintf("event %d", index),
-			Payload:   map[string]any{"index": index},
+			Payload:   session.CustomPayload{CustomType: "log", Data: session.BoundedJSON(map[string]any{"index": index})},
+			Display:   session.NewCustom(session.CustomPayload{CustomType: "log", Data: session.BoundedJSON(map[string]any{"index": index})}).Display,
 			StartedAt: time.Now().UTC(),
 		})
 		if err != nil {
@@ -65,8 +67,9 @@ func TestEventsTailReturnsNewestEventsInSequenceOrder(t *testing.T) {
 		t.Fatalf("status = %d", response.Code)
 	}
 	var body struct {
-		Events []store.Event `json:"events"`
-		Cursor int64         `json:"cursor"`
+		Events        []store.Event `json:"events"`
+		Cursor        int64         `json:"cursor"`
+		FormatVersion int           `json:"format_version"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
 		t.Fatal(err)
@@ -76,6 +79,9 @@ func TestEventsTailReturnsNewestEventsInSequenceOrder(t *testing.T) {
 	}
 	if body.Cursor != body.Events[1].Sequence {
 		t.Fatalf("cursor = %d, want %d", body.Cursor, body.Events[1].Sequence)
+	}
+	if body.FormatVersion != session.FormatVersion {
+		t.Fatalf("format_version = %d, want %d", body.FormatVersion, session.FormatVersion)
 	}
 }
 
@@ -177,12 +183,17 @@ func TestCreateAndListTaskSessions(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d: %s", response.Code, response.Body.String())
 	}
-	var sessions []store.Task
+	var sessions []store.TaskSession
 	if err = json.NewDecoder(response.Body).Decode(&sessions); err != nil {
 		t.Fatal(err)
 	}
 	if len(sessions) != 2 || sessions[1].ID != created.ID {
 		t.Fatalf("sessions = %#v", sessions)
+	}
+	for _, value := range sessions {
+		if value.AgentSessions == nil {
+			t.Fatalf("agent_sessions is null for session %s, want []", value.ID)
+		}
 	}
 
 	request = httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+task.ID+"/sessions", bytes.NewBufferString(`{"request":" "}`))

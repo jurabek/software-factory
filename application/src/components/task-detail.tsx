@@ -45,7 +45,6 @@ import {
 	type TaskCheck,
 	type TaskDetails,
 	type TaskDiff,
-	type TaskEvent,
 	type TaskIntervention,
 	type TaskResult,
 } from "@/client/daemon-api.ts";
@@ -55,17 +54,12 @@ import {
 	relativeTime,
 } from "@/client/daemon-ui-state.ts";
 import {
-	eventDuration,
-	eventIcon,
-	eventIsAuxiliaryMessage,
-	eventResult,
-	eventResultLine,
-	eventStartedAt,
-	eventSuccess,
-	eventTarget,
-	eventTitle,
+	formatDurationMs,
+	sessionDisplay,
+	type SessionEvent,
+} from "@/client/session-contract.ts";
+import {
 	meaningfulWorkEvents,
-	payloadRecord,
 	visibleWorkEvents,
 } from "@/client/work-log.ts";
 import { AttemptGraph } from "@/components/attempt-graph.tsx";
@@ -237,7 +231,16 @@ type ChatItem = {
 	text?: string;
 	at: number;
 	iso: string;
-	event?: TaskEvent;
+	errored?: boolean;
+	event?: SessionEvent;
+};
+
+const roleGlyph: Record<ChatItem["role"], string> = {
+	user: "U",
+	agent: "A",
+	system: "S",
+	tool: "T",
+	event: ">",
 };
 
 function buildTimeline(
@@ -245,7 +248,7 @@ function buildTimeline(
 	createdAt: string,
 	author: string,
 	interventions: TaskIntervention[],
-	events: TaskEvent[],
+	events: SessionEvent[],
 ): ChatItem[] {
 	const items: ChatItem[] = [];
 	if (request.trim())
@@ -269,57 +272,15 @@ function buildTimeline(
 		});
 	}
 	for (const event of events) {
-		const at = eventStartedAt(event);
-		const iso = Number.isNaN(at.getTime())
-			? event.started_at
-			: at.toISOString();
-		if (event.type === "tool_call") {
-			items.push({
-				key: `ev-${event.sequence}`,
-				role: "tool",
-				at: at.getTime() || 0,
-				iso,
-				event,
-			});
-			continue;
-		}
-		const message = payloadRecord(payloadRecord(event.payload).message);
-		const errored =
-			event.type.includes("error") ||
-			eventSuccess(event) === false ||
-			message.stopReason === "error" ||
-			message.stop_reason === "error";
-		if (eventIsAuxiliaryMessage(event)) {
-			items.push({
-				key: `ev-${event.sequence}`,
-				role: "event",
-				text: eventTitle(event),
-				at: at.getTime() || 0,
-				iso,
-				event,
-			});
-			continue;
-		}
-		const text = eventResult(event).trim();
-		if (text) {
-			items.push({
-				key: `ev-${event.sequence}`,
-				role: errored ? "system" : "agent",
-				text,
-				at: at.getTime() || 0,
-				iso,
-				event,
-			});
-			continue;
-		}
-		// Lifecycle events carry no prose, but they are still the record of what
-		// the daemon did; they stay in the log as openable one-line markers.
+		const display = sessionDisplay(event);
+		const at = new Date(event.started_at);
 		items.push({
 			key: `ev-${event.sequence}`,
-			role: errored ? "system" : "event",
-			text: eventTitle(event),
+			role: display.role,
+			text: display.result || display.title,
 			at: at.getTime() || 0,
-			iso,
+			iso: event.started_at,
+			errored: display.status === "failure",
 			event,
 		});
 	}
@@ -405,9 +366,9 @@ export function TaskDetail({
 		"rendered",
 	);
 	const [artifactQuote, setArtifactQuote] = useState("");
-	const [selectedEvent, setSelectedEvent] = useState<TaskEvent | null>(null);
+	const [selectedEvent, setSelectedEvent] = useState<SessionEvent | null>(null);
 	const [autoScroll] = useState(true);
-	const [events, setEvents] = useState<TaskEvent[]>([]);
+	const [events, setEvents] = useState<SessionEvent[]>([]);
 	const [availableActions, setAvailableActions] = useState<string[]>([]);
 	const [, setCursor] = useState<number | undefined>(undefined);
 	const [live, setLive] = useState<
@@ -645,33 +606,7 @@ export function TaskDetail({
 			if (!fresh.length) return;
 			for (const entry of fresh)
 				seen.current.add(qualifiedEventKey(daemonId, task.id, entry.sequence));
-			const mapped = fresh.map((entry) => {
-				const raw = entry.raw as Partial<TaskEvent> | null;
-				return {
-					sequence: entry.sequence,
-					id: typeof raw?.id === "string" ? raw.id : String(entry.sequence),
-					task_id: task.id,
-					type: typeof raw?.type === "string" ? raw.type : "event",
-					...(typeof raw?.phase_id === "string"
-						? { phase_id: raw.phase_id }
-						: {}),
-					...(typeof raw?.attempt_id === "string"
-						? { attempt_id: raw.attempt_id }
-						: {}),
-					...(typeof raw?.artifact_id === "string"
-						? { artifact_id: raw.artifact_id }
-						: {}),
-					...(typeof raw?.branch_id === "string"
-						? { branch_id: raw.branch_id }
-						: {}),
-					...(typeof raw?.name === "string" ? { name: raw.name } : {}),
-					payload: raw && "payload" in raw ? raw.payload : entry.raw,
-					...(Array.isArray(raw?.available_actions)
-						? { available_actions: raw.available_actions }
-						: {}),
-					started_at: typeof raw?.started_at === "string" ? raw.started_at : "",
-				} satisfies TaskEvent;
-			});
+			const mapped = fresh.map((entry) => entry.raw as SessionEvent);
 			setEvents((previous) =>
 				[...previous, ...mapped]
 					.sort((left, right) => left.sequence - right.sequence)
@@ -1123,8 +1058,9 @@ export function TaskDetail({
 											(item.role === "tool" || item.role === "event")
 										) {
 											const event = item.event;
-											const failed = eventSuccess(event) === false;
-											const duration = eventDuration(event);
+											const display = sessionDisplay(event);
+											const failed = display.status === "failure";
+											const duration = formatDurationMs(display.duration_ms);
 											return (
 												<button
 													className="hover:bg-secondary grid w-full grid-cols-[1.5rem_minmax(0,1fr)_auto] items-start gap-3 rounded-md px-1 py-0.5 text-left"
@@ -1140,27 +1076,23 @@ export function TaskDetail({
 														)}
 														aria-hidden="true"
 													>
-														{item.role === "tool" ? (
-															<File className="size-4" />
-														) : (
-															<i className="border-input grid size-5 place-items-center rounded-full border text-[0.6rem] not-italic">
-																{eventIcon(event)}
-															</i>
-														)}
+												<i className="border-input grid size-5 place-items-center rounded-full border text-[0.6rem] not-italic">
+													{failed ? "!" : roleGlyph[item.role]}
+												</i>
 													</span>
 													<span className="grid min-w-0 gap-1">
 														<span className="flex min-w-0 items-center gap-2">
 															<strong className="text-foreground shrink-0 font-semibold">
-																{eventTitle(event)}
-															</strong>
-															{eventTarget(event) ? (
-																<span className="text-subtle truncate">
-																	{eventTarget(event)}
-																</span>
+													{display.title}
+												</strong>
+												{display.target ? (
+													<span className="text-subtle truncate">
+														{display.target}
+													</span>
 															) : null}
 															<ExternalLink className="text-muted-foreground size-3.5 shrink-0" />
 														</span>
-														{eventResultLine(event) ? (
+											{display.preview ? (
 															<span className="text-muted-foreground flex min-w-0 gap-2 truncate text-[0.82rem]">
 																<i
 																	aria-hidden="true"
@@ -1168,7 +1100,7 @@ export function TaskDetail({
 																>
 																	└
 																</i>
-																{eventResultLine(event)}
+													{display.preview}
 															</span>
 														) : null}
 													</span>
@@ -1187,18 +1119,28 @@ export function TaskDetail({
 												<span
 													className={cn(
 														"grid size-6 place-items-center",
-														item.role === "system"
-															? "text-warning"
-															: "text-primary",
+												item.errored
+													? "text-destructive"
+													: item.role === "system"
+													? "text-warning"
+													: "text-primary",
 													)}
 													aria-hidden="true"
 												>
-													<Brain className="size-4" />
+											{item.event ? (
+												<i className="border-input grid size-5 place-items-center rounded-full border text-[0.6rem] not-italic">
+													{item.errored ? "!" : roleGlyph[item.role]}
+												</i>
+											) : (
+												<Brain className="size-4" />
+											)}
 												</span>
 												<p
 													className={cn(
 														"m-0 min-w-0 break-words",
-														item.role === "system"
+												item.errored
+													? "text-destructive"
+													: item.role === "system"
 															? "text-warning"
 															: isResponse
 																? "text-subtle whitespace-pre-wrap"
