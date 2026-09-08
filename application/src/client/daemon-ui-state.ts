@@ -5,131 +5,186 @@ import type { QualifiedTask, TaskAttempt } from "./daemon-api.ts";
 export type QualifiedSelection = { daemonId: string; taskId: string };
 
 export function qualifiedTaskKey(selection: QualifiedSelection): string {
-  return `${selection.daemonId}:${selection.taskId}`;
+	return `${selection.daemonId}:${selection.taskId}`;
 }
 
-export function qualifiedEventKey(daemonId: string, taskId: string, sequence: number): string {
-  return `${daemonId}:${taskId}:${sequence}`;
+export function qualifiedEventKey(
+	daemonId: string,
+	taskId: string,
+	sequence: number,
+): string {
+	return `${daemonId}:${taskId}:${sequence}`;
 }
 
 // Guards late responses when daemon/task selection changes quickly.
 export class RequestScope {
-  private current = 0;
-  next(): number {
-    this.current += 1;
-    return this.current;
-  }
-  isCurrent(generation: number): boolean {
-    return generation === this.current;
-  }
-  invalidate(): void {
-    this.current += 1;
-  }
+	private current = 0;
+	next(): number {
+		this.current += 1;
+		return this.current;
+	}
+	isCurrent(generation: number): boolean {
+		return generation === this.current;
+	}
+	invalidate(): void {
+		this.current += 1;
+	}
 }
 
-export type LiveEvent = { sequence: number; id: string; type: string; name?: string };
+export type LiveEvent = {
+	sequence: number;
+	id: string;
+	type: string;
+	name?: string;
+};
 
 // Merge incoming events into daemon/task-scoped state. Daemon sequence numbers
 // are database-wide with per-task gaps, so gaps are accepted and duplicates by
 // (daemon, task, sequence) are dropped. Memory is capped at the newest 1000.
-export function mergeLiveEvents(current: LiveEvent[], incoming: LiveEvent[], limit = 1000): LiveEvent[] {
-  const seen = new Set(current.map((event) => event.sequence));
-  const merged = [...current];
-  for (const event of incoming) {
-    if (seen.has(event.sequence)) continue;
-    seen.add(event.sequence);
-    merged.push(event);
-  }
-  merged.sort((left, right) => left.sequence - right.sequence);
-  return merged.length > limit ? merged.slice(merged.length - limit) : merged;
+export function mergeLiveEvents(
+	current: LiveEvent[],
+	incoming: LiveEvent[],
+	limit = 1000,
+): LiveEvent[] {
+	const seen = new Set(current.map((event) => event.sequence));
+	const merged = [...current];
+	for (const event of incoming) {
+		if (seen.has(event.sequence)) continue;
+		seen.add(event.sequence);
+		merged.push(event);
+	}
+	merged.sort((left, right) => left.sequence - right.sequence);
+	return merged.length > limit ? merged.slice(merged.length - limit) : merged;
 }
 
 export function maxEventSequence(events: LiveEvent[]): number | undefined {
-  let max: number | undefined;
-  for (const event of events) {
-    if (max === undefined || event.sequence > max) max = event.sequence;
-  }
-  return max;
+	let max: number | undefined;
+	for (const event of events) {
+		if (max === undefined || event.sequence > max) max = event.sequence;
+	}
+	return max;
 }
 
-export type WorkspaceSelection = { daemonId: string | null; taskId: string | null; sessionId: string | null };
+export type WorkspaceSelection = {
+	daemonId: string | null;
+	taskId: string | null;
+	sessionId: string | null;
+};
 export type TaskGroup = { root: QualifiedTask; sessions: QualifiedTask[] };
 
-export function taskRootId(task: Pick<QualifiedTask, "id" | "parent_task_id">): string {
-  return task.parent_task_id ?? task.id;
+export function taskRootId(
+	task: Pick<QualifiedTask, "id" | "parent_task_id">,
+): string {
+	return task.parent_task_id ?? task.id;
 }
 
 export function groupDaemonTasks(tasks: QualifiedTask[]): TaskGroup[] {
-  const roots = tasks.filter((task) => !task.parent_task_id);
-  return roots.map((root) => ({
-    root,
-    sessions: tasks
-      .filter((task) => task.id === root.id || task.parent_task_id === root.id)
-      .sort((left, right) => left.created_at.localeCompare(right.created_at)),
-  }));
+	const roots = tasks.filter((task) => !task.parent_task_id);
+	return roots.map((root) => ({
+		root,
+		sessions: tasks
+			.filter((task) => task.id === root.id || task.parent_task_id === root.id)
+			.sort((left, right) => left.created_at.localeCompare(right.created_at)),
+	}));
 }
 
 export function normalizeWorkspaceSelection(
-  selection: WorkspaceSelection,
-  daemonIds: readonly string[],
-  tasks: QualifiedTask[],
+	selection: WorkspaceSelection,
+	daemonIds: readonly string[],
+	tasks: QualifiedTask[],
 ): WorkspaceSelection {
-  const daemonId = selection.daemonId && daemonIds.includes(selection.daemonId) ? selection.daemonId : daemonIds[0] ?? null;
-  const daemonTasks = daemonId ? tasks.filter((task) => task.daemonId === daemonId) : [];
-  const requestedId = selection.sessionId ?? selection.taskId;
-  const selected = requestedId ? daemonTasks.find((task) => task.id === requestedId) : undefined;
-  if (!selected) {
-    // A stale session link falls back to its root overview when the root
-    // is still present, instead of dropping a valid task selection.
-    const root = selection.taskId ? daemonTasks.find((task) => task.id === selection.taskId) : undefined;
-    if (root) return { daemonId, taskId: taskRootId(root), sessionId: null };
-    return { daemonId, taskId: null, sessionId: null };
-  }
-  const rootId = taskRootId(selected);
-  if (selected.id === rootId) {
-    // The root is also the initial session. A bare task link shows the task
-    // overview; an explicit session link to the root opens its chat.
-    return { daemonId, taskId: rootId, sessionId: selection.sessionId === rootId ? rootId : null };
-  }
-  return { daemonId, taskId: rootId, sessionId: selected.id };
+	const daemonId =
+		selection.daemonId && daemonIds.includes(selection.daemonId)
+			? selection.daemonId
+			: (daemonIds[0] ?? null);
+	const daemonTasks = daemonId
+		? tasks.filter((task) => task.daemonId === daemonId)
+		: [];
+	const requestedId = selection.sessionId ?? selection.taskId;
+	const selected = requestedId
+		? daemonTasks.find((task) => task.id === requestedId)
+		: undefined;
+	if (!selected) {
+		// A stale session link falls back to its root overview when the root
+		// is still present, instead of dropping a valid task selection.
+		const root = selection.taskId
+			? daemonTasks.find((task) => task.id === selection.taskId)
+			: undefined;
+		if (root) return { daemonId, taskId: taskRootId(root), sessionId: null };
+		return { daemonId, taskId: null, sessionId: null };
+	}
+	const rootId = taskRootId(selected);
+	if (selected.id === rootId) {
+		// The root is also the initial session. A bare task link shows the task
+		// overview; an explicit session link to the root opens its chat.
+		return {
+			daemonId,
+			taskId: rootId,
+			sessionId: selection.sessionId === rootId ? rootId : null,
+		};
+	}
+	return { daemonId, taskId: rootId, sessionId: selected.id };
 }
 
 export function workspaceSearch(selection: WorkspaceSelection): string {
-  const parameters = new URLSearchParams();
-  if (selection.daemonId) parameters.set("daemon", selection.daemonId);
-  if (selection.taskId) parameters.set("task", selection.taskId);
-  if (selection.sessionId) parameters.set("session", selection.sessionId);
-  const value = parameters.toString();
-  return value ? `?${value}` : "";
+	const parameters = new URLSearchParams();
+	if (selection.daemonId) parameters.set("daemon", selection.daemonId);
+	if (selection.taskId) parameters.set("task", selection.taskId);
+	if (selection.sessionId) parameters.set("session", selection.sessionId);
+	const value = parameters.toString();
+	return value ? `?${value}` : "";
 }
 
-export function statePresentation(state: string): "active" | "success" | "failure" | "idle" {
-  if (["completed", "passed", "success"].includes(state)) return "success";
-  if (["aborted", "blocked", "failed", "error"].includes(state)) return "failure";
-  if (["preparing", "planning", "building", "checking", "reviewing", "running"].includes(state)) return "active";
-  return "idle";
+export function statePresentation(
+	state: string,
+): "active" | "success" | "failure" | "idle" {
+	if (["completed", "passed", "success"].includes(state)) return "success";
+	if (["aborted", "blocked", "failed", "error"].includes(state))
+		return "failure";
+	if (
+		[
+			"preparing",
+			"planning",
+			"building",
+			"checking",
+			"reviewing",
+			"running",
+		].includes(state)
+	)
+		return "active";
+	return "idle";
 }
 
 // Compact relative timestamp ("now", "4m", "3h", "2d") for chat and tables.
 export function relativeTime(iso: string, now: number = Date.now()): string {
-  const then = new Date(iso).getTime();
-  if (!Number.isFinite(then)) return "";
-  const seconds = Math.max(0, Math.round((now - then) / 1000));
-  if (seconds < 45) return "now";
-  const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours}h`;
-  const days = Math.round(hours / 24);
-  if (days < 7) return `${days}d`;
-  const weeks = Math.round(days / 7);
-  if (weeks < 5) return `${weeks}w`;
-  return new Date(iso).toLocaleDateString();
+	const then = new Date(iso).getTime();
+	if (!Number.isFinite(then)) return "";
+	const seconds = Math.max(0, Math.round((now - then) / 1000));
+	if (seconds < 45) return "now";
+	const minutes = Math.round(seconds / 60);
+	if (minutes < 60) return `${minutes}m`;
+	const hours = Math.round(minutes / 60);
+	if (hours < 24) return `${hours}h`;
+	const days = Math.round(hours / 24);
+	if (days < 7) return `${days}d`;
+	const weeks = Math.round(days / 7);
+	if (weeks < 5) return `${weeks}w`;
+	return new Date(iso).toLocaleDateString();
 }
 
-export function orderedAttempts(attempts: TaskAttempt[], branchId?: string | null): TaskAttempt[] {
-  return attempts
-    .filter((attempt) => !branchId || !attempt.branch_id || attempt.branch_id === branchId)
-    .slice()
-    .sort((left, right) => (left.attempt ?? 0) - (right.attempt ?? 0) || (left.started_at ?? "").localeCompare(right.started_at ?? ""));
+export function orderedAttempts(
+	attempts: TaskAttempt[],
+	branchId?: string | null,
+): TaskAttempt[] {
+	return attempts
+		.filter(
+			(attempt) =>
+				!branchId || !attempt.branch_id || attempt.branch_id === branchId,
+		)
+		.slice()
+		.sort(
+			(left, right) =>
+				(left.attempt ?? 0) - (right.attempt ?? 0) ||
+				(left.started_at ?? "").localeCompare(right.started_at ?? ""),
+		);
 }
