@@ -5,6 +5,7 @@ import {
 	eventDetailEntries,
 	eventDuration,
 	eventIcon,
+	eventIsAuxiliaryMessage,
 	eventPreview,
 	eventResult,
 	eventResultLine,
@@ -72,6 +73,39 @@ test("work-log excludes transient events and retains attempted events", () => {
 		),
 		["attempted"],
 	);
+});
+
+test("work-log labels non-assistant message completions as auxiliary", () => {
+	const toolResult = {
+		...event({
+			message: {
+				role: "toolResult",
+				toolName: "read",
+				content: [{ type: "text", text: "large tool transcript" }],
+			},
+		}),
+		id: "tool-result",
+		type: "message_end",
+	};
+	const assistant = {
+		...event({
+			message: {
+				role: "assistant",
+				content: [{ type: "text", text: "Readable response" }],
+			},
+		}),
+		id: "assistant",
+		type: "message_end",
+	};
+
+	assert.deepEqual(
+		meaningfulWorkEvents([toolResult, assistant]).map((value) => value.id),
+		["tool-result", "assistant"],
+	);
+	assert.equal(eventIsAuxiliaryMessage(toolResult), true);
+	assert.equal(eventTitle(toolResult), "Read result");
+	assert.equal(eventIsAuxiliaryMessage(assistant), false);
+	assert.equal(eventTitle(assistant), "Agent response");
 });
 
 test("work-log reports how many meaningful events the window hides", () => {

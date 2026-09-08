@@ -7,8 +7,8 @@ import type { QualifiedTask } from "@/client/daemon-api.ts";
 import {
 	groupDaemonTasks,
 	relativeTime,
-	workspaceSearch,
 	type WorkspaceSelection,
+	workspaceSearch,
 } from "@/client/daemon-ui-state.ts";
 import { SessionPanel } from "@/components/session-panel.tsx";
 import { Badge } from "@/components/ui/badge.tsx";
@@ -18,7 +18,6 @@ import {
 	CollapsibleContent,
 	CollapsibleTrigger,
 } from "@/components/ui/collapsible.tsx";
-import { SidebarInput } from "@/components/ui/sidebar.tsx";
 import {
 	Sidebar,
 	SidebarContent,
@@ -27,6 +26,7 @@ import {
 	SidebarGroupContent,
 	SidebarGroupLabel,
 	SidebarHeader,
+	SidebarInput,
 	SidebarMenu,
 	SidebarMenuButton,
 	SidebarMenuItem,
@@ -36,9 +36,9 @@ import {
 	SidebarRail,
 	useSidebar,
 } from "@/components/ui/sidebar.tsx";
-import type { DaemonConnection } from "@/server/daemon-registry.ts";
 import { stateDotClass } from "@/lib/state-style.ts";
 import { cn } from "@/lib/utils.ts";
+import type { DaemonConnection } from "@/server/daemon-registry.ts";
 
 export function TaskRail({
 	connections,
@@ -87,7 +87,7 @@ export function TaskRail({
 	return (
 		<Sidebar aria-label="Tasks">
 			<SidebarHeader className="border-rail-line h-14 flex-row items-center gap-2 border-t-2 border-b px-2.5">
-				<label className="border-input text-muted-foreground focus-within:border-ring flex min-w-0 flex-1 items-center gap-1.5 rounded-md border px-2">
+				<div className="border-input text-muted-foreground focus-within:border-ring flex min-w-0 flex-1 items-center gap-1.5 rounded-md border px-2">
 					<Search className="size-3.5 shrink-0" />
 					<SidebarInput
 						ref={searchInput}
@@ -100,7 +100,7 @@ export function TaskRail({
 					<kbd className="border-input text-subtle hidden shrink-0 rounded-sm border px-1 text-[0.65rem] sm:inline">
 						⌘K
 					</kbd>
-				</label>
+				</div>
 				<Button asChild variant="outline" size="xs" className="text-primary">
 					<Link
 						href={`/tasks${workspaceSearch({ daemonId: selection.daemonId, taskId: null, sessionId: null })}`}
