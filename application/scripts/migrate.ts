@@ -1,8 +1,8 @@
-import nextEnvironment from "@next/env";
 import { fileURLToPath } from "node:url";
+import nextEnvironment from "@next/env";
 import { createDatabasePool } from "../src/server/database.ts";
-import { ensureSchema } from "../src/server/migrations.ts";
 import { validateDatabaseURL } from "../src/server/environment.ts";
+import { ensureSchema } from "../src/server/migrations.ts";
 
 nextEnvironment.loadEnvConfig(
 	fileURLToPath(new URL("..", import.meta.url)),

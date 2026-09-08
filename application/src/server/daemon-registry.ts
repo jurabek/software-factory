@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import type {
-	CreateTaskInput,
 	CreateSessionInput,
+	CreateTaskInput,
 	DaemonClient,
 	DaemonCommand,
 	DaemonCreationDefaults,
@@ -16,8 +16,8 @@ import type {
 import { createDaemonClient, daemonCommands } from "./daemon-client.ts";
 import { getDatabasePool } from "./database.ts";
 import {
-	parseAllowedDaemonOrigins,
 	normalizeDaemonEndpoint,
+	parseAllowedDaemonOrigins,
 } from "./endpoint-policy.ts";
 import { readDeploymentEnvironment } from "./environment.ts";
 

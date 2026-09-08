@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+	groupDaemonTasks,
 	maxEventSequence,
 	mergeLiveEvents,
+	normalizeWorkspaceSelection,
+	orderedAttempts,
 	qualifiedEventKey,
 	qualifiedTaskKey,
 	RequestScope,
-	groupDaemonTasks,
-	normalizeWorkspaceSelection,
-	orderedAttempts,
 	workspaceSearch,
 } from "../src/client/daemon-ui-state.ts";
 

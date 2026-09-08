@@ -1,13 +1,10 @@
-import { daemonCommands } from "../../../../../../../src/server/daemon-client.ts";
-import type { DaemonCommand } from "../../../../../../../src/server/daemon-client.ts";
-import { getDaemonRegistry } from "../../../../../../../src/server/daemon-registry.ts";
-import {
-	daemonErrorResponse,
-	privateJSON,
-} from "../../../../../../../src/server/daemon-route.ts";
-import { readAuthenticationEnvironment } from "../../../../../../../src/server/environment.ts";
-import { hasTrustedOrigin } from "../../../../../../../src/server/request-origin.ts";
-import { getRequestSession } from "../../../../../../../src/server/session.ts";
+import type { DaemonCommand } from "@/server/daemon-client.ts";
+import { daemonCommands } from "@/server/daemon-client.ts";
+import { getDaemonRegistry } from "@/server/daemon-registry.ts";
+import { daemonErrorResponse, privateJSON } from "@/server/daemon-route.ts";
+import { readAuthenticationEnvironment } from "@/server/environment.ts";
+import { hasTrustedOrigin } from "@/server/request-origin.ts";
+import { getRequestSession } from "@/server/session.ts";
 
 export const runtime = "nodejs";
 

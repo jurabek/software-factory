@@ -41,9 +41,7 @@ function registryStore(): {
 	};
 }
 
-function daemonClient(
-	taskID = "task-1",
-): DaemonClient & {
+function daemonClient(taskID = "task-1"): DaemonClient & {
 	calls: { method: string; options?: DaemonRequestOptions }[];
 	upstreamIdentity: string;
 } {

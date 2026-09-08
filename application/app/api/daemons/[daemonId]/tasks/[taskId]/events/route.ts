@@ -1,9 +1,6 @@
-import { getDaemonRegistry } from "../../../../../../../src/server/daemon-registry.ts";
-import {
-	daemonErrorResponse,
-	privateJSON,
-} from "../../../../../../../src/server/daemon-route.ts";
-import { getRequestSession } from "../../../../../../../src/server/session.ts";
+import { getDaemonRegistry } from "@/server/daemon-registry.ts";
+import { daemonErrorResponse, privateJSON } from "@/server/daemon-route.ts";
+import { getRequestSession } from "@/server/session.ts";
 
 export const runtime = "nodejs";
 

@@ -12,8 +12,8 @@ import {
 	Folder,
 	GitBranch,
 	Monitor,
-	Pencil,
 	PanelLeftClose,
+	Pencil,
 	Plus,
 	Send,
 	Shield,
@@ -21,7 +21,7 @@ import {
 	Terminal,
 	Users,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
 	daemonArtifacts,
 	daemonAttempts,
@@ -51,12 +51,13 @@ import {
 } from "@/client/daemon-api.ts";
 import {
 	qualifiedEventKey,
-	relativeTime,
 	RequestScope,
+	relativeTime,
 } from "@/client/daemon-ui-state.ts";
 import {
 	eventDuration,
 	eventIcon,
+	eventIsAuxiliaryMessage,
 	eventResult,
 	eventResultLine,
 	eventStartedAt,
@@ -288,6 +289,17 @@ function buildTimeline(
 			eventSuccess(event) === false ||
 			message.stopReason === "error" ||
 			message.stop_reason === "error";
+		if (eventIsAuxiliaryMessage(event)) {
+			items.push({
+				key: `ev-${event.sequence}`,
+				role: "event",
+				text: eventTitle(event),
+				at: at.getTime() || 0,
+				iso,
+				event,
+			});
+			continue;
+		}
 		const text = eventResult(event).trim();
 		if (text) {
 			items.push({
@@ -504,45 +516,49 @@ export function TaskDetail({
 		if (!choices.includes(action)) setAction(choices[0] ?? "comment");
 	}, [action, availableActions, currentTask.state]);
 
-	async function refreshDetails(signal?: AbortSignal) {
-		const [
-			taskResult,
-			attemptResult,
-			branchResult,
-			artifactResult,
-			checksResult,
-			resultsResult,
-			diffResult,
-			sessionsResult,
-			interventionsResult,
-		] = await Promise.all([
-			daemonTask(daemonId, task.id, signal),
-			daemonAttempts(daemonId, task.id, signal),
-			daemonBranches(daemonId, task.id, signal),
-			daemonArtifacts(daemonId, task.id, signal),
-			daemonChecks(daemonId, task.id, signal),
-			daemonResults(daemonId, task.id, signal),
-			daemonDiff(daemonId, task.id, signal),
-			daemonSessions(daemonId, rootTaskId, signal),
-			daemonInterventions(daemonId, task.id, signal),
-		]);
-		setDetails(taskResult.task);
-		setAttempts(attemptResult.attempts ?? []);
-		setBranches(branchResult.branches ?? []);
-		setArtifacts(artifactResult.artifacts ?? []);
-		setChecks(checksResult.checks ?? []);
-		setResults(resultsResult.results ?? []);
-		setDiff(diffResult.diff ?? { repositories: [] });
-		setSessions(sessionsResult.sessions ?? []);
-		setInterventions(interventionsResult.interventions ?? []);
-		setSelectedBranchId((current) =>
-			current && branchResult.branches?.some((branch) => branch.id === current)
-				? current
-				: (taskResult.task.selected_branch_id ??
-					branchResult.branches?.[0]?.id ??
-					null),
-		);
-	}
+	const refreshDetails = useCallback(
+		async (signal?: AbortSignal) => {
+			const [
+				taskResult,
+				attemptResult,
+				branchResult,
+				artifactResult,
+				checksResult,
+				resultsResult,
+				diffResult,
+				sessionsResult,
+				interventionsResult,
+			] = await Promise.all([
+				daemonTask(daemonId, task.id, signal),
+				daemonAttempts(daemonId, task.id, signal),
+				daemonBranches(daemonId, task.id, signal),
+				daemonArtifacts(daemonId, task.id, signal),
+				daemonChecks(daemonId, task.id, signal),
+				daemonResults(daemonId, task.id, signal),
+				daemonDiff(daemonId, task.id, signal),
+				daemonSessions(daemonId, rootTaskId, signal),
+				daemonInterventions(daemonId, task.id, signal),
+			]);
+			setDetails(taskResult.task);
+			setAttempts(attemptResult.attempts ?? []);
+			setBranches(branchResult.branches ?? []);
+			setArtifacts(artifactResult.artifacts ?? []);
+			setChecks(checksResult.checks ?? []);
+			setResults(resultsResult.results ?? []);
+			setDiff(diffResult.diff ?? { repositories: [] });
+			setSessions(sessionsResult.sessions ?? []);
+			setInterventions(interventionsResult.interventions ?? []);
+			setSelectedBranchId((current) =>
+				current &&
+				branchResult.branches?.some((branch) => branch.id === current)
+					? current
+					: (taskResult.task.selected_branch_id ??
+						branchResult.branches?.[0]?.id ??
+						null),
+			);
+		},
+		[daemonId, rootTaskId, task.id],
+	);
 
 	useEffect(() => {
 		const current = scope.current.next();
@@ -582,10 +598,14 @@ export function TaskDetail({
 			mutationScope.current.invalidate();
 			mutationController.current?.abort();
 		};
-	}, [daemonId, task.id]);
+	}, [refreshDetails]);
 
 	useEffect(() => {
-		if (autoScroll && chatScroll.current)
+		if (
+			autoScroll &&
+			(events.length > 0 || interventions.length > 0) &&
+			chatScroll.current
+		)
 			chatScroll.current.scrollTop = chatScroll.current.scrollHeight;
 	}, [autoScroll, events, interventions]);
 
@@ -700,11 +720,11 @@ export function TaskDetail({
 					if (!scope.current.isCurrent(current)) return;
 					attempts = 0;
 					setError(null);
-					result.events.forEach((event) =>
+					result.events.forEach((event) => {
 						seen.current.add(
 							qualifiedEventKey(daemonId, task.id, event.sequence),
-						),
-					);
+						);
+					});
 					setEvents(result.events);
 					setAvailableActions(result.events.at(-1)?.available_actions ?? []);
 					cursorRef.current = result.events.length ? result.cursor : 0;
@@ -904,6 +924,7 @@ export function TaskDetail({
 					</nav>
 					<div className="flex items-center gap-1">
 						<span
+							role="status"
 							className={cn("size-2 rounded-full", liveTone[live])}
 							title={live}
 							aria-label={`Stream ${live}`}
@@ -997,9 +1018,8 @@ export function TaskDetail({
 				commands.some((command) =>
 					commandEnabled(command, currentTask.state),
 				) ? (
-					<div
+					<fieldset
 						className="flex flex-wrap gap-2 border-b px-4 py-2.5"
-						role="group"
 						aria-label="Task commands"
 					>
 						{commands.map((command) =>
@@ -1031,7 +1051,7 @@ export function TaskDetail({
 								{pending ? "Working…" : "delete"}
 							</Button>
 						) : null}
-					</div>
+					</fieldset>
 				) : null}
 
 				<div
@@ -1318,7 +1338,7 @@ export function TaskDetail({
 						className="min-h-14"
 					/>
 					<div className="flex items-center justify-between gap-4">
-						<div
+						<fieldset
 							className="flex items-center gap-0.5"
 							aria-label="Session controls"
 						>
@@ -1395,7 +1415,7 @@ export function TaskDetail({
 							>
 								<Users />
 							</Button>
-						</div>
+						</fieldset>
 						<Button
 							type="submit"
 							variant="outline"

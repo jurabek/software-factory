@@ -1,22 +1,22 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
 	daemonTasks,
 	listDaemons,
-	registerDaemon,
 	type QualifiedTask,
+	registerDaemon,
 } from "@/client/daemon-api.ts";
 import {
 	normalizeWorkspaceSelection,
 	RequestScope,
-	workspaceSearch,
 	type WorkspaceSelection,
+	workspaceSearch,
 } from "@/client/daemon-ui-state.ts";
-import type { DaemonConnection } from "@/server/daemon-registry.ts";
 import { Alert, AlertDescription } from "@/components/ui/alert.tsx";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar.tsx";
+import type { DaemonConnection } from "@/server/daemon-registry.ts";
 import { DaemonSetup } from "./daemon-setup.tsx";
 import { TaskCreation } from "./task-creation.tsx";
 import { TaskDetail } from "./task-detail.tsx";
@@ -42,11 +42,14 @@ export function DaemonConnections({ login }: { login: string }) {
 	const controllers = useRef(new Map<string, AbortController>());
 	const pendingSelectionIds = useRef(new Map<string, number>());
 	const daemonSettledLoadStart = useRef(new Map<string, number>());
-	const requested: WorkspaceSelection = {
-		daemonId: searchParams.get("daemon"),
-		taskId: searchParams.get("task"),
-		sessionId: searchParams.get("session"),
-	};
+	const requested = useMemo<WorkspaceSelection>(
+		() => ({
+			daemonId: searchParams.get("daemon"),
+			taskId: searchParams.get("task"),
+			sessionId: searchParams.get("session"),
+		}),
+		[searchParams],
+	);
 	const allTasks = connections.flatMap(
 		(connection) => taskStates[connection.id]?.tasks ?? [],
 	);
@@ -64,65 +67,68 @@ export function DaemonConnections({ login }: { login: string }) {
 		},
 		[pathname, router],
 	);
-	function scopeFor(daemonId: string): RequestScope {
+	const scopeFor = useCallback((daemonId: string): RequestScope => {
 		let scope = scopes.current.get(daemonId);
 		if (!scope) {
 			scope = new RequestScope();
 			scopes.current.set(daemonId, scope);
 		}
 		return scope;
-	}
-	const loadTasks = useCallback(async (connection: DaemonConnection) => {
-		const scope = scopeFor(connection.id);
-		const generation = scope.next();
-		controllers.current.get(connection.id)?.abort();
-		const controller = new AbortController();
-		controllers.current.set(connection.id, controller);
-		const startedAt = Date.now();
-		setTaskStates((current) => ({
-			...current,
-			[connection.id]: {
-				tasks: current[connection.id]?.tasks ?? [],
-				error: null,
-				loading: true,
-				offline: false,
-			},
-		}));
-		try {
-			const result = await daemonTasks(connection.id, controller.signal);
-			if (!scope.isCurrent(generation)) return;
-			daemonSettledLoadStart.current.set(
-				connection.id,
-				Math.max(
-					daemonSettledLoadStart.current.get(connection.id) ?? 0,
-					startedAt,
-				),
-			);
-			setTaskStates((current) => ({
-				...current,
-				[connection.id]: {
-					tasks: result.tasks,
-					error: null,
-					loading: false,
-					offline: false,
-				},
-			}));
-		} catch (error) {
-			if (controller.signal.aborted || !scope.isCurrent(generation)) return;
-			const message =
-				error instanceof Error ? error.message : "Daemon is unavailable.";
-			if (message.startsWith("Session expired")) setSessionExpired(true);
+	}, []);
+	const loadTasks = useCallback(
+		async (connection: DaemonConnection) => {
+			const scope = scopeFor(connection.id);
+			const generation = scope.next();
+			controllers.current.get(connection.id)?.abort();
+			const controller = new AbortController();
+			controllers.current.set(connection.id, controller);
+			const startedAt = Date.now();
 			setTaskStates((current) => ({
 				...current,
 				[connection.id]: {
 					tasks: current[connection.id]?.tasks ?? [],
-					error: message,
-					loading: false,
-					offline: !message.startsWith("Session expired"),
+					error: null,
+					loading: true,
+					offline: false,
 				},
 			}));
-		}
-	}, []);
+			try {
+				const result = await daemonTasks(connection.id, controller.signal);
+				if (!scope.isCurrent(generation)) return;
+				daemonSettledLoadStart.current.set(
+					connection.id,
+					Math.max(
+						daemonSettledLoadStart.current.get(connection.id) ?? 0,
+						startedAt,
+					),
+				);
+				setTaskStates((current) => ({
+					...current,
+					[connection.id]: {
+						tasks: result.tasks,
+						error: null,
+						loading: false,
+						offline: false,
+					},
+				}));
+			} catch (error) {
+				if (controller.signal.aborted || !scope.isCurrent(generation)) return;
+				const message =
+					error instanceof Error ? error.message : "Daemon is unavailable.";
+				if (message.startsWith("Session expired")) setSessionExpired(true);
+				setTaskStates((current) => ({
+					...current,
+					[connection.id]: {
+						tasks: current[connection.id]?.tasks ?? [],
+						error: message,
+						loading: false,
+						offline: !message.startsWith("Session expired"),
+					},
+				}));
+			}
+		},
+		[scopeFor],
+	);
 	const loadConnections = useCallback(async () => {
 		try {
 			const body = await listDaemons();

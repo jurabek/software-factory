@@ -10,7 +10,6 @@ import {
 	type TaskDetails,
 } from "@/client/daemon-api.ts";
 import { relativeTime } from "@/client/daemon-ui-state.ts";
-import type { DaemonConnection } from "@/server/daemon-registry.ts";
 import { Alert, AlertDescription } from "@/components/ui/alert.tsx";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar.tsx";
 import { Badge } from "@/components/ui/badge.tsx";
@@ -27,6 +26,7 @@ import {
 import { Textarea } from "@/components/ui/textarea.tsx";
 import { stateDotClass, stateTextClass } from "@/lib/state-style.ts";
 import { cn } from "@/lib/utils.ts";
+import type { DaemonConnection } from "@/server/daemon-registry.ts";
 
 function monogram(name: string): string {
 	const parts = name

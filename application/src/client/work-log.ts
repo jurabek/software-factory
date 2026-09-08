@@ -11,6 +11,17 @@ const targetKeys = [
 	"label",
 ];
 const argumentKeys = ["arguments", "args"];
+const toolTitles: Record<string, string> = {
+	apply_patch: "Edit",
+	bash: "Bash",
+	edit: "Edit",
+	glob: "Files",
+	grep: "Search",
+	read: "Read",
+	web_fetch: "Web Fetch",
+	webfetch: "Web Fetch",
+	write: "Write",
+};
 export const transientEventTypes = new Set([
 	"message_start",
 	"message_update",
@@ -35,6 +46,28 @@ function parseRecord(value: unknown): Record<string, unknown> {
 	} catch {
 		return {};
 	}
+}
+
+function displayName(value: string): string {
+	return value
+		.replace(/([a-z])([A-Z])/g, "$1 $2")
+		.replaceAll("_", " ")
+		.replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function toolTitle(value: unknown): string {
+	const name = String(value || "Tool");
+	return toolTitles[name.toLowerCase()] ?? displayName(name);
+}
+
+function eventMessage(event: TaskEvent): Record<string, unknown> {
+	return payloadRecord(payloadRecord(event.payload).message);
+}
+
+export function eventIsAuxiliaryMessage(event: TaskEvent): boolean {
+	if (event.type !== "message_end") return false;
+	const role = eventMessage(event).role;
+	return typeof role === "string" && role !== "assistant";
 }
 
 export function eventArgumentEntries(event: TaskEvent): [string, unknown][] {
@@ -90,26 +123,15 @@ export function eventResult(event: TaskEvent): string {
 
 export function eventTitle(event: TaskEvent): string {
 	if (event.type === "tool_call") {
-		const name = String(
-			payloadRecord(event.payload).tool ?? event.name ?? "Tool",
-		);
-		const known: Record<string, string> = {
-			apply_patch: "Edit",
-			bash: "Bash",
-			edit: "Edit",
-			glob: "Files",
-			grep: "Search",
-			read: "Read",
-			web_fetch: "Web Fetch",
-			webfetch: "Web Fetch",
-			write: "Write",
-		};
-		return (
-			known[name.toLowerCase()] ??
-			name
-				.replaceAll("_", " ")
-				.replace(/\b\w/g, (letter) => letter.toUpperCase())
-		);
+		return toolTitle(payloadRecord(event.payload).tool ?? event.name);
+	}
+	if (event.type === "message_end") {
+		const message = eventMessage(event);
+		if (message.role === "user") return "User message";
+		if (message.role === "toolResult")
+			return `${toolTitle(message.toolName ?? message.tool_name)} result`;
+		if (typeof message.role === "string" && message.role !== "assistant")
+			return `${displayName(message.role)} message`;
 	}
 	return (
 		(

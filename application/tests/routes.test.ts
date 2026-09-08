@@ -1,11 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { GET as daemonList } from "../app/api/daemons/route.ts";
 import { GET as creationOptions } from "../app/api/daemons/[daemonId]/creation-options/route.ts";
-import {
-	GET as daemonTasks,
-	POST as daemonTasksCreate,
-} from "../app/api/daemons/[daemonId]/tasks/route.ts";
 import { POST as daemonCommand } from "../app/api/daemons/[daemonId]/tasks/[taskId]/[command]/route.ts";
 import { GET as daemonEvents } from "../app/api/daemons/[daemonId]/tasks/[taskId]/events/route.ts";
 import { GET as daemonStream } from "../app/api/daemons/[daemonId]/tasks/[taskId]/events/stream/route.ts";
@@ -17,6 +12,11 @@ import {
 	DELETE as daemonTaskDelete,
 	GET as daemonTaskDetail,
 } from "../app/api/daemons/[daemonId]/tasks/[taskId]/route.ts";
+import {
+	GET as daemonTasks,
+	POST as daemonTasksCreate,
+} from "../app/api/daemons/[daemonId]/tasks/route.ts";
+import { GET as daemonList } from "../app/api/daemons/route.ts";
 import { GET as health } from "../app/api/health/route.ts";
 import { POST as login } from "../app/api/login/route.ts";
 import { POST as logout } from "../app/api/logout/route.ts";
