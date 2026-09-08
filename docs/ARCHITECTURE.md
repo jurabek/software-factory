@@ -1,16 +1,19 @@
-# How the Software Factory daemon works
+# Software Factory architecture
 
-Software Factory is a long-running, loopback-only Go service that coordinates coding-agent work inside isolated Task Workspaces. The browser UI is the control surface, but the daemon process owns orchestration, repository access, child processes, validation, and durable state.
+Software Factory has a self-hosted Next.js application and independently deployed Go daemons. The application owns the single-user login, daemon registry, and browser control surface. Each daemon owns orchestration, repository access, child processes, validation, Tasks, and durable sandbox state.
 
-The service does not daemonize or install a process supervisor. `go run main.go` starts it in the foreground; use an external supervisor if it must survive a terminal or login session.
+The service does not daemonize or install a process supervisor. `go -C daemon run .` starts it in the foreground; use an external supervisor if it must survive a terminal or login session.
 
 ## System shape
 
-The daemon is deliberately a single-host system: one Go process, one SQLite database, and at most one active Task. There is no remote worker, message broker, or in-memory copy of the durable task model.
+Each daemon is deliberately a single-host system: one Go process, one SQLite database, and at most one active Task. There is no remote worker, message broker, or application-side copy of the durable task model.
 
 ```mermaid
 flowchart LR
-    User[Browser or API client] -->|HTTP commands| API[Loopback HTTP API]
+    User[Browser] -->|same-origin HTTP and SSE| App[Next.js application]
+    App --> AppDB[(PostgreSQL)]
+    App -->|authenticated HTTP and SSE through tunnel| API[Loopback daemon API]
+    Client[Local API client] --> API
     API --> Factory[Factory service]
     Factory --> Policy[State and transition policy]
     Factory --> Git[Git and GitHub commands]
@@ -20,22 +23,125 @@ flowchart LR
     Factory --> Store[(SQLite WAL)]
     Factory --> Files[Task Workspace files]
     Store -->|poll by event cursor| SSE[SSE endpoint]
-    SSE -->|normalized events| User
-    API -->|embedded assets| User
+    SSE -->|normalized events| App
 ```
 
 The main modules are:
 
 | Module | Responsibility |
 | --- | --- |
-| `main.go` | Bootstrap, single-server lock, dependency wiring, embedded UI, HTTP listener, and shutdown |
+| `main.go` | Bootstrap, single-server lock, dependency wiring, Swagger, HTTP listener, and shutdown |
 | `internal/api` | REST commands and reads, mutation protection, error mapping, and SSE delivery |
 | `internal/factory` | Task lifecycle, phase execution, prompts, envelopes, checks, snapshots, and interventions |
 | `internal/store` | SQLite schema, durable state transitions, event cursors, and JSONL trace mirroring |
 | `internal/git` | Repository isolation, repository profiles, changed-file detection, and diffs |
 | `internal/harness` | Agent-runtime boundary used by orchestration |
 | `internal/harness/pi` | Pi command invocation, JSONL consumption, event normalization, usage, and process termination |
-| `web` | Vue control surface; it does not own workflow policy |
+| `application` | Next.js UI, initial-user authentication, PostgreSQL state, daemon registry, and authenticated daemon proxy |
+
+## Application-to-daemon request flow
+
+The browser uses same-origin Next.js routes for every daemon operation. The application stores only login sessions and daemon registrations in PostgreSQL; daemon SQLite remains authoritative for Tasks, sessions, events, and execution data. A registered endpoint is reached through its trusted encrypted tunnel to the loopback daemon.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant B as Browser
+    participant N as Next.js routes
+    participant PG as PostgreSQL
+    participant R as Daemon registry
+    participant T as Encrypted tunnel
+    participant D as Go daemon API
+    participant S as Daemon SQLite
+
+    B->>N: POST /api/daemons (name, endpoint, bearer credential)
+    N->>N: Authenticate application login session
+    N->>R: Validate endpoint and credential
+    R->>T: GET /api/v1/identity + /api/v1/health
+    T->>D: Forward bearer-authenticated probes
+    D->>S: Read stable daemon identity and health state
+    S-->>D: Identity and health
+    D-->>T: Identity + health response
+    T-->>R: Verify reachable daemon
+    R->>PG: Store registration and encrypted credential
+    PG-->>R: daemon ID, endpoint, expected identity
+    R-->>N: Public connection metadata only
+    N-->>B: Registration result
+
+    B->>N: GET /api/daemons/:daemonId/tasks
+    N->>PG: Validate login session and resolve registration
+    PG-->>N: Endpoint, encrypted credential, expected daemon identity
+    N->>R: Resolve and decrypt server-side credential
+    R->>T: GET /api/v1/tasks
+    T->>D: Authorization: Bearer daemon-token
+    D->>S: Read Tasks
+    S-->>D: Current daemon-owned task list
+    D-->>T: Task list
+    T-->>R: Tunnel response
+    R-->>N: Qualified tasks (daemon ID added)
+    N-->>B: Same-origin JSON response
+
+    B->>N: GET task, sessions, attempts, branches, artifacts, checks, results, diff
+    N->>PG: Validate login session and resolve daemon registration
+    PG-->>N: Encrypted credential and expected identity
+    N->>T: Forward resource read
+    T->>D: Bearer credential + expected identity header
+    D->>S: Query authoritative task/session/resource records
+    S-->>D: Current resource data
+    D-->>T: JSON resource response
+    T-->>N: Transparent response
+    N-->>B: Same-origin JSON response
+
+    B->>N: POST create task/session, feedback, intervention, or lifecycle command
+    N->>PG: Validate login session and resolve registration
+    PG-->>N: Credential and expected identity
+    N->>T: Forward mutation with actor
+    T->>D: Bearer credential + expected identity + actor header
+    D->>S: Validate transition and persist mutation
+    S-->>D: Accepted result and new events
+    D-->>T: Mutation response
+    T-->>N: Transparent response
+    N-->>B: Accepted result
+
+    B->>N: GET events/stream?after=cursor (or Last-Event-ID)
+    N->>PG: Validate login session and resolve registration
+    PG-->>N: Credential and expected identity
+    N->>T: Open SSE stream; forward cursor headers/query
+    T->>D: Bearer credential + expected identity\nLast-Event-ID / after cursor
+    D->>S: Replay events after cursor
+    S-->>D: Durable ordered event frames
+    D-->>T: Replay SSE frames with daemon sequence IDs
+    T-->>N: Stream without buffering or renumbering
+    N-->>B: Replay then live SSE frames
+    loop Until disconnect or revocation
+        D->>S: Poll for events after last cursor
+        S-->>D: New events, if any
+        D-->>T: Live SSE frame or heartbeat
+        T-->>N: Transparent frame
+        N-->>B: Event with daemon cursor
+    end
+    B-->>N: Disconnect; retain latest daemon cursor
+    N->>T: Cancel upstream stream on disconnect
+    B->>N: Reconnect stream with after=cursor or Last-Event-ID
+    N->>T: Open a new upstream stream with the cursor
+    T->>D: Replay from the requested cursor
+    D->>S: Read events after cursor
+    S-->>D: Durable replay records
+    D-->>T: Replay SSE frames
+    T-->>N: Transparent replay
+    N-->>B: Continue from the last cursor
+    N->>PG: Periodically recheck login session during stream
+    alt Login session revoked
+        PG-->>N: Session is not alive
+        N->>T: Cancel upstream stream
+        T-->>D: Close request
+    else Daemon offline
+        T-->>N: Timeout or unavailable
+        N-->>B: Isolated daemon_unavailable failure
+    end
+```
+
+Task history is not copied into PostgreSQL or synchronized by the application. An offline daemon or identity mismatch affects only requests routed to that registration.
 
 ## Startup and ownership
 
@@ -47,9 +153,11 @@ On startup, the process:
 4. Opens `factory.db` with WAL, foreign keys, a busy timeout, and `synchronous=NORMAL`.
 5. Recovers stale database records from an interrupted prior process and leaves affected work blocked rather than silently resuming it.
 6. Loads configuration, registers the Pi harness, and probes the installed Pi model catalog.
-7. Starts the API and embedded Vue application on `127.0.0.1:${PORT:-8080}`.
+7. Loads or creates the stable `daemon-id`, validates bind/authentication configuration, and starts the API on `${SOFTWARE_FACTORY_BIND:-127.0.0.1}:${PORT:-8080}`.
 
-Configuration or Pi validation errors put the server in a degraded state. Read endpoints and the UI remain available, but new Task work is rejected until configuration is valid.
+Configuration or Pi validation errors put the daemon in a degraded state. Read endpoints remain available, but new Task work is rejected until configuration is valid.
+
+Non-loopback binding is rejected. The daemon generates a 32-hex bearer token on first run, persists it at `$SOFTWARE_FACTORY_DIR/daemon-token`, and prints it to stdout. Every `/api/*` request except `GET /api/v1/health` requires `Authorization: Bearer <daemon-token>`. Remote application access reaches the loopback daemon through a trusted encrypted tunnel and sends the same header. Swagger UI is served at `/docs` and its OpenAPI spec at `/swagger.yaml`.
 
 The process handles `SIGINT` and `SIGTERM`. During shutdown it cancels active work, marks active Tasks blocked, shuts down HTTP, closes SQLite, and releases the lock.
 
@@ -152,7 +260,7 @@ sequenceDiagram
     participant H as Pi harness
     participant P as pi process
     participant D as SQLite and JSONL
-    participant U as Browser UI
+    participant U as Next.js application
 
     F->>H: Run(cwd, prompts, model, session, deadline)
     H->>P: Start one-shot JSON-mode process
@@ -246,16 +354,16 @@ The persistence model also supports append-only Interventions, execution branche
 
 ## Security model
 
-The security boundary is the local operating-system user, not a remote multi-user identity system.
+The daemon has local and application-connected security modes.
 
-- The HTTP server binds only to loopback and does not enable CORS.
-- Every mutation requires a random per-process token from the same-origin `/api/v1/control` endpoint.
-- Requests with a foreign `Origin` are rejected, and API responses are not cached.
+- The HTTP server always binds to loopback and does not enable CORS. Remote reachability requires an encrypted tunnel.
+- Every `/api/*` request except `GET /api/v1/health` requires `Authorization: Bearer <daemon-token>`. The token is generated on first run and persisted at `$SOFTWARE_FACTORY_DIR/daemon-token`.
+- API responses are not cached.
 - The state directory, prompts, sessions, raw output, and repository materializations are never exposed through a generic static-file route.
-- Embedded UI assets are the only files served outside the API.
+- Swagger UI and its spec are served at `/docs` and `/swagger.yaml`.
 - Coding agents and checks have the same host access as the user running the daemon.
 
-The mutation token protects the browser control surface from cross-origin requests; it is not a substitute for host isolation. Run the daemon as a user with only the repositories, credentials, tools, and network access required by its Tasks. Do not expose the loopback service through a public proxy without adding a separate authentication and authorization layer.
+The daemon token is not a substitute for host isolation or transport encryption. Run the daemon as a user with only the repositories, credentials, tools, and network access required by its Tasks. Do not expose the loopback service through an unencrypted or public proxy.
 
 ## Architectural guarantees
 
