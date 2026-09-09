@@ -25,13 +25,28 @@ type Request struct {
 	AdditionalDirectories []string
 }
 type Event = session.Entry
+
 type (
 	EventSink func(context.Context, Event) error
-	Cost      struct{ Input, Output, CacheRead, CacheWrite, Reasoning, Total float64 }
-	Usage     struct {
-		Input, Output, CacheRead, CacheWrite, Reasoning, TotalTokens int
-		Cost                                                         float64
-		Costs                                                        Cost
+
+	Cost struct {
+		Input,
+		Output,
+		CacheRead,
+		CacheWrite,
+		Reasoning,
+		Total float64
+	}
+
+	Usage struct {
+		Input,
+		Output,
+		CacheRead,
+		CacheWrite,
+		Reasoning,
+		TotalTokens int
+		Cost  float64
+		Costs Cost
 	}
 )
 
