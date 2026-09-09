@@ -16,7 +16,10 @@ import {
 	GET as daemonTasks,
 	POST as daemonTasksCreate,
 } from "../app/api/daemons/[daemonId]/tasks/route.ts";
-import { GET as daemonList } from "../app/api/daemons/route.ts";
+import {
+	GET as daemonList,
+	POST as daemonRegister,
+} from "../app/api/daemons/route.ts";
 import { GET as health } from "../app/api/health/route.ts";
 import { POST as login } from "../app/api/login/route.ts";
 import { POST as logout } from "../app/api/logout/route.ts";
@@ -50,6 +53,28 @@ test("daemon list rejects a missing session and disables caching", async () => {
 	);
 	assert.equal(response.status, 401);
 	assert.equal(response.headers.get("Cache-Control"), "private, no-store");
+});
+
+test("daemon registration rejects foreign origins and missing sessions before registry access", async () => {
+	const foreign = await daemonRegister(
+		new Request("http://localhost:3000/api/daemons", {
+			method: "POST",
+			headers: { Origin: "https://evil.example" },
+			body: JSON.stringify({ token: "a.b.c" }),
+		}),
+	);
+	assert.equal(foreign.status, 403);
+	assert.equal(foreign.headers.get("Cache-Control"), "private, no-store");
+
+	const noSession = await daemonRegister(
+		new Request("http://localhost:3000/api/daemons", {
+			method: "POST",
+			headers: { Origin: "http://localhost:3000" },
+			body: JSON.stringify({ token: "a.b.c" }),
+		}),
+	);
+	assert.equal(noSession.status, 401);
+	assert.equal(noSession.headers.get("Cache-Control"), "private, no-store");
 });
 
 test("health route fails when PostgreSQL or migrations are unavailable", async () => {

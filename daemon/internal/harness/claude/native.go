@@ -101,11 +101,15 @@ func archiveNative(nativePath, sessionDir, uuid string) (string, error) {
 		return "", nil
 	}
 	allowedRoot := filepath.Dir(nativePath)
+	resolvedRoot, err := filepath.EvalSymlinks(allowedRoot)
+	if err != nil {
+		return "", fmt.Errorf("resolve claude session root: %w", err)
+	}
 	resolved, err := filepath.EvalSymlinks(nativePath)
 	if err != nil {
 		return "", fmt.Errorf("resolve claude transcript: %w", err)
 	}
-	if !strings.HasPrefix(resolved, allowedRoot) && resolved != nativePath {
+	if !pathWithinRoot(resolvedRoot, resolved) {
 		return "", fmt.Errorf("claude transcript escapes session root")
 	}
 	destinationDir := filepath.Join(sessionDir, "native")
@@ -126,12 +130,21 @@ func archiveNative(nativePath, sessionDir, uuid string) (string, error) {
 			continue
 		}
 		source := filepath.Join(allowedRoot, entry.Name())
-		if resolvedSibling, err := filepath.EvalSymlinks(source); err != nil || !strings.HasPrefix(resolvedSibling, allowedRoot) {
+		resolvedSibling, err := filepath.EvalSymlinks(source)
+		if err != nil || !pathWithinRoot(resolvedRoot, resolvedSibling) {
 			continue
 		}
 		_ = copyFile(source, filepath.Join(destinationDir, entry.Name()))
 	}
 	return destination, nil
+}
+
+func pathWithinRoot(root, path string) bool {
+	relative, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	return relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) && !filepath.IsAbs(relative)
 }
 
 func copyFile(source, destination string) error {

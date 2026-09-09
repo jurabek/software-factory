@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
 import { test } from "node:test";
 import type {
 	DaemonClient,
@@ -17,6 +18,38 @@ import {
 const credential = "daemon-test-credential-with-32-characters";
 const createdAt = new Date("2026-09-06T12:00:00Z");
 const daemonIdentity = "0123456789abcdef0123456789abcdef";
+
+// Mints a connection token the same way the daemon does: HS256 over
+// header.payload with the credential as the HMAC key.
+function connectionToken(
+	overrides: {
+		sub?: string;
+		endpoint?: string;
+		name?: string;
+		cred?: string;
+	} = {},
+): string {
+	const cred = overrides.cred ?? credential;
+	const claims = {
+		iss: "software-factory-daemon",
+		sub: overrides.sub ?? daemonIdentity,
+		endpoint: overrides.endpoint ?? "http://127.0.0.1:8080",
+		name: overrides.name ?? "Sandbox",
+		cred,
+		iat: 1_700_000_000,
+	};
+	const header = Buffer.from(
+		JSON.stringify({ alg: "HS256", typ: "JWT" }),
+		"utf8",
+	).toString("base64url");
+	const payload = Buffer.from(JSON.stringify(claims), "utf8").toString(
+		"base64url",
+	);
+	const signature = createHmac("sha256", cred)
+		.update(`${header}.${payload}`)
+		.digest("base64url");
+	return `${header}.${payload}.${signature}`;
+}
 
 function registryStore(): {
 	store: DaemonRegistryStore;
@@ -141,11 +174,10 @@ test("registration verifies identity and persists the credential server-side", a
 		createID: () => "connection-a",
 	});
 	const result = await registry.register({
-		name: " Sandbox A ",
-		endpoint: "http://127.0.0.1:8080",
-		credential,
+		token: connectionToken({ name: "Sandbox A" }),
+		name: " Override A ",
 	});
-	assert.equal(result.connection.name, "Sandbox A");
+	assert.equal(result.connection.name, "Override A");
 	assert.equal(
 		result.connection.daemonIdentity,
 		"0123456789abcdef0123456789abcdef",
@@ -153,6 +185,38 @@ test("registration verifies identity and persists the credential server-side", a
 	assert.equal("credential" in result.connection, false);
 	assert.doesNotMatch(JSON.stringify(result), new RegExp(credential));
 	assert.equal(database.rows.get("connection-a").credential, credential);
+});
+
+test("registration falls back to the token name when no override is given", async () => {
+	const database = registryStore();
+	const registry = createDaemonRegistry({
+		store: database.store,
+		client: daemonClient(),
+		allowedOrigins: ["http://127.0.0.1:8080"],
+		createID: () => "connection-a",
+	});
+	const result = await registry.register({
+		token: connectionToken({ name: "Token Name" }),
+	});
+	assert.equal(result.connection.name, "Token Name");
+});
+
+test("registration rejects a token whose sub differs from the daemon identity", async () => {
+	const database = registryStore();
+	const registry = createDaemonRegistry({
+		store: database.store,
+		client: daemonClient(),
+		allowedOrigins: ["http://127.0.0.1:8080"],
+		createID: () => "connection-a",
+	});
+	await assert.rejects(
+		registry.register({
+			token: connectionToken({ sub: "ffffffffffffffffffffffffffffffff" }),
+		}),
+		(error: unknown) =>
+			error instanceof DaemonRegistryError &&
+			error.code === "identity_mismatch",
+	);
 });
 
 test("task identity is qualified by daemon registration", async () => {
@@ -171,14 +235,12 @@ test("task identity is qualified by daemon registration", async () => {
 		createID: () => "daemon-b",
 	});
 	await firstRegistry.register({
+		token: connectionToken({ endpoint: "http://127.0.0.1:8080" }),
 		name: "A",
-		endpoint: "http://127.0.0.1:8080",
-		credential,
 	});
 	await secondRegistry.register({
+		token: connectionToken({ endpoint: "http://127.0.0.1:8081" }),
 		name: "B",
-		endpoint: "http://127.0.0.1:8081",
-		credential,
 	});
 	assert.equal(
 		(await firstRegistry.tasks("daemon-a")).tasks[0].daemonId,
@@ -220,17 +282,15 @@ test("unknown registrations and unsafe input fail before contacting a daemon", a
 	);
 	await assert.rejects(
 		registry.register({
+			token: connectionToken({ endpoint: "http://127.0.0.1:9999" }),
 			name: "A",
-			endpoint: "http://127.0.0.1:9999",
-			credential,
 		}),
 		/not in DAEMON_ALLOWED_ORIGINS/,
 	);
 	await assert.rejects(
 		registry.register({
+			token: connectionToken({ cred: "short" }),
 			name: "A",
-			endpoint: "http://127.0.0.1:8080",
-			credential: "short",
 		}),
 		/at least 32/,
 	);
@@ -247,9 +307,8 @@ test("every operation reaches the daemon over the authenticated connection", asy
 		createID: () => "daemon-a",
 	});
 	await registry.register({
+		token: connectionToken(),
 		name: "A",
-		endpoint: "http://127.0.0.1:8080",
-		credential,
 	});
 	const validInput = {
 		request: "Build feature",
@@ -274,9 +333,8 @@ test("unsupported commands and invalid task input fail without daemon access", a
 		createID: () => "daemon-a",
 	});
 	await registry.register({
+		token: connectionToken(),
 		name: "A",
-		endpoint: "http://127.0.0.1:8080",
-		credential,
 	});
 	const callsAfterRegister = client.calls.length;
 	await assert.rejects(
@@ -321,14 +379,12 @@ test("one offline daemon does not block a second daemon", async () => {
 		createID: () => "daemon-b",
 	});
 	await firstRegistry.register({
+		token: connectionToken({ endpoint: "http://127.0.0.1:8080" }),
 		name: "A",
-		endpoint: "http://127.0.0.1:8080",
-		credential,
 	});
 	await secondRegistry.register({
+		token: connectionToken({ endpoint: "http://127.0.0.1:8081" }),
 		name: "B",
-		endpoint: "http://127.0.0.1:8081",
-		credential,
 	});
 	await assert.rejects(firstRegistry.tasks("daemon-a"), /unavailable/);
 	assert.equal(
@@ -346,9 +402,8 @@ test("resolved credentials never appear in public results", async () => {
 		createID: () => "daemon-a",
 	});
 	await registry.register({
+		token: connectionToken(),
 		name: "A",
-		endpoint: "http://127.0.0.1:8080",
-		credential,
 	});
 	const resolved = await registry.resolve("daemon-a");
 	assert.equal(resolved.connection.id, "daemon-a");

@@ -44,6 +44,10 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for how the daemon coordinate
 
 The daemon binds only to loopback. Every `/api/*` request except `GET /api/v1/health` requires `Authorization: Bearer <daemon-token>`. The token is generated on first run, persisted at `$SOFTWARE_FACTORY_DIR/daemon-token`, and printed to stdout. To reach the daemon from the application, expose it through an encrypted tunnel whose exact origin is in `DAEMON_ALLOWED_ORIGINS`. Task workspaces, SQLite WAL state, JSONL traces, prompts, and Pi sessions remain under the factory directory until explicit deletion.
 
+## Connecting a daemon to the application
+
+On startup the daemon prints a `connection token` line and writes the same value to `$SOFTWARE_FACTORY_DIR/connection-token`. This token is a self-contained JWT that bundles the daemon endpoint (`http://<bind>:<port>`, derived from the bind address), the daemon identity, the daemon name (the OS hostname), and the bearer credential. In the application UI, open **Connect daemon**, paste the token, optionally override the name (it defaults to the hostname), and submit. The application server verifies the token, checks the endpoint against `DAEMON_ALLOWED_ORIGINS`, confirms the daemon identity, and registers the connection. The credential never leaves the application server.
+
 ## API example
 
 `curl` is an API client, not a product CLI.
