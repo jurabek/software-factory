@@ -66,6 +66,16 @@ export function registerDaemon(input: { token: string; name?: string }) {
 	});
 }
 
+export function deleteDaemon(daemonId: string, signal?: AbortSignal) {
+	return apiFetch<{
+		daemon: DaemonConnection;
+		result: { deleted: boolean };
+	}>(`/api/daemons/${encodeURIComponent(daemonId)}`, {
+		method: "DELETE",
+		signal,
+	});
+}
+
 export function daemonTasks(daemonId: string, signal?: AbortSignal) {
 	return apiFetch<{ daemon: DaemonConnection; tasks: QualifiedTask[] }>(
 		`/api/daemons/${encodeURIComponent(daemonId)}/tasks`,
