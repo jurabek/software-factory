@@ -18,7 +18,7 @@ export function meaningfulWorkEvents(
 	return events.filter(
 		(event) =>
 			!attemptId ||
-				event.attempt_id === attemptId ||
-				event.phase_id === attemptId,
+			event.attempt_id === attemptId ||
+			event.phase_id === attemptId,
 	);
 }

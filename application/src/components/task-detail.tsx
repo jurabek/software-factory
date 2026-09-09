@@ -1108,23 +1108,23 @@ export function TaskDetail({
 														)}
 														aria-hidden="true"
 													>
-												<i className="border-input grid size-5 place-items-center rounded-full border text-[0.6rem] not-italic">
-													{failed ? "!" : roleGlyph[item.role]}
-												</i>
+														<i className="border-input grid size-5 place-items-center rounded-full border text-[0.6rem] not-italic">
+															{failed ? "!" : roleGlyph[item.role]}
+														</i>
 													</span>
 													<span className="grid min-w-0 gap-1">
 														<span className="flex min-w-0 items-center gap-2">
 															<strong className="text-foreground shrink-0 font-semibold">
-													{display.title}
-												</strong>
-												{display.target ? (
-													<span className="text-subtle truncate">
-														{display.target}
-													</span>
+																{display.title}
+															</strong>
+															{display.target ? (
+																<span className="text-subtle truncate">
+																	{display.target}
+																</span>
 															) : null}
 															<ExternalLink className="text-muted-foreground size-3.5 shrink-0" />
 														</span>
-											{display.preview ? (
+														{display.preview ? (
 															<span className="text-muted-foreground flex min-w-0 gap-2 truncate text-[0.82rem]">
 																<i
 																	aria-hidden="true"
@@ -1132,7 +1132,7 @@ export function TaskDetail({
 																>
 																	└
 																</i>
-													{display.preview}
+																{display.preview}
 															</span>
 														) : null}
 													</span>
@@ -1151,32 +1151,32 @@ export function TaskDetail({
 												<span
 													className={cn(
 														"grid size-6 place-items-center",
-												item.errored
-													? "text-destructive"
-													: item.role === "system"
-													? "text-warning"
-													: "text-primary",
+														item.errored
+															? "text-destructive"
+															: item.role === "system"
+																? "text-warning"
+																: "text-primary",
 													)}
 													aria-hidden="true"
 												>
-											{item.event ? (
-												<i className="border-input grid size-5 place-items-center rounded-full border text-[0.6rem] not-italic">
-													{item.errored ? "!" : roleGlyph[item.role]}
-												</i>
-											) : (
-												<Brain className="size-4" />
-											)}
+													{item.event ? (
+														<i className="border-input grid size-5 place-items-center rounded-full border text-[0.6rem] not-italic">
+															{item.errored ? "!" : roleGlyph[item.role]}
+														</i>
+													) : (
+														<Brain className="size-4" />
+													)}
 												</span>
 												<p
 													className={cn(
 														"m-0 min-w-0 break-words",
-												item.errored
-													? "text-destructive"
-													: item.role === "system"
-															? "text-warning"
-															: isResponse
-																? "text-subtle whitespace-pre-wrap"
-																: "text-muted-foreground italic",
+														item.errored
+															? "text-destructive"
+															: item.role === "system"
+																? "text-warning"
+																: isResponse
+																	? "text-subtle whitespace-pre-wrap"
+																	: "text-muted-foreground italic",
 													)}
 												>
 													{item.text}

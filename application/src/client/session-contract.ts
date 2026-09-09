@@ -145,8 +145,7 @@ const displayStatuses = new Set<SessionDisplay["status"]>([
 export function formatDurationMs(ms?: number | null): string {
 	if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) return "";
 	if (ms < 1_000) return `${ms}ms`;
-	if (ms < 60_000)
-		return `${(ms / 1_000).toFixed(ms < 10_000 ? 1 : 0)}s`;
+	if (ms < 60_000) return `${(ms / 1_000).toFixed(ms < 10_000 ? 1 : 0)}s`;
 	const seconds = Math.round(ms / 1_000);
 	return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }

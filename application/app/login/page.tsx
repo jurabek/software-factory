@@ -1,10 +1,6 @@
 import { redirect } from "next/navigation";
 import { SignInPanel } from "@/components/sign-in-panel.tsx";
-import {
-	Card,
-	CardContent,
-	CardHeader,
-} from "@/components/ui/card.tsx";
+import { Card, CardContent, CardHeader } from "@/components/ui/card.tsx";
 import {
 	validateAuthenticationEnvironment,
 	validateEnvironment,
