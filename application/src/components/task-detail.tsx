@@ -54,16 +54,18 @@ import {
 	relativeTime,
 } from "@/client/daemon-ui-state.ts";
 import {
-	formatDurationMs,
-	sessionDisplay,
-	type SessionEvent,
-} from "@/client/session-contract.ts";
+	isPlannerApprovalBlocked,
+	latestPlannerQuestionSet,
+} from "@/client/planner-feedback.ts";
 import {
-	meaningfulWorkEvents,
-	visibleWorkEvents,
-} from "@/client/work-log.ts";
+	formatDurationMs,
+	type SessionEvent,
+	sessionDisplay,
+} from "@/client/session-contract.ts";
+import { meaningfulWorkEvents, visibleWorkEvents } from "@/client/work-log.ts";
 import { AttemptGraph } from "@/components/attempt-graph.tsx";
 import { EventDialog } from "@/components/event-dialog.tsx";
+import { PlannerQuestions } from "@/components/planner-questions.tsx";
 import { Alert, AlertDescription } from "@/components/ui/alert.tsx";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar.tsx";
 import { Badge } from "@/components/ui/badge.tsx";
@@ -356,6 +358,9 @@ export function TaskDetail({
 	const [artifacts, setArtifacts] = useState<TaskArtifact[]>([]);
 	const [checks, setChecks] = useState<TaskCheck[]>([]);
 	const [results, setResults] = useState<TaskResult[]>([]);
+	const [resultsLoadedTaskId, setResultsLoadedTaskId] = useState<string | null>(
+		null,
+	);
 	const [diff, setDiff] = useState<TaskDiff>({ repositories: [] });
 	const [sessions, setSessions] = useState<TaskDetails[]>([]);
 	const [interventions, setInterventions] = useState<TaskIntervention[]>([]);
@@ -451,6 +456,14 @@ export function TaskDetail({
 	);
 	const otherCount = results.length + checks.length + diff.repositories.length;
 	const workspacePath = currentTask.workspace_path ?? "Daemon sandbox";
+	const plannerResultsLoaded = resultsLoadedTaskId === task.id;
+	const plannerQuestionSet = plannerResultsLoaded
+		? latestPlannerQuestionSet(results)
+		: null;
+	const plannerApprovalBlocked = isPlannerApprovalBlocked(
+		plannerResultsLoaded,
+		plannerQuestionSet,
+	);
 	const canSend = !offline && !pending && pendingCommand === null;
 
 	function beginMutation(): {
@@ -506,6 +519,7 @@ export function TaskDetail({
 			setArtifacts(artifactResult.artifacts ?? []);
 			setChecks(checksResult.checks ?? []);
 			setResults(resultsResult.results ?? []);
+			setResultsLoadedTaskId(task.id);
 			setDiff(diffResult.diff ?? { repositories: [] });
 			setSessions(sessionsResult.sessions ?? []);
 			setInterventions(interventionsResult.interventions ?? []);
@@ -530,6 +544,7 @@ export function TaskDetail({
 		setArtifacts([]);
 		setChecks([]);
 		setResults([]);
+		setResultsLoadedTaskId(null);
 		setDiff({ repositories: [] });
 		setSessions([]);
 		setInterventions([]);
@@ -687,6 +702,7 @@ export function TaskDetail({
 	}, [daemonId, task.id]);
 
 	async function sendCommand(command: (typeof commands)[number]) {
+		if (command === "approve" && plannerApprovalBlocked) return;
 		const { generation, controller } = beginMutation();
 		setPendingCommand(command);
 		setError(null);
@@ -767,9 +783,11 @@ export function TaskDetail({
 		}
 	}
 
-	async function revisePlan(event: React.FormEvent) {
-		event.preventDefault();
-		if (!message.trim()) return;
+	async function sendPlanFeedback(
+		feedback: string,
+		clearMessageOnSuccess: boolean,
+	) {
+		if (pending || pendingCommand !== null || !feedback.trim()) return;
 		const { generation, controller } = beginMutation();
 		setPending(true);
 		setError(null);
@@ -777,11 +795,11 @@ export function TaskDetail({
 			await daemonFeedback(
 				daemonId,
 				task.id,
-				message.trim(),
+				feedback.trim(),
 				currentTask.plan_digest,
 				controller.signal,
 			);
-			setMessage("");
+			if (clearMessageOnSuccess) setMessage("");
 			await refreshDetails(controller.signal);
 			if (mutationIsCurrent(generation, controller)) await onChanged();
 		} catch (failure) {
@@ -792,6 +810,15 @@ export function TaskDetail({
 		} finally {
 			if (mutationIsCurrent(generation, controller)) setPending(false);
 		}
+	}
+
+	async function revisePlan(event: React.FormEvent) {
+		event.preventDefault();
+		await sendPlanFeedback(message, true);
+	}
+
+	async function submitPlannerAnswers(feedback: string) {
+		await sendPlanFeedback(feedback, false);
 	}
 
 	async function removeTask() {
@@ -965,7 +992,12 @@ export function TaskDetail({
 									variant="outline"
 									size="sm"
 									className="uppercase"
-									disabled={offline || pendingCommand !== null || pending}
+									disabled={
+										offline ||
+										pendingCommand !== null ||
+										pending ||
+										(command === "approve" && plannerApprovalBlocked)
+									}
 									onClick={() => void sendCommand(command)}
 								>
 									{pendingCommand === command ? `${command}…` : command}
@@ -1188,6 +1220,19 @@ export function TaskDetail({
 					) : null}
 				</div>
 
+				{currentTask.state === "awaiting_plan_approval" &&
+				plannerQuestionSet ? (
+					<div className="bg-background max-h-[60dvh] shrink-0 overflow-y-auto border-t px-4 py-4">
+						<PlannerQuestions
+							questions={plannerQuestionSet.questions}
+							planDigest={currentTask.plan_digest}
+							offline={offline}
+							pending={pending || pendingCommand !== null}
+							onSubmit={submitPlannerAnswers}
+						/>
+					</div>
+				) : null}
+
 				<form
 					className="bg-background grid gap-2.5 border-t px-4 pt-3 pb-4"
 					onSubmit={
@@ -1311,7 +1356,9 @@ export function TaskDetail({
 								variant="ghost"
 								size="icon-sm"
 								disabled={
-									!canSend || !commandEnabled("approve", currentTask.state)
+									!canSend ||
+									!commandEnabled("approve", currentTask.state) ||
+									plannerApprovalBlocked
 								}
 								aria-label="Approve"
 								onClick={() => void sendCommand("approve")}
