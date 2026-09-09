@@ -1050,9 +1050,9 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
 		): Promise<{
 			connection: DaemonConnection;
 			taskId: string;
-			 events: DaemonEvent[];
-			 cursor: number;
-			 format_version: number;
+			events: DaemonEvent[];
+			cursor: number;
+			format_version: number;
 		}> {
 			const validatedTask = validatedTaskID(taskId);
 			const validatedQuery = validatedEventQuery(query);

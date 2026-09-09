@@ -259,7 +259,9 @@ export function TaskCreation({
 					),
 				];
 				const fallbackThinking =
-					thinkingAvailable.length > 0 ? thinkingAvailable : [...thinkingLevels];
+					thinkingAvailable.length > 0
+						? thinkingAvailable
+						: [...thinkingLevels];
 				setThinking((previous) => {
 					if (fallbackThinking.includes(previous)) return previous;
 					if (fallbackThinking.includes(options.defaults.thinking))
