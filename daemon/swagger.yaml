@@ -7,6 +7,15 @@ info:
     All endpoints (except /health) require Authorization: Bearer <daemon-token>.
     The token is generated on first run and persisted at
     ~/.software-factory/daemon-token (printed on startup).
+
+    To onboard a daemon in the application UI, use the connection token instead
+    of copying the endpoint and credential by hand. The daemon prints a
+    `connection token` line on startup and writes the same value to
+    ~/.software-factory/connection-token. That token is a self-contained JWT
+    that bundles the daemon endpoint (derived from its bind address), its
+    identity, its hostname, and the bearer credential. Paste it once into the
+    application's "Connect daemon" form and the server verifies and registers
+    the daemon.
 basePath: /api/v1
 schemes:
   - http

@@ -15,6 +15,10 @@ import type {
 	InterventionInput,
 } from "./daemon-client.ts";
 import { createDaemonClient, daemonCommands } from "./daemon-client.ts";
+import {
+	ConnectionTokenError,
+	parseConnectionToken,
+} from "./connection-token.ts";
 import { getDatabasePool } from "./database.ts";
 import {
 	normalizeDaemonEndpoint,
@@ -335,15 +339,36 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
 		async resolve(id: string): Promise<ResolvedDaemon> {
 			return resolve(id);
 		},
-		async register(input: {
-			name: string;
-			endpoint: string;
-			credential: string;
-		}): Promise<{
+		async register(input: { token: string; name?: string }): Promise<{
 			connection: DaemonConnection;
 			health: Pick<DaemonHealth, "status">;
 		}> {
-			const name = input.name.trim();
+			if (typeof input.token !== "string" || !input.token.trim()) {
+				throw new DaemonRegistryError(
+					400,
+					"invalid_token",
+					"Connection token is required.",
+				);
+			}
+			let parsed: {
+				endpoint: string;
+				credential: string;
+				daemonId: string;
+				name?: string;
+			};
+			try {
+				parsed = parseConnectionToken(input.token);
+			} catch (error) {
+				if (error instanceof ConnectionTokenError) {
+					throw new DaemonRegistryError(400, error.code, error.message);
+				}
+				throw error;
+			}
+			const name = (
+				input.name !== undefined && input.name.trim()
+					? input.name
+					: (parsed.name ?? "")
+			).trim();
 			if (!name || name.length > 80)
 				throw new DaemonRegistryError(
 					400,
@@ -351,8 +376,8 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
 					"Daemon name must contain 1-80 characters.",
 				);
 			if (
-				input.credential.length < 32 ||
-				input.credential.trim() !== input.credential
+				parsed.credential.length < 32 ||
+				parsed.credential.trim() !== parsed.credential
 			) {
 				throw new DaemonRegistryError(
 					400,
@@ -363,7 +388,7 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
 			let endpoint: string;
 			try {
 				endpoint = normalizeDaemonEndpoint(
-					input.endpoint,
+					parsed.endpoint,
 					options.allowedOrigins,
 				);
 			} catch (error) {
@@ -376,15 +401,22 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
 				);
 			}
 			const [identity, health] = await Promise.all([
-				options.client.identity(endpoint, input.credential),
-				options.client.health(endpoint, input.credential),
+				options.client.identity(endpoint, parsed.credential),
+				options.client.health(endpoint, parsed.credential),
 			]);
+			if (identity.id !== parsed.daemonId) {
+				throw new DaemonRegistryError(
+					400,
+					"identity_mismatch",
+					"Connection token daemon id does not match the daemon identity.",
+				);
+			}
 			const row = await options.store.create({
 				id: (options.createID ?? randomUUID)(),
 				name,
 				endpoint,
 				daemon_identity: identity.id,
-				credential: input.credential,
+				credential: parsed.credential,
 			});
 			return {
 				connection: publicConnection(row),
