@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { SessionEvent } from "../src/client/session-contract.ts";
-import { meaningfulWorkEvents, visibleWorkEvents } from "../src/client/work-log.ts";
+import {
+	meaningfulWorkEvents,
+	visibleWorkEvents,
+} from "../src/client/work-log.ts";
 
-function toolEvent(overrides: Partial<SessionEvent> & { id: string }): SessionEvent {
+function toolEvent(
+	overrides: Partial<SessionEvent> & { id: string },
+): SessionEvent {
 	return {
 		format_version: 1,
 		sequence: 1,
