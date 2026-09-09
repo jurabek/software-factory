@@ -76,7 +76,9 @@ export function EventDialog({
 							const display = sessionDisplay(event);
 							const failed = display.status === "failure";
 							const input =
-								event.kind === "tool_call" ? event.payload.arguments : undefined;
+								event.kind === "tool_call"
+									? event.payload.arguments
+									: undefined;
 							const content =
 								event.kind === "tool_call"
 									? event.payload.result
@@ -104,10 +106,11 @@ export function EventDialog({
 											<DialogDescription
 												className={cn(
 													"truncate text-[0.78rem]",
-												display.target ? "" : "sr-only",
+													display.target ? "" : "sr-only",
 												)}
 											>
-											{display.target || `${event.kind} event ${event.sequence}`}
+												{display.target ||
+													`${event.kind} event ${event.sequence}`}
 											</DialogDescription>
 										</div>
 									</DialogHeader>
@@ -127,7 +130,7 @@ export function EventDialog({
 														failed ? "text-destructive" : "text-subtle",
 													)}
 												>
-											{display.status}
+													{display.status}
 												</dd>
 											</div>
 											<div className="bg-background grid gap-1 px-3 py-2.5">
@@ -135,7 +138,7 @@ export function EventDialog({
 													Started
 												</dt>
 												<dd className="text-subtle truncate text-[0.8rem]">
-											{new Date(event.started_at).toLocaleString()}
+													{new Date(event.started_at).toLocaleString()}
 												</dd>
 											</div>
 											<div className="bg-background grid gap-1 px-3 py-2.5">
@@ -143,8 +146,8 @@ export function EventDialog({
 													Duration
 												</dt>
 												<dd className="text-subtle truncate text-[0.8rem]">
-											{formatDurationMs(display.duration_ms) ||
-												"not reported"}
+													{formatDurationMs(display.duration_ms) ||
+														"not reported"}
 												</dd>
 											</div>
 											<div className="bg-background grid gap-1 px-3 py-2.5">
