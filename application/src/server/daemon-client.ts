@@ -1,7 +1,4 @@
-import type {
-	SessionDisplay,
-	SessionKind,
-} from "@/client/session-contract.ts";
+import type { SessionDisplay, SessionKind } from "@/client/session-contract.ts";
 
 const requestTimeoutMilliseconds = 5_000;
 const daemonActorHeader = "X-Software-Factory-Actor";
@@ -498,7 +495,11 @@ export function createDaemonClient(fetcher: typeof fetch = fetch) {
 						? { context_window: model.context_window }
 						: {}),
 					...(Array.isArray(model.thinking)
-						? { thinking: model.thinking.filter((level) => typeof level === "string") }
+						? {
+								thinking: model.thinking.filter(
+									(level) => typeof level === "string",
+								),
+							}
 						: {}),
 				})),
 			};
