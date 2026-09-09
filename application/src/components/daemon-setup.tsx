@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/card.tsx";
 import { Input } from "@/components/ui/input.tsx";
 import { Label } from "@/components/ui/label.tsx";
+import { Textarea } from "@/components/ui/textarea.tsx";
 import { cn } from "@/lib/utils.ts";
 
 export function DaemonSetup({
@@ -65,43 +66,40 @@ export function DaemonSetup({
 						<AlertDescription>{error}</AlertDescription>
 					</Alert>
 				) : null}
-				<form className="grid items-end gap-3 md:grid-cols-3" action={submit}>
+				<form className="grid gap-3" action={submit}>
 					<div className="grid gap-1.5">
-						<Label htmlFor="daemon-name">Name</Label>
+						<Label htmlFor="daemon-token">Connection token</Label>
+						<Textarea
+							id="daemon-token"
+							name="token"
+							required
+							rows={4}
+							autoComplete="off"
+							spellCheck={false}
+							className="font-mono text-xs"
+							placeholder="Paste the connection token printed by the daemon"
+						/>
+						<p className="text-muted-foreground text-xs">
+							The daemon prints this token on startup and writes it to
+							<code className="mx-1">&lt;root&gt;/connection-token</code>. It
+							bundles the endpoint and credential.
+						</p>
+					</div>
+					<div className="grid gap-1.5">
+						<Label htmlFor="daemon-name">Name (optional)</Label>
 						<Input
 							id="daemon-name"
 							name="name"
 							maxLength={80}
-							required
-							placeholder="sandbox-a"
-						/>
-					</div>
-					<div className="grid gap-1.5">
-						<Label htmlFor="daemon-endpoint">Endpoint</Label>
-						<Input
-							id="daemon-endpoint"
-							name="endpoint"
-							type="url"
-							required
-							placeholder="http://127.0.0.1:8080"
-						/>
-					</div>
-					<div className="grid gap-1.5">
-						<Label htmlFor="daemon-credential">Daemon credential</Label>
-						<Input
-							id="daemon-credential"
-							name="credential"
-							type="password"
-							minLength={32}
 							autoComplete="off"
-							required
+							placeholder="Defaults to the daemon hostname"
 						/>
 					</div>
 					<Button
 						type="submit"
 						variant="outline"
 						disabled={pending}
-						className="md:col-span-3 md:justify-self-start"
+						className="justify-self-start"
 					>
 						{pending ? "Checking daemon..." : "Connect daemon"}
 					</Button>
