@@ -3,9 +3,7 @@ import { SignInPanel } from "@/components/sign-in-panel.tsx";
 import {
 	Card,
 	CardContent,
-	CardDescription,
 	CardHeader,
-	CardTitle,
 } from "@/components/ui/card.tsx";
 import {
 	validateAuthenticationEnvironment,
@@ -37,12 +35,6 @@ export default async function LoginPage() {
 					<p className="text-primary text-xs uppercase tracking-[0.12em]">
 						Software Factory
 					</p>
-					<CardTitle className="max-w-[12ch] text-3xl font-medium leading-tight tracking-tight">
-						Build from a single control room.
-					</CardTitle>
-					<CardDescription>
-						Sign in to connect daemons, create work, and follow each attempt.
-					</CardDescription>
 				</CardHeader>
 				<CardContent>
 					{!environment.ok ? (
