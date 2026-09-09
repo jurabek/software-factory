@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jurabek/software-factory/daemon/internal/token"
 	"gopkg.in/yaml.v3"
 )
 
@@ -122,6 +123,35 @@ func TestMalformedDaemonIdentityFailsClosed(t *testing.T) {
 	}
 	if _, err := loadDaemonID(root); err == nil {
 		t.Fatal("loadDaemonID succeeded with malformed identity")
+	}
+}
+
+func TestBuildConnectionTokenCarriesEndpointAndCredential(t *testing.T) {
+	const credential = "0123456789abcdef0123456789abcdef"
+	const daemonID = "fedcba9876543210fedcba9876543210"
+	signed, err := buildConnectionToken(daemonID, credential, "127.0.0.1:8080")
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := token.Parse(signed, credential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims.Issuer != token.Issuer {
+		t.Fatalf("issuer = %q, want %q", claims.Issuer, token.Issuer)
+	}
+	if claims.Subject != daemonID {
+		t.Fatalf("sub = %q, want %q", claims.Subject, daemonID)
+	}
+	if claims.Endpoint != "http://127.0.0.1:8080" {
+		t.Fatalf("endpoint = %q, want http://127.0.0.1:8080", claims.Endpoint)
+	}
+	if claims.Cred != credential {
+		t.Fatalf("cred = %q, want %q", claims.Cred, credential)
+	}
+	hostname, _ := os.Hostname()
+	if hostname != "" && claims.Name != hostname {
+		t.Fatalf("name = %q, want hostname %q", claims.Name, hostname)
 	}
 }
 

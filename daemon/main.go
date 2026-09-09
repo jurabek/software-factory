@@ -29,6 +29,7 @@ import (
 	claudeharness "github.com/jurabek/software-factory/daemon/internal/harness/claude"
 	piharness "github.com/jurabek/software-factory/daemon/internal/harness/pi"
 	"github.com/jurabek/software-factory/daemon/internal/store"
+	"github.com/jurabek/software-factory/daemon/internal/token"
 )
 
 //go:embed templates
@@ -106,6 +107,14 @@ func run() error {
 	)
 	if err != nil {
 		return err
+	}
+	connectionTokenPath := filepath.Join(root, "connection-token")
+	connectionToken, err := buildConnectionToken(daemonID, daemonToken, address)
+	if err != nil {
+		return fmt.Errorf("build connection token: %w", err)
+	}
+	if err = os.WriteFile(connectionTokenPath, []byte(connectionToken+"\n"), 0o600); err != nil {
+		return fmt.Errorf("write connection token: %w", err)
 	}
 	db, err := store.Open(filepath.Join(root, "factory.db"))
 	if err != nil {
@@ -195,6 +204,7 @@ func run() error {
 	done := make(chan error, 1)
 	go func() {
 		fmt.Fprintf(os.Stdout, "daemon token: %s\ndaemon token file: %s\n", daemonToken, tokenPath)
+		fmt.Fprintf(os.Stdout, "connection token: %s\nconnection token file: %s\n", connectionToken, connectionTokenPath)
 		logger.Info("server started", "address", "http://"+address, "root", root, "validation_errors", len(problems), "token_file", tokenPath)
 		done <- server.ListenAndServe()
 	}()
@@ -210,6 +220,27 @@ func run() error {
 		service.Shutdown(shutdownCtx)
 		return server.Shutdown(shutdownCtx)
 	}
+}
+
+// buildConnectionToken mints the single-paste connection token whose claims
+// carry everything the application server needs to register this daemon: the
+// endpoint (http://<bind>:<port> derived from the resolved listen address), the
+// daemon id, the OS hostname, and the bearer credential. The credential doubles
+// as the HMAC signing key so the token verifies without any shared secret.
+func buildConnectionToken(daemonID, credential, address string) (string, error) {
+	hostname, err := os.Hostname()
+	if err != nil || hostname == "" {
+		hostname = "software-factory-daemon"
+	}
+	claims := token.Claims{
+		Issuer:   token.Issuer,
+		Subject:  daemonID,
+		Endpoint: "http://" + address,
+		Name:     hostname,
+		Cred:     credential,
+		IssuedAt: time.Now().UTC().Unix(),
+	}
+	return token.Sign(claims, credential)
 }
 
 func daemonNetworkConfig(bind, port string) (string, error) {
