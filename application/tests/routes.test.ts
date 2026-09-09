@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { GET as creationOptions } from "../app/api/daemons/[daemonId]/creation-options/route.ts";
+import { DELETE as daemonDelete } from "../app/api/daemons/[daemonId]/route.ts";
 import { POST as daemonCommand } from "../app/api/daemons/[daemonId]/tasks/[taskId]/[command]/route.ts";
 import { GET as daemonEvents } from "../app/api/daemons/[daemonId]/tasks/[taskId]/events/route.ts";
 import { GET as daemonStream } from "../app/api/daemons/[daemonId]/tasks/[taskId]/events/stream/route.ts";
@@ -173,11 +174,20 @@ test("every daemon mutation rejects foreign origins before session access", asyn
 		{ params: Promise.resolve(taskParams) },
 	);
 	assert.equal(deleteResponse.status, 403);
+	const daemonDeleteResponse = await daemonDelete(
+		new Request("http://localhost:3000/api/daemons/daemon-a", {
+			method: "DELETE",
+			headers: foreign,
+		}),
+		{ params: Promise.resolve(daemonParams) },
+	);
+	assert.equal(daemonDeleteResponse.status, 403);
 	for (const response of [
 		createResponse,
 		commandResponse,
 		resourceResponse,
 		deleteResponse,
+		daemonDeleteResponse,
 	]) {
 		assert.equal(response.headers.get("Cache-Control"), "private, no-store");
 	}
