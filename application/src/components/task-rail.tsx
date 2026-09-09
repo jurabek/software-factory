@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronRight, Plus, Search } from "lucide-react";
+import { ChevronRight, Plus, Search, Settings } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import type { QualifiedTask } from "@/client/daemon-api.ts";
@@ -261,6 +261,17 @@ export function TaskRail({
 			</SidebarContent>
 
 			<SidebarFooter className="border-t">
+				<Button
+					asChild
+					variant="ghost"
+					size="xs"
+					className="text-muted-foreground justify-start"
+				>
+					<Link href="/settings" onClick={close}>
+						<Settings />
+						Settings
+					</Link>
+				</Button>
 				<SessionPanel login={login} />
 			</SidebarFooter>
 			<SidebarRail />

@@ -70,6 +70,9 @@ function registryStore(): {
 			async find(id) {
 				return rows.get(id) ?? null;
 			},
+			async delete(id) {
+				return rows.delete(id);
+			},
 		},
 	};
 }
@@ -411,5 +414,30 @@ test("resolved credentials never appear in public results", async () => {
 	assert.doesNotMatch(
 		JSON.stringify(listed),
 		new RegExp(credential.slice(0, 16)),
+	);
+});
+
+test("deregister removes the connection and 404s on a missing id", async () => {
+	const database = registryStore();
+	const registry = createDaemonRegistry({
+		store: database.store,
+		client: daemonClient(),
+		allowedOrigins: ["http://127.0.0.1:8080"],
+		createID: () => "daemon-a",
+	});
+	await registry.register({
+		token: connectionToken(),
+		name: "A",
+	});
+	const removed = await registry.deregister("daemon-a");
+	assert.equal(removed.connection.id, "daemon-a");
+	assert.deepEqual(removed.result, { deleted: true });
+	assert.equal(database.rows.has("daemon-a"), false);
+	await assert.rejects(
+		registry.deregister("daemon-a"),
+		(error: unknown) =>
+			error instanceof DaemonRegistryError &&
+			error.status === 404 &&
+			error.code === "daemon_not_found",
 	);
 });
