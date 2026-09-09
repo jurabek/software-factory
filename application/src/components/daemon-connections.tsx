@@ -211,10 +211,10 @@ export function DaemonConnections({ login }: { login: string }) {
 				null)
 			: null;
 	async function register(form: FormData) {
+		const name = String(form.get("name") ?? "").trim();
 		const response = await registerDaemon({
-			name: String(form.get("name") ?? ""),
-			endpoint: String(form.get("endpoint") ?? ""),
-			credential: String(form.get("credential") ?? ""),
+			token: String(form.get("token") ?? ""),
+			...(name ? { name } : {}),
 		});
 		setConnections((current) =>
 			[...current, response.connection].sort((left, right) =>

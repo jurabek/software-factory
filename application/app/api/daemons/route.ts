@@ -24,20 +24,21 @@ export async function POST(request: Request) {
 		if (!(await getRequestSession(request)))
 			return privateJSON({ error: "unauthorized" }, 401);
 		const body = (await request.json()) as {
+			token?: unknown;
 			name?: unknown;
-			endpoint?: unknown;
-			credential?: unknown;
 		};
-		const { name, endpoint, credential } = body;
-		if (
-			typeof name !== "string" ||
-			typeof endpoint !== "string" ||
-			typeof credential !== "string"
-		) {
+		const { token, name } = body;
+		if (typeof token !== "string" || !token.trim() || token.length > 8192) {
+			return privateJSON({ error: "invalid_request" }, 400);
+		}
+		if (name !== undefined && typeof name !== "string") {
 			return privateJSON({ error: "invalid_request" }, 400);
 		}
 		return privateJSON(
-			await getDaemonRegistry().register({ name, endpoint, credential }),
+			await getDaemonRegistry().register({
+				token,
+				...(name !== undefined ? { name } : {}),
+			}),
 			201,
 		);
 	} catch (error) {

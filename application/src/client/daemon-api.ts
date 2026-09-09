@@ -58,11 +58,7 @@ export function listDaemons(signal?: AbortSignal) {
 	return apiFetch<{ daemons: DaemonConnection[] }>("/api/daemons", { signal });
 }
 
-export function registerDaemon(input: {
-	name: string;
-	endpoint: string;
-	credential: string;
-}) {
+export function registerDaemon(input: { token: string; name?: string }) {
 	return apiFetch<{ connection: DaemonConnection }>(`/api/daemons`, {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
