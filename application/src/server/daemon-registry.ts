@@ -49,6 +49,7 @@ export type DaemonRegistryStore = {
 	): Promise<DaemonConnectionRow>;
 	list(): Promise<DaemonConnectionRow[]>;
 	find(id: string): Promise<DaemonConnectionRow | null>;
+	delete(id: string): Promise<boolean>;
 };
 
 export class DaemonRegistryError extends Error {
@@ -117,6 +118,13 @@ export function createDaemonRegistryStore(pool: Pool): DaemonRegistryStore {
 				[id],
 			);
 			return result.rows[0] ?? null;
+		},
+		async delete(id) {
+			const result = await pool.query<{ id: string }>(
+				`DELETE FROM daemon_connection WHERE id = $1 RETURNING id`,
+				[id],
+			);
+			return result.rowCount !== null && result.rowCount > 0;
 		},
 	};
 }
@@ -338,6 +346,20 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
 	return {
 		async resolve(id: string): Promise<ResolvedDaemon> {
 			return resolve(id);
+		},
+		async deregister(id: string): Promise<{
+			connection: DaemonConnection;
+			result: { deleted: boolean };
+		}> {
+			const resolved = await resolve(id);
+			const deleted = await options.store.delete(id);
+			if (!deleted)
+				throw new DaemonRegistryError(
+					404,
+					"daemon_not_found",
+					"Daemon connection not found.",
+				);
+			return { connection: resolved.connection, result: { deleted: true } };
 		},
 		async register(input: { token: string; name?: string }): Promise<{
 			connection: DaemonConnection;
