@@ -5,6 +5,7 @@ export type SessionKind =
 	| "process_end"
 	| "phase_start"
 	| "phase_end"
+	| "task_message"
 	| "intervention"
 	| "plan_feedback"
 	| "custom";
@@ -24,6 +25,19 @@ export type MessagePayload = {
 	stop_reason?: string;
 	model?: string;
 	usage?: SessionUsage;
+};
+
+export type TaskMessagePayload = {
+	message_id: string;
+	task_id: string;
+	text: string;
+	recipient_role: string;
+	agent_session_id: string;
+	target_type?: string;
+	target_id?: string;
+	anchor_json?: string;
+	delivery_status: "queued" | "delivered" | "failed";
+	failure_reason?: string;
 };
 
 export type ToolCallPayload = {
@@ -88,6 +102,7 @@ export type SessionPayloadByKind = {
 	process_end: ProcessEndPayload;
 	phase_start: PhasePayload;
 	phase_end: PhasePayload;
+	task_message: TaskMessagePayload;
 	intervention: InterventionPayload;
 	plan_feedback: PlanFeedbackPayload;
 	custom: CustomPayload;

@@ -1,0 +1,323 @@
+= Task Control and Agent Messaging Specification
+:toc:
+:sectnums:
+
+== Status
+
+Completed replacement for the user-facing Intervention intent model.
+
+This specification replaces user selection of `comment`, `steer`, `follow_up`, `revise`, and `repair`. It also replaces plan feedback as a separate message type. Existing Task, Attempt, Agent Session, Artifact Anchor, and deterministic transition concepts remain.
+
+== Problem
+
+The current composer requires a user to classify text before sending it. That classification exposes orchestration details:
+
+* `comment` means persist without agent delivery.
+* `steer` and `follow_up` describe delivery timing.
+* `revise` and `repair` prescribe an execution strategy.
+
+A user should state the desired outcome in ordinary language. The factory should own delivery timing and workflow policy. Explicit controls should be reserved for deterministic operations whose effects must not depend on language interpretation.
+
+== Goals
+
+* Separate deterministic Task control from agent conversation.
+* Allow free-form messages throughout an Agent Session.
+* Remove message intent and delivery-mode selection from the UI and public request interface.
+* Persist every accepted message before attempting delivery.
+* Preserve message order and Agent Session identity.
+* Keep Task transitions, approval, cancellation, and exact retry under factory control.
+* Keep Artifact Anchors as optional message context.
+
+== Non-goals
+
+* Interpreting chat text as a Task command.
+* Guaranteeing mid-invocation input for harnesses that only support turn-based execution.
+* Allowing an agent to approve, pause, resume, abort, or exact-retry a Task.
+* Retaining a new-note workflow that does not deliver text to an agent.
+* Selecting retry, revision, or repair strategy from the message composer.
+
+== Domain model
+
+=== Control
+
+A Control is an explicit deterministic operation against a Task or Attempt. Its result is defined by transition policy and does not depend on agent interpretation.
+
+The supported Controls are:
+
+* `start`
+* `approve`
+* `pause`
+* `resume`
+* `abort`
+* `retry`
+
+`retry` means exact retry. It reuses the selected Attempt's phase definition and input snapshot. It accepts no instruction text.
+
+=== Message
+
+A Message is durable human text sent to an Agent Session. A Message may carry optional Task-history context, but has no intent field.
+
+A Message does not represent approval or another Control, even when its text contains words such as "approve", "pause", "retry", or "abort".
+
+=== Message target
+
+A target adds context. It does not select execution behavior.
+
+A target accepts at most one of:
+
+* `attempt_id`
+* `event_id`
+* `artifact_id`
+
+An Artifact target may include one canonical Artifact Anchor. Existing stale-anchor validation applies.
+
+=== Delivery status
+
+A Message has one of these delivery statuses:
+
+* `queued`: persisted but not yet supplied to the Agent Session.
+* `delivered`: supplied to the harness as live input or as a resumed turn.
+* `failed`: delivery cannot continue; a machine-readable reason is recorded.
+
+Delivery status is observable state, not a user choice.
+
+== Required behavior
+
+=== Control plane
+
+Controls MUST use dedicated routes or equivalent typed operations. Controls MUST NOT accept free-form instruction text.
+
+The factory MUST validate each Control against authoritative transition policy. The UI MUST render server-provided available Controls and MUST NOT infer them from local state strings.
+
+Natural-language messages MUST NOT invoke Controls. For example, sending `abort this task` MUST create a Message and MUST NOT transition the Task to `aborted`.
+
+=== Conversation plane
+
+The composer MUST contain one free-form text input and one Send action. It MUST NOT contain an intent or delivery selector.
+
+A Message request MUST contain non-empty text and a client-generated idempotency key. It MAY contain a target. The factory MUST persist the Message before scheduling or attempting delivery.
+
+An accepted Message MUST be delivered to an Agent Session. It MUST NOT silently become a human-only annotation.
+
+Duplicate requests with the same Task and idempotency key MUST return the original Message and MUST NOT cause duplicate delivery.
+
+=== Agent Session routing
+
+The factory MUST choose the Agent Session; the client MUST NOT choose `steer`, `follow_up`, `revise`, or `repair` behavior.
+
+Routing order:
+
+. If the target resolves to an Agent Attempt, use that Attempt's role and Agent Session as conversational context.
+. Otherwise, use the currently active Agent Attempt.
+. Otherwise, use deterministic Task transition policy to select the next responsible role.
+
+Role selection for common states:
+
+[cols="1,2,3",options="header"]
+|===
+|Task condition
+|Recipient
+|Effect
+
+|Running Agent Attempt
+|That Attempt's Agent Session
+|Deliver live when supported; otherwise queue a resumed turn.
+
+|Running deterministic Attempt
+|Next policy-selected Agent Session
+|Queue without interrupting the deterministic Attempt.
+
+|Awaiting plan approval
+|Planner Agent Session
+|Resume planning with the Message, invalidate any prior approval, validate the new plan, then return to plan approval.
+
+|Paused
+|Policy-selected Agent Session
+|Keep queued. Delivery waits for explicit `resume`.
+
+|Blocked after an Agent Attempt
+|That Attempt's Agent Session
+|Continue from the selected branch's current workspace state.
+
+|Blocked after a deterministic check
+|Builder Agent Session
+|Continue from current check evidence and workspace state; rerun unchanged checks after the agent turn.
+
+|Completed
+|Builder Agent Session
+|Start a continuation Attempt on the selected branch, then run deterministic checks and review normally.
+
+|Aborted
+|None
+|Reject with `invalid_state`. The user must exact-retry an eligible Attempt or create another Task.
+|===
+
+A normal Message continuation MUST use the selected branch's current workspace state. It MUST NOT rewind files or create a child branch. Historical branching and rewind are performed only by exact `retry`.
+
+=== Delivery
+
+The harness seam MUST support turn-based continuation using the existing Agent Session identity. A continuation invocation MUST set resume semantics and use the Message text as the user prompt.
+
+A harness MAY additionally support live input during an active invocation. The factory MUST select live input only when the harness advertises that capability.
+
+For a turn-based harness:
+
+. Persist the Message as `queued`.
+. Let the active invocation settle unless a Control cancels it.
+. Prevent the workflow from advancing past the responsible Agent Attempt while queued Messages exist for that Agent Session.
+. Resume the same Agent Session with the oldest queued Message.
+. Mark the Message `delivered` once the harness accepts the resumed invocation.
+. Process later Messages in FIFO order, with at most one invocation active per Agent Session.
+
+Pi and Claude MUST initially use turn-based continuation unless their adapters implement and advertise live input.
+
+=== Workflow outcomes
+
+Messages provide agent context; they do not prescribe orchestration strategy. After an agent turn, the factory MUST validate its result and apply normal deterministic transition policy.
+
+Examples:
+
+* A Message requesting a plan change resumes the Planner. The resulting plan is validated before approval becomes available.
+* A Message requesting a code change resumes the Builder. Checks run after the Builder completes.
+* A Message sent after a failed check gives the Builder the failure evidence. The same checks run again afterward.
+* A Message asking for a different implementation does not itself select a snapshot, branch, or retry strategy.
+
+=== Pause and abort races
+
+Message persistence, phase completion, and Controls MUST be serialized per Task so accepted Messages are not lost at invocation boundaries.
+
+If `pause` wins the race, queued Messages remain queued and no further invocation starts until `resume`.
+
+If `abort` wins the race, active execution is cancelled, queued Messages become `failed` with reason `task_aborted`, and no Message may restart the Task.
+
+If Message acceptance wins before Agent Attempt completion, the Message MUST be delivered before the workflow advances to the next deterministic phase.
+
+== Public HTTP interface
+
+=== Send Message
+
+[source,http]
+----
+POST /api/v1/tasks/{task-id}/messages
+Content-Type: application/json
+
+{
+  "text": "Keep the public interface unchanged.",
+  "target": {
+    "artifact_id": "artifact-id",
+    "anchor": {
+      "kind": "text_range",
+      "start": 418,
+      "end": 449,
+      "quote": "Public interface"
+    }
+  },
+  "idempotency_key": "client-generated-id"
+}
+----
+
+`target` is optional. `intent`, `delivery`, and `expected_branch_head` are not accepted.
+
+Success returns `202 Accepted` with the persisted Message and its current delivery status.
+
+=== List Messages
+
+[source,http]
+----
+GET /api/v1/tasks/{task-id}/messages
+----
+
+The response is ordered by creation time and includes target, anchor, recipient role, Agent Session identity, delivery status, failure reason, and timestamps.
+
+=== Exact retry
+
+[source,http]
+----
+POST /api/v1/tasks/{task-id}/attempts/{attempt-id}/retry
+----
+
+Exact retry MUST:
+
+* reject running or queued Attempts;
+* reuse the selected Attempt's phase definition;
+* restore the selected Attempt's input snapshot;
+* create one child branch and one queued Attempt atomically;
+* preserve prior history;
+* accept an idempotency key;
+* accept no Message text.
+
+=== Other Controls
+
+Existing typed routes remain for:
+
+[source,text]
+----
+POST /api/v1/tasks/{task-id}/start
+POST /api/v1/tasks/{task-id}/approve
+POST /api/v1/tasks/{task-id}/pause
+POST /api/v1/tasks/{task-id}/resume
+POST /api/v1/tasks/{task-id}/abort
+----
+
+Approval MUST identify the exact current plan digest. A Message to the Planner invalidates approval eligibility until the revised plan is validated.
+
+== Events and reads
+
+Message lifecycle changes MUST appear in the Task event stream. Events MUST identify the Message, Task, recipient role, Agent Session, target context, and delivery status.
+
+`available_actions` MUST contain only deterministic Controls. The following values MUST NOT be emitted as actions:
+
+* `comment`
+* `steer`
+* `follow_up`
+* `revise`
+* `repair`
+
+Historical Interventions MAY remain readable during a transition period, but clients MUST render them as legacy history rather than available composer modes.
+
+== Application requirements
+
+The Task detail interface MUST:
+
+* show a single message composer;
+* allow optional Artifact quotation or historical target context;
+* show queued, delivered, and failed status beside each Message;
+* show deterministic Controls separately from the composer;
+* obtain Control availability from the daemon;
+* preserve typed text while Task events refresh;
+* prevent duplicate submission while retaining server idempotency protection.
+
+The application MUST remove labels and selectors for Comment, Steer running agent, Follow up after settle, Revise and retry, and Continue repair.
+
+== Removal and compatibility
+
+The new interface replaces:
+
+* `POST /tasks/{id}/interventions` for new writes;
+* `comment`, `steer`, `follow_up`, `revise`, and `repair` intent validation;
+* the separate plan-feedback write path;
+* client-side intervention choice policy;
+* delivery mode supplied by clients.
+
+Destructive schema changes are allowed. No migration of development data is required. Read compatibility for existing Intervention rows is optional; new writes MUST use Messages and Controls only.
+
+Daemon OpenAPI, application proxy routes, client contracts, event display contracts, tests, and user documentation MUST be updated together.
+
+== Acceptance criteria
+
+. The composer sends arbitrary text without asking the user to classify it.
+. A Message sent during a running Pi or Claude invocation is persisted immediately, then delivered through the same harness session after the current invocation settles.
+. Multiple Messages sent during one invocation are delivered once each in FIFO order.
+. A Message accepted at the invocation-completion boundary is delivered before the Task advances.
+. A Message sent while paused remains queued until explicit resume.
+. A Message sent after a failed deterministic check resumes the Builder with check evidence, then reruns the unchanged check.
+. A Message sent while awaiting plan approval resumes the Planner and requires approval of the newly validated plan digest.
+. A Message sent after completion continues through Builder, checks, and review without rewinding or branching.
+. A Message sent after abort is rejected and does not restart execution.
+. Text containing a Control name never executes that Control.
+. Exact retry creates one child branch and one Attempt from the original input snapshot without accepting prose.
+. Duplicate Message and retry submissions are idempotent.
+. Pause and abort retain their deterministic cancellation behavior.
+. No public write request or composer control contains `comment`, `steer`, `follow_up`, `revise`, or `repair`.
+. Server-provided available actions contain deterministic Controls only.
+. Daemon tests, race tests, application typecheck, and application build pass.

@@ -1,30 +1,32 @@
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
+import {
+	ConnectionTokenError,
+	parseConnectionToken,
+} from "./connection-token.ts";
 import type {
 	CreateSessionInput,
 	CreateTaskInput,
 	DaemonClient,
 	DaemonCommand,
+	DaemonCommandInput,
 	DaemonCreationDefaults,
 	DaemonEvent,
 	DaemonHarnessModel,
 	DaemonHealth,
 	DaemonTask,
 	EventQuery,
-	FeedbackInput,
-	InterventionInput,
+	MessageInput,
+	RetryInput,
 } from "./daemon-client.ts";
 import { createDaemonClient, daemonCommands } from "./daemon-client.ts";
-import {
-	ConnectionTokenError,
-	parseConnectionToken,
-} from "./connection-token.ts";
 import { getDatabasePool } from "./database.ts";
 import {
 	normalizeDaemonEndpoint,
 	parseAllowedDaemonOrigins,
 } from "./endpoint-policy.ts";
 import { readDeploymentEnvironment } from "./environment.ts";
+import { isMessageTarget } from "./message-contract.ts";
 
 type DaemonConnectionRow = {
 	id: string;
@@ -644,11 +646,11 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
 				throw remapIdentityMismatch(error);
 			}
 		},
-		async feedback(
+		async sendMessage(
 			id: string,
 			taskId: string,
 			actor: string,
-			input: FeedbackInput,
+			input: MessageInput,
 			signal?: AbortSignal,
 		): Promise<{
 			connection: DaemonConnection;
@@ -660,31 +662,34 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
 				throw new DaemonRegistryError(
 					400,
 					"invalid_actor",
-					"Feedback actor is invalid.",
+					"Message actor is invalid.",
 				);
 			if (
 				!input ||
-				typeof input.feedback !== "string" ||
-				!input.feedback.trim()
+				typeof input.text !== "string" ||
+				!input.text.trim() ||
+				typeof input.idempotency_key !== "string" ||
+				!input.idempotency_key.trim()
 			) {
 				throw new DaemonRegistryError(
 					400,
-					"invalid_feedback",
-					"Feedback is required.",
+					"invalid_message",
+					"Message text and idempotency key are required.",
 				);
 			}
+			if (input.target && !isMessageTarget(input.target))
+				throw new DaemonRegistryError(
+					400,
+					"invalid_message",
+					"Message target must identify exactly one context.",
+				);
 			const resolved = await resolve(id);
 			try {
-				const result = await options.client.feedback(
+				const result = await options.client.sendMessage(
 					resolved.endpoint,
 					resolved.credential,
 					validatedTask,
-					{
-						feedback: input.feedback.trim(),
-						...(input.current_plan_digest
-							? { current_plan_digest: input.current_plan_digest }
-							: {}),
-					},
+					input,
 					{ actor, signal },
 				);
 				return {
@@ -696,40 +701,28 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
 				throw remapIdentityMismatch(error);
 			}
 		},
-		async intervene(
+		async messages(
 			id: string,
 			taskId: string,
-			actor: string,
-			input: InterventionInput,
 			signal?: AbortSignal,
 		): Promise<{
 			connection: DaemonConnection;
 			taskId: string;
-			result: unknown;
+			messages: unknown;
 		}> {
 			const validatedTask = validatedTaskID(taskId);
-			if (!actor || actor.length > 64)
-				throw new DaemonRegistryError(
-					400,
-					"invalid_actor",
-					"Intervention actor is invalid.",
-				);
 			const resolved = await resolve(id);
 			try {
-				const result = await options.client.intervene(
+				const messages = await options.client.messages(
 					resolved.endpoint,
 					resolved.credential,
 					validatedTask,
-					input,
-					{
-						actor,
-						signal,
-					},
+					{ signal },
 				);
 				return {
 					connection: resolved.connection,
 					taskId: validatedTask,
-					result,
+					messages,
 				};
 			} catch (error) {
 				throw remapIdentityMismatch(error);
@@ -1002,6 +995,7 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
 			taskId: string,
 			command: DaemonCommand,
 			actor: string,
+			input: DaemonCommandInput | undefined = undefined,
 			signal?: AbortSignal,
 		): Promise<{
 			connection: DaemonConnection;
@@ -1021,6 +1015,15 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
 					"invalid_actor",
 					"Command actor is invalid.",
 				);
+			if (
+				command === "approve" &&
+				(typeof input?.plan_digest !== "string" || !input.plan_digest)
+			)
+				throw new DaemonRegistryError(
+					400,
+					"invalid_command",
+					"Approval requires the current plan digest.",
+				);
 			const resolved = await resolve(id);
 			try {
 				const result = await options.client.command(
@@ -1028,6 +1031,7 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
 					resolved.credential,
 					validatedTask,
 					command,
+					input,
 					{
 						actor,
 						signal,
@@ -1037,6 +1041,53 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
 					connection: resolved.connection,
 					taskId: validatedTask,
 					accepted: result.accepted,
+				};
+			} catch (error) {
+				throw remapIdentityMismatch(error);
+			}
+		},
+		async retryAttempt(
+			id: string,
+			taskId: string,
+			attemptId: string,
+			actor: string,
+			input: RetryInput,
+			signal?: AbortSignal,
+		): Promise<{
+			connection: DaemonConnection;
+			taskId: string;
+			attemptId: string;
+			result: unknown;
+		}> {
+			const validatedTask = validatedTaskID(taskId);
+			const validatedAttempt = validatedTaskID(attemptId);
+			if (
+				!actor ||
+				actor.length > 64 ||
+				!input ||
+				typeof input.idempotency_key !== "string" ||
+				!input.idempotency_key.trim()
+			)
+				throw new DaemonRegistryError(
+					400,
+					"invalid_request",
+					"Retry actor and idempotency key are required.",
+				);
+			const resolved = await resolve(id);
+			try {
+				const result = await options.client.retryAttempt(
+					resolved.endpoint,
+					resolved.credential,
+					validatedTask,
+					validatedAttempt,
+					input,
+					{ actor, signal },
+				);
+				return {
+					connection: resolved.connection,
+					taskId: validatedTask,
+					attemptId: validatedAttempt,
+					result,
 				};
 			} catch (error) {
 				throw remapIdentityMismatch(error);

@@ -10,7 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
+	"uuid"
+
 	"github.com/jurabek/software-factory/daemon/internal/session"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 )
@@ -239,7 +240,7 @@ func (s *Service) Intervene(ctx context.Context, taskID, actor string, request I
 		return store.InterventionResult{}, err
 	}
 	if applied.Created {
-		actions := []string{"comment", "pause", "abort"}
+		actions := AvailableActions(newPhase, newState)
 		_ = s.traceAttempt(ctx, taskID, newPhase, applied.Intervention.ID, session.NewIntervention(session.InterventionPayload{Actor: applied.Intervention.Actor, Intent: applied.Intervention.Intent, Text: applied.Intervention.Text, Delivery: applied.Intervention.Delivery, InterventionID: applied.Intervention.ID, TargetType: applied.Intervention.TargetType, TargetID: applied.Intervention.TargetID}), actions)
 	}
 	return store.InterventionResult{Intervention: applied.Intervention, BranchID: applied.BranchID, AttemptID: applied.AttemptID, Action: request.Intent}, nil
@@ -258,7 +259,7 @@ func (s *Service) resetClaudeSessions(ctx context.Context, taskID string) {
 		if existing.Harness != "claude" {
 			continue
 		}
-		newID := uuid.NewString()
+		newID := uuid.New().String()
 		newDir := filepath.Join(s.taskDir(taskID), "sessions", existing.Role, existing.Harness)
 		prior, err := s.db.ReplaceAgentSession(ctx, taskID, existing.Role, newID, newDir)
 		if err != nil {
