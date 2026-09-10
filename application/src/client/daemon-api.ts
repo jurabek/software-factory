@@ -1,7 +1,11 @@
 // Same-origin browser client. Builds only application URLs; daemon endpoints
 // and credentials never leave the application server.
 import type { SessionEvent, SessionUsage } from "@/client/session-contract.ts";
-import type { DaemonTask } from "@/server/daemon-client.ts";
+import type {
+	DaemonPipeline,
+	DaemonStageProjection,
+	DaemonTask,
+} from "@/server/daemon-client.ts";
 import type { DaemonConnection } from "@/server/daemon-registry.ts";
 
 export type QualifiedTask = DaemonTask & { daemonId: string };
@@ -97,6 +101,7 @@ export type CreationOptions = {
 	daemon: DaemonConnection;
 	defaults: { coding_agent: string; model: string; thinking: string };
 	harnesses: string[];
+	pipelines: DaemonPipeline[];
 	models: {
 		harness: string;
 		models: {
@@ -131,6 +136,7 @@ export function daemonCreateTask(
 			repo?: string;
 			primary?: boolean;
 		}[];
+		pipeline?: string;
 		coding_agent?: string;
 		model?: string;
 		thinking?: string;
@@ -311,6 +317,7 @@ export type TaskDetails = QualifiedTask & {
 	plan_digest?: string;
 	available_actions?: string[];
 	agent_sessions?: AgentSession[];
+	stages?: DaemonStageProjection[];
 };
 
 function daemonTaskResource<T>(

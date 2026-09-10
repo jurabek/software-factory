@@ -7,6 +7,7 @@ import {
 	daemonCreationOptions,
 	type QualifiedTask,
 } from "@/client/daemon-api.ts";
+import { PipelineSelector } from "@/components/pipeline-selector.tsx";
 import { Alert, AlertDescription } from "@/components/ui/alert.tsx";
 import { Button } from "@/components/ui/button.tsx";
 import {
@@ -24,6 +25,7 @@ import {
 	SelectValue,
 } from "@/components/ui/select.tsx";
 import { Textarea } from "@/components/ui/textarea.tsx";
+import type { DaemonPipeline } from "@/server/daemon-client.ts";
 import type { DaemonConnection } from "@/server/daemon-registry.ts";
 
 const thinkingLevels = [
@@ -92,7 +94,9 @@ export function TaskCreation({
 	const [harness, setHarness] = useState("");
 	const [model, setModel] = useState("");
 	const [thinking, setThinking] = useState("");
+	const [pipeline, setPipeline] = useState("");
 	const [harnesses, setHarnesses] = useState<string[]>([]);
+	const [pipelines, setPipelines] = useState<DaemonPipeline[]>([]);
 	const [models, setModels] = useState<
 		{ provider: string; id: string; thinking?: string[] }[]
 	>([]);
@@ -135,6 +139,8 @@ export function TaskCreation({
 		setHarness("");
 		setModel("");
 		setThinking("");
+		setPipeline("");
+		setPipelines([]);
 		setRecentDirectories([]);
 		void daemonCreationOptions(daemon.id, undefined, controller.signal)
 			.then((options) => {
@@ -144,6 +150,10 @@ export function TaskCreation({
 				setHarness(options.defaults.coding_agent);
 				setModel(options.defaults.model);
 				setThinking(options.defaults.thinking);
+				setPipelines(options.pipelines);
+				setPipeline(
+					options.pipelines.find((entry) => entry.default)?.name ?? "",
+				);
 				setLoading(false);
 			})
 			.catch((failure: unknown) => {
@@ -241,6 +251,14 @@ export function TaskCreation({
 				)
 					return;
 				setHarnesses(options.harnesses);
+				if (options.pipelines.length) {
+					setPipelines(options.pipelines);
+					setPipeline((previous) =>
+						options.pipelines.some((entry) => entry.name === previous)
+							? previous
+							: (options.pipelines.find((entry) => entry.default)?.name ?? ""),
+					);
+				}
 				setModels(options.models.models);
 				const available = options.models.models.map(
 					(entry) => `${entry.provider}/${entry.id}`,
@@ -341,6 +359,10 @@ export function TaskCreation({
 									primary: repository.primary,
 								},
 					),
+					...(pipeline &&
+					pipeline !== pipelines.find((entry) => entry.default)?.name
+						? { pipeline }
+						: {}),
 					...(harness ? { coding_agent: harness } : {}),
 					...(model ? { model } : {}),
 					...(thinking ? { thinking } : {}),
@@ -619,6 +641,15 @@ export function TaskCreation({
 					) : null}
 				</Section>
 			)}
+
+			<Section title="Pipeline" defaultOpen>
+				<PipelineSelector
+					pipelines={pipelines}
+					loading={loading}
+					value={pipeline}
+					onChange={setPipeline}
+				/>
+			</Section>
 
 			<footer className="bg-secondary text-muted-foreground mt-3 flex items-center gap-4 rounded-md border px-3 py-2.5 text-xs">
 				<span>Ctrl/Cmd + Enter to create</span>

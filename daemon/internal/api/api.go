@@ -71,6 +71,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/config", s.configRead)
 	mux.HandleFunc("GET /api/v1/harnesses", s.harnessesRead)
 	mux.HandleFunc("GET /api/v1/models", s.modelsRead)
+	mux.HandleFunc("GET /api/v1/pipelines", s.pipelinesRead)
 	mux.HandleFunc("POST /api/v1/tasks", s.create)
 	mux.HandleFunc("GET /api/v1/tasks", s.tasks)
 	mux.HandleFunc("GET /api/v1/tasks/{id}", s.task)
@@ -183,6 +184,10 @@ func (s *Server) modelsRead(w http.ResponseWriter, r *http.Request) {
 	write(w, http.StatusOK, map[string]any{"harness": harness, "models": models})
 }
 
+func (s *Server) pipelinesRead(w http.ResponseWriter, _ *http.Request) {
+	write(w, http.StatusOK, s.config.Pipelines)
+}
+
 func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	if !s.ready(w) {
 		return
@@ -279,6 +284,13 @@ func (s *Server) taskResponse(ctx context.Context, task store.Task) (taskRespons
 	}
 	if phase == nil && len(phases) > 0 {
 		phase = &phases[len(phases)-1]
+	}
+	if s.factory != nil {
+		stages, projectionErr := s.factory.StageProjection(ctx, task)
+		if projectionErr != nil {
+			return taskResponse{}, projectionErr
+		}
+		task.Stages = stages
 	}
 	return taskResponse{Task: task, AvailableActions: factory.AvailableActions(phase, task.State)}, nil
 }

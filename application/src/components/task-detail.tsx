@@ -20,7 +20,6 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-	daemonArtifacts,
 	daemonAttempts,
 	daemonBranches,
 	daemonChecks,
@@ -38,7 +37,6 @@ import {
 	type MessageTarget,
 	openTaskStream,
 	type QualifiedTask,
-	type TaskArtifact,
 	type TaskAttempt,
 	type TaskBranch,
 	type TaskCheck,
@@ -61,6 +59,7 @@ import {
 import { meaningfulWorkEvents, visibleWorkEvents } from "@/client/work-log.ts";
 import { AttemptGraph } from "@/components/attempt-graph.tsx";
 import { EventDialog } from "@/components/event-dialog.tsx";
+import { StageProgress } from "@/components/stage-progress.tsx";
 import { Alert, AlertDescription } from "@/components/ui/alert.tsx";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar.tsx";
 import { Badge } from "@/components/ui/badge.tsx";
@@ -101,7 +100,7 @@ const liveTone: Record<string, string> = {
 const visibleEventLimit = 500;
 type DisplayArtifact = {
 	id: string;
-	kind: "result" | "check" | "diff" | "file";
+	kind: "result" | "check" | "diff";
 	title: string;
 	subtitle: string;
 	content: string;
@@ -342,7 +341,6 @@ export function TaskDetail({
 	const [details, setDetails] = useState<TaskDetails | null>(null);
 	const [attempts, setAttempts] = useState<TaskAttempt[]>([]);
 	const [branches, setBranches] = useState<TaskBranch[]>([]);
-	const [artifacts, setArtifacts] = useState<TaskArtifact[]>([]);
 	const [checks, setChecks] = useState<TaskCheck[]>([]);
 	const [results, setResults] = useState<TaskResult[]>([]);
 	const [diff, setDiff] = useState<TaskDiff>({ repositories: [] });
@@ -352,9 +350,6 @@ export function TaskDetail({
 	const [selectedAttempt, setSelectedAttempt] = useState<string | null>(null);
 	const [selectedBranchId, setSelectedBranchId] = useState<string | null>(null);
 	const [selectedArtifact, setSelectedArtifact] = useState<string | null>(null);
-	const [artifactMode, setArtifactMode] = useState<"rendered" | "raw">(
-		"rendered",
-	);
 	const [selectedEvent, setSelectedEvent] = useState<SessionEvent | null>(null);
 	const [autoScroll] = useState(true);
 	const [events, setEvents] = useState<SessionEvent[]>([]);
@@ -410,13 +405,6 @@ export function TaskDetail({
 			subtitle: `${repository.files.length} files`,
 			content: repository.patch || "No changes",
 		})),
-		...artifacts.map((artifact) => ({
-			id: artifact.id,
-			kind: "file" as const,
-			title: artifact.type,
-			subtitle: artifact.path,
-			content: `This artifact remains on the daemon sandbox.\n\nPath: ${artifact.path}\nDigest: ${artifact.digest}`,
-		})),
 	];
 	const selectedArtifactValue =
 		artifactViews.find((artifact) => artifact.id === selectedArtifact) ?? null;
@@ -449,12 +437,9 @@ export function TaskDetail({
 		commands.includes(action as Command),
 	);
 	const canRetry = availableActions.includes("retry");
-	const messageTarget: MessageTarget | undefined =
-		selectedArtifactValue?.kind === "file"
-			? { artifact_id: selectedArtifactValue.id }
-			: selectedAttempt
-				? { attempt_id: selectedAttempt }
-				: undefined;
+	const messageTarget: MessageTarget | undefined = selectedAttempt
+		? { attempt_id: selectedAttempt }
+		: undefined;
 
 	function beginMutation(): {
 		generation: number;
@@ -481,7 +466,6 @@ export function TaskDetail({
 				taskResult,
 				attemptResult,
 				branchResult,
-				artifactResult,
 				checksResult,
 				resultsResult,
 				diffResult,
@@ -492,7 +476,6 @@ export function TaskDetail({
 				daemonTask(daemonId, task.id, signal),
 				daemonAttempts(daemonId, task.id, signal),
 				daemonBranches(daemonId, task.id, signal),
-				daemonArtifacts(daemonId, task.id, signal),
 				daemonChecks(daemonId, task.id, signal),
 				daemonResults(daemonId, task.id, signal),
 				daemonDiff(daemonId, task.id, signal),
@@ -503,7 +486,6 @@ export function TaskDetail({
 			setDetails(taskResult.task);
 			setAttempts(attemptResult.attempts ?? []);
 			setBranches(branchResult.branches ?? []);
-			setArtifacts(artifactResult.artifacts ?? []);
 			setChecks(checksResult.checks ?? []);
 			setResults(resultsResult.results ?? []);
 			setDiff(diffResult.diff ?? { repositories: [] });
@@ -529,7 +511,6 @@ export function TaskDetail({
 		setDetails(null);
 		setAttempts([]);
 		setBranches([]);
-		setArtifacts([]);
 		setChecks([]);
 		setResults([]);
 		setDiff({ repositories: [] });
@@ -1306,9 +1287,7 @@ export function TaskDetail({
 						</span>
 						{messageTarget ? (
 							<Badge variant="outline" className="ml-auto text-[0.68rem]">
-								{"artifact_id" in messageTarget
-									? `Artifact ${messageTarget.artifact_id.slice(0, 8)}`
-									: `Attempt ${messageTarget.attempt_id.slice(0, 8)}`}
+								{`Attempt ${messageTarget.attempt_id.slice(0, 8)}`}
 							</Badge>
 						) : null}
 					</div>
@@ -1424,6 +1403,12 @@ export function TaskDetail({
 							Graph
 						</TabsTrigger>
 						<TabsTrigger
+							value="pipeline"
+							className="text-[0.68rem] uppercase tracking-[0.07em]"
+						>
+							Pipeline
+						</TabsTrigger>
+						<TabsTrigger
 							value="artifacts"
 							className="text-[0.68rem] uppercase tracking-[0.07em]"
 						>
@@ -1445,7 +1430,7 @@ export function TaskDetail({
 							<strong className="text-subtle font-semibold">{editCount}</strong>{" "}
 							edit ·{" "}
 							<strong className="text-subtle font-semibold">
-								{artifacts.length}
+								0
 							</strong>{" "}
 							new ·{" "}
 							<strong className="text-subtle font-semibold">
@@ -1462,10 +1447,7 @@ export function TaskDetail({
 						</p>
 						<ul className="grid gap-1.5">
 							{artifactViews.map((artifact) => {
-								const label =
-									artifact.kind === "file"
-										? artifact.subtitle.split("/").pop() || artifact.subtitle
-										: artifact.title;
+								const label = artifact.title;
 								return (
 									<li key={artifact.id}>
 										<button
@@ -1474,7 +1456,6 @@ export function TaskDetail({
 											aria-pressed={selectedArtifact === artifact.id}
 											onClick={() => {
 												setSelectedArtifact(artifact.id);
-												setArtifactMode("rendered");
 											}}
 										>
 											<File className="text-muted-foreground size-4" />
@@ -1505,24 +1486,6 @@ export function TaskDetail({
 											type="button"
 											variant="outline"
 											size="xs"
-											aria-pressed={artifactMode === "rendered"}
-											onClick={() => setArtifactMode("rendered")}
-										>
-											Rendered
-										</Button>
-										<Button
-											type="button"
-											variant="outline"
-											size="xs"
-											aria-pressed={artifactMode === "raw"}
-											onClick={() => setArtifactMode("raw")}
-										>
-											Raw
-										</Button>
-										<Button
-											type="button"
-											variant="outline"
-											size="xs"
 											onClick={() => setSelectedArtifact(null)}
 										>
 											Close
@@ -1530,18 +1493,20 @@ export function TaskDetail({
 									</div>
 								</div>
 								<pre className="text-muted-foreground mt-2.5 max-h-72 overflow-auto text-xs leading-relaxed break-words whitespace-pre-wrap">
-									{artifactMode === "rendered"
-										? renderedArtifactContent(selectedArtifactValue)
-										: selectedArtifactValue.content}
+									{renderedArtifactContent(selectedArtifactValue)}
 								</pre>
-								{selectedArtifactValue.kind === "file" ? (
-									<p className="text-muted-foreground mt-2.5 border-t pt-2.5 text-xs">
-										Artifact target selected. Quoting is unavailable because
-										canonical bytes and offsets are not loaded.
-									</p>
-								) : null}
 							</article>
 						) : null}
+					</TabsContent>
+					<TabsContent
+						value="pipeline"
+						className="min-h-0 flex-1 overflow-y-auto p-3.5"
+					>
+						<StageProgress
+							pipeline={currentTask.pipeline}
+							activeStage={currentTask.active_stage}
+							stages={currentTask.stages ?? []}
+						/>
 					</TabsContent>
 					<TabsContent
 						value="workspace"

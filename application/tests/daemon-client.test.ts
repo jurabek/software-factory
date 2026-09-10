@@ -55,6 +55,12 @@ test("daemon task and health responses project only known safe fields", async ()
 						request: "request",
 						state: "draft",
 						created_at: "2026-09-06T12:00:00Z",
+						pipeline: "standard",
+						active_stage: "verify",
+						stages: [
+							{ id: "build", kind: "build", status: "completed" },
+							{ id: "verify", kind: "verify", status: "running" },
+						],
 						extra: credential,
 					},
 				]),
@@ -69,6 +75,12 @@ test("daemon task and health responses project only known safe fields", async ()
 			request: "request",
 			state: "draft",
 			created_at: "2026-09-06T12:00:00Z",
+			pipeline: "standard",
+			active_stage: "verify",
+			stages: [
+				{ id: "build", kind: "build", status: "completed" },
+				{ id: "verify", kind: "verify", status: "running" },
+			],
 		},
 	]);
 });
@@ -227,6 +239,53 @@ test("creation posts JSON bodies with the expected identity", async () => {
 		request: "Build",
 		repositories: [{ type: "github", repo: "owner/app" }],
 	});
+	await client.createTask(
+		"http://127.0.0.1:8080",
+		"credential",
+		{
+			request: "Build",
+			repositories: [{ type: "github", repo: "owner/app" }],
+			pipeline: "thorough",
+		},
+		{},
+	);
+	assert.deepEqual(JSON.parse(String(requests[1].init?.body)), {
+		request: "Build",
+		repositories: [{ type: "github", repo: "owner/app" }],
+		pipeline: "thorough",
+	});
+});
+
+test("pipeline reads project ordered public stages", async () => {
+	const requests: string[] = [];
+	const client = createDaemonClient(async (input) => {
+		requests.push(String(input));
+		return Response.json([
+			{
+				name: "standard",
+				default: true,
+				stages: [
+					{ id: "build", kind: "build", agent: "builder" },
+					{ id: "verify", kind: "verify" },
+				],
+				secret: "must not leak",
+			},
+		]);
+	});
+	assert.deepEqual(
+		await client.pipelines("http://127.0.0.1:8080", "credential"),
+		[
+			{
+				name: "standard",
+				default: true,
+				stages: [
+					{ id: "build", kind: "build", agent: "builder" },
+					{ id: "verify", kind: "verify" },
+				],
+			},
+		],
+	);
+	assert.equal(requests[0], "http://127.0.0.1:8080/api/v1/pipelines");
 });
 
 test("task workflow resources stay on the authenticated daemon connection", async () => {

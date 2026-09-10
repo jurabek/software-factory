@@ -8,14 +8,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
-	"syscall"
 	"text/template"
 	"time"
 
@@ -62,6 +58,7 @@ type Repository struct {
 type CreateRequest struct {
 	Request      string       `json:"request"`
 	Repositories []Repository `json:"repositories"`
+	Pipeline     string       `json:"pipeline,omitempty"`
 	CodingAgent  string       `json:"coding_agent,omitempty"`
 	Model        string       `json:"model,omitempty"`
 	Thinking     string       `json:"thinking,omitempty"`
@@ -120,6 +117,7 @@ func (s *Service) CreateSession(ctx context.Context, taskID string, request Crea
 		CodingAgent:  task.CodingAgent,
 		Model:        task.Model,
 		Thinking:     task.Thinking,
+		Pipeline:     task.Pipeline,
 	}, task.ID)
 }
 
@@ -134,6 +132,11 @@ func (s *Service) create(ctx context.Context, request CreateRequest, parentTaskI
 	request.CodingAgent = strings.TrimSpace(request.CodingAgent)
 	request.Model = strings.TrimSpace(request.Model)
 	request.Thinking = strings.TrimSpace(request.Thinking)
+	request.Pipeline = strings.TrimSpace(request.Pipeline)
+	configured, selectedPipeline, err := s.selectPipeline(request.Pipeline)
+	if err != nil {
+		return store.Task{}, err
+	}
 	if request.CodingAgent != "" && !config.IsValidHarness(request.CodingAgent) {
 		return store.Task{}, fmt.Errorf("coding_agent must be pi, codex, or claude")
 	}
@@ -170,7 +173,16 @@ func (s *Service) create(ctx context.Context, request CreateRequest, parentTaskI
 			return store.Task{}, fmt.Errorf("create task workspace: %w", err)
 		}
 	}
-	task := store.Task{ID: id, ParentTaskID: parentTaskID, Request: request.Request, WorkspacePath: workspace, Repositories: repositories, State: string(Draft), CreatedAt: createdAt, CodingAgent: request.CodingAgent, Model: request.Model, Thinking: request.Thinking}
+	configured = config.ApplyTaskOverrides(configured, request.CodingAgent, request.Model, request.Thinking)
+	configSnapshot, err := snapshotConfig(configured)
+	if err != nil {
+		_ = os.RemoveAll(workspace)
+		return store.Task{}, fmt.Errorf("encode task config: %w", err)
+	}
+	if len(configured.Agents) == 0 {
+		configSnapshot = ""
+	}
+	task := store.Task{ID: id, ParentTaskID: parentTaskID, Request: request.Request, WorkspacePath: workspace, Repositories: repositories, State: string(Draft), Pipeline: selectedPipeline.Name, ConfigSnapshot: configSnapshot, CreatedAt: createdAt, CodingAgent: request.CodingAgent, Model: request.Model, Thinking: request.Thinking}
 	metadata, err := json.MarshalIndent(task, "", "  ")
 	if err != nil {
 		_ = os.RemoveAll(workspace)
@@ -197,7 +209,7 @@ func (s *Service) Start(ctx context.Context, id string) error {
 	if err := s.ensureBranch(ctx, id, ""); err != nil {
 		return err
 	}
-	s.launch(id, s.prepareAndPlan)
+	s.launch(id, s.progress)
 	return nil
 }
 
@@ -288,7 +300,7 @@ func (s *Service) Approve(ctx context.Context, id, actor, expectedDigest string)
 	if err := s.db.Transition(ctx, id, string(AwaitingApproval), string(Building), "", ""); err != nil {
 		return err
 	}
-	s.launch(id, s.buildCheckReview)
+	s.launch(id, s.progress)
 	return nil
 }
 
@@ -408,21 +420,25 @@ func (s *Service) Resume(ctx context.Context, id string) error {
 	} else if !errors.Is(messageErr, store.ErrNotFound) {
 		return messageErr
 	}
-	target := State(task.PreviousState)
-	if target == AwaitingApproval || target == Draft || target == "" {
+	if task.State == string(Blocked) && task.Error == "unresolved_questions" {
 		return store.ErrConflict
 	}
+	_, pipeline, pipelineErr := s.taskPipeline(task)
+	if pipelineErr != nil {
+		return pipelineErr
+	}
+	stage, _, stageOK := stageDefinition(pipeline, task.ActiveStage)
+	if !stageOK {
+		return store.ErrConflict
+	}
+	target := stageState(stage.Kind)
 	if !CanTransition(State(task.State), target) {
 		return store.ErrConflict
 	}
 	if err := s.db.Transition(ctx, id, task.State, string(target), task.ActivePhase, ""); err != nil {
 		return err
 	}
-	if target == Preparing || target == Planning {
-		s.launch(id, s.prepareAndPlan)
-	} else {
-		s.launch(id, s.buildCheckReview)
-	}
+	s.launch(id, s.progress)
 	return nil
 }
 
@@ -461,16 +477,24 @@ func (s *Service) Diff(ctx context.Context, id string) (Diff, error) {
 	if err != nil {
 		return Diff{}, err
 	}
+	return s.diffRepositories(ctx, task, false)
+}
+
+func (s *Service) diffRepositories(ctx context.Context, task store.Task, reviewBase bool) (Diff, error) {
 	result := Diff{Repositories: make([]RepositoryDiff, 0, len(task.Repositories))}
 	for _, repository := range task.Repositories {
 		if repository.WorkingPath == "" {
 			continue
 		}
-		files, diffErr := factorygit.ChangedFiles(ctx, s.git, repository.WorkingPath)
+		base := repository.BaseSHA
+		if reviewBase && repository.ReviewBaseSHA != "" {
+			base = repository.ReviewBaseSHA
+		}
+		files, diffErr := factorygit.ChangedFiles(ctx, s.git, repository.WorkingPath, base)
 		if diffErr != nil {
 			return Diff{}, diffErr
 		}
-		patch, diffErr := factorygit.Diff(ctx, s.git, repository.WorkingPath)
+		patch, diffErr := factorygit.Diff(ctx, s.git, repository.WorkingPath, base)
 		if diffErr != nil {
 			return Diff{}, diffErr
 		}
@@ -588,6 +612,7 @@ func (s *Service) prepareAndPlan(ctx context.Context, id string) error {
 			return prepareErr
 		}
 		repository.CanonicalPath, repository.WorkingPath, repository.BaseSHA = canonical, workingPath, profile.BaseSHA
+		repository.ReviewBaseSHA, repository.BranchName = profile.BaseSHA, profile.BranchName
 		if err = s.db.SetRepositoryPrepared(ctx, repository); err != nil {
 			s.failPhase(ctx, phase, err)
 			return err
@@ -635,7 +660,7 @@ func (s *Service) prepareAndPlan(ctx context.Context, id string) error {
 }
 
 func (s *Service) plan(ctx context.Context, task store.Task, revision map[string]any) error {
-	before, err := taskChangedFiles(ctx, s.git, task.Repositories)
+	before, err := repositoryFingerprints(ctx, s.git, task.Repositories)
 	if err != nil {
 		return err
 	}
@@ -654,11 +679,11 @@ func (s *Service) plan(ctx context.Context, task store.Task, revision map[string
 		return err
 	}
 	_, err = s.completeAgentPhase(ctx, task, phase, "planner", validate, payload, func(payload string) error {
-		after, changedErr := taskChangedFiles(ctx, s.git, task.Repositories)
+		after, changedErr := repositoryFingerprints(ctx, s.git, task.Repositories)
 		if changedErr != nil {
 			return changedErr
 		}
-		if !sameStrings(before, after) {
+		if !sameFingerprints(before, after) {
 			return fmt.Errorf("planner modified repository")
 		}
 		return nil
@@ -705,7 +730,7 @@ func (s *Service) buildCheckReview(ctx context.Context, id string) error {
 			return beginErr
 		}
 		for _, repository := range task.Repositories {
-			if err = s.runChecks(ctx, task, phase, repository, profiles[repository.Name].Checks); err != nil {
+			if err = s.runChecks(ctx, task, phase, repository, profiles[repository.Name].Checks, "primary", ""); err != nil {
 				s.failPhase(ctx, phase, err)
 				return err
 			}
@@ -718,7 +743,11 @@ func (s *Service) buildCheckReview(ctx context.Context, id string) error {
 		}
 	}
 	task, _ = s.db.Task(ctx, id)
-	before, err := taskChangedFiles(ctx, s.git, task.Repositories)
+	before, err := repositoryFingerprints(ctx, s.git, task.Repositories)
+	if err != nil {
+		return err
+	}
+	changedFiles, err := taskChangedFiles(ctx, s.git, task.Repositories, true)
 	if err != nil {
 		return err
 	}
@@ -726,14 +755,25 @@ func (s *Service) buildCheckReview(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	checks, _ := s.db.Checks(ctx, id)
-	changes, err := s.Diff(ctx, id)
+	checks, err := s.db.Checks(ctx, id)
+	if err != nil {
+		return err
+	}
+	testChanges, err := s.db.TestChanges(ctx, id)
+	if err != nil {
+		return err
+	}
+	comparisons, err := s.db.Comparisons(ctx, id)
+	if err != nil {
+		return err
+	}
+	changes, err := s.diffRepositories(ctx, task, true)
 	if err != nil {
 		s.failPhase(ctx, phase, err)
 		return err
 	}
 	validate := validatorForRole("reviewer")
-	reviewPayload, err := s.runRole(ctx, task, phase, "reviewer", map[string]any{"TaskID": task.ID, "Request": task.Request, "Plan": plan, "Checks": checks, "ChangedFiles": before, "Diff": changes.Repositories}, validate)
+	reviewPayload, err := s.runRole(ctx, task, phase, "reviewer", map[string]any{"TaskID": task.ID, "Request": task.Request, "Plan": plan, "Checks": checks, "TestChanges": testChanges, "Comparisons": comparisons, "ChangedFiles": changedFiles, "Diff": changes.Repositories}, validate)
 	if err != nil {
 		s.failPhase(ctx, phase, err)
 		return err
@@ -746,11 +786,11 @@ func (s *Service) buildCheckReview(ctx context.Context, id string) error {
 		if !review.Approved {
 			return fmt.Errorf("reviewer rejected implementation")
 		}
-		after, changedErr := taskChangedFiles(ctx, s.git, task.Repositories)
+		after, changedErr := repositoryFingerprints(ctx, s.git, task.Repositories)
 		if changedErr != nil {
 			return changedErr
 		}
-		if !sameStrings(before, after) {
+		if !sameFingerprints(before, after) {
 			return fmt.Errorf("reviewer modified repository")
 		}
 		return nil
@@ -765,9 +805,15 @@ func (s *Service) runRole(ctx context.Context, task store.Task, phase store.Phas
 	if err != nil {
 		return "", err
 	}
-	agent, ok := agentForRole(taskConfig, role)
+	stageID := role
+	agentName := role
+	if phase.Kind != "agent" && phase.Owner != "" {
+		stageID = phase.Name
+		agentName = phase.Owner
+	}
+	agent, ok := agentForRole(taskConfig, agentName)
 	if !ok {
-		return "", fmt.Errorf("agent %s not configured", role)
+		return "", fmt.Errorf("agent %s not configured", agentName)
 	}
 	adapter, ok := s.harnesses.Get(taskConfig.Defaults.CodingAgent)
 	if !ok {
@@ -778,10 +824,10 @@ func (s *Service) runRole(ctx context.Context, task store.Task, phase store.Phas
 		return "", err
 	}
 	harnessName := taskConfig.Defaults.CodingAgent
-	sessionDir := filepath.Join(s.taskDir(task.ID), "sessions", role, harnessName)
-	storedSession, sessionErr := s.db.AgentSession(ctx, task.ID, role)
+	sessionDir := filepath.Join(s.taskDir(task.ID), "sessions", stageID, harnessName)
+	storedSession, sessionErr := s.db.AgentSession(ctx, task.ID, stageID)
 	if errors.Is(sessionErr, store.ErrNotFound) {
-		storedSession, sessionErr = s.db.ReserveAgentSession(ctx, task.ID, store.AgentSession{Role: role, Harness: harnessName, Model: agent.Model, Thinking: agent.Thinking, Color: agent.Color, HarnessSessionID: uuid.New().String(), SessionDirectory: sessionDir, AccountingComplete: true})
+		storedSession, sessionErr = s.db.ReserveAgentSession(ctx, task.ID, store.AgentSession{StageID: stageID, AgentName: agentName, Role: agentName, Harness: harnessName, Model: agent.Model, Thinking: agent.Thinking, Color: agent.Color, HarnessSessionID: uuid.New().String(), SessionDirectory: sessionDir, AccountingComplete: true})
 	}
 	if sessionErr != nil {
 		return "", sessionErr
@@ -799,13 +845,28 @@ func (s *Service) runRole(ctx context.Context, task store.Task, phase store.Phas
 	sessionReady := storedSession.SessionReady
 	for attempt := 0; attempt <= taskConfig.Runtime.JSONFixAttempts; attempt++ {
 		if attempt > 0 {
-			request.Prompt = "Your previous final response was invalid: " + err.Error() + "\n" + envelopeInstructions(role)
+			request.Prompt = "Your previous final response was invalid: " + err.Error() + "\n" + envelopeInstructions(phaseEnvelopeKind(phase, role))
 		}
 		invocationID := uuid.New().String()
-		if err := s.db.BeginAgentInvocation(ctx, task.ID, role, invocationID); err != nil {
+		if err := s.db.BeginAgentInvocation(ctx, task.ID, stageID, invocationID); err != nil {
 			return "", err
 		}
+		var before map[string]string
+		if phaseReadOnly(phase, role) {
+			before, err = repositoryFingerprints(ctx, s.git, task.Repositories)
+			if err != nil {
+				return "", err
+			}
+		}
 		result, runErr := adapter.Run(ctx, request, s.eventSink(task.ID, phase.ID, harnessName))
+		if phaseReadOnly(phase, role) {
+			after, fingerprintErr := repositoryFingerprints(ctx, s.git, task.Repositories)
+			if fingerprintErr != nil {
+				runErr = errors.Join(runErr, fingerprintErr)
+			} else if !sameFingerprints(before, after) {
+				runErr = errors.Join(runErr, fmt.Errorf("%s modified repository", role))
+			}
+		}
 		if result.SessionID == "" {
 			result.SessionID = storedSession.HarnessSessionID
 		}
@@ -819,7 +880,7 @@ func (s *Service) runRole(ctx context.Context, task store.Task, phase store.Phas
 		}
 		sessionReady = sessionReady || result.SessionReady
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		finalizeErr := s.db.FinalizeAgentInvocation(cleanupCtx, task.ID, role, invocationID, store.AgentSession{Role: role, Harness: harnessName, Provider: result.Provider, Model: result.Model, Thinking: agent.Thinking, Color: agent.Color, HarnessSessionID: storedSession.HarnessSessionID, SessionDirectory: storedSession.SessionDirectory, SessionReady: sessionReady, NativeTranscriptPath: result.NativeTranscriptPath, ContextTokens: result.ContextTokens, ContextWindow: result.ContextWindow, Usage: persistedUsage(result.Usage), Cost: result.Usage.Cost, AccountingComplete: result.AccountingComplete})
+		finalizeErr := s.db.FinalizeAgentInvocation(cleanupCtx, task.ID, stageID, invocationID, store.AgentSession{StageID: stageID, AgentName: agentName, Role: agentName, Harness: harnessName, Provider: result.Provider, Model: result.Model, Thinking: agent.Thinking, Color: agent.Color, HarnessSessionID: storedSession.HarnessSessionID, SessionDirectory: storedSession.SessionDirectory, SessionReady: sessionReady, NativeTranscriptPath: result.NativeTranscriptPath, ContextTokens: result.ContextTokens, ContextWindow: result.ContextWindow, Usage: persistedUsage(result.Usage), Cost: result.Usage.Cost, AccountingComplete: result.AccountingComplete})
 		cancel()
 		if finalizeErr != nil {
 			return "", finalizeErr
@@ -838,7 +899,7 @@ func (s *Service) runRole(ctx context.Context, task store.Task, phase store.Phas
 		if valid {
 			stored = result.Text
 		}
-		if err := s.db.SaveEnvelope(ctx, randomID(), task.ID, phase.ID, role, role, stored, valid, attempt+1); err != nil {
+		if err := s.db.SaveEnvelope(ctx, randomID(), task.ID, phase.ID, stageID, phaseEnvelopeKind(phase, role), stored, valid, attempt+1); err != nil {
 			return "", err
 		}
 		if valid {
@@ -854,28 +915,12 @@ func persistedUsage(value harness.Usage) session.Usage {
 }
 
 func (s *Service) renderPrompts(agent config.Agent, data map[string]any) (string, string, error) {
-	base := filepath.Dir(s.configPath)
-	render := func(path string) (string, error) {
-		body, err := os.ReadFile(filepath.Join(base, path))
-		if err != nil {
-			return "", err
-		}
-		parsed, err := template.New(filepath.Base(path)).Option("missingkey=zero").Parse(string(body))
-		if err != nil {
-			return "", err
-		}
-		var output strings.Builder
-		if err = parsed.Execute(&output, data); err != nil {
-			return "", err
-		}
-		return output.String(), nil
-	}
-	system, err := render(agent.PromptEngineering.System)
+	system, err := s.renderPrompt(agent.PromptEngineering.SystemContent, agent.PromptEngineering.System, data)
 	if err != nil {
 		return "", "", err
 	}
 	system = strings.TrimSpace(system) + "\n\n" + envelopeInstructions(agent.Name)
-	user, err := render(agent.PromptEngineering.User)
+	user, err := s.renderPrompt(agent.PromptEngineering.UserContent, agent.PromptEngineering.User, data)
 	if err != nil {
 		return "", "", err
 	}
@@ -891,63 +936,43 @@ func (s *Service) renderPrompts(agent config.Agent, data map[string]any) (string
 	}
 	return system, user, nil
 }
-func dataTask(data map[string]any) string { return fmt.Sprint(data["TaskID"]) }
 
-func (s *Service) runChecks(ctx context.Context, task store.Task, phase store.Phase, repository store.TaskRepository, checks []factorygit.Check) error {
-	for _, spec := range checks {
-		started := time.Now()
-		checkID := repository.Name + ":" + spec.ID
-		artifact := filepath.Join(s.taskDir(task.ID), "checks", repository.Name, spec.ID+".log")
-		if err := os.MkdirAll(filepath.Dir(artifact), 0o700); err != nil {
-			return err
-		}
-		file, err := os.OpenFile(artifact, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+func (s *Service) renderPrompt(content, path string, data map[string]any) (string, error) {
+	if content != "" {
+		parsed, err := template.New("frozen-prompt").Option("missingkey=zero").Parse(content)
 		if err != nil {
-			return err
+			return "", err
 		}
-		tail := &tailCapture{limit: maxCapturedOutput}
-		cmd := exec.Command("/bin/sh", "-c", spec.Command)
-		cmd.Dir = repository.WorkingPath
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-		cmd.Stdout = io.MultiWriter(file, tail)
-		cmd.Stderr = io.MultiWriter(file, tail)
-		if err = cmd.Start(); err != nil {
-			file.Close()
-			return fmt.Errorf("start check %s: %w", spec.ID, err)
-		}
-		_, _ = s.db.StartProcess(ctx, task.ID, phase.ID, "check", checkID, cmd.Process.Pid, "/bin/sh -c "+spec.Command)
-		done := make(chan struct{})
-		go func(pid int) {
-			select {
-			case <-ctx.Done():
-				_ = syscall.Kill(-pid, syscall.SIGTERM)
-				time.Sleep(500 * time.Millisecond)
-				_ = syscall.Kill(-pid, syscall.SIGKILL)
-			case <-done:
-			}
-		}(cmd.Process.Pid)
-		err = cmd.Wait()
-		close(done)
-		_ = file.Sync()
-		_ = file.Close()
-		exit := 0
-		status := "passed"
-		if err != nil {
-			exit = -1
-			status = "failed"
-			if value, ok := err.(*exec.ExitError); ok {
-				exit = value.ExitCode()
-			}
-		}
-		_ = s.db.EndProcess(context.Background(), task.ID, cmd.Process.Pid, exit)
-		ended := time.Now()
-		_ = s.db.SaveCheck(context.Background(), store.Check{ID: checkID, TaskID: task.ID, PhaseID: phase.ID, Name: checkID, Command: spec.Command, Attempt: 1, Status: status, ExitCode: exit, Output: tail.String(), ArtifactPath: artifact, DurationMS: int(ended.Sub(started).Milliseconds()), StartedAt: started.UTC().Format(time.RFC3339Nano), EndedAt: ended.UTC().Format(time.RFC3339Nano)})
-		if err != nil {
-			return fmt.Errorf("check %s failed: %w", spec.ID, err)
-		}
+		var output strings.Builder
+		return output.String(), parsed.Execute(&output, data)
 	}
-	return nil
+	base := filepath.Dir(s.configPath)
+	body, err := os.ReadFile(filepath.Join(base, path))
+	if err != nil {
+		return "", err
+	}
+	parsed, err := template.New(filepath.Base(path)).Option("missingkey=zero").Parse(string(body))
+	if err != nil {
+		return "", err
+	}
+	var output strings.Builder
+	if err = parsed.Execute(&output, data); err != nil {
+		return "", err
+	}
+	return output.String(), nil
 }
+
+func phaseEnvelopeKind(phase store.Phase, role string) string {
+	if phase.Kind == "build" || phase.Kind == "review" {
+		return phase.Kind
+	}
+	return role
+}
+
+func phaseReadOnly(phase store.Phase, role string) bool {
+	return phase.Kind == "review" || isReadOnlyOwner(role)
+}
+func dataTask(data map[string]any) string { return fmt.Sprint(data["TaskID"]) }
 
 func (s *Service) beginPhase(ctx context.Context, taskID, name, kind, owner, description string) (store.Phase, error) {
 	phases, err := s.db.Phases(ctx, taskID)
@@ -968,6 +993,24 @@ func (s *Service) beginPhase(ctx context.Context, taskID, name, kind, owner, des
 	}
 	phase := store.Phase{ID: randomID(), TaskID: taskID, Sequence: len(phases) + 1, Name: name, Kind: kind, Owner: owner, Description: description, Status: "running", Attempt: 1, BranchID: task.SelectedBranchID, DefinitionID: definitionID, InputSnapshot: inputSnapshot}
 	if err = s.db.AddPhase(ctx, phase); err != nil {
+		return store.Phase{}, err
+	}
+	inputs := make([]store.PhaseRepositoryInput, 0, len(task.Repositories))
+	for _, repository := range task.Repositories {
+		if repository.WorkingPath == "" {
+			continue
+		}
+		head, headErr := factorygit.Head(ctx, s.git, repository.WorkingPath)
+		if headErr != nil {
+			return store.Phase{}, headErr
+		}
+		branch, branchErr := factorygit.Branch(ctx, s.git, repository.WorkingPath)
+		if branchErr != nil {
+			return store.Phase{}, branchErr
+		}
+		inputs = append(inputs, store.PhaseRepositoryInput{PhaseID: phase.ID, RepositoryID: repository.ID, ReviewBaseSHA: repositoryReviewBase(repository), HeadSHA: head, BranchName: branch})
+	}
+	if err = s.db.SavePhaseRepositoryInputs(ctx, phase.ID, inputs); err != nil {
 		return store.Phase{}, err
 	}
 	if phase.BranchID != "" {
@@ -1001,7 +1044,7 @@ func (s *Service) endPhase(ctx context.Context, phase store.Phase, status string
 	if status != "success" || !isReadOnlyOwner(phase.Owner) {
 		if task, taskErr := s.db.Task(ctx, phase.TaskID); taskErr == nil {
 			if snapshot, captureErr := s.CaptureSnapshot(ctx, task); captureErr == nil {
-				if status == "success" && (phase.Kind == "agent" || phase.Kind == "check" || phase.Kind == "git") {
+				if status == "success" && (phase.Kind == "agent" || phase.Kind == "build" || phase.Kind == "review" || phase.Kind == "check" || phase.Kind == "git") {
 					outputSnapshot = snapshot.Digest
 				} else if status != "success" {
 					outputSnapshot = snapshot.Digest
@@ -1092,7 +1135,15 @@ func validateTaskConfig(configured config.Config, harnesses harness.Registry) []
 	if !config.IsValidThinkingFor(configured.Defaults.CodingAgent, configured.Defaults.Thinking) {
 		problems = append(problems, "defaults.thinking "+configured.Defaults.Thinking+" unsupported for "+configured.Defaults.CodingAgent)
 	}
-	for _, role := range []string{"planner", "builder", "reviewer"} {
+	candidates := map[string]bool{"planner": true}
+	for _, pipeline := range configured.Pipelines {
+		for _, stage := range pipeline.Stages {
+			if stage.Agent != "" {
+				candidates[stage.Agent] = true
+			}
+		}
+	}
+	for role := range candidates {
 		found := false
 		for _, a := range configured.Agents {
 			if a.Name == role {
@@ -1255,13 +1306,17 @@ func writeRepositoryProfile(taskWorkspace, name string, profile factorygit.Profi
 	return nil
 }
 
-func taskChangedFiles(ctx context.Context, runner factorygit.Runner, repositories []store.TaskRepository) ([]string, error) {
+func taskChangedFiles(ctx context.Context, runner factorygit.Runner, repositories []store.TaskRepository, reviewBase bool) ([]string, error) {
 	var changed []string
 	for _, repository := range repositories {
 		if repository.WorkingPath == "" {
 			continue
 		}
-		files, err := factorygit.ChangedFiles(ctx, runner, repository.WorkingPath)
+		base := repository.BaseSHA
+		if reviewBase && repository.ReviewBaseSHA != "" {
+			base = repository.ReviewBaseSHA
+		}
+		files, err := factorygit.ChangedFiles(ctx, runner, repository.WorkingPath, base)
 		if err != nil {
 			return nil, err
 		}
@@ -1270,6 +1325,40 @@ func taskChangedFiles(ctx context.Context, runner factorygit.Runner, repositorie
 		}
 	}
 	return changed, nil
+}
+
+func repositoryReviewBase(repository store.TaskRepository) string {
+	if repository.ReviewBaseSHA != "" {
+		return repository.ReviewBaseSHA
+	}
+	return repository.BaseSHA
+}
+
+func repositoryFingerprints(ctx context.Context, runner factorygit.Runner, repositories []store.TaskRepository) (map[string]string, error) {
+	values := make(map[string]string, len(repositories))
+	for _, repository := range repositories {
+		if repository.WorkingPath == "" {
+			continue
+		}
+		fingerprint, err := factorygit.Fingerprint(ctx, runner, repository.WorkingPath)
+		if err != nil {
+			return nil, fmt.Errorf("fingerprint repository %s: %w", repository.Name, err)
+		}
+		values[repository.ID] = fingerprint
+	}
+	return values, nil
+}
+
+func sameFingerprints(left, right map[string]string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for key, value := range left {
+		if right[key] != value {
+			return false
+		}
+	}
+	return true
 }
 
 func isReadOnlyOwner(owner string) bool {
@@ -1281,11 +1370,14 @@ func isActive(state State) bool {
 }
 
 type tailCapture struct {
+	mu    sync.Mutex
 	data  []byte
 	limit int
 }
 
 func (capture *tailCapture) Write(data []byte) (int, error) {
+	capture.mu.Lock()
+	defer capture.mu.Unlock()
 	length := len(data)
 	capture.data = append(capture.data, data...)
 	if len(capture.data) > capture.limit {
@@ -1293,10 +1385,8 @@ func (capture *tailCapture) Write(data []byte) (int, error) {
 	}
 	return length, nil
 }
-func (capture *tailCapture) String() string { return string(capture.data) }
-
-func sameStrings(left, right []string) bool {
-	sort.Strings(left)
-	sort.Strings(right)
-	return strings.Join(left, "\x00") == strings.Join(right, "\x00")
+func (capture *tailCapture) String() string {
+	capture.mu.Lock()
+	defer capture.mu.Unlock()
+	return string(capture.data)
 }

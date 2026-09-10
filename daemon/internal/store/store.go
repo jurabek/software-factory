@@ -19,23 +19,23 @@ const schema = `
 create table if not exists tasks (
  id text primary key, parent_task_id text references tasks(id) on delete cascade,
  request text not null, workspace_path text not null, primary_repository_path text,
- state text not null, previous_state text, active_phase text, error text, config_snapshot text, plan_digest text,
+ state text not null, previous_state text, active_phase text, active_stage text, pipeline text, error text, config_snapshot text, plan_digest text,
  approval_actor text, approval_at text, total_usage_json text, total_cost real not null default 0,
  created_at text not null, started_at text, ended_at text,
  coding_agent text not null default '', model text not null default '', thinking text not null default ''
 );
 create table if not exists task_repositories (
- id text primary key, task_id text not null references tasks(id) on delete cascade, name text not null,
- source_type text not null, source_value text not null, submitted_path text, canonical_path text,
- working_path text, base_sha text, is_primary integer not null default 0, created_at text not null,
- unique(task_id, name)
+	id text primary key, task_id text not null references tasks(id) on delete cascade, name text not null,
+	source_type text not null, source_value text not null, submitted_path text, canonical_path text,
+	working_path text, base_sha text, review_base_sha text, branch_name text, is_primary integer not null default 0, created_at text not null,
+	unique(task_id, name)
 );
 create table if not exists phases (id text primary key, task_id text not null references tasks(id) on delete cascade, sequence integer not null, name text not null, kind text not null, owner text not null, description text, status text not null, attempt integer not null default 1, retries integer not null default 0, error text, started_at text, ended_at text);
 create table if not exists events (sequence integer primary key autoincrement, id text not null unique, task_id text not null references tasks(id) on delete cascade, phase_id text, parent_event_id text, kind text not null, format_version integer not null default 1, name text, payload_json text not null, display_json text not null default '{}', token_count integer not null default 0, started_at text not null, ended_at text);
-create table if not exists envelopes (id text primary key, task_id text not null references tasks(id) on delete cascade, phase_id text, agent_role text not null, output_type text not null, payload_json text not null, valid integer not null, attempt integer not null, created_at text not null);
-create table if not exists checks (id text not null, task_id text not null references tasks(id) on delete cascade, phase_id text, name text not null, command text not null, attempt integer not null, status text not null, exit_code integer, output text, artifact_path text, duration_ms integer, started_at text, ended_at text, primary key (task_id, id, attempt));
+create table if not exists envelopes (id text primary key, task_id text not null references tasks(id) on delete cascade, phase_id text, stage_id text, agent_role text not null, output_type text not null, payload_json text not null, valid integer not null, attempt integer not null, created_at text not null);
+create table if not exists checks (id text not null, task_id text not null references tasks(id) on delete cascade, phase_id text, repository_id text, stage_id text, check_phase text not null default 'primary', comparison_baseline text, name text not null, command text not null, attempt integer not null, status text not null, exit_code integer, output text, artifact_path text, duration_ms integer, started_at text, ended_at text, primary key (task_id, id, attempt));
 create table if not exists processes (id integer primary key autoincrement, task_id text not null references tasks(id) on delete cascade, phase_id text, kind text not null, name text not null, pid integer not null, display_command text not null, status text not null, exit_code integer, started_at text not null, ended_at text);
-create table if not exists agent_sessions (task_id text not null references tasks(id) on delete cascade, role text not null, harness text not null, provider text, model text, thinking text, color text, harness_session_id text not null, session_directory text not null, session_ready integer not null default 0, native_transcript_path text, pending_invocation_id text, context_tokens integer, context_window integer, usage_json text, cost real not null default 0, accounting_complete integer not null default 1, created_at text not null, last_used_at text not null, primary key(task_id, role));
+create table if not exists agent_sessions (task_id text not null, stage_id text not null, agent_name text not null, role text not null default '', harness text not null, provider text, model text, thinking text, color text, harness_session_id text not null, session_directory text not null, session_ready integer not null default 0, native_transcript_path text, pending_invocation_id text, context_tokens integer, context_window integer, usage_json text, cost real not null default 0, accounting_complete integer not null default 1, created_at text not null, last_used_at text not null, primary key(task_id, stage_id));
 create table if not exists feedback (id text primary key, task_id text not null references tasks(id) on delete cascade, actor text not null, plan_digest text not null, text text not null, created_at text not null);
 create table if not exists interventions (
  id text primary key, task_id text not null references tasks(id) on delete cascade,
@@ -50,7 +50,7 @@ create table if not exists messages (
  id text not null unique, task_id text not null references tasks(id) on delete cascade,
  actor text not null, text text not null, idempotency_key text not null,
  target_type text, target_id text, anchor_json text,
- recipient_role text not null, agent_session_id text not null,
+ stage_id text, recipient_role text not null, agent_session_id text not null,
  delivery_status text not null, failure_reason text,
  created_at text not null, delivered_at text, failed_at text,
  unique(task_id, idempotency_key)
@@ -84,6 +84,14 @@ create table if not exists workspace_snapshots (
  path text not null default '', size_bytes integer not null default 0,
  manifest_json text not null default '{}', created_at text not null
 );
+create table if not exists phase_repository_inputs (
+	phase_id text not null references phases(id) on delete cascade,
+	repository_id text not null references task_repositories(id) on delete cascade,
+	review_base_sha text not null, head_sha text not null, branch_name text not null,
+ primary key (phase_id, repository_id)
+);
+create table if not exists test_changes (id text primary key, task_id text not null references tasks(id) on delete cascade, phase_id text not null, attempt integer not null, repository_id text not null, repository_name text not null, path text not null, reason text not null, change_kind text not null, rename_from text, rename_to text, created_at text not null, unique(task_id, phase_id, repository_id, path));
+create table if not exists comparisons (id text primary key, task_id text not null references tasks(id) on delete cascade, phase_id text not null, attempt integer not null, repository_id text not null, repository_name text not null, status text not null, reason text not null, baseline_snapshot text, overlay_paths_json text not null default '[]', created_at text not null, duration_ms integer not null default 0);
 create index if not exists events_task_cursor on events(task_id, sequence);
 create index if not exists phases_task_sequence on phases(task_id, sequence);
 create index if not exists task_repositories_task on task_repositories(task_id, is_primary desc, name);
@@ -173,6 +181,8 @@ func ensureRetriableColumns(ctx context.Context, db *sql.DB) error {
 	adds := [][2]string{
 		{"tasks", "parent_task_id text references tasks(id) on delete cascade"},
 		{"tasks", "selected_branch_id text"},
+		{"tasks", "pipeline text"},
+		{"tasks", "active_stage text"},
 		{"tasks", "coding_agent text not null default ''"},
 		{"tasks", "model text not null default ''"},
 		{"tasks", "thinking text not null default ''"},
@@ -189,6 +199,15 @@ func ensureRetriableColumns(ctx context.Context, db *sql.DB) error {
 		{"interventions", "expected_branch_head text"},
 		{"interventions", "branch_id text"},
 		{"interventions", "attempt_id text"},
+		{"phases", "stage_id text"},
+		{"envelopes", "stage_id text"},
+		{"messages", "stage_id text"},
+		{"task_repositories", "review_base_sha text"},
+		{"task_repositories", "branch_name text"},
+		{"checks", "repository_id text"},
+		{"checks", "stage_id text"},
+		{"checks", "check_phase text not null default 'primary'"},
+		{"checks", "comparison_baseline text"},
 	}
 	for _, add := range adds {
 		if _, err := db.ExecContext(ctx, `alter table `+add[0]+` add column `+add[1]); err != nil && !isDuplicateColumn(err) {
@@ -244,28 +263,31 @@ func columnExists(ctx context.Context, db *sql.DB, table, column string) (bool, 
 }
 
 type Task struct {
-	ID                    string           `json:"id"`
-	ParentTaskID          string           `json:"parent_task_id,omitempty"`
-	Request               string           `json:"request"`
-	WorkspacePath         string           `json:"workspace_path"`
-	PrimaryRepositoryPath string           `json:"primary_repository_path,omitempty"`
-	Repositories          []TaskRepository `json:"repositories"`
-	State                 string           `json:"state"`
-	PreviousState         string           `json:"previous_state,omitempty"`
-	ActivePhase           string           `json:"active_phase,omitempty"`
-	Error                 string           `json:"error,omitempty"`
-	ConfigSnapshot        string           `json:"-"`
-	PlanDigest            string           `json:"plan_digest,omitempty"`
-	ApprovalActor         string           `json:"approval_actor,omitempty"`
-	ApprovalAt            string           `json:"approval_at,omitempty"`
-	CreatedAt             string           `json:"created_at"`
-	StartedAt             string           `json:"started_at,omitempty"`
-	EndedAt               string           `json:"ended_at,omitempty"`
-	TotalCost             float64          `json:"total_cost"`
-	SelectedBranchID      string           `json:"selected_branch_id,omitempty"`
-	CodingAgent           string           `json:"coding_agent,omitempty"`
-	Model                 string           `json:"model,omitempty"`
-	Thinking              string           `json:"thinking,omitempty"`
+	ID                    string            `json:"id"`
+	ParentTaskID          string            `json:"parent_task_id,omitempty"`
+	Request               string            `json:"request"`
+	WorkspacePath         string            `json:"workspace_path"`
+	PrimaryRepositoryPath string            `json:"primary_repository_path,omitempty"`
+	Repositories          []TaskRepository  `json:"repositories"`
+	State                 string            `json:"state"`
+	PreviousState         string            `json:"previous_state,omitempty"`
+	ActivePhase           string            `json:"active_phase,omitempty"`
+	ActiveStage           string            `json:"active_stage,omitempty"`
+	Pipeline              string            `json:"pipeline,omitempty"`
+	Error                 string            `json:"error,omitempty"`
+	ConfigSnapshot        string            `json:"-"`
+	PlanDigest            string            `json:"plan_digest,omitempty"`
+	ApprovalActor         string            `json:"approval_actor,omitempty"`
+	ApprovalAt            string            `json:"approval_at,omitempty"`
+	CreatedAt             string            `json:"created_at"`
+	StartedAt             string            `json:"started_at,omitempty"`
+	EndedAt               string            `json:"ended_at,omitempty"`
+	TotalCost             float64           `json:"total_cost"`
+	SelectedBranchID      string            `json:"selected_branch_id,omitempty"`
+	CodingAgent           string            `json:"coding_agent,omitempty"`
+	Model                 string            `json:"model,omitempty"`
+	Thinking              string            `json:"thinking,omitempty"`
+	Stages                []StageProjection `json:"stages,omitempty"`
 }
 
 type TaskRepository struct {
@@ -278,11 +300,23 @@ type TaskRepository struct {
 	CanonicalPath string `json:"canonical_path,omitempty"`
 	WorkingPath   string `json:"working_path,omitempty"`
 	BaseSHA       string `json:"base_sha,omitempty"`
+	ReviewBaseSHA string `json:"review_base_sha,omitempty"`
+	BranchName    string `json:"branch_name,omitempty"`
 	Primary       bool   `json:"primary"`
 	CreatedAt     string `json:"created_at"`
 }
 
+type PhaseRepositoryInput struct {
+	PhaseID       string `json:"phase_id"`
+	RepositoryID  string `json:"repository_id"`
+	ReviewBaseSHA string `json:"review_base_sha"`
+	HeadSHA       string `json:"head_sha"`
+	BranchName    string `json:"branch_name"`
+}
+
 type AgentSession struct {
+	StageID              string        `json:"stage_id"`
+	AgentName            string        `json:"agent_name,omitempty"`
 	Role                 string        `json:"role"`
 	Harness              string        `json:"harness"`
 	Provider             string        `json:"provider,omitempty"`
@@ -332,6 +366,7 @@ type Phase struct {
 	ID             string `json:"id"`
 	TaskID         string `json:"task_id"`
 	Name           string `json:"name"`
+	StageID        string `json:"stage_id,omitempty"`
 	Kind           string `json:"kind"`
 	Owner          string `json:"owner"`
 	Description    string `json:"description"`
@@ -398,6 +433,10 @@ type Check struct {
 	ID           string `json:"id"`
 	TaskID       string `json:"task_id"`
 	PhaseID      string `json:"phase_id"`
+	RepositoryID string `json:"repository_id"`
+	StageID      string `json:"stage_id"`
+	Phase        string `json:"phase"`
+	ComparisonBaseline string `json:"comparison_baseline,omitempty"`
 	Name         string `json:"name"`
 	Command      string `json:"command"`
 	Status       string `json:"status"`
@@ -408,6 +447,36 @@ type Check struct {
 	DurationMS   int    `json:"duration_ms"`
 	StartedAt    string `json:"started_at"`
 	EndedAt      string `json:"ended_at"`
+}
+
+type TestChange struct {
+	ID           string `json:"id"`
+	TaskID       string `json:"task_id"`
+	PhaseID      string `json:"phase_id"`
+	Attempt      int    `json:"attempt"`
+	RepositoryID string `json:"repository_id"`
+	RepositoryName string `json:"repository_name"`
+	Path         string `json:"path"`
+	Reason       string `json:"reason"`
+	ChangeKind   string `json:"change_kind"`
+	RenameFrom   string `json:"rename_from,omitempty"`
+	RenameTo     string `json:"rename_to,omitempty"`
+	CreatedAt    string `json:"created_at"`
+}
+
+type Comparison struct {
+	ID               string `json:"id"`
+	TaskID           string `json:"task_id"`
+	PhaseID          string `json:"phase_id"`
+	Attempt          int    `json:"attempt"`
+	RepositoryID     string `json:"repository_id"`
+	RepositoryName   string `json:"repository_name"`
+	Status           string `json:"status"`
+	Reason           string `json:"reason"`
+	BaselineSnapshot string `json:"baseline_snapshot,omitempty"`
+	OverlayPaths     []string `json:"overlay_paths"`
+	CreatedAt        string `json:"created_at"`
+	DurationMS       int    `json:"duration_ms"`
 }
 
 type Feedback struct {
@@ -454,6 +523,7 @@ type Message struct {
 	TargetID       string         `json:"-"`
 	Anchor         string         `json:"-"`
 	Target         *MessageTarget `json:"target,omitempty"`
+	StageID        string         `json:"stage_id,omitempty"`
 	RecipientRole  string         `json:"recipient_role"`
 	AgentSessionID string         `json:"agent_session_id"`
 	DeliveryStatus string         `json:"delivery_status"`
@@ -461,6 +531,15 @@ type Message struct {
 	CreatedAt      string         `json:"created_at"`
 	DeliveredAt    string         `json:"delivered_at,omitempty"`
 	FailedAt       string         `json:"failed_at,omitempty"`
+}
+
+type StageProjection struct {
+	ID             string `json:"id"`
+	Kind           string `json:"kind"`
+	Agent          string `json:"agent,omitempty"`
+	Status         string `json:"status"`
+	AttemptID      string `json:"attempt_id,omitempty"`
+	BlockingReason string `json:"blocking_reason,omitempty"`
 }
 
 type MessageTarget struct {
@@ -481,6 +560,7 @@ type Envelope struct {
 	ID         string `json:"id"`
 	TaskID     string `json:"task_id"`
 	PhaseID    string `json:"phase_id"`
+	StageID    string `json:"stage_id,omitempty"`
 	AgentRole  string `json:"agent_role"`
 	OutputType string `json:"output_type"`
 	Payload    string `json:"payload"`
@@ -495,7 +575,7 @@ func (db *DB) CreateTask(ctx context.Context, task Task) error {
 		return fmt.Errorf("begin create task: %w", err)
 	}
 	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, `insert into tasks(id,parent_task_id,request,workspace_path,state,created_at,coding_agent,model,thinking) values(?,?,?,?,?,?,?,?,?)`, task.ID, nullIfEmpty(task.ParentTaskID), task.Request, task.WorkspacePath, task.State, task.CreatedAt, task.CodingAgent, task.Model, task.Thinking); err != nil {
+	if _, err = tx.ExecContext(ctx, `insert into tasks(id,parent_task_id,request,workspace_path,state,pipeline,active_stage,config_snapshot,created_at,coding_agent,model,thinking) values(?,?,?,?,?,?,?,?,?,?,?,?)`, task.ID, nullIfEmpty(task.ParentTaskID), task.Request, task.WorkspacePath, task.State, nullIfEmpty(task.Pipeline), nullIfEmpty(task.ActiveStage), nullIfEmpty(task.ConfigSnapshot), task.CreatedAt, task.CodingAgent, task.Model, task.Thinking); err != nil {
 		return wrap("create task", err)
 	}
 	for _, repository := range task.Repositories {
@@ -506,11 +586,11 @@ func (db *DB) CreateTask(ctx context.Context, task Task) error {
 	return wrap("commit task", tx.Commit())
 }
 
-const taskColumns = `id,coalesce(parent_task_id,''),request,workspace_path,coalesce(primary_repository_path,''),state,coalesce(previous_state,''),coalesce(active_phase,''),coalesce(error,''),coalesce(config_snapshot,''),coalesce(plan_digest,''),coalesce(approval_actor,''),coalesce(approval_at,''),total_cost,created_at,coalesce(started_at,''),coalesce(ended_at,''),coalesce(selected_branch_id,''),coalesce(coding_agent,''),coalesce(model,''),coalesce(thinking,'')`
+const taskColumns = `id,coalesce(parent_task_id,''),request,workspace_path,coalesce(primary_repository_path,''),state,coalesce(previous_state,''),coalesce(active_phase,''),coalesce(active_stage,''),coalesce(pipeline,''),coalesce(error,''),coalesce(config_snapshot,''),coalesce(plan_digest,''),coalesce(approval_actor,''),coalesce(approval_at,''),total_cost,created_at,coalesce(started_at,''),coalesce(ended_at,''),coalesce(selected_branch_id,''),coalesce(coding_agent,''),coalesce(model,''),coalesce(thinking,'')`
 
 func scanTask(scanner interface{ Scan(...any) error }) (Task, error) {
 	var value Task
-	err := scanner.Scan(&value.ID, &value.ParentTaskID, &value.Request, &value.WorkspacePath, &value.PrimaryRepositoryPath, &value.State, &value.PreviousState, &value.ActivePhase, &value.Error, &value.ConfigSnapshot, &value.PlanDigest, &value.ApprovalActor, &value.ApprovalAt, &value.TotalCost, &value.CreatedAt, &value.StartedAt, &value.EndedAt, &value.SelectedBranchID, &value.CodingAgent, &value.Model, &value.Thinking)
+	err := scanner.Scan(&value.ID, &value.ParentTaskID, &value.Request, &value.WorkspacePath, &value.PrimaryRepositoryPath, &value.State, &value.PreviousState, &value.ActivePhase, &value.ActiveStage, &value.Pipeline, &value.Error, &value.ConfigSnapshot, &value.PlanDigest, &value.ApprovalActor, &value.ApprovalAt, &value.TotalCost, &value.CreatedAt, &value.StartedAt, &value.EndedAt, &value.SelectedBranchID, &value.CodingAgent, &value.Model, &value.Thinking)
 	return value, err
 }
 
@@ -630,12 +710,12 @@ func (db *DB) SetPrepared(ctx context.Context, id, primaryPath, snapshot string)
 }
 
 func (db *DB) SetRepositoryPrepared(ctx context.Context, repository TaskRepository) error {
-	_, err := db.ExecContext(ctx, `update task_repositories set canonical_path=?,working_path=?,base_sha=? where id=? and task_id=?`, repository.CanonicalPath, repository.WorkingPath, repository.BaseSHA, repository.ID, repository.TaskID)
+	_, err := db.ExecContext(ctx, `update task_repositories set canonical_path=?,working_path=?,base_sha=?,review_base_sha=?,branch_name=? where id=? and task_id=?`, repository.CanonicalPath, repository.WorkingPath, repository.BaseSHA, repository.ReviewBaseSHA, repository.BranchName, repository.ID, repository.TaskID)
 	return wrap("save repository materialization", err)
 }
 
 func (db *DB) TaskRepositories(ctx context.Context, taskID string) ([]TaskRepository, error) {
-	rows, err := db.QueryContext(ctx, `select id,task_id,name,source_type,source_value,coalesce(submitted_path,''),coalesce(canonical_path,''),coalesce(working_path,''),coalesce(base_sha,''),is_primary,created_at from task_repositories where task_id=? order by is_primary desc,name`, taskID)
+	rows, err := db.QueryContext(ctx, `select id,task_id,name,source_type,source_value,coalesce(submitted_path,''),coalesce(canonical_path,''),coalesce(working_path,''),coalesce(base_sha,''),coalesce(review_base_sha,''),coalesce(branch_name,''),is_primary,created_at from task_repositories where task_id=? order by is_primary desc,name`, taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -643,7 +723,7 @@ func (db *DB) TaskRepositories(ctx context.Context, taskID string) ([]TaskReposi
 	values := make([]TaskRepository, 0)
 	for rows.Next() {
 		var value TaskRepository
-		if err = rows.Scan(&value.ID, &value.TaskID, &value.Name, &value.SourceType, &value.SourceValue, &value.SubmittedPath, &value.CanonicalPath, &value.WorkingPath, &value.BaseSHA, &value.Primary, &value.CreatedAt); err != nil {
+		if err = rows.Scan(&value.ID, &value.TaskID, &value.Name, &value.SourceType, &value.SourceValue, &value.SubmittedPath, &value.CanonicalPath, &value.WorkingPath, &value.BaseSHA, &value.ReviewBaseSHA, &value.BranchName, &value.Primary, &value.CreatedAt); err != nil {
 			return nil, err
 		}
 		values = append(values, value)
@@ -651,13 +731,75 @@ func (db *DB) TaskRepositories(ctx context.Context, taskID string) ([]TaskReposi
 	return values, rows.Err()
 }
 
+func (db *DB) SavePhaseRepositoryInputs(ctx context.Context, phaseID string, inputs []PhaseRepositoryInput) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return wrap("begin phase Git inputs", err)
+	}
+	defer tx.Rollback()
+	for _, input := range inputs {
+		if _, err = tx.ExecContext(ctx, `insert or replace into phase_repository_inputs(phase_id,repository_id,review_base_sha,head_sha,branch_name) values(?,?,?,?,?)`, phaseID, input.RepositoryID, input.ReviewBaseSHA, input.HeadSHA, input.BranchName); err != nil {
+			return wrap("save phase Git input", err)
+		}
+	}
+	return wrap("commit phase Git inputs", tx.Commit())
+}
+
+func (db *DB) PhaseRepositoryInputs(ctx context.Context, phaseID string) ([]PhaseRepositoryInput, error) {
+	rows, err := db.QueryContext(ctx, `select phase_id,repository_id,review_base_sha,head_sha,branch_name from phase_repository_inputs where phase_id=? order by repository_id`, phaseID)
+	if err != nil {
+		return nil, wrap("read phase Git inputs", err)
+	}
+	defer rows.Close()
+	inputs := make([]PhaseRepositoryInput, 0)
+	for rows.Next() {
+		var input PhaseRepositoryInput
+		if err = rows.Scan(&input.PhaseID, &input.RepositoryID, &input.ReviewBaseSHA, &input.HeadSHA, &input.BranchName); err != nil {
+			return nil, wrap("scan phase Git input", err)
+		}
+		inputs = append(inputs, input)
+	}
+	return inputs, rows.Err()
+}
+
+func (db *DB) AdvanceReviewBase(ctx context.Context, taskID, repositoryID, expectedHead, reviewBase string) error {
+	result, err := db.ExecContext(ctx, `update task_repositories set review_base_sha=? where task_id=? and id=? and review_base_sha=?`, reviewBase, taskID, repositoryID, expectedHead)
+	if err != nil {
+		return wrap("advance review base", err)
+	}
+	if count, _ := result.RowsAffected(); count != 1 {
+		return ErrConflict
+	}
+	return nil
+}
+
+func (db *DB) SetRepositoryReviewBase(ctx context.Context, taskID, repositoryID, reviewBase string) error {
+	_, err := db.ExecContext(ctx, `update task_repositories set review_base_sha=? where task_id=? and id=?`, reviewBase, taskID, repositoryID)
+	return wrap("restore repository review base", err)
+}
+
+func (db *DB) SetRepositoryBranch(ctx context.Context, taskID, repositoryID, branch string) error {
+	_, err := db.ExecContext(ctx, `update task_repositories set branch_name=? where task_id=? and id=?`, branch, taskID, repositoryID)
+	return wrap("save repository execution branch", err)
+}
+
 func (db *DB) SetApproval(ctx context.Context, id, digest, actor string) error {
 	_, err := db.ExecContext(ctx, `update tasks set plan_digest=?,approval_actor=?,approval_at=? where id=?`, digest, actor, now(), id)
 	return wrap("save approval", err)
 }
 
+func (db *DB) SetApprovalCandidate(ctx context.Context, id, digest string) error {
+	_, err := db.ExecContext(ctx, `update tasks set plan_digest=?,approval_actor=null,approval_at=null where id=?`, digest, id)
+	return wrap("save approval candidate", err)
+}
+
+func (db *DB) SetActiveStage(ctx context.Context, taskID, stageID string) error {
+	_, err := db.ExecContext(ctx, `update tasks set active_stage=? where id=?`, nullIfEmpty(stageID), taskID)
+	return wrap("save active stage", err)
+}
+
 func (db *DB) InvalidateApproval(ctx context.Context, id string) error {
-	_, err := db.ExecContext(ctx, `update tasks set approval_actor=null,approval_at=null where id=?`, id)
+	_, err := db.ExecContext(ctx, `update tasks set plan_digest=null,approval_actor=null,approval_at=null where id=?`, id)
 	return wrap("invalidate approval", err)
 }
 
@@ -714,11 +856,19 @@ func (db *DB) PhaseByID(ctx context.Context, taskID, phaseID string) (Phase, err
 
 func (db *DB) ReserveAgentSession(ctx context.Context, taskID string, value AgentSession) (AgentSession, error) {
 	timestamp := now()
-	_, err := db.ExecContext(ctx, `insert into agent_sessions(task_id,role,harness,provider,model,thinking,color,harness_session_id,session_directory,session_ready,usage_json,cost,accounting_complete,created_at,last_used_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) on conflict(task_id,role) do nothing`, taskID, value.Role, value.Harness, nullIfEmpty(value.Provider), nullIfEmpty(value.Model), nullIfEmpty(value.Thinking), nullIfEmpty(value.Color), value.HarnessSessionID, value.SessionDirectory, boolToInt(value.SessionReady), `{}`, value.Cost, boolToInt(value.AccountingComplete), timestamp, timestamp)
+	stageID := value.StageID
+	if stageID == "" {
+		stageID = value.Role
+	}
+	agentName := value.AgentName
+	if agentName == "" {
+		agentName = value.Role
+	}
+	_, err := db.ExecContext(ctx, `insert into agent_sessions(task_id,stage_id,agent_name,role,harness,provider,model,thinking,color,harness_session_id,session_directory,session_ready,usage_json,cost,accounting_complete,created_at,last_used_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) on conflict(task_id,stage_id) do nothing`, taskID, stageID, agentName, agentName, value.Harness, nullIfEmpty(value.Provider), nullIfEmpty(value.Model), nullIfEmpty(value.Thinking), nullIfEmpty(value.Color), value.HarnessSessionID, value.SessionDirectory, boolToInt(value.SessionReady), `{}`, value.Cost, boolToInt(value.AccountingComplete), timestamp, timestamp)
 	if err != nil {
 		return AgentSession{}, wrap("reserve agent session", err)
 	}
-	stored, err := db.AgentSession(ctx, taskID, value.Role)
+	stored, err := db.AgentSession(ctx, taskID, stageID)
 	if err != nil {
 		return AgentSession{}, err
 	}
@@ -732,7 +882,7 @@ func (db *DB) AgentSession(ctx context.Context, taskID, role string) (AgentSessi
 	var value AgentSession
 	var usage string
 	var ready, complete int
-	err := db.QueryRowContext(ctx, `select role,harness,coalesce(provider,''),coalesce(model,''),coalesce(thinking,''),coalesce(color,''),harness_session_id,session_directory,session_ready,coalesce(native_transcript_path,''),coalesce(pending_invocation_id,''),coalesce(context_tokens,0),coalesce(context_window,0),coalesce(usage_json,'{}'),coalesce(cost,0),accounting_complete,created_at,last_used_at from agent_sessions where task_id=? and role=?`, taskID, role).Scan(&value.Role, &value.Harness, &value.Provider, &value.Model, &value.Thinking, &value.Color, &value.HarnessSessionID, &value.SessionDirectory, &ready, &value.NativeTranscriptPath, &value.PendingInvocationID, &value.ContextTokens, &value.ContextWindow, &usage, &value.Cost, &complete, &value.CreatedAt, &value.LastUsedAt)
+	err := db.QueryRowContext(ctx, `select stage_id,agent_name,harness,coalesce(provider,''),coalesce(model,''),coalesce(thinking,''),coalesce(color,''),harness_session_id,session_directory,session_ready,coalesce(native_transcript_path,''),coalesce(pending_invocation_id,''),coalesce(context_tokens,0),coalesce(context_window,0),coalesce(usage_json,'{}'),coalesce(cost,0),accounting_complete,created_at,last_used_at from agent_sessions where task_id=? and stage_id=?`, taskID, role).Scan(&value.StageID, &value.AgentName, &value.Harness, &value.Provider, &value.Model, &value.Thinking, &value.Color, &value.HarnessSessionID, &value.SessionDirectory, &ready, &value.NativeTranscriptPath, &value.PendingInvocationID, &value.ContextTokens, &value.ContextWindow, &usage, &value.Cost, &complete, &value.CreatedAt, &value.LastUsedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return AgentSession{}, ErrNotFound
 	}
@@ -740,6 +890,7 @@ func (db *DB) AgentSession(ctx context.Context, taskID, role string) (AgentSessi
 		return AgentSession{}, wrap("read agent session", err)
 	}
 	value.SessionReady = ready != 0
+	value.Role = value.AgentName
 	value.AccountingComplete = complete != 0 && value.PendingInvocationID == ""
 	if err := json.Unmarshal([]byte(usage), &value.Usage); err != nil {
 		return AgentSession{}, wrap("decode agent session usage", err)
@@ -748,18 +899,18 @@ func (db *DB) AgentSession(ctx context.Context, taskID, role string) (AgentSessi
 }
 
 func (db *DB) AgentSessions(ctx context.Context, taskID string) ([]AgentSession, error) {
-	rows, err := db.QueryContext(ctx, `select role from agent_sessions where task_id=? order by role`, taskID)
+	rows, err := db.QueryContext(ctx, `select stage_id from agent_sessions where task_id=? order by stage_id`, taskID)
 	if err != nil {
 		return nil, wrap("list agent sessions", err)
 	}
 	defer rows.Close()
 	roles := make([]string, 0)
 	for rows.Next() {
-		var role string
-		if err := rows.Scan(&role); err != nil {
+		var stageID string
+		if err := rows.Scan(&stageID); err != nil {
 			return nil, err
 		}
-		roles = append(roles, role)
+		roles = append(roles, stageID)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -776,7 +927,7 @@ func (db *DB) AgentSessions(ctx context.Context, taskID string) ([]AgentSession,
 }
 
 func (db *DB) BeginAgentInvocation(ctx context.Context, taskID, role, invocationID string) error {
-	result, err := db.ExecContext(ctx, `update agent_sessions set pending_invocation_id=?,last_used_at=? where task_id=? and role=? and pending_invocation_id is null`, invocationID, now(), taskID, role)
+	result, err := db.ExecContext(ctx, `update agent_sessions set pending_invocation_id=?,last_used_at=? where task_id=? and stage_id=? and pending_invocation_id is null`, invocationID, now(), taskID, role)
 	if err != nil {
 		return wrap("begin agent invocation", err)
 	}
@@ -800,7 +951,7 @@ func (db *DB) FinalizeAgentInvocation(ctx context.Context, taskID, role, invocat
 		return wrap("begin agent invocation finalization", err)
 	}
 	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, `update agent_sessions set provider=?,model=?,thinking=?,color=?,session_ready=?,native_transcript_path=?,context_tokens=?,context_window=?,usage_json=?,cost=cost+?,accounting_complete=accounting_complete and ?,pending_invocation_id=null,last_used_at=? where task_id=? and role=? and pending_invocation_id=? and harness_session_id=?`, nullIfEmpty(value.Provider), nullIfEmpty(value.Model), nullIfEmpty(value.Thinking), nullIfEmpty(value.Color), boolToInt(value.SessionReady), nullIfEmpty(value.NativeTranscriptPath), value.ContextTokens, value.ContextWindow, string(usage), value.Cost, boolToInt(value.AccountingComplete), now(), taskID, role, invocationID, value.HarnessSessionID)
+	result, err := tx.ExecContext(ctx, `update agent_sessions set provider=?,model=?,thinking=?,color=?,session_ready=?,native_transcript_path=?,context_tokens=?,context_window=?,usage_json=?,cost=cost+?,accounting_complete=accounting_complete and ?,pending_invocation_id=null,last_used_at=? where task_id=? and stage_id=? and pending_invocation_id=? and harness_session_id=?`, nullIfEmpty(value.Provider), nullIfEmpty(value.Model), nullIfEmpty(value.Thinking), nullIfEmpty(value.Color), boolToInt(value.SessionReady), nullIfEmpty(value.NativeTranscriptPath), value.ContextTokens, value.ContextWindow, string(usage), value.Cost, boolToInt(value.AccountingComplete), now(), taskID, role, invocationID, value.HarnessSessionID)
 	if err != nil {
 		return wrap("finalize agent invocation", err)
 	}
@@ -810,7 +961,7 @@ func (db *DB) FinalizeAgentInvocation(ctx context.Context, taskID, role, invocat
 	}
 	if count == 0 {
 		var pending string
-		readErr := tx.QueryRowContext(ctx, `select coalesce(pending_invocation_id,'') from agent_sessions where task_id=? and role=?`, taskID, role).Scan(&pending)
+		readErr := tx.QueryRowContext(ctx, `select coalesce(pending_invocation_id,'') from agent_sessions where task_id=? and stage_id=?`, taskID, role).Scan(&pending)
 		if readErr != nil {
 			return wrap("read pending agent invocation", readErr)
 		}
@@ -842,7 +993,7 @@ func (db *DB) ReplaceAgentSession(ctx context.Context, taskID, role, newSessionI
 	if current.PendingInvocationID != "" {
 		return "", ErrConflict
 	}
-	result, err := db.ExecContext(ctx, `update agent_sessions set harness_session_id=?,session_directory=?,session_ready=0,native_transcript_path=null,last_used_at=? where task_id=? and role=? and harness_session_id=? and pending_invocation_id is null`, newSessionID, newDirectory, now(), taskID, role, current.HarnessSessionID)
+	result, err := db.ExecContext(ctx, `update agent_sessions set harness_session_id=?,session_directory=?,session_ready=0,native_transcript_path=null,last_used_at=? where task_id=? and stage_id=? and harness_session_id=? and pending_invocation_id is null`, newSessionID, newDirectory, now(), taskID, role, current.HarnessSessionID)
 	if err != nil {
 		return "", wrap("replace agent session", err)
 	}
@@ -857,7 +1008,7 @@ func (db *DB) ReplaceAgentSession(ctx context.Context, taskID, role, newSessionI
 }
 
 func (db *DB) SaveEnvelope(ctx context.Context, id, taskID, phaseID, role, outputType, payload string, valid bool, attempt int) error {
-	_, err := db.ExecContext(ctx, `insert into envelopes(id,task_id,phase_id,agent_role,output_type,payload_json,valid,attempt,created_at) values(?,?,?,?,?,?,?,?,?)`, id, taskID, phaseID, role, outputType, payload, valid, attempt, now())
+	_, err := db.ExecContext(ctx, `insert into envelopes(id,task_id,phase_id,stage_id,agent_role,output_type,payload_json,valid,attempt,created_at) values(?,?,?,?,?,?,?,?,?,?)`, id, taskID, phaseID, role, role, outputType, payload, valid, attempt, now())
 	if err == nil && valid && role == "planner" {
 		digest := fmt.Sprintf("%x", sha256.Sum256([]byte(payload)))
 		_, err = db.ExecContext(ctx, `update tasks set plan_digest=?,approval_actor=null,approval_at=null where id=?`, digest, taskID)
@@ -866,7 +1017,7 @@ func (db *DB) SaveEnvelope(ctx context.Context, id, taskID, phaseID, role, outpu
 }
 
 func (db *DB) Envelopes(ctx context.Context, taskID string) ([]Envelope, error) {
-	rows, err := db.QueryContext(ctx, `select id,task_id,coalesce(phase_id,''),agent_role,output_type,payload_json,valid,attempt,created_at from envelopes where task_id=? order by created_at`, taskID)
+	rows, err := db.QueryContext(ctx, `select id,task_id,coalesce(phase_id,''),coalesce(stage_id,''),agent_role,output_type,payload_json,valid,attempt,created_at from envelopes where task_id=? order by created_at`, taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -874,7 +1025,7 @@ func (db *DB) Envelopes(ctx context.Context, taskID string) ([]Envelope, error) 
 	values := make([]Envelope, 0)
 	for rows.Next() {
 		var value Envelope
-		if err := rows.Scan(&value.ID, &value.TaskID, &value.PhaseID, &value.AgentRole, &value.OutputType, &value.Payload, &value.Valid, &value.Attempt, &value.CreatedAt); err != nil {
+		if err := rows.Scan(&value.ID, &value.TaskID, &value.PhaseID, &value.StageID, &value.AgentRole, &value.OutputType, &value.Payload, &value.Valid, &value.Attempt, &value.CreatedAt); err != nil {
 			return nil, err
 		}
 		values = append(values, value)
@@ -905,12 +1056,12 @@ func (db *DB) EndProcess(ctx context.Context, taskID string, pid, exitCode int) 
 }
 
 func (db *DB) SaveCheck(ctx context.Context, check Check) error {
-	_, err := db.ExecContext(ctx, `insert or replace into checks(id,task_id,phase_id,name,command,attempt,status,exit_code,output,artifact_path,duration_ms,started_at,ended_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?)`, check.ID, check.TaskID, check.PhaseID, check.Name, check.Command, check.Attempt, check.Status, check.ExitCode, check.Output, check.ArtifactPath, check.DurationMS, check.StartedAt, check.EndedAt)
+	_, err := db.ExecContext(ctx, `insert or replace into checks(id,task_id,phase_id,repository_id,stage_id,check_phase,comparison_baseline,name,command,attempt,status,exit_code,output,artifact_path,duration_ms,started_at,ended_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, check.ID, check.TaskID, nullIfEmpty(check.PhaseID), nullIfEmpty(check.RepositoryID), nullIfEmpty(check.StageID), check.Phase, nullIfEmpty(check.ComparisonBaseline), check.Name, check.Command, check.Attempt, check.Status, check.ExitCode, check.Output, check.ArtifactPath, check.DurationMS, check.StartedAt, check.EndedAt)
 	return wrap("save check", err)
 }
 
 func (db *DB) Checks(ctx context.Context, taskID string) ([]Check, error) {
-	rows, err := db.QueryContext(ctx, `select id,task_id,coalesce(phase_id,''),name,command,attempt,status,coalesce(exit_code,-1),coalesce(output,''),coalesce(artifact_path,''),coalesce(duration_ms,0),coalesce(started_at,''),coalesce(ended_at,'') from checks where task_id=? order by rowid`, taskID)
+	rows, err := db.QueryContext(ctx, `select id,task_id,coalesce(phase_id,''),coalesce(repository_id,''),coalesce(stage_id,''),coalesce(check_phase,'primary'),coalesce(comparison_baseline,''),name,command,attempt,status,coalesce(exit_code,-1),coalesce(output,''),coalesce(artifact_path,''),coalesce(duration_ms,0),coalesce(started_at,''),coalesce(ended_at,'') from checks where task_id=? order by rowid`, taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -918,8 +1069,69 @@ func (db *DB) Checks(ctx context.Context, taskID string) ([]Check, error) {
 	values := make([]Check, 0)
 	for rows.Next() {
 		var value Check
-		if err := rows.Scan(&value.ID, &value.TaskID, &value.PhaseID, &value.Name, &value.Command, &value.Attempt, &value.Status, &value.ExitCode, &value.Output, &value.ArtifactPath, &value.DurationMS, &value.StartedAt, &value.EndedAt); err != nil {
+		if err := rows.Scan(&value.ID, &value.TaskID, &value.PhaseID, &value.RepositoryID, &value.StageID, &value.Phase, &value.ComparisonBaseline, &value.Name, &value.Command, &value.Attempt, &value.Status, &value.ExitCode, &value.Output, &value.ArtifactPath, &value.DurationMS, &value.StartedAt, &value.EndedAt); err != nil {
 			return nil, err
+		}
+		values = append(values, value)
+	}
+	return values, rows.Err()
+}
+
+func (db *DB) SaveTestChanges(ctx context.Context, changes []TestChange) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return wrap("begin test-change evidence", err)
+	}
+	defer tx.Rollback()
+	for _, change := range changes {
+		if _, err = tx.ExecContext(ctx, `insert or replace into test_changes(id,task_id,phase_id,attempt,repository_id,repository_name,path,reason,change_kind,rename_from,rename_to,created_at) values(?,?,?,?,?,?,?,?,?,?,?,?)`, change.ID, change.TaskID, change.PhaseID, change.Attempt, change.RepositoryID, change.RepositoryName, change.Path, change.Reason, change.ChangeKind, nullIfEmpty(change.RenameFrom), nullIfEmpty(change.RenameTo), change.CreatedAt); err != nil {
+			return wrap("save test-change evidence", err)
+		}
+	}
+	return wrap("commit test-change evidence", tx.Commit())
+}
+
+func (db *DB) TestChanges(ctx context.Context, taskID string) ([]TestChange, error) {
+	rows, err := db.QueryContext(ctx, `select id,task_id,phase_id,attempt,repository_id,repository_name,path,reason,change_kind,coalesce(rename_from,''),coalesce(rename_to,''),created_at from test_changes where task_id=? order by created_at,rowid`, taskID)
+	if err != nil {
+		return nil, wrap("read test-change evidence", err)
+	}
+	defer rows.Close()
+	values := make([]TestChange, 0)
+	for rows.Next() {
+		var value TestChange
+		if err := rows.Scan(&value.ID, &value.TaskID, &value.PhaseID, &value.Attempt, &value.RepositoryID, &value.RepositoryName, &value.Path, &value.Reason, &value.ChangeKind, &value.RenameFrom, &value.RenameTo, &value.CreatedAt); err != nil {
+			return nil, err
+		}
+		values = append(values, value)
+	}
+	return values, rows.Err()
+}
+
+func (db *DB) SaveComparison(ctx context.Context, value Comparison) error {
+	overlay, err := json.Marshal(value.OverlayPaths)
+	if err != nil {
+		return wrap("encode comparison overlay paths", err)
+	}
+	_, err = db.ExecContext(ctx, `insert or replace into comparisons(id,task_id,phase_id,attempt,repository_id,repository_name,status,reason,baseline_snapshot,overlay_paths_json,created_at,duration_ms) values(?,?,?,?,?,?,?,?,?,?,?,?)`, value.ID, value.TaskID, value.PhaseID, value.Attempt, value.RepositoryID, value.RepositoryName, value.Status, value.Reason, nullIfEmpty(value.BaselineSnapshot), string(overlay), value.CreatedAt, value.DurationMS)
+	return wrap("save comparison", err)
+}
+
+func (db *DB) Comparisons(ctx context.Context, taskID string) ([]Comparison, error) {
+	rows, err := db.QueryContext(ctx, `select id,task_id,phase_id,attempt,repository_id,repository_name,status,reason,coalesce(baseline_snapshot,''),overlay_paths_json,created_at,duration_ms from comparisons where task_id=? order by created_at,rowid`, taskID)
+	if err != nil {
+		return nil, wrap("read comparisons", err)
+	}
+	defer rows.Close()
+	values := make([]Comparison, 0)
+	for rows.Next() {
+		var value Comparison
+		var overlay string
+		if err := rows.Scan(&value.ID, &value.TaskID, &value.PhaseID, &value.Attempt, &value.RepositoryID, &value.RepositoryName, &value.Status, &value.Reason, &value.BaselineSnapshot, &overlay, &value.CreatedAt, &value.DurationMS); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(overlay), &value.OverlayPaths); err != nil {
+			return nil, wrap("decode comparison overlay paths", err)
 		}
 		values = append(values, value)
 	}
@@ -1110,7 +1322,7 @@ func (db *DB) Interventions(ctx context.Context, taskID string) ([]Intervention,
 }
 
 func (db *DB) SaveMessage(ctx context.Context, value Message) (Message, bool, error) {
-	result, err := db.ExecContext(ctx, `insert into messages(id,task_id,actor,text,idempotency_key,target_type,target_id,anchor_json,recipient_role,agent_session_id,delivery_status,created_at) values(?,?,?,?,?,?,?,?,?,?,?,?) on conflict(task_id,idempotency_key) do nothing`, value.ID, value.TaskID, value.Actor, value.Text, value.IdempotencyKey, nullIfEmpty(value.TargetType), nullIfEmpty(value.TargetID), nullIfEmpty(value.Anchor), value.RecipientRole, value.AgentSessionID, value.DeliveryStatus, value.CreatedAt)
+	result, err := db.ExecContext(ctx, `insert into messages(id,task_id,actor,text,idempotency_key,target_type,target_id,anchor_json,stage_id,recipient_role,agent_session_id,delivery_status,created_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?) on conflict(task_id,idempotency_key) do nothing`, value.ID, value.TaskID, value.Actor, value.Text, value.IdempotencyKey, nullIfEmpty(value.TargetType), nullIfEmpty(value.TargetID), nullIfEmpty(value.Anchor), nullIfEmpty(value.StageID), value.RecipientRole, value.AgentSessionID, value.DeliveryStatus, value.CreatedAt)
 	if err != nil {
 		return Message{}, false, wrap("save message", err)
 	}
@@ -1123,7 +1335,7 @@ func (db *DB) SaveMessage(ctx context.Context, value Message) (Message, bool, er
 }
 
 func (db *DB) messageByKey(ctx context.Context, taskID, key string) (Message, error) {
-	return scanMessage(db.QueryRowContext(ctx, `select sequence,id,task_id,actor,text,idempotency_key,coalesce(target_type,''),coalesce(target_id,''),coalesce(anchor_json,''),recipient_role,agent_session_id,delivery_status,coalesce(failure_reason,''),created_at,coalesce(delivered_at,''),coalesce(failed_at,'') from messages where task_id=? and idempotency_key=?`, taskID, key))
+	return scanMessage(db.QueryRowContext(ctx, `select sequence,id,task_id,actor,text,idempotency_key,coalesce(target_type,''),coalesce(target_id,''),coalesce(anchor_json,''),coalesce(stage_id,''),recipient_role,agent_session_id,delivery_status,coalesce(failure_reason,''),created_at,coalesce(delivered_at,''),coalesce(failed_at,'') from messages where task_id=? and idempotency_key=?`, taskID, key))
 }
 
 func (db *DB) MessageByIdempotencyKey(ctx context.Context, taskID, key string) (Message, error) {
@@ -1132,7 +1344,7 @@ func (db *DB) MessageByIdempotencyKey(ctx context.Context, taskID, key string) (
 
 func scanMessage(scanner interface{ Scan(...any) error }) (Message, error) {
 	var value Message
-	err := scanner.Scan(&value.Sequence, &value.ID, &value.TaskID, &value.Actor, &value.Text, &value.IdempotencyKey, &value.TargetType, &value.TargetID, &value.Anchor, &value.RecipientRole, &value.AgentSessionID, &value.DeliveryStatus, &value.FailureReason, &value.CreatedAt, &value.DeliveredAt, &value.FailedAt)
+	err := scanner.Scan(&value.Sequence, &value.ID, &value.TaskID, &value.Actor, &value.Text, &value.IdempotencyKey, &value.TargetType, &value.TargetID, &value.Anchor, &value.StageID, &value.RecipientRole, &value.AgentSessionID, &value.DeliveryStatus, &value.FailureReason, &value.CreatedAt, &value.DeliveredAt, &value.FailedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Message{}, ErrNotFound
 	}
@@ -1154,7 +1366,7 @@ func scanMessage(scanner interface{ Scan(...any) error }) (Message, error) {
 }
 
 func (db *DB) Messages(ctx context.Context, taskID string) ([]Message, error) {
-	rows, err := db.QueryContext(ctx, `select sequence,id,task_id,actor,text,idempotency_key,coalesce(target_type,''),coalesce(target_id,''),coalesce(anchor_json,''),recipient_role,agent_session_id,delivery_status,coalesce(failure_reason,''),created_at,coalesce(delivered_at,''),coalesce(failed_at,'') from messages where task_id=? order by sequence`, taskID)
+	rows, err := db.QueryContext(ctx, `select sequence,id,task_id,actor,text,idempotency_key,coalesce(target_type,''),coalesce(target_id,''),coalesce(anchor_json,''),coalesce(stage_id,''),recipient_role,agent_session_id,delivery_status,coalesce(failure_reason,''),created_at,coalesce(delivered_at,''),coalesce(failed_at,'') from messages where task_id=? order by sequence`, taskID)
 	if err != nil {
 		return nil, wrap("list messages", err)
 	}
@@ -1171,11 +1383,11 @@ func (db *DB) Messages(ctx context.Context, taskID string) ([]Message, error) {
 }
 
 func (db *DB) NextQueuedMessage(ctx context.Context, taskID, role string) (Message, error) {
-	return scanMessage(db.QueryRowContext(ctx, `select sequence,id,task_id,actor,text,idempotency_key,coalesce(target_type,''),coalesce(target_id,''),coalesce(anchor_json,''),recipient_role,agent_session_id,delivery_status,coalesce(failure_reason,''),created_at,coalesce(delivered_at,''),coalesce(failed_at,'') from messages where task_id=? and recipient_role=? and delivery_status='queued' order by sequence limit 1`, taskID, role))
+	return scanMessage(db.QueryRowContext(ctx, `select sequence,id,task_id,actor,text,idempotency_key,coalesce(target_type,''),coalesce(target_id,''),coalesce(anchor_json,''),coalesce(stage_id,''),recipient_role,agent_session_id,delivery_status,coalesce(failure_reason,''),created_at,coalesce(delivered_at,''),coalesce(failed_at,'') from messages where task_id=? and stage_id=? and delivery_status='queued' order by sequence limit 1`, taskID, role))
 }
 
 func (db *DB) NextQueuedTaskMessage(ctx context.Context, taskID string) (Message, error) {
-	return scanMessage(db.QueryRowContext(ctx, `select sequence,id,task_id,actor,text,idempotency_key,coalesce(target_type,''),coalesce(target_id,''),coalesce(anchor_json,''),recipient_role,agent_session_id,delivery_status,coalesce(failure_reason,''),created_at,coalesce(delivered_at,''),coalesce(failed_at,'') from messages where task_id=? and delivery_status='queued' order by sequence limit 1`, taskID))
+	return scanMessage(db.QueryRowContext(ctx, `select sequence,id,task_id,actor,text,idempotency_key,coalesce(target_type,''),coalesce(target_id,''),coalesce(anchor_json,''),coalesce(stage_id,''),recipient_role,agent_session_id,delivery_status,coalesce(failure_reason,''),created_at,coalesce(delivered_at,''),coalesce(failed_at,'') from messages where task_id=? and delivery_status='queued' order by sequence limit 1`, taskID))
 }
 
 func (db *DB) BeginMessageInvocation(ctx context.Context, taskID, role, invocationID, messageID string) error {
@@ -1191,7 +1403,7 @@ func (db *DB) BeginMessageInvocation(ctx context.Context, taskID, role, invocati
 	if state == "aborted" {
 		return ErrConflict
 	}
-	result, err := tx.ExecContext(ctx, `update agent_sessions set pending_invocation_id=?,last_used_at=? where task_id=? and role=? and pending_invocation_id is null`, invocationID, now(), taskID, role)
+	result, err := tx.ExecContext(ctx, `update agent_sessions set pending_invocation_id=?,last_used_at=? where task_id=? and stage_id=? and pending_invocation_id is null`, invocationID, now(), taskID, role)
 	if err != nil {
 		return wrap("begin message invocation", err)
 	}
@@ -1229,7 +1441,7 @@ func (db *DB) AbortTask(ctx context.Context, taskID, from, activePhase string) (
 		return nil, wrap("begin abort", err)
 	}
 	defer tx.Rollback()
-	rows, err := tx.QueryContext(ctx, `select sequence,id,task_id,actor,text,idempotency_key,coalesce(target_type,''),coalesce(target_id,''),coalesce(anchor_json,''),recipient_role,agent_session_id,delivery_status,coalesce(failure_reason,''),created_at,coalesce(delivered_at,''),coalesce(failed_at,'') from messages where task_id=? and delivery_status='queued' order by sequence`, taskID)
+	rows, err := tx.QueryContext(ctx, `select sequence,id,task_id,actor,text,idempotency_key,coalesce(target_type,''),coalesce(target_id,''),coalesce(anchor_json,''),coalesce(stage_id,''),recipient_role,agent_session_id,delivery_status,coalesce(failure_reason,''),created_at,coalesce(delivered_at,''),coalesce(failed_at,'') from messages where task_id=? and delivery_status='queued' order by sequence`, taskID)
 	if err != nil {
 		return nil, wrap("read abort messages", err)
 	}

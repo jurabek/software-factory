@@ -11,6 +11,9 @@ export type DaemonTask = {
 	request: string;
 	state: string;
 	created_at: string;
+	active_stage?: string;
+	pipeline?: string;
+	stages?: DaemonStageProjection[];
 	workspace_path?: string;
 	selected_branch_id?: string;
 	repositories?: unknown[];
@@ -21,6 +24,14 @@ export type DaemonTask = {
 	thinking?: string;
 	available_actions?: string[];
 	[key: string]: unknown;
+};
+export type DaemonStageProjection = {
+	id: string;
+	kind: string;
+	agent?: string;
+	status: string;
+	attempt_id?: string;
+	blocking_reason?: string;
 };
 export type DaemonCommand = "start" | "approve" | "pause" | "resume" | "abort";
 export type DaemonCommandInput = { plan_digest: string };
@@ -63,6 +74,16 @@ export type DaemonCreationDefaults = {
 	model: string;
 	thinking: string;
 };
+export type DaemonPipelineStage = {
+	id: string;
+	kind: string;
+	agent?: string;
+};
+export type DaemonPipeline = {
+	name: string;
+	default: boolean;
+	stages: DaemonPipelineStage[];
+};
 export type RepositoryInput = {
 	name?: string;
 	type: "local" | "github";
@@ -73,6 +94,7 @@ export type RepositoryInput = {
 export type CreateTaskInput = {
 	request: string;
 	repositories: RepositoryInput[];
+	pipeline?: string;
 	coding_agent?: string;
 	model?: string;
 	thinking?: string;
@@ -288,6 +310,32 @@ function assertTaskShape(task: unknown): asserts task is DaemonTask {
 }
 
 function projectTask(task: DaemonTask & Record<string, unknown>): DaemonTask {
+	const stages = Array.isArray(task.stages)
+		? task.stages.flatMap((stage) => {
+				if (!stage || typeof stage !== "object") return [];
+				const value = stage as Record<string, unknown>;
+				if (
+					typeof value.id !== "string" ||
+					typeof value.kind !== "string" ||
+					typeof value.status !== "string"
+				)
+					return [];
+				return [
+					{
+						id: value.id,
+						kind: value.kind,
+						status: value.status,
+						...(typeof value.agent === "string" ? { agent: value.agent } : {}),
+						...(typeof value.attempt_id === "string"
+							? { attempt_id: value.attempt_id }
+							: {}),
+						...(typeof value.blocking_reason === "string"
+							? { blocking_reason: value.blocking_reason }
+							: {}),
+					},
+				];
+			})
+		: undefined;
 	return {
 		id: task.id,
 		...(typeof task.parent_task_id === "string"
@@ -296,6 +344,11 @@ function projectTask(task: DaemonTask & Record<string, unknown>): DaemonTask {
 		request: task.request,
 		state: task.state,
 		created_at: task.created_at,
+		...(typeof task.active_stage === "string"
+			? { active_stage: task.active_stage }
+			: {}),
+		...(typeof task.pipeline === "string" ? { pipeline: task.pipeline } : {}),
+		...(stages ? { stages } : {}),
 	};
 }
 
@@ -502,6 +555,51 @@ export function createDaemonClient(fetcher: typeof fetch = fetch) {
 						: {}),
 				})),
 			};
+		},
+		async pipelines(
+			endpoint: string,
+			credential: string,
+			options: DaemonRequestOptions = {},
+		): Promise<DaemonPipeline[]> {
+			const body = await requestJSON(
+				fetcher,
+				endpoint,
+				credential,
+				"/api/v1/pipelines",
+				options,
+			);
+			if (!Array.isArray(body))
+				throw new DaemonRequestError(
+					502,
+					"invalid_daemon_pipelines",
+					"Daemon returned invalid pipelines.",
+				);
+			return body.flatMap((pipeline) => {
+				if (!pipeline || typeof pipeline !== "object") return [];
+				const value = pipeline as Record<string, unknown>;
+				if (
+					typeof value.name !== "string" ||
+					typeof value.default !== "boolean" ||
+					!Array.isArray(value.stages)
+				)
+					return [];
+				const stages = value.stages.flatMap((stage) => {
+					if (!stage || typeof stage !== "object") return [];
+					const entry = stage as Record<string, unknown>;
+					if (typeof entry.id !== "string" || typeof entry.kind !== "string")
+						return [];
+					return [
+						{
+							id: entry.id,
+							kind: entry.kind,
+							...(typeof entry.agent === "string"
+								? { agent: entry.agent }
+								: {}),
+						},
+					];
+				});
+				return [{ name: value.name, default: value.default, stages }];
+			});
 		},
 		async createTask(
 			endpoint: string,

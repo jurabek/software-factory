@@ -51,6 +51,47 @@ func TestReserveAgentSessionConcurrentCallersShareWinner(t *testing.T) {
 	}
 }
 
+func TestRepositoryReviewBaseAndPhaseGitInputsRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "factory.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err = db.CreateTask(ctx, Task{ID: "task", Request: "request", WorkspacePath: t.TempDir(), State: "draft", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), Repositories: []TaskRepository{{ID: "repo", TaskID: "task", Name: "app", SourceType: "local", SourceValue: "/source", Primary: true, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}}}); err != nil {
+		t.Fatal(err)
+	}
+	repository := TaskRepository{ID: "repo", TaskID: "task", CanonicalPath: "/source", WorkingPath: "/work", BaseSHA: "base", ReviewBaseSHA: "base", BranchName: "software-factory/task", Primary: true}
+	if err = db.SetRepositoryPrepared(ctx, repository); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := db.TaskRepositories(ctx, "task")
+	if err != nil || len(stored) != 1 || stored[0].ReviewBaseSHA != "base" || stored[0].BranchName != repository.BranchName {
+		t.Fatalf("repository = %#v, err = %v", stored, err)
+	}
+	if err = db.AddPhase(ctx, Phase{ID: "attempt", TaskID: "task", Sequence: 1, Name: "planning", Kind: "agent", Owner: "planner", Status: "running", Attempt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	input := PhaseRepositoryInput{PhaseID: "attempt", RepositoryID: "repo", ReviewBaseSHA: "base", HeadSHA: "head", BranchName: repository.BranchName}
+	if err = db.SavePhaseRepositoryInputs(ctx, "attempt", []PhaseRepositoryInput{input}); err != nil {
+		t.Fatal(err)
+	}
+	inputs, err := db.PhaseRepositoryInputs(ctx, "attempt")
+	if err != nil || len(inputs) != 1 || inputs[0] != input {
+		t.Fatalf("phase inputs = %#v, err = %v", inputs, err)
+	}
+	if err = db.AdvanceReviewBase(ctx, "task", "repo", "wrong", "new"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("unexpected review base mismatch error: %v", err)
+	}
+	if err = db.AdvanceReviewBase(ctx, "task", "repo", "base", "new"); err != nil {
+		t.Fatal(err)
+	}
+	stored, err = db.TaskRepositories(ctx, "task")
+	if err != nil || stored[0].ReviewBaseSHA != "new" {
+		t.Fatalf("advanced repository = %#v, err = %v", stored, err)
+	}
+}
+
 func TestOpenRejectsLegacyState(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "factory.db")
 	db, err := sql.Open("sqlite", path)
