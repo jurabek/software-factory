@@ -31,7 +31,7 @@ func TestBuilderValidatorRequiresExactlyGitDerivedTestChanges(t *testing.T) {
 	}
 	defer db.Close()
 	task := qualityTask(t, db, root, store.TaskRepository{ID: "repo-1", TaskID: "task-1", Name: "app", WorkingPath: repositoryPath, BaseSHA: base, ReviewBaseSHA: base})
-	service := NewService(root, db, configForQuality(), "", nil, factorygit.OSRunner{})
+	service := NewService(root, Dependencies{Store: db, Config: configForQuality(), Git: factorygit.OSRunner{}})
 	profiles := map[string]factorygit.Profile{"app": {Tests: []string{"**/*_test.go"}}}
 	validate := service.builderValidator(context.Background(), task, profiles)
 	valid := `{"status":"success","summary":"built","artifacts":[],"notes_for_next_agent":"","changed_files":["changed_test.go"],"commit_message":"test","test_changes":[{"repository_id":"repo-1","path":"changed_test.go","reason":"adds the regression assertion"}]}`
@@ -63,7 +63,7 @@ func TestPersistBuilderEvidenceRetainsChangeKindAndReason(t *testing.T) {
 	}
 	defer db.Close()
 	task := qualityTask(t, db, root, store.TaskRepository{ID: "repo-1", TaskID: "task-1", Name: "app", WorkingPath: repositoryPath, BaseSHA: base, ReviewBaseSHA: base})
-	service := NewService(root, db, configForQuality(), "", nil, factorygit.OSRunner{})
+	service := NewService(root, Dependencies{Store: db, Config: configForQuality(), Git: factorygit.OSRunner{}})
 	profileDir := filepath.Join(task.WorkspacePath, "repository-profiles")
 	if err = os.MkdirAll(profileDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -106,7 +106,7 @@ func TestMaterializeScratchPreservesModesSymlinksAndIsolation(t *testing.T) {
 	qualityGit(t, repositoryPath, "add", ".")
 	qualityGit(t, repositoryPath, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "base")
 	task := qualityTask(t, db, root, store.TaskRepository{ID: "repo-1", TaskID: "task-1", Name: "app", WorkingPath: repositoryPath})
-	service := NewService(root, db, configForQuality(), "", nil, factorygit.OSRunner{})
+	service := NewService(root, Dependencies{Store: db, Config: configForQuality(), Git: factorygit.OSRunner{}})
 	snapshot, err := service.CaptureSnapshot(context.Background(), task)
 	if err != nil {
 		t.Fatal(err)
@@ -146,7 +146,7 @@ func TestCheckCancellationKillsProcessGroupAndPersistsCancelledRecord(t *testing
 		t.Fatal(err)
 	}
 	task := qualityTask(t, db, root, store.TaskRepository{ID: "repo-1", TaskID: "task-1", Name: "app", WorkingPath: repositoryPath})
-	service := NewService(root, db, configForQuality(), "", nil, factorygit.OSRunner{})
+	service := NewService(root, Dependencies{Store: db, Config: configForQuality(), Git: factorygit.OSRunner{}})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
@@ -183,7 +183,7 @@ func TestComparisonFailureIsPersistedAsAdvisoryObservation(t *testing.T) {
 	qualityGit(t, repositoryPath, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "base")
 	base := strings.TrimSpace(qualityGit(t, repositoryPath, "rev-parse", "HEAD"))
 	task := qualityTask(t, db, root, store.TaskRepository{ID: "repo-1", TaskID: "task-1", Name: "app", WorkingPath: repositoryPath, BaseSHA: base, ReviewBaseSHA: base})
-	service := NewService(root, db, configForQuality(), "", nil, factorygit.OSRunner{})
+	service := NewService(root, Dependencies{Store: db, Config: configForQuality(), Git: factorygit.OSRunner{}})
 	snapshot, err := service.CaptureSnapshot(context.Background(), task)
 	if err != nil {
 		t.Fatal(err)

@@ -20,7 +20,7 @@ type expectedTestChange struct {
 	change     factorygit.Change
 }
 
-func (s *Service) builderValidator(ctx context.Context, task store.Task, profiles map[string]factorygit.Profile) validator {
+func (s *qualityService) builderValidator(ctx context.Context, task store.Task, profiles map[string]factorygit.Profile) validator {
 	return func(text string) (any, error) {
 		build, err := ValidateBuild(text)
 		if err != nil {
@@ -37,7 +37,7 @@ func (s *Service) builderValidator(ctx context.Context, task store.Task, profile
 	}
 }
 
-func (s *Service) changedTestSet(ctx context.Context, task store.Task, profiles map[string]factorygit.Profile) (map[string]expectedTestChange, error) {
+func (s *qualityService) changedTestSet(ctx context.Context, task store.Task, profiles map[string]factorygit.Profile) (map[string]expectedTestChange, error) {
 	expected := make(map[string]expectedTestChange)
 	for _, repository := range task.Repositories {
 		profile, ok := profiles[repository.Name]
@@ -85,7 +85,7 @@ func validateTestChangeSet(changes []TestChange, expected map[string]expectedTes
 	return nil
 }
 
-func (s *Service) persistBuilderEvidence(ctx context.Context, task store.Task, phase store.Phase, payload string) error {
+func (s *qualityService) persistBuilderEvidence(ctx context.Context, task store.Task, phase store.Phase, payload string) error {
 	build, err := ValidateBuild(payload)
 	if err != nil {
 		return err
@@ -130,11 +130,11 @@ type checkRunError struct {
 func (e *checkRunError) Error() string { return e.err.Error() }
 func (e *checkRunError) Unwrap() error { return e.err }
 
-func (s *Service) runChecks(ctx context.Context, task store.Task, phase store.Phase, repository store.TaskRepository, checks []factorygit.Check, checkPhase, baseline string) error {
+func (s *qualityService) runChecks(ctx context.Context, task store.Task, phase store.Phase, repository store.TaskRepository, checks []factorygit.Check, checkPhase, baseline string) error {
 	return s.runChecksAt(ctx, task, phase, repository, repository.WorkingPath, checks, checkPhase, baseline)
 }
 
-func (s *Service) runChecksAt(ctx context.Context, task store.Task, phase store.Phase, repository store.TaskRepository, workingPath string, checks []factorygit.Check, checkPhase, baseline string) error {
+func (s *qualityService) runChecksAt(ctx context.Context, task store.Task, phase store.Phase, repository store.TaskRepository, workingPath string, checks []factorygit.Check, checkPhase, baseline string) error {
 	var firstErr error
 	for index, declared := range checks {
 		check, err := s.runCheck(ctx, task, phase, repository, workingPath, declared, index, checkPhase, baseline)
@@ -148,7 +148,7 @@ func (s *Service) runChecksAt(ctx context.Context, task store.Task, phase store.
 	return firstErr
 }
 
-func (s *Service) runCheck(ctx context.Context, task store.Task, phase store.Phase, repository store.TaskRepository, workingPath string, declared factorygit.Check, index int, checkPhase, baseline string) (store.Check, error) {
+func (s *qualityService) runCheck(ctx context.Context, task store.Task, phase store.Phase, repository store.TaskRepository, workingPath string, declared factorygit.Check, index int, checkPhase, baseline string) (store.Check, error) {
 	started := time.Now().UTC()
 	check := store.Check{
 		ID:                 fmt.Sprintf("%s-%s-%s-%d", phase.ID, checkPhase, safeFileName(declared.ID), index),
@@ -291,7 +291,7 @@ func safeFileName(value string) string {
 	return builder.String()
 }
 
-func (s *Service) runComparisons(ctx context.Context, task store.Task, phase store.Phase, profiles map[string]factorygit.Profile) error {
+func (s *qualityService) runComparisons(ctx context.Context, task store.Task, phase store.Phase, profiles map[string]factorygit.Profile) error {
 	baseline, err := s.comparisonBaseline(ctx, task, phase)
 	if err != nil {
 		return err
@@ -356,7 +356,7 @@ func (s *Service) runComparisons(ctx context.Context, task store.Task, phase sto
 		func() {
 			defer os.RemoveAll(comparisonRoot)
 			baselineRoot := filepath.Join(comparisonRoot, "baseline")
-			if materializeErr := s.MaterializeScratch(ctx, task, baseline, baselineRoot); materializeErr != nil {
+			if materializeErr := s.snapshots.MaterializeScratch(ctx, task, baseline, baselineRoot); materializeErr != nil {
 				comparison.Status, comparison.Reason = "inconclusive", materializeErr.Error()
 				return
 			}
@@ -369,7 +369,7 @@ func (s *Service) runComparisons(ctx context.Context, task store.Task, phase sto
 				return
 			}
 			overlayRoot := filepath.Join(comparisonRoot, "overlay")
-			if materializeErr := s.MaterializeScratch(ctx, task, baseline, overlayRoot); materializeErr != nil {
+			if materializeErr := s.snapshots.MaterializeScratch(ctx, task, baseline, overlayRoot); materializeErr != nil {
 				comparison.Status, comparison.Reason = "inconclusive", materializeErr.Error()
 				return
 			}
@@ -406,7 +406,7 @@ func (s *Service) runComparisons(ctx context.Context, task store.Task, phase sto
 	return nil
 }
 
-func (s *Service) saveComparison(ctx context.Context, comparison *store.Comparison) error {
+func (s *qualityService) saveComparison(ctx context.Context, comparison *store.Comparison) error {
 	if ctx.Err() != nil {
 		comparison.Status = "cancelled"
 		comparison.Reason = ctx.Err().Error()
@@ -414,7 +414,7 @@ func (s *Service) saveComparison(ctx context.Context, comparison *store.Comparis
 	return s.db.SaveComparison(context.WithoutCancel(ctx), *comparison)
 }
 
-func (s *Service) changedTestEntries(ctx context.Context, repository store.TaskRepository, profile factorygit.Profile) ([]expectedTestChange, error) {
+func (s *qualityService) changedTestEntries(ctx context.Context, repository store.TaskRepository, profile factorygit.Profile) ([]expectedTestChange, error) {
 	entries, err := factorygit.ChangedEntries(ctx, s.git, repository.WorkingPath, repositoryReviewBase(repository))
 	if err != nil {
 		return nil, err
@@ -444,7 +444,7 @@ func comparisonPaths(entries []expectedTestChange) []string {
 	return paths
 }
 
-func (s *Service) comparisonBaseline(ctx context.Context, task store.Task, current store.Phase) (string, error) {
+func (s *qualityService) comparisonBaseline(ctx context.Context, task store.Task, current store.Phase) (string, error) {
 	phases, err := s.db.Phases(ctx, task.ID)
 	if err != nil {
 		return "", err
@@ -465,6 +465,22 @@ func (s *Service) comparisonBaseline(ctx context.Context, task store.Task, curre
 		}
 	}
 	return "", nil
+}
+
+func (s *Service) builderValidator(ctx context.Context, task store.Task, profiles map[string]factorygit.Profile) validator {
+	return s.quality.builderValidator(ctx, task, profiles)
+}
+
+func (s *Service) persistBuilderEvidence(ctx context.Context, task store.Task, phase store.Phase, payload string) error {
+	return s.quality.persistBuilderEvidence(ctx, task, phase, payload)
+}
+
+func (s *Service) runChecks(ctx context.Context, task store.Task, phase store.Phase, repository store.TaskRepository, checks []factorygit.Check, checkPhase, baseline string) error {
+	return s.quality.runChecks(ctx, task, phase, repository, checks, checkPhase, baseline)
+}
+
+func (s *Service) runComparisons(ctx context.Context, task store.Task, phase store.Phase, profiles map[string]factorygit.Profile) error {
+	return s.quality.runComparisons(ctx, task, phase, profiles)
 }
 
 func copyOverlayPath(sourceRoot, destinationRoot, relative string) error {

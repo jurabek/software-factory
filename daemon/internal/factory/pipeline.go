@@ -39,7 +39,7 @@ func fallbackPipelineConfig(c config.Config) config.Config {
 	}
 }
 
-func (s *Service) freezeConfig() (config.Config, error) {
+func (s *pipelineService) freezeConfig() (config.Config, error) {
 	c := fallbackPipelineConfig(s.config)
 	base := filepath.Dir(s.configPath)
 	for index := range c.Agents {
@@ -62,7 +62,7 @@ func (s *Service) freezeConfig() (config.Config, error) {
 	return c, nil
 }
 
-func (s *Service) selectPipeline(name string) (config.Config, config.Pipeline, error) {
+func (s *pipelineService) selectPipeline(name string) (config.Config, config.Pipeline, error) {
 	c, err := s.freezeConfig()
 	if err != nil {
 		return config.Config{}, config.Pipeline{}, err
@@ -81,8 +81,8 @@ func (s *Service) selectPipeline(name string) (config.Config, config.Pipeline, e
 	return c, pipeline, nil
 }
 
-func (s *Service) taskPipeline(task store.Task) (config.Config, config.Pipeline, error) {
-	c, err := s.taskConfig(task)
+func (s *pipelineService) taskPipeline(task store.Task) (config.Config, config.Pipeline, error) {
+	c, err := taskConfig(s.config, s.configPath, task)
 	if err != nil {
 		return config.Config{}, config.Pipeline{}, err
 	}
@@ -101,6 +101,10 @@ func (s *Service) taskPipeline(task store.Task) (config.Config, config.Pipeline,
 }
 
 func (s *Service) StageProjection(ctx context.Context, task store.Task) ([]store.StageProjection, error) {
+	return s.pipelines.StageProjection(ctx, task)
+}
+
+func (s *pipelineService) StageProjection(ctx context.Context, task store.Task) ([]store.StageProjection, error) {
 	_, pipeline, err := s.taskPipeline(task)
 	if err != nil {
 		return nil, err
@@ -149,6 +153,18 @@ func (s *Service) StageProjection(ctx context.Context, task store.Task) ([]store
 		result = append(result, value)
 	}
 	return result, nil
+}
+
+func (s *Service) freezeConfig() (config.Config, error) {
+	return s.pipelines.freezeConfig()
+}
+
+func (s *Service) selectPipeline(name string) (config.Config, config.Pipeline, error) {
+	return s.pipelines.selectPipeline(name)
+}
+
+func (s *Service) taskPipeline(task store.Task) (config.Config, config.Pipeline, error) {
+	return s.pipelines.taskPipeline(task)
 }
 
 func stageState(kind string) State {

@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/jurabek/software-factory/daemon/internal/config"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 )
 
@@ -18,7 +17,7 @@ func TestCreateTaskAllocatesWorkspaceForMultipleRepositories(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	service := NewService(root, db, config.Config{}, "", nil, nil)
+	service := NewService(root, Dependencies{Store: db})
 	task, err := service.Create(context.Background(), CreateRequest{Request: "Coordinate API and UI", Repositories: []Repository{{Name: "api", Type: "local", Path: filepath.Join(root, "api"), Primary: true}, {Name: "web", Type: "github", Repo: "owner/web"}}})
 	if err != nil {
 		t.Fatal(err)
@@ -57,7 +56,7 @@ func TestCreateTaskRequiresOnePrimaryRepository(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	service := NewService(root, db, config.Config{}, "", nil, nil)
+	service := NewService(root, Dependencies{Store: db})
 	_, err = service.Create(context.Background(), CreateRequest{Request: "change", Repositories: []Repository{{Name: "one", Type: "github", Repo: "owner/one", Primary: true}, {Name: "two", Type: "github", Repo: "owner/two", Primary: true}}})
 	if err == nil {
 		t.Fatal("expected primary repository validation error")
@@ -71,7 +70,7 @@ func TestCreateSessionInheritsTaskConfiguration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	service := NewService(root, db, config.Config{}, "", nil, nil)
+	service := NewService(root, Dependencies{Store: db})
 	task, err := service.Create(context.Background(), CreateRequest{
 		Request:      "Add task sessions",
 		Repositories: []Repository{{Name: "app", Type: "github", Repo: "owner/app", Primary: true}},
@@ -116,7 +115,7 @@ func TestCreateSessionUsesRootForNestedSessionRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	service := NewService(root, db, config.Config{}, "", nil, nil)
+	service := NewService(root, Dependencies{Store: db})
 	task, err := service.Create(context.Background(), CreateRequest{Request: "Task", Repositories: []Repository{{Type: "github", Repo: "owner/app"}}})
 	if err != nil {
 		t.Fatal(err)
@@ -141,7 +140,7 @@ func TestDeleteRootTaskDeletesAllSessionWorkspaces(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	service := NewService(root, db, config.Config{}, "", nil, nil)
+	service := NewService(root, Dependencies{Store: db})
 	task, err := service.Create(context.Background(), CreateRequest{Request: "Task", Repositories: []Repository{{Type: "github", Repo: "owner/app"}}})
 	if err != nil {
 		t.Fatal(err)
@@ -171,7 +170,7 @@ func TestCommentIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	service := NewService(root, db, config.Config{}, "", nil, nil)
+	service := NewService(root, Dependencies{Store: db})
 	task, err := service.Create(context.Background(), CreateRequest{Request: "change", Repositories: []Repository{{Type: "github", Repo: "owner/repository"}}})
 	if err != nil {
 		t.Fatal(err)

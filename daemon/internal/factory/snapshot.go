@@ -14,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 )
 
@@ -28,7 +27,7 @@ type fileEntry struct {
 }
 
 // CaptureSnapshot copies workspace/repositories into workspace/snapshots/<digest>/.
-func (s *Service) CaptureSnapshot(ctx context.Context, task store.Task) (store.WorkspaceSnapshot, error) {
+func (s *snapshotService) CaptureSnapshot(ctx context.Context, task store.Task) (store.WorkspaceSnapshot, error) {
 	source := filepath.Join(task.WorkspacePath, "workspace", "repositories")
 	destinationRoot := filepath.Join(task.WorkspacePath, "workspace", "snapshots")
 	if err := os.MkdirAll(destinationRoot, 0o700); err != nil {
@@ -112,7 +111,7 @@ func (s *Service) CaptureSnapshot(ctx context.Context, task store.Task) (store.W
 }
 
 // MaterializeSnapshot restores a snapshot into workspace/repositories.
-func (s *Service) MaterializeSnapshot(ctx context.Context, task store.Task, digest string) error {
+func (s *snapshotService) MaterializeSnapshot(ctx context.Context, task store.Task, digest string) error {
 	if digest == "" {
 		return nil
 	}
@@ -133,7 +132,7 @@ func (s *Service) MaterializeSnapshot(ctx context.Context, task store.Task, dige
 	return copyDir(snapshot.Path, destination)
 }
 
-func (s *Service) MaterializeScratch(ctx context.Context, task store.Task, digest, destination string) error {
+func (s *snapshotService) MaterializeScratch(ctx context.Context, task store.Task, digest, destination string) error {
 	if digest == "" {
 		return fmt.Errorf("comparison snapshot is required")
 	}
@@ -150,26 +149,37 @@ func (s *Service) MaterializeScratch(ctx context.Context, task store.Task, diges
 	if err = copyDirSafe(snapshot.Path, destination); err != nil {
 		return fmt.Errorf("materialize comparison snapshot: %w", err)
 	}
-	runner := s.git
-	if runner == nil {
-		runner = factorygit.OSRunner{}
+	if s.git == nil {
+		return fmt.Errorf("git runner is required")
 	}
 	for _, repository := range task.Repositories {
 		repositoryPath := filepath.Join(destination, repository.Name)
 		if err = os.MkdirAll(repositoryPath, 0o700); err != nil {
 			return err
 		}
-		if _, err = runner.Run(ctx, "git", "-C", repositoryPath, "init"); err != nil {
+		if _, err = s.git.Run(ctx, "git", "-C", repositoryPath, "init"); err != nil {
 			return fmt.Errorf("initialize scratch repository %s: %w", repository.Name, err)
 		}
-		if _, err = runner.Run(ctx, "git", "-C", repositoryPath, "add", "--all"); err != nil {
+		if _, err = s.git.Run(ctx, "git", "-C", repositoryPath, "add", "--all"); err != nil {
 			return fmt.Errorf("stage scratch repository %s: %w", repository.Name, err)
 		}
-		if _, err = runner.Run(ctx, "git", "-C", repositoryPath, "-c", "user.name=Software Factory", "-c", "user.email=software-factory@localhost", "commit", "--allow-empty", "-m", "comparison snapshot"); err != nil {
+		if _, err = s.git.Run(ctx, "git", "-C", repositoryPath, "-c", "user.name=Software Factory", "-c", "user.email=software-factory@localhost", "commit", "--allow-empty", "-m", "comparison snapshot"); err != nil {
 			return fmt.Errorf("commit scratch repository %s: %w", repository.Name, err)
 		}
 	}
 	return nil
+}
+
+func (s *Service) CaptureSnapshot(ctx context.Context, task store.Task) (store.WorkspaceSnapshot, error) {
+	return s.snapshots.CaptureSnapshot(ctx, task)
+}
+
+func (s *Service) MaterializeSnapshot(ctx context.Context, task store.Task, digest string) error {
+	return s.snapshots.MaterializeSnapshot(ctx, task, digest)
+}
+
+func (s *Service) MaterializeScratch(ctx context.Context, task store.Task, digest, destination string) error {
+	return s.snapshots.MaterializeScratch(ctx, task, digest, destination)
 }
 
 func clearRepositoryContents(root string) error {

@@ -184,7 +184,10 @@ func run() error {
 			}
 		}
 	}
-	service := factory.NewService(root, db, configured, configPath, registry, factorygit.OSRunner{})
+	service := factory.NewService(root, factory.Dependencies{
+		Store: db, Config: configured, ConfigPath: configPath,
+		Harnesses: registry, Git: factorygit.OSRunner{},
+	})
 	apiServer, err := api.New(db, service, configured, problems, loadErr, harnessNames, catalog, api.Access{DaemonID: daemonID, Token: daemonToken})
 	if err != nil {
 		return err

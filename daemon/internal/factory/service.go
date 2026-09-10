@@ -32,7 +32,15 @@ var (
 	ErrInvalidFeedback = errors.New("feedback is required")
 )
 
-type Service struct {
+type Dependencies struct {
+	Store      *store.DB
+	Config     config.Config
+	ConfigPath string
+	Harnesses  harness.Registry
+	Git        factorygit.Runner
+}
+
+type runtime struct {
 	root       string
 	db         *store.DB
 	config     config.Config
@@ -42,6 +50,65 @@ type Service struct {
 	mu         sync.Mutex
 	cancel     map[string]*execution
 	taskLocks  sync.Map
+}
+
+type taskStore interface {
+	CreateTask(context.Context, store.Task) error
+	DeleteTask(context.Context, string) error
+	Task(context.Context, string) (store.Task, error)
+	TaskSessions(context.Context, string) ([]store.Task, error)
+}
+
+type taskService struct {
+	root      string
+	db        taskStore
+	config    config.Config
+	harnesses harness.Registry
+	git       factorygit.Runner
+	pipelines *pipelineService
+}
+
+type pipelineStore interface {
+	Phases(context.Context, string) ([]store.Phase, error)
+}
+
+type pipelineService struct {
+	db         pipelineStore
+	config     config.Config
+	configPath string
+}
+
+type snapshotStore interface {
+	SaveSnapshot(context.Context, store.WorkspaceSnapshot) error
+	Snapshot(context.Context, string) (store.WorkspaceSnapshot, error)
+}
+
+type snapshotService struct {
+	db  snapshotStore
+	git factorygit.Runner
+}
+
+type qualityStore interface {
+	EndProcess(context.Context, string, int, int) error
+	Phases(context.Context, string) ([]store.Phase, error)
+	SaveCheck(context.Context, store.Check) error
+	SaveComparison(context.Context, store.Comparison) error
+	SaveTestChanges(context.Context, []store.TestChange) error
+	StartProcess(context.Context, string, string, string, string, int, string) (int64, error)
+}
+
+type qualityService struct {
+	db        qualityStore
+	git       factorygit.Runner
+	snapshots *snapshotService
+}
+
+type Service struct {
+	*runtime
+	tasks     *taskService
+	pipelines *pipelineService
+	snapshots *snapshotService
+	quality   *qualityService
 }
 
 type execution struct {
@@ -82,15 +149,39 @@ type RepositoryDiff struct {
 	Patch        string   `json:"patch"`
 }
 
-func NewService(root string, db *store.DB, cfg config.Config, configPath string, harnesses harness.Registry, gitRunner factorygit.Runner) *Service {
-	return &Service{root: root, db: db, config: cfg, configPath: configPath, harnesses: harnesses, git: gitRunner, cancel: map[string]*execution{}}
+func NewService(root string, dependencies Dependencies) *Service {
+	runtime := &runtime{
+		root:       root,
+		db:         dependencies.Store,
+		config:     dependencies.Config,
+		configPath: dependencies.ConfigPath,
+		harnesses:  dependencies.Harnesses,
+		git:        dependencies.Git,
+		cancel:     map[string]*execution{},
+	}
+	pipelines := &pipelineService{db: dependencies.Store, config: dependencies.Config, configPath: dependencies.ConfigPath}
+	snapshots := &snapshotService{db: dependencies.Store, git: dependencies.Git}
+	return &Service{
+		runtime: runtime,
+		tasks: &taskService{
+			root: root, db: dependencies.Store, config: dependencies.Config,
+			harnesses: dependencies.Harnesses, git: dependencies.Git, pipelines: pipelines,
+		},
+		pipelines: pipelines,
+		snapshots: snapshots,
+		quality:   &qualityService{db: dependencies.Store, git: dependencies.Git, snapshots: snapshots},
+	}
 }
 
 func (s *Service) Create(ctx context.Context, request CreateRequest) (store.Task, error) {
-	return s.create(ctx, request, "")
+	return s.tasks.create(ctx, request, "")
 }
 
 func (s *Service) CreateSession(ctx context.Context, taskID string, request CreateSessionRequest) (store.Task, error) {
+	return s.tasks.CreateSession(ctx, taskID, request)
+}
+
+func (s *taskService) CreateSession(ctx context.Context, taskID string, request CreateSessionRequest) (store.Task, error) {
 	task, err := s.db.Task(ctx, taskID)
 	if err != nil {
 		return store.Task{}, err
@@ -121,7 +212,7 @@ func (s *Service) CreateSession(ctx context.Context, taskID string, request Crea
 	}, task.ID)
 }
 
-func (s *Service) create(ctx context.Context, request CreateRequest, parentTaskID string) (store.Task, error) {
+func (s *taskService) create(ctx context.Context, request CreateRequest, parentTaskID string) (store.Task, error) {
 	request.Request = strings.TrimSpace(request.Request)
 	if request.Request == "" {
 		return store.Task{}, fmt.Errorf("task description is required")
@@ -133,7 +224,7 @@ func (s *Service) create(ctx context.Context, request CreateRequest, parentTaskI
 	request.Model = strings.TrimSpace(request.Model)
 	request.Thinking = strings.TrimSpace(request.Thinking)
 	request.Pipeline = strings.TrimSpace(request.Pipeline)
-	configured, selectedPipeline, err := s.selectPipeline(request.Pipeline)
+	configured, selectedPipeline, err := s.pipelines.selectPipeline(request.Pipeline)
 	if err != nil {
 		return store.Task{}, err
 	}
@@ -443,6 +534,10 @@ func (s *Service) Resume(ctx context.Context, id string) error {
 }
 
 func (s *Service) Delete(ctx context.Context, id string) error {
+	return s.tasks.Delete(ctx, id)
+}
+
+func (s *taskService) Delete(ctx context.Context, id string) error {
 	task, err := s.db.Task(ctx, id)
 	if err != nil {
 		return err
@@ -473,6 +568,10 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 }
 
 func (s *Service) Diff(ctx context.Context, id string) (Diff, error) {
+	return s.tasks.Diff(ctx, id)
+}
+
+func (s *taskService) Diff(ctx context.Context, id string) (Diff, error) {
 	task, err := s.db.Task(ctx, id)
 	if err != nil {
 		return Diff{}, err
@@ -480,7 +579,7 @@ func (s *Service) Diff(ctx context.Context, id string) (Diff, error) {
 	return s.diffRepositories(ctx, task, false)
 }
 
-func (s *Service) diffRepositories(ctx context.Context, task store.Task, reviewBase bool) (Diff, error) {
+func (s *taskService) diffRepositories(ctx context.Context, task store.Task, reviewBase bool) (Diff, error) {
 	result := Diff{Repositories: make([]RepositoryDiff, 0, len(task.Repositories))}
 	for _, repository := range task.Repositories {
 		if repository.WorkingPath == "" {
@@ -501,6 +600,12 @@ func (s *Service) diffRepositories(ctx context.Context, task store.Task, reviewB
 		result.Repositories = append(result.Repositories, RepositoryDiff{RepositoryID: repository.ID, Name: repository.Name, Files: files, Patch: patch})
 	}
 	return result, nil
+}
+
+func (s *taskService) taskDir(id string) string { return filepath.Join(s.root, "tasks", id) }
+
+func (s *Service) diffRepositories(ctx context.Context, task store.Task, reviewBase bool) (Diff, error) {
+	return s.tasks.diffRepositories(ctx, task, reviewBase)
 }
 
 func (s *Service) launch(id string, run func(context.Context, string) error) {
@@ -1110,10 +1215,14 @@ func (s *Service) trace(ctx context.Context, taskID, phaseID string, entry sessi
 }
 
 func (s *Service) taskConfig(task store.Task) (config.Config, error) {
+	return taskConfig(s.config, s.configPath, task)
+}
+
+func taskConfig(current config.Config, configPath string, task store.Task) (config.Config, error) {
 	if task.ConfigSnapshot == "" {
-		return s.config, nil
+		return current, nil
 	}
-	configured, problems, err := config.Parse([]byte(task.ConfigSnapshot), filepath.Dir(s.configPath))
+	configured, problems, err := config.Parse([]byte(task.ConfigSnapshot), filepath.Dir(configPath))
 	if err != nil {
 		return config.Config{}, err
 	}
@@ -1185,7 +1294,7 @@ func agentForRole(configured config.Config, role string) (config.Agent, bool) {
 	}
 	return config.Agent{}, false
 }
-func (s *Service) taskDir(id string) string { return filepath.Join(s.root, "tasks", id) }
+func (r *runtime) taskDir(id string) string { return filepath.Join(r.root, "tasks", id) }
 
 func (s *Service) taskLock(id string) *sync.Mutex {
 	value, _ := s.taskLocks.LoadOrStore(id, &sync.Mutex{})

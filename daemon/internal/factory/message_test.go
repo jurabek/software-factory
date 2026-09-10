@@ -37,7 +37,10 @@ func messageTestService(t *testing.T, adapter harness.Harness) (*Service, *store
 		agents = append(agents, config.Agent{Name: role, Model: "provider/model", Thinking: "low", PromptEngineering: config.PromptEngineering{System: filepath.Join("prompts", role, "system.md"), User: filepath.Join("prompts", role, "user.md")}})
 	}
 	cfg := config.Config{Defaults: config.Defaults{CodingAgent: "pi", Model: "provider/model", Thinking: "low"}, Agents: agents}
-	service := NewService(root, db, cfg, filepath.Join(root, "config.yaml"), harness.Registry{"pi": adapter}, nil)
+	service := NewService(root, Dependencies{
+		Store: db, Config: cfg, ConfigPath: filepath.Join(root, "config.yaml"),
+		Harnesses: harness.Registry{"pi": adapter},
+	})
 	task, err := service.Create(context.Background(), CreateRequest{Request: "change", Repositories: []Repository{{Type: "github", Repo: "owner/repository"}}})
 	if err != nil {
 		t.Fatal(err)

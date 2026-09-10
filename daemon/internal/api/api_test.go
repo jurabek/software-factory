@@ -122,7 +122,7 @@ func TestCreateTaskAcceptsMultipleRepositories(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	service := factory.NewService(root, db, config.Config{}, "", nil, nil)
+	service := factory.NewService(root, factory.Dependencies{Store: db})
 	server, err := New(db, service, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil }, newTestAccess())
 	if err != nil {
 		t.Fatal(err)
@@ -151,7 +151,7 @@ func TestCreateAndListTaskSessions(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	service := factory.NewService(root, db, config.Config{}, "", nil, nil)
+	service := factory.NewService(root, factory.Dependencies{Store: db})
 	server, err := New(db, service, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil }, newTestAccess())
 	if err != nil {
 		t.Fatal(err)

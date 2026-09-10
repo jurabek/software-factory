@@ -62,7 +62,10 @@ func TestRunRoleProvidesReviewerEnvelopeContract(t *testing.T) {
 			},
 		}},
 	}
-	service := NewService(root, db, cfg, filepath.Join(root, "config.yaml"), harness.Registry{"pi": agent}, nil)
+	service := NewService(root, Dependencies{
+		Store: db, Config: cfg, ConfigPath: filepath.Join(root, "config.yaml"),
+		Harnesses: harness.Registry{"pi": agent},
+	})
 	task, err := service.Create(context.Background(), CreateRequest{Request: "Review change", Repositories: []Repository{{Type: "github", Repo: "owner/repository"}}})
 	if err != nil {
 		t.Fatal(err)
