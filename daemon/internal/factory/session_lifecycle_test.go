@@ -8,7 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/google/uuid"
+	"uuid"
+
 	"github.com/jurabek/software-factory/daemon/internal/config"
 	"github.com/jurabek/software-factory/daemon/internal/harness"
 	"github.com/jurabek/software-factory/daemon/internal/store"
@@ -187,7 +188,7 @@ func TestRetryRotatesClaudeSessionPreservingCost(t *testing.T) {
 	ctx := context.Background()
 	task, phase := createTaskWithAttempt(t, service, db)
 	claudeDir := filepath.Join(task.WorkspacePath, "sessions", "builder", "claude")
-	original, err := db.ReserveAgentSession(ctx, task.ID, store.AgentSession{Role: "builder", Harness: "claude", Model: "anthropic/sonnet", Thinking: "medium", HarnessSessionID: uuid.NewString(), SessionDirectory: claudeDir, AccountingComplete: true})
+	original, err := db.ReserveAgentSession(ctx, task.ID, store.AgentSession{Role: "builder", Harness: "claude", Model: "anthropic/sonnet", Thinking: "medium", HarnessSessionID: uuid.New().String(), SessionDirectory: claudeDir, AccountingComplete: true})
 	if err != nil {
 		t.Fatal(err)
 	}

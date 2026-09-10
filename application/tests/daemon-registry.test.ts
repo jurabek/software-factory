@@ -142,7 +142,7 @@ function daemonClient(taskID = "task-1"): DaemonClient & {
 				created_at: createdAt.toISOString(),
 			};
 		},
-		async command(_endpoint, _credential, taskId, command, options) {
+		async command(_endpoint, _credential, taskId, command, _input, options) {
 			state.calls.push({ method: "command", options });
 			check(options);
 			void taskId;
