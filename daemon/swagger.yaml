@@ -238,6 +238,11 @@ paths:
           required: false
           default: local-user
           description: Actor recorded with the approval
+        - in: body
+          name: approval
+          required: true
+          schema:
+            $ref: "#/definitions/ApprovalRequest"
       responses:
         "202":
           $ref: "#/responses/Accepted"
@@ -245,26 +250,6 @@ paths:
           $ref: "#/responses/Forbidden"
         "404":
           $ref: "#/responses/NotFound"
-        "409":
-          $ref: "#/responses/Conflict"
-        "422":
-          $ref: "#/responses/UnprocessableEntity"
-  /tasks/{id}/feedback:
-    parameters:
-      - $ref: "#/parameters/TaskID"
-    post:
-      tags: [Tasks]
-      operationId: reviseTaskPlan
-      summary: Answer Planner questions and revise the plan
-      parameters:
-        - in: body
-          name: feedback
-          required: true
-          schema:
-            $ref: "#/definitions/FeedbackRequest"
-      responses:
-        "202":
-          $ref: "#/responses/Accepted"
         "409":
           $ref: "#/responses/Conflict"
         "422":
@@ -282,21 +267,47 @@ paths:
             type: array
             items:
               $ref: "#/definitions/Intervention"
+  /tasks/{id}/messages:
+    parameters:
+      - $ref: "#/parameters/TaskID"
+    get:
+      tags: [Tasks]
+      operationId: listTaskMessages
+      summary: List durable agent messages in FIFO order
+      responses:
+        "200":
+          description: Messages ordered by acceptance sequence
+          schema:
+            type: array
+            items:
+              $ref: "#/definitions/Message"
+        "404":
+          $ref: "#/responses/NotFound"
+        "500":
+          $ref: "#/responses/InternalError"
     post:
       tags: [Tasks]
-      operationId: commentOnTaskHistory
-      summary: Add an idempotent comment to a Task, Attempt, Event, or Artifact
+      operationId: sendTaskMessage
+      summary: Persist and schedule a message to a factory-selected Agent Session
       parameters:
         - in: body
-          name: intervention
+          name: message
           required: true
           schema:
-            $ref: "#/definitions/InterventionRequest"
+            $ref: "#/definitions/SendMessageRequest"
       responses:
         "202":
-          description: Intervention persisted
+          description: Message persisted before delivery
           schema:
-            $ref: "#/definitions/Intervention"
+            $ref: "#/definitions/Message"
+        "404":
+          $ref: "#/responses/NotFound"
+        "409":
+          $ref: "#/responses/Conflict"
+        "422":
+          $ref: "#/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/responses/InternalError"
   /tasks/{id}/pause:
     parameters:
       - $ref: "#/parameters/TaskID"
@@ -367,6 +378,36 @@ paths:
               $ref: "#/definitions/Phase"
         "404":
           $ref: "#/responses/NotFound"
+        "500":
+          $ref: "#/responses/InternalError"
+  /tasks/{id}/attempts/{attemptID}/retry:
+    parameters:
+      - $ref: "#/parameters/TaskID"
+      - in: path
+        name: attemptID
+        type: string
+        required: true
+    post:
+      tags: [Tasks]
+      operationId: retryTaskAttempt
+      summary: Queue and execute an Attempt from its exact phase definition and input snapshot
+      parameters:
+        - in: body
+          name: retry
+          required: true
+          schema:
+            $ref: "#/definitions/RetryRequest"
+      responses:
+        "202":
+          description: One child branch and queued Attempt created
+          schema:
+            $ref: "#/definitions/RetryResult"
+        "404":
+          $ref: "#/responses/NotFound"
+        "409":
+          $ref: "#/responses/Conflict"
+        "422":
+          $ref: "#/responses/UnprocessableEntity"
         "500":
           $ref: "#/responses/InternalError"
   /tasks/{id}/events:
@@ -727,7 +768,7 @@ definitions:
         minLength: 1
   Task:
     type: object
-    required: [id, request, workspace_path, repositories, state, total_cost, created_at]
+    required: [id, request, workspace_path, repositories, state, total_cost, created_at, available_actions]
     properties:
       id:
         type: string
@@ -769,10 +810,12 @@ definitions:
         type: string
       thinking:
         type: string
-      agent_sessions:
+      available_actions:
         type: array
+        description: Authoritative deterministic controls currently available for this Task
         items:
-          $ref: "#/definitions/AgentSession"
+          type: string
+          enum: [start, approve, pause, resume, abort, retry]
       created_at:
         type: string
         format: date-time
@@ -837,7 +880,7 @@ definitions:
         type: string
       kind:
         type: string
-        enum: [message, tool_call, process_start, process_end, phase_start, phase_end, intervention, plan_feedback, custom]
+        enum: [message, task_message, tool_call, process_start, process_end, phase_start, phase_end, intervention, plan_feedback, custom]
       format_version:
         type: integer
         minimum: 1
@@ -1054,20 +1097,78 @@ definitions:
         items: {type: string}
       patch:
         type: string
-  FeedbackRequest:
+  ApprovalRequest:
     type: object
-    required: [feedback]
+    required: [plan_digest]
+    additionalProperties: false
     properties:
-      feedback: {type: string}
-      current_plan_digest: {type: string}
-  InterventionRequest:
+      plan_digest: {type: string, minLength: 1}
+  MessageTarget:
     type: object
-    required: [target_type, target_id, message, idempotency_key]
+    additionalProperties: false
     properties:
-      target_type: {type: string, enum: [task, attempt, event, artifact]}
-      target_id: {type: string}
-      message: {type: string}
+      attempt_id: {type: string}
+      event_id: {type: string}
+      artifact_id: {type: string}
+      anchor:
+        $ref: "#/definitions/Anchor"
+    description: At most one target ID; anchor is valid only with artifact_id
+  Anchor:
+    type: object
+    required: [kind]
+    additionalProperties: false
+    properties:
+      kind: {type: string, enum: [text_range, line_range, block, json_pointer]}
+      start: {type: integer, minimum: 0}
+      end: {type: integer, minimum: 0}
+      quote: {type: string}
+      pointer: {type: string}
+      value_digest: {type: string}
+      block: {type: string}
+  SendMessageRequest:
+    type: object
+    required: [text, idempotency_key]
+    additionalProperties: false
+    properties:
+      text: {type: string, minLength: 1}
+      target:
+        $ref: "#/definitions/MessageTarget"
+      idempotency_key: {type: string, minLength: 1}
+  Message:
+    type: object
+    required: [sequence, id, task_id, actor, text, idempotency_key, recipient_role, agent_session_id, delivery_status, created_at]
+    properties:
+      sequence: {type: integer, format: int64}
+      id: {type: string}
+      task_id: {type: string}
+      actor: {type: string}
+      text: {type: string}
       idempotency_key: {type: string}
+      target:
+        $ref: "#/definitions/MessageTarget"
+      recipient_role: {type: string, enum: [planner, builder, reviewer]}
+      agent_session_id: {type: string, format: uuid}
+      delivery_status: {type: string, enum: [queued, delivered, failed]}
+      failure_reason:
+        type: string
+        enum: [task_aborted, session_unavailable, context_unavailable, delivery_failed, harness_error, session_identity_changed, invocation_cancelled, invalid_agent_response]
+      created_at: {type: string, format: date-time}
+      delivered_at: {type: string, format: date-time}
+      failed_at: {type: string, format: date-time}
+  RetryRequest:
+    type: object
+    required: [idempotency_key]
+    additionalProperties: false
+    properties:
+      idempotency_key: {type: string, minLength: 1}
+  RetryResult:
+    type: object
+    required: [source_attempt_id, branch_id, attempt_id, created_at]
+    properties:
+      source_attempt_id: {type: string}
+      branch_id: {type: string}
+      attempt_id: {type: string}
+      created_at: {type: string, format: date-time}
   Intervention:
     type: object
     required: [id, task_id, target_type, target_id, actor, intent, text, delivery, idempotency_key, created_at]

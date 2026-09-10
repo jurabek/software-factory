@@ -1,11 +1,6 @@
-import { postTaskResource } from "@/server/task-resource-route.ts";
-
+// Stale clients cannot invoke the removed plan-feedback write path.
 export const runtime = "nodejs";
 
-export async function POST(
-	request: Request,
-	context: RouteContext<"/api/daemons/[daemonId]/tasks/[taskId]/feedback">,
-) {
-	const { daemonId, taskId } = await context.params;
-	return postTaskResource(request, daemonId, taskId, "feedback");
+export function GET() {
+	return new Response(null, { status: 410 });
 }

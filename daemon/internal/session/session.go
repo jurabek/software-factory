@@ -25,6 +25,7 @@ const (
 	KindPhaseEnd     Kind = "phase_end"
 	KindIntervention Kind = "intervention"
 	KindPlanFeedback Kind = "plan_feedback"
+	KindTaskMessage  Kind = "task_message"
 	KindCustom       Kind = "custom"
 )
 
@@ -95,6 +96,19 @@ type PlanFeedbackPayload struct {
 	PlanDigest string `json:"plan_digest,omitempty"`
 }
 
+type TaskMessagePayload struct {
+	MessageID      string `json:"message_id"`
+	TaskID         string `json:"task_id"`
+	Text           string `json:"text"`
+	RecipientRole  string `json:"recipient_role"`
+	AgentSessionID string `json:"agent_session_id"`
+	TargetType     string `json:"target_type,omitempty"`
+	TargetID       string `json:"target_id,omitempty"`
+	Anchor         string `json:"anchor_json,omitempty"`
+	DeliveryStatus string `json:"delivery_status"`
+	FailureReason  string `json:"failure_reason,omitempty"`
+}
+
 type CustomPayload struct {
 	CustomType string          `json:"custom_type"`
 	Data       json.RawMessage `json:"data"`
@@ -152,6 +166,10 @@ func NewIntervention(payload InterventionPayload) Entry {
 
 func NewPlanFeedback(payload PlanFeedbackPayload) Entry {
 	return Entry{Kind: KindPlanFeedback, Payload: payload, Display: Describe(KindPlanFeedback, payload)}
+}
+
+func NewTaskMessage(payload TaskMessagePayload) Entry {
+	return Entry{Kind: KindTaskMessage, Payload: payload, Display: Describe(KindTaskMessage, payload)}
 }
 
 func NewCustom(payload CustomPayload) Entry {
@@ -222,6 +240,14 @@ func Describe(kind Kind, payload any) Display {
 	case KindPlanFeedback:
 		if value, ok := payloadValue[PlanFeedbackPayload](payload); ok {
 			return withText(Display{Role: "user", Status: "neutral", Title: "Planner feedback"}, value.Feedback)
+		}
+	case KindTaskMessage:
+		if value, ok := payloadValue[TaskMessagePayload](payload); ok {
+			status := "neutral"
+			if value.DeliveryStatus == "failed" {
+				status = "failure"
+			}
+			return withText(Display{Role: "user", Status: status, Title: "Message " + value.DeliveryStatus, Target: value.RecipientRole}, value.Text)
 		}
 	case KindCustom:
 		if value, ok := payloadValue[CustomPayload](payload); ok {

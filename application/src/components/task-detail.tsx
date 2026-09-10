@@ -1,13 +1,11 @@
 "use client";
 
 import {
-	Archive,
 	Brain,
 	ChevronRight,
 	Columns2,
 	Copy,
 	ExternalLink,
-	FastForward,
 	File,
 	Folder,
 	GitBranch,
@@ -17,7 +15,6 @@ import {
 	Plus,
 	Send,
 	Shield,
-	SkipForward,
 	Terminal,
 	Users,
 } from "lucide-react";
@@ -30,13 +27,15 @@ import {
 	daemonCommand,
 	daemonDiff,
 	daemonEvents,
-	daemonFeedback,
-	daemonIntervene,
 	daemonInterventions,
+	daemonMessages,
 	daemonRemoveTask,
 	daemonResults,
+	daemonRetryAttempt,
+	daemonSendMessage,
 	daemonSessions,
 	daemonTask,
+	type MessageTarget,
 	openTaskStream,
 	type QualifiedTask,
 	type TaskArtifact,
@@ -46,6 +45,7 @@ import {
 	type TaskDetails,
 	type TaskDiff,
 	type TaskIntervention,
+	type TaskMessage,
 	type TaskResult,
 } from "@/client/daemon-api.ts";
 import {
@@ -54,10 +54,6 @@ import {
 	relativeTime,
 } from "@/client/daemon-ui-state.ts";
 import {
-	isPlannerApprovalBlocked,
-	latestPlannerQuestionSet,
-} from "@/client/planner-feedback.ts";
-import {
 	formatDurationMs,
 	type SessionEvent,
 	sessionDisplay,
@@ -65,7 +61,6 @@ import {
 import { meaningfulWorkEvents, visibleWorkEvents } from "@/client/work-log.ts";
 import { AttemptGraph } from "@/components/attempt-graph.tsx";
 import { EventDialog } from "@/components/event-dialog.tsx";
-import { PlannerQuestions } from "@/components/planner-questions.tsx";
 import { Alert, AlertDescription } from "@/components/ui/alert.tsx";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar.tsx";
 import { Badge } from "@/components/ui/badge.tsx";
@@ -96,23 +91,7 @@ import { stateTextClass } from "@/lib/state-style.ts";
 import { cn } from "@/lib/utils.ts";
 
 const commands = ["start", "approve", "pause", "resume", "abort"] as const;
-const interventionActions = [
-	"comment",
-	"steer",
-	"follow_up",
-	"retry",
-	"revise",
-	"repair",
-] as const;
-type InterventionAction = (typeof interventionActions)[number];
-const actionLabels: Record<InterventionAction, string> = {
-	comment: "Comment",
-	steer: "Steer running agent",
-	follow_up: "Follow up after settle",
-	retry: "Retry exact",
-	revise: "Revise and retry",
-	repair: "Continue repair",
-};
+type Command = (typeof commands)[number];
 const liveTone: Record<string, string> = {
 	live: "bg-success shadow-[0_0_0.4rem_var(--success)]",
 	reconnecting: "bg-warning",
@@ -127,30 +106,6 @@ type DisplayArtifact = {
 	subtitle: string;
 	content: string;
 };
-
-function commandEnabled(
-	command: (typeof commands)[number],
-	state: string,
-): boolean {
-	switch (command) {
-		case "start":
-			return state === "draft";
-		case "approve":
-			return state === "awaiting_plan_approval";
-		case "pause":
-			return [
-				"preparing",
-				"planning",
-				"building",
-				"checking",
-				"reviewing",
-			].includes(state);
-		case "resume":
-			return ["paused", "blocked"].includes(state);
-		case "abort":
-			return !["completed", "aborted"].includes(state);
-	}
-}
 
 type TaskRepository = {
 	id: string;
@@ -168,27 +123,6 @@ function isTaskRepository(value: unknown): value is TaskRepository {
 		typeof repository.source_type === "string" &&
 		typeof repository.primary === "boolean"
 	);
-}
-
-function interventionChoices(
-	state: string,
-	availableActions: string[],
-): InterventionAction[] {
-	const serverActions = availableActions.filter(
-		(action): action is InterventionAction =>
-			interventionActions.includes(action as InterventionAction),
-	);
-	if (state === "draft") return ["comment"];
-	if (state === "blocked" || state === "paused")
-		return [
-			...new Set<InterventionAction>([
-				"comment",
-				...serverActions.filter((action) =>
-					["retry", "revise", "repair"].includes(action),
-				),
-			]),
-		];
-	return serverActions.length ? serverActions : ["comment"];
 }
 
 function renderedArtifactContent(artifact: DisplayArtifact): string {
@@ -234,6 +168,10 @@ type ChatItem = {
 	at: number;
 	iso: string;
 	errored?: boolean;
+	deliveryStatus?: TaskMessage["delivery_status"];
+	failureReason?: string;
+	legacy?: boolean;
+	message?: TaskMessage;
 	event?: SessionEvent;
 };
 
@@ -249,6 +187,7 @@ function buildTimeline(
 	request: string,
 	createdAt: string,
 	author: string,
+	messages: TaskMessage[],
 	interventions: TaskIntervention[],
 	events: SessionEvent[],
 ): ChatItem[] {
@@ -262,6 +201,20 @@ function buildTimeline(
 			at: new Date(createdAt).getTime() || 0,
 			iso: createdAt,
 		});
+	for (const message of messages) {
+		if (!message.text?.trim()) continue;
+		items.push({
+			key: `msg-${message.id}`,
+			role: "user",
+			author: message.actor,
+			text: message.text,
+			at: new Date(message.created_at).getTime() || 0,
+			iso: message.created_at,
+			deliveryStatus: message.delivery_status,
+			failureReason: message.failure_reason,
+			message,
+		});
+	}
 	for (const intervention of interventions) {
 		if (!intervention.text?.trim()) continue;
 		items.push({
@@ -271,9 +224,20 @@ function buildTimeline(
 			text: intervention.text,
 			at: new Date(intervention.created_at).getTime() || 0,
 			iso: intervention.created_at,
+			legacy: true,
 		});
 	}
+	const messageIDs = new Set(messages.map((message) => message.id));
 	for (const event of events) {
+		const payload = event.payload as { message_id?: unknown };
+		if (
+			event.kind === "task_message" &&
+			payload &&
+			typeof payload === "object" &&
+			typeof payload.message_id === "string" &&
+			messageIDs.has(payload.message_id)
+		)
+			continue;
 		const display = sessionDisplay(event);
 		const at = new Date(event.started_at);
 		items.push({
@@ -289,6 +253,29 @@ function buildTimeline(
 	return items.sort(
 		(left, right) => left.at - right.at || left.key.localeCompare(right.key),
 	);
+}
+
+function messageTargetLabel(message: TaskMessage): string | null {
+	const target = message.target;
+	if (!target) return null;
+	if ("attempt_id" in target) return `Attempt ${target.attempt_id}`;
+	if ("event_id" in target) return `Event ${target.event_id}`;
+	return `Artifact ${target.artifact_id}`;
+}
+
+function messageAnchorLabel(message: TaskMessage): string | null {
+	if (!message.target || !("artifact_id" in message.target)) return null;
+	const anchor = message.target.anchor;
+	if (!anchor) return null;
+	const range =
+		typeof anchor.start === "number" && typeof anchor.end === "number"
+			? ` ${anchor.start}-${anchor.end}`
+			: "";
+	const quote = anchor.quote ? `: ${anchor.quote}` : "";
+	const pointer = anchor.pointer ? ` ${anchor.pointer}` : "";
+	const block = anchor.block ? ` ${anchor.block}` : "";
+	const digest = anchor.value_digest ? ` ${anchor.value_digest}` : "";
+	return `${anchor.kind}${range}${pointer}${block}${digest}${quote}`;
 }
 
 function formatSpan(ms: number): string {
@@ -358,11 +345,9 @@ export function TaskDetail({
 	const [artifacts, setArtifacts] = useState<TaskArtifact[]>([]);
 	const [checks, setChecks] = useState<TaskCheck[]>([]);
 	const [results, setResults] = useState<TaskResult[]>([]);
-	const [resultsLoadedTaskId, setResultsLoadedTaskId] = useState<string | null>(
-		null,
-	);
 	const [diff, setDiff] = useState<TaskDiff>({ repositories: [] });
 	const [sessions, setSessions] = useState<TaskDetails[]>([]);
+	const [messages, setMessages] = useState<TaskMessage[]>([]);
 	const [interventions, setInterventions] = useState<TaskIntervention[]>([]);
 	const [selectedAttempt, setSelectedAttempt] = useState<string | null>(null);
 	const [selectedBranchId, setSelectedBranchId] = useState<string | null>(null);
@@ -370,7 +355,6 @@ export function TaskDetail({
 	const [artifactMode, setArtifactMode] = useState<"rendered" | "raw">(
 		"rendered",
 	);
-	const [artifactQuote, setArtifactQuote] = useState("");
 	const [selectedEvent, setSelectedEvent] = useState<SessionEvent | null>(null);
 	const [autoScroll] = useState(true);
 	const [events, setEvents] = useState<SessionEvent[]>([]);
@@ -383,13 +367,17 @@ export function TaskDetail({
 	const [pendingCommand, setPendingCommand] = useState<string | null>(null);
 	const [pending, setPending] = useState(false);
 	const [message, setMessage] = useState("");
-	const [action, setAction] = useState<InterventionAction>("comment");
 	const chatScroll = useRef<HTMLDivElement | null>(null);
 	const scope = useRef(new RequestScope());
 	const mutationScope = useRef(new RequestScope());
 	const mutationController = useRef<AbortController | null>(null);
 	const cursorRef = useRef<number | undefined>(undefined);
 	const seen = useRef(new Set<string>());
+	const submitting = useRef(false);
+	const submittedMessage = useRef<{ payload: string; key: string } | null>(
+		null,
+	);
+	const retryKeys = useRef(new Map<string, string>());
 
 	const currentTask = details ?? task;
 	const rootTaskId = currentTask.parent_task_id ?? currentTask.id;
@@ -446,6 +434,7 @@ export function TaskDetail({
 		currentTask.request,
 		currentTask.created_at,
 		login,
+		messages,
 		interventions,
 		visibleEvents,
 	);
@@ -456,15 +445,16 @@ export function TaskDetail({
 	);
 	const otherCount = results.length + checks.length + diff.repositories.length;
 	const workspacePath = currentTask.workspace_path ?? "Daemon sandbox";
-	const plannerResultsLoaded = resultsLoadedTaskId === task.id;
-	const plannerQuestionSet = plannerResultsLoaded
-		? latestPlannerQuestionSet(results)
-		: null;
-	const plannerApprovalBlocked = isPlannerApprovalBlocked(
-		plannerResultsLoaded,
-		plannerQuestionSet,
+	const controls = availableActions.filter((action): action is Command =>
+		commands.includes(action as Command),
 	);
-	const canSend = !offline && !pending && pendingCommand === null;
+	const canRetry = availableActions.includes("retry");
+	const messageTarget: MessageTarget | undefined =
+		selectedArtifactValue?.kind === "file"
+			? { artifact_id: selectedArtifactValue.id }
+			: selectedAttempt
+				? { attempt_id: selectedAttempt }
+				: undefined;
 
 	function beginMutation(): {
 		generation: number;
@@ -485,11 +475,6 @@ export function TaskDetail({
 		);
 	}
 
-	useEffect(() => {
-		const choices = interventionChoices(currentTask.state, availableActions);
-		if (!choices.includes(action)) setAction(choices[0] ?? "comment");
-	}, [action, availableActions, currentTask.state]);
-
 	const refreshDetails = useCallback(
 		async (signal?: AbortSignal) => {
 			const [
@@ -501,6 +486,7 @@ export function TaskDetail({
 				resultsResult,
 				diffResult,
 				sessionsResult,
+				messagesResult,
 				interventionsResult,
 			] = await Promise.all([
 				daemonTask(daemonId, task.id, signal),
@@ -511,6 +497,7 @@ export function TaskDetail({
 				daemonResults(daemonId, task.id, signal),
 				daemonDiff(daemonId, task.id, signal),
 				daemonSessions(daemonId, rootTaskId, signal),
+				daemonMessages(daemonId, task.id, signal),
 				daemonInterventions(daemonId, task.id, signal),
 			]);
 			setDetails(taskResult.task);
@@ -519,10 +506,11 @@ export function TaskDetail({
 			setArtifacts(artifactResult.artifacts ?? []);
 			setChecks(checksResult.checks ?? []);
 			setResults(resultsResult.results ?? []);
-			setResultsLoadedTaskId(task.id);
 			setDiff(diffResult.diff ?? { repositories: [] });
 			setSessions(sessionsResult.sessions ?? []);
+			setMessages(messagesResult.messages ?? []);
 			setInterventions(interventionsResult.interventions ?? []);
+			setAvailableActions(taskResult.task.available_actions ?? []);
 			setSelectedBranchId((current) =>
 				current &&
 				branchResult.branches?.some((branch) => branch.id === current)
@@ -544,16 +532,16 @@ export function TaskDetail({
 		setArtifacts([]);
 		setChecks([]);
 		setResults([]);
-		setResultsLoadedTaskId(null);
 		setDiff({ repositories: [] });
 		setSessions([]);
+		setMessages([]);
 		setInterventions([]);
 		setSelectedAttempt(null);
 		setSelectedBranchId(null);
 		setSelectedArtifact(null);
-		setArtifactQuote("");
 		setSelectedEvent(null);
 		setError(null);
+		setAvailableActions([]);
 		const handleFailure = (failure: unknown) => {
 			if (controller.signal.aborted || !scope.current.isCurrent(current))
 				return;
@@ -579,11 +567,11 @@ export function TaskDetail({
 	useEffect(() => {
 		if (
 			autoScroll &&
-			(events.length > 0 || interventions.length > 0) &&
+			(events.length > 0 || messages.length > 0 || interventions.length > 0) &&
 			chatScroll.current
 		)
 			chatScroll.current.scrollTop = chatScroll.current.scrollHeight;
-	}, [autoScroll, events, interventions]);
+	}, [autoScroll, events, messages, interventions]);
 
 	useEffect(() => {
 		const current = scope.current.next();
@@ -676,7 +664,8 @@ export function TaskDetail({
 						);
 					});
 					setEvents(result.events);
-					setAvailableActions(result.events.at(-1)?.available_actions ?? []);
+					if (result.events.length)
+						setAvailableActions(result.events.at(-1)?.available_actions ?? []);
 					cursorRef.current = result.events.length ? result.cursor : 0;
 					setCursor(cursorRef.current);
 					connect(cursorRef.current, false);
@@ -701,19 +690,30 @@ export function TaskDetail({
 		};
 	}, [daemonId, task.id]);
 
-	async function sendCommand(command: (typeof commands)[number]) {
-		if (command === "approve" && plannerApprovalBlocked) return;
+	async function sendCommand(command: Command) {
+		if (submitting.current || !controls.includes(command)) return;
+		if (command === "approve" && !currentTask.plan_digest) return;
+		submitting.current = true;
 		const { generation, controller } = beginMutation();
 		setPendingCommand(command);
 		setError(null);
 		try {
-			await daemonCommand(daemonId, task.id, command, controller.signal);
+			await daemonCommand(
+				daemonId,
+				task.id,
+				command,
+				command === "approve"
+					? { plan_digest: currentTask.plan_digest as string }
+					: undefined,
+				controller.signal,
+			);
 			await refreshDetails(controller.signal);
 			if (mutationIsCurrent(generation, controller)) await onChanged();
 		} catch (failure) {
 			if (!mutationIsCurrent(generation, controller)) return;
 			setError(failure instanceof Error ? failure.message : "Command failed.");
 		} finally {
+			submitting.current = false;
 			if (mutationIsCurrent(generation, controller))
 				setPendingCommand((current) => (current === command ? null : current));
 		}
@@ -721,104 +721,72 @@ export function TaskDetail({
 
 	async function submitMessage(event: React.FormEvent) {
 		event.preventDefault();
-		if (pending || pendingCommand !== null) return;
-		if (!message.trim() && action !== "retry") return;
+		if (submitting.current || pending || pendingCommand !== null) return;
+		if (!message.trim()) return;
+		submitting.current = true;
 		const { generation, controller } = beginMutation();
 		setPending(true);
 		setError(null);
 		try {
-			if (action === "comment") {
-				await daemonIntervene(
-					daemonId,
-					task.id,
-					{
-						target: {
-							...(selectedAttempt ? { attempt_id: selectedAttempt } : {}),
-							...(selectedArtifactValue?.kind === "file"
-								? { artifact_id: selectedArtifactValue.id }
-								: {}),
-							...(artifactQuote
-								? { anchor: { kind: "text_range", quote: artifactQuote } }
-								: {}),
-						},
-						intent: "comment",
-						message: message.trim(),
-						idempotency_key: crypto.randomUUID(),
-					},
-					controller.signal,
-				);
-			} else {
-				const result = await daemonIntervene(
-					daemonId,
-					task.id,
-					{
-						target: selectedAttempt ? { attempt_id: selectedAttempt } : {},
-						intent: action,
-						message: message.trim(),
-						...(selectedBranch?.head_attempt_id
-							? { expected_branch_head: selectedBranch.head_attempt_id }
-							: {}),
-						idempotency_key: crypto.randomUUID(),
-					},
-					controller.signal,
-				);
-				if (result.result.branch_id)
-					setSelectedBranchId(result.result.branch_id);
-				if (result.result.attempt_id)
-					setSelectedAttempt(result.result.attempt_id);
-			}
-			setMessage("");
-			setArtifactQuote("");
-			await refreshDetails(controller.signal);
-			if (mutationIsCurrent(generation, controller)) await onChanged();
-		} catch (failure) {
-			if (!mutationIsCurrent(generation, controller)) return;
-			setError(
-				failure instanceof Error
-					? failure.message
-					: "Could not send intervention.",
-			);
-		} finally {
-			if (mutationIsCurrent(generation, controller)) setPending(false);
-		}
-	}
-
-	async function sendPlanFeedback(
-		feedback: string,
-		clearMessageOnSuccess: boolean,
-	) {
-		if (pending || pendingCommand !== null || !feedback.trim()) return;
-		const { generation, controller } = beginMutation();
-		setPending(true);
-		setError(null);
-		try {
-			await daemonFeedback(
+			const input = {
+				text: message,
+				...(messageTarget ? { target: messageTarget } : {}),
+			};
+			const payload = JSON.stringify(input);
+			const previous = submittedMessage.current;
+			const idempotencyKey =
+				previous?.payload === payload ? previous.key : crypto.randomUUID();
+			submittedMessage.current = { payload, key: idempotencyKey };
+			await daemonSendMessage(
 				daemonId,
 				task.id,
-				feedback.trim(),
-				currentTask.plan_digest,
+				{ ...input, idempotency_key: idempotencyKey },
 				controller.signal,
 			);
-			if (clearMessageOnSuccess) setMessage("");
+			submittedMessage.current = null;
+			setMessage("");
 			await refreshDetails(controller.signal);
 			if (mutationIsCurrent(generation, controller)) await onChanged();
 		} catch (failure) {
 			if (!mutationIsCurrent(generation, controller)) return;
 			setError(
-				failure instanceof Error ? failure.message : "Could not send feedback.",
+				failure instanceof Error ? failure.message : "Could not send message.",
 			);
 		} finally {
+			submitting.current = false;
 			if (mutationIsCurrent(generation, controller)) setPending(false);
 		}
 	}
 
-	async function revisePlan(event: React.FormEvent) {
-		event.preventDefault();
-		await sendPlanFeedback(message, true);
-	}
-
-	async function submitPlannerAnswers(feedback: string) {
-		await sendPlanFeedback(feedback, false);
+	async function retryAttempt() {
+		if (submitting.current || !canRetry || !selectedAttempt) return;
+		submitting.current = true;
+		const { generation, controller } = beginMutation();
+		setPendingCommand("retry");
+		setError(null);
+		try {
+			const idempotencyKey =
+				retryKeys.current.get(selectedAttempt) ?? crypto.randomUUID();
+			retryKeys.current.set(selectedAttempt, idempotencyKey);
+			await daemonRetryAttempt(
+				daemonId,
+				task.id,
+				selectedAttempt,
+				idempotencyKey,
+				controller.signal,
+			);
+			retryKeys.current.delete(selectedAttempt);
+			await refreshDetails(controller.signal);
+			if (mutationIsCurrent(generation, controller)) await onChanged();
+		} catch (failure) {
+			if (!mutationIsCurrent(generation, controller)) return;
+			setError(
+				failure instanceof Error ? failure.message : "Could not retry attempt.",
+			);
+		} finally {
+			submitting.current = false;
+			if (mutationIsCurrent(generation, controller)) setPendingCommand(null);
+		}
 	}
 
 	async function removeTask() {
@@ -976,49 +944,56 @@ export function TaskDetail({
 					</Alert>
 				) : null}
 
-				{(["completed", "aborted"] as string[]).includes(currentTask.state) ||
-				commands.some((command) =>
-					commandEnabled(command, currentTask.state),
-				) ? (
+				{controls.length > 0 || canRetry ? (
 					<fieldset
 						className="flex flex-wrap gap-2 border-b px-4 py-2.5"
 						aria-label="Task commands"
 					>
-						{commands.map((command) =>
-							commandEnabled(command, currentTask.state) ? (
-								<Button
-									key={`${daemonId}:${task.id}:${command}`}
-									type="button"
-									variant="outline"
-									size="sm"
-									className="uppercase"
-									disabled={
-										offline ||
-										pendingCommand !== null ||
-										pending ||
-										(command === "approve" && plannerApprovalBlocked)
-									}
-									onClick={() => void sendCommand(command)}
-								>
-									{pendingCommand === command ? `${command}…` : command}
-								</Button>
-							) : null,
-						)}
-						{(["completed", "aborted"] as string[]).includes(
-							currentTask.state,
-						) ? (
+						{controls.map((command) => (
+							<Button
+								key={`${daemonId}:${task.id}:${command}`}
+								type="button"
+								variant="outline"
+								size="sm"
+								className="uppercase"
+								disabled={
+									offline ||
+									pendingCommand !== null ||
+									pending ||
+									(command === "approve" && !currentTask.plan_digest)
+								}
+								onClick={() => void sendCommand(command)}
+							>
+								{pendingCommand === command ? `${command}…` : command}
+							</Button>
+						))}
+						{canRetry ? (
 							<Button
 								type="button"
 								variant="outline"
 								size="sm"
 								className="uppercase"
-								disabled={offline || pending}
-								onClick={() => void removeTask()}
+								disabled={offline || pending || !selectedAttempt}
+								onClick={() => void retryAttempt()}
 							>
-								{pending ? "Working…" : "delete"}
+								{pendingCommand === "retry" ? "retrying…" : "retry exact"}
 							</Button>
 						) : null}
 					</fieldset>
+				) : null}
+				{(["completed", "aborted"] as string[]).includes(currentTask.state) ? (
+					<div className="border-b px-4 py-2.5">
+						<Button
+							type="button"
+							variant="outline"
+							size="sm"
+							className="uppercase"
+							disabled={offline || pending}
+							onClick={() => void removeTask()}
+						>
+							{pending ? "Working…" : "delete"}
+						</Button>
+					</div>
 				) : null}
 
 				<div
@@ -1069,6 +1044,77 @@ export function TaskDetail({
 										<p className="whitespace-pre-wrap break-words">
 											{block.item.text}
 										</p>
+										{block.item.deliveryStatus || block.item.legacy ? (
+											<p className="text-muted-foreground text-[0.68rem] uppercase tracking-[0.06em]">
+												{block.item.legacy
+													? "legacy intervention"
+													: block.item.deliveryStatus}
+												{block.item.failureReason
+													? ` · ${block.item.failureReason}`
+													: ""}
+											</p>
+										) : null}
+										{block.item.message ? (
+											<dl className="text-muted-foreground grid gap-0.5 text-[0.7rem]">
+												<div className="flex min-w-0 gap-1.5">
+													<dt>Recipient</dt>
+													<dd className="text-subtle truncate">
+														{block.item.message.recipient_role}
+													</dd>
+												</div>
+												<div className="flex min-w-0 gap-1.5">
+													<dt>Agent session</dt>
+													<dd
+														className="text-subtle truncate font-mono"
+														title={block.item.message.agent_session_id}
+													>
+														{block.item.message.agent_session_id}
+													</dd>
+												</div>
+												{messageTargetLabel(block.item.message) ? (
+													<div className="flex min-w-0 gap-1.5">
+														<dt>Target</dt>
+														<dd className="text-subtle truncate">
+															{messageTargetLabel(block.item.message)}
+														</dd>
+													</div>
+												) : null}
+												{messageAnchorLabel(block.item.message) ? (
+													<div className="flex min-w-0 gap-1.5">
+														<dt>Anchor</dt>
+														<dd className="text-subtle truncate">
+															{messageAnchorLabel(block.item.message)}
+														</dd>
+													</div>
+												) : null}
+												<div className="flex flex-wrap gap-x-3">
+													<time
+														dateTime={block.item.message.created_at}
+														title={block.item.message.created_at}
+													>
+														Queued {relativeTime(block.item.message.created_at)}
+													</time>
+													{block.item.message.delivered_at ? (
+														<time
+															dateTime={block.item.message.delivered_at}
+															title={block.item.message.delivered_at}
+														>
+															Delivered{" "}
+															{relativeTime(block.item.message.delivered_at)}
+														</time>
+													) : null}
+													{block.item.message.failed_at ? (
+														<time
+															dateTime={block.item.message.failed_at}
+															title={block.item.message.failed_at}
+														>
+															Failed{" "}
+															{relativeTime(block.item.message.failed_at)}
+														</time>
+													) : null}
+												</div>
+											</dl>
+										) : null}
 									</div>
 								</article>
 							);
@@ -1220,26 +1266,9 @@ export function TaskDetail({
 					) : null}
 				</div>
 
-				{currentTask.state === "awaiting_plan_approval" &&
-				plannerQuestionSet ? (
-					<div className="bg-background max-h-[60dvh] shrink-0 overflow-y-auto border-t px-4 py-4">
-						<PlannerQuestions
-							questions={plannerQuestionSet.questions}
-							planDigest={currentTask.plan_digest}
-							offline={offline}
-							pending={pending || pendingCommand !== null}
-							onSubmit={submitPlannerAnswers}
-						/>
-					</div>
-				) : null}
-
 				<form
 					className="bg-background grid gap-2.5 border-t px-4 pt-3 pb-4"
-					onSubmit={
-						currentTask.state === "awaiting_plan_approval"
-							? revisePlan
-							: submitMessage
-					}
+					onSubmit={submitMessage}
 				>
 					<div className="flex flex-wrap items-center gap-2.5">
 						<Badge
@@ -1275,37 +1304,13 @@ export function TaskDetail({
 								? `$${currentTask.total_cost.toFixed(2)}`
 								: "0 tokens"}
 						</span>
-						<div className="ml-auto">
-							<Label className="sr-only" htmlFor="intervention-action">
-								Intervention action
-							</Label>
-							<Select
-								value={action}
-								onValueChange={(value) =>
-									setAction(value as InterventionAction)
-								}
-								disabled={
-									!canSend || currentTask.state === "awaiting_plan_approval"
-								}
-							>
-								<SelectTrigger
-									id="intervention-action"
-									size="sm"
-									className="text-xs"
-								>
-									<SelectValue />
-								</SelectTrigger>
-								<SelectContent>
-									{interventionChoices(currentTask.state, availableActions).map(
-										(item) => (
-											<SelectItem key={item} value={item}>
-												{actionLabels[item]}
-											</SelectItem>
-										),
-									)}
-								</SelectContent>
-							</Select>
-						</div>
+						{messageTarget ? (
+							<Badge variant="outline" className="ml-auto text-[0.68rem]">
+								{"artifact_id" in messageTarget
+									? `Artifact ${messageTarget.artifact_id.slice(0, 8)}`
+									: `Attempt ${messageTarget.attempt_id.slice(0, 8)}`}
+							</Badge>
+						) : null}
 					</div>
 					<Textarea
 						value={message}
@@ -1317,11 +1322,7 @@ export function TaskDetail({
 							}
 						}}
 						disabled={offline || pending || pendingCommand !== null}
-						placeholder={
-							currentTask.state === "awaiting_plan_approval"
-								? "Explain what the planner should revise…"
-								: "ENTER to start typing…"
-						}
+						placeholder="Message the agent…"
 						className="min-h-14"
 					/>
 					<div className="flex items-center justify-between gap-4">
@@ -1338,44 +1339,6 @@ export function TaskDetail({
 								aria-label="Permissions"
 							>
 								<Shield />
-							</Button>
-							<Button
-								type="button"
-								variant="ghost"
-								size="icon-sm"
-								disabled={
-									!canSend || !commandEnabled("resume", currentTask.state)
-								}
-								aria-label="Resume"
-								onClick={() => void sendCommand("resume")}
-							>
-								<FastForward />
-							</Button>
-							<Button
-								type="button"
-								variant="ghost"
-								size="icon-sm"
-								disabled={
-									!canSend ||
-									!commandEnabled("approve", currentTask.state) ||
-									plannerApprovalBlocked
-								}
-								aria-label="Approve"
-								onClick={() => void sendCommand("approve")}
-							>
-								<SkipForward />
-							</Button>
-							<Button
-								type="button"
-								variant="ghost"
-								size="icon-sm"
-								disabled={
-									!canSend || !commandEnabled("abort", currentTask.state)
-								}
-								aria-label="Abort"
-								onClick={() => void sendCommand("abort")}
-							>
-								<Archive />
 							</Button>
 							<Button
 								type="button"
@@ -1411,10 +1374,7 @@ export function TaskDetail({
 							size="sm"
 							className="bg-secondary tracking-[0.05em]"
 							disabled={
-								offline ||
-								pending ||
-								pendingCommand !== null ||
-								(!message.trim() && action !== "retry")
+								offline || pending || pendingCommand !== null || !message.trim()
 							}
 						>
 							<Send className="text-primary" />
@@ -1515,7 +1475,6 @@ export function TaskDetail({
 											onClick={() => {
 												setSelectedArtifact(artifact.id);
 												setArtifactMode("rendered");
-												setArtifactQuote("");
 											}}
 										>
 											<File className="text-muted-foreground size-4" />
@@ -1564,49 +1523,22 @@ export function TaskDetail({
 											type="button"
 											variant="outline"
 											size="xs"
-											onClick={() => {
-												setSelectedArtifact(null);
-												setArtifactQuote("");
-											}}
+											onClick={() => setSelectedArtifact(null)}
 										>
 											Close
 										</Button>
 									</div>
 								</div>
-								<pre
-									className="text-muted-foreground mt-2.5 max-h-72 overflow-auto text-xs leading-relaxed break-words whitespace-pre-wrap"
-									onMouseUp={() =>
-										setArtifactQuote(
-											window.getSelection()?.toString().trim() ?? "",
-										)
-									}
-								>
+								<pre className="text-muted-foreground mt-2.5 max-h-72 overflow-auto text-xs leading-relaxed break-words whitespace-pre-wrap">
 									{artifactMode === "rendered"
 										? renderedArtifactContent(selectedArtifactValue)
 										: selectedArtifactValue.content}
 								</pre>
-								{artifactQuote ? (
-									<div className="text-muted-foreground mt-2.5 flex items-center justify-between gap-3 border-t pt-2.5 text-xs">
-										<span className="truncate">
-											“{artifactQuote.slice(0, 60)}
-											{artifactQuote.length > 60 ? "…" : ""}”
-										</span>
-										<Button
-											type="button"
-											variant="outline"
-											size="xs"
-											onClick={() => {
-												setAction("comment");
-												setMessage((current) =>
-													current
-														? `${current}\nRegarding “${artifactQuote}”`
-														: `Regarding “${artifactQuote}”\n`,
-												);
-											}}
-										>
-											Comment
-										</Button>
-									</div>
+								{selectedArtifactValue.kind === "file" ? (
+									<p className="text-muted-foreground mt-2.5 border-t pt-2.5 text-xs">
+										Artifact target selected. Quoting is unavailable because
+										canonical bytes and offsets are not loaded.
+									</p>
 								) : null}
 							</article>
 						) : null}
