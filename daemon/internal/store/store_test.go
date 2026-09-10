@@ -5,16 +5,51 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/jurabek/software-factory/daemon/internal/session"
 	_ "modernc.org/sqlite"
 )
+
+func TestReserveAgentSessionConcurrentCallersShareWinner(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "factory.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	if err = db.CreateTask(ctx, Task{ID: "task", Request: "request", WorkspacePath: t.TempDir(), State: "draft", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+		t.Fatal(err)
+	}
+	const callers = 8
+	results := make([]AgentSession, callers)
+	errorsFound := make([]error, callers)
+	var wait sync.WaitGroup
+	for index := 0; index < callers; index++ {
+		wait.Add(1)
+		go func(index int) {
+			defer wait.Done()
+			results[index], errorsFound[index] = db.ReserveAgentSession(ctx, "task", AgentSession{Role: "planner", Harness: "pi", HarnessSessionID: fmt.Sprintf("session-%d", index), SessionDirectory: "/tmp/session", AccountingComplete: true})
+		}(index)
+	}
+	wait.Wait()
+	winner := results[0].HarnessSessionID
+	for index := range results {
+		if errorsFound[index] != nil {
+			t.Fatalf("caller %d: %v", index, errorsFound[index])
+		}
+		if results[index].HarnessSessionID != winner {
+			t.Fatalf("caller %d session = %q, want %q", index, results[index].HarnessSessionID, winner)
+		}
+	}
+}
 
 func TestOpenRejectsLegacyState(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "factory.db")

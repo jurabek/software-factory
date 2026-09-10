@@ -19,9 +19,11 @@ export type DaemonTask = {
 	coding_agent?: string;
 	model?: string;
 	thinking?: string;
+	available_actions?: string[];
 	[key: string]: unknown;
 };
 export type DaemonCommand = "start" | "approve" | "pause" | "resume" | "abort";
+export type DaemonCommandInput = { plan_digest: string };
 export type DaemonRequestOptions = {
 	signal?: AbortSignal;
 	actor?: string;
@@ -77,19 +79,16 @@ export type CreateTaskInput = {
 };
 
 export type CreateSessionInput = { request: string };
-export type FeedbackInput = { feedback: string; current_plan_digest?: string };
-export type InterventionInput = {
-	target: {
-		event_id?: string;
-		artifact_id?: string;
-		attempt_id?: string;
-		anchor?: unknown;
-	};
-	intent: string;
-	message: string;
-	expected_branch_head?: string;
+export type MessageTarget =
+	| { attempt_id: string }
+	| { event_id: string }
+	| { artifact_id: string; anchor?: unknown };
+export type MessageInput = {
+	text: string;
+	target?: MessageTarget;
 	idempotency_key: string;
 };
+export type RetryInput = { idempotency_key: string };
 
 export const daemonCommands: readonly DaemonCommand[] = [
 	"start",
@@ -103,7 +102,7 @@ const safeUpstreamCodes = new Set([
 	"invalid_request",
 	"invalid_task",
 	"invalid_session",
-	"invalid_feedback",
+	"invalid_message",
 	"configuration_invalid",
 	"unknown_harness",
 	"models_unavailable",
@@ -118,7 +117,7 @@ const safeMessages: Record<string, string> = {
 	invalid_request: "Daemon rejected the request shape.",
 	invalid_task: "Daemon rejected the task input.",
 	invalid_session: "Daemon rejected the session input.",
-	invalid_feedback: "Daemon rejected the feedback input.",
+	invalid_message: "Daemon rejected the message input.",
 	configuration_invalid: "Daemon configuration is invalid.",
 	unknown_harness: "Selected harness is unavailable on this daemon.",
 	models_unavailable: "Model catalog is unavailable on this daemon.",
@@ -568,6 +567,7 @@ export function createDaemonClient(fetcher: typeof fetch = fetch) {
 			credential: string,
 			taskId: string,
 			command: DaemonCommand,
+			input: DaemonCommandInput | undefined = undefined,
 			options: DaemonRequestOptions = {},
 		): Promise<{ accepted: boolean }> {
 			if (!daemonCommands.includes(command)) {
@@ -585,7 +585,7 @@ export function createDaemonClient(fetcher: typeof fetch = fetch) {
 				{
 					...options,
 					method: "POST",
-					body: {},
+					...(command === "approve" && input ? { body: input } : {}),
 				},
 			);
 			if (
@@ -601,34 +601,33 @@ export function createDaemonClient(fetcher: typeof fetch = fetch) {
 			}
 			return { accepted: true };
 		},
-		async feedback(
+		async sendMessage(
 			endpoint: string,
 			credential: string,
 			taskId: string,
-			input: FeedbackInput,
+			input: MessageInput,
 			options: DaemonRequestOptions = {},
 		): Promise<unknown> {
 			return requestJSON(
 				fetcher,
 				endpoint,
 				credential,
-				`/api/v1/tasks/${encodeURIComponent(taskId)}/feedback`,
+				`/api/v1/tasks/${encodeURIComponent(taskId)}/messages`,
 				{ ...options, method: "POST", body: input },
 			);
 		},
-		async intervene(
+		async messages(
 			endpoint: string,
 			credential: string,
 			taskId: string,
-			input: InterventionInput,
 			options: DaemonRequestOptions = {},
 		): Promise<unknown> {
 			return requestJSON(
 				fetcher,
 				endpoint,
 				credential,
-				`/api/v1/tasks/${encodeURIComponent(taskId)}/interventions`,
-				{ ...options, method: "POST", body: input },
+				`/api/v1/tasks/${encodeURIComponent(taskId)}/messages`,
+				options,
 			);
 		},
 		async interventions(
@@ -686,6 +685,22 @@ export function createDaemonClient(fetcher: typeof fetch = fetch) {
 				credential,
 				`/api/v1/tasks/${encodeURIComponent(taskId)}/attempts/${encodeURIComponent(attemptId)}`,
 				options,
+			);
+		},
+		async retryAttempt(
+			endpoint: string,
+			credential: string,
+			taskId: string,
+			attemptId: string,
+			input: RetryInput,
+			options: DaemonRequestOptions = {},
+		): Promise<unknown> {
+			return requestJSON(
+				fetcher,
+				endpoint,
+				credential,
+				`/api/v1/tasks/${encodeURIComponent(taskId)}/attempts/${encodeURIComponent(attemptId)}/retry`,
+				{ ...options, method: "POST", body: input },
 			);
 		},
 		async branches(
