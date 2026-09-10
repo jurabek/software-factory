@@ -7,40 +7,25 @@ import (
 // AvailableActions returns server-computed actions for an attempt.
 // The UI renders these without duplicating transition policy.
 func AvailableActions(phase *store.Phase, taskState string) []string {
-	if phase == nil {
-		switch taskState {
-		case string(Draft):
-			return []string{"comment", "start"}
-		case string(Completed):
-			return []string{"comment", "retry", "revise", "repair"}
-		default:
-			return []string{"comment"}
-		}
+	actions := make([]string, 0, 3)
+	switch taskState {
+	case string(Draft):
+		actions = append(actions, "start", "abort")
+	case string(AwaitingApproval):
+		actions = append(actions, "approve", "abort")
+	case string(Paused):
+		actions = append(actions, "resume", "abort")
+	case string(Blocked):
+		actions = append(actions, "resume", "abort")
+	case string(Aborted):
+	case string(Completed):
+	case string(Preparing), string(Planning), string(Building), string(Checking), string(Reviewing):
+		actions = append(actions, "pause", "abort")
 	}
-	if phase.Superseded {
-		return []string{"comment"}
+	if phase != nil && phase.Status != "running" && phase.Status != "queued" {
+		actions = append(actions, "retry")
 	}
-	switch phase.Status {
-	case "running":
-		if phase.Kind == "agent" {
-			return []string{"comment", "steer", "follow_up", "pause", "abort"}
-		}
-		return []string{"comment", "pause", "abort"}
-	case "failed", "interrupted":
-		if phase.Kind == "check" {
-			return []string{"comment", "retry", "repair"}
-		}
-		return []string{"comment", "retry", "revise", "repair"}
-	case "success":
-		if taskState == string(Completed) {
-			return []string{"comment", "retry", "revise", "repair"}
-		}
-		return []string{"comment", "retry", "revise"}
-	case "queued":
-		return []string{"comment", "pause", "abort"}
-	default:
-		return []string{"comment"}
-	}
+	return actions
 }
 
 // ValidateIntent enforces the atomic intervention policy before any write.

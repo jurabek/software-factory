@@ -3,12 +3,14 @@ import { test } from "node:test";
 import { GET as creationOptions } from "../app/api/daemons/[daemonId]/creation-options/route.ts";
 import { DELETE as daemonDelete } from "../app/api/daemons/[daemonId]/route.ts";
 import { POST as daemonCommand } from "../app/api/daemons/[daemonId]/tasks/[taskId]/[command]/route.ts";
+import { POST as daemonRetry } from "../app/api/daemons/[daemonId]/tasks/[taskId]/attempts/[attemptId]/retry/route.ts";
 import { GET as daemonEvents } from "../app/api/daemons/[daemonId]/tasks/[taskId]/events/route.ts";
 import { GET as daemonStream } from "../app/api/daemons/[daemonId]/tasks/[taskId]/events/stream/route.ts";
+import { GET as daemonLegacyInterventions } from "../app/api/daemons/[daemonId]/tasks/[taskId]/interventions/route.ts";
 import {
-	GET as daemonResource,
-	POST as daemonResourceMutation,
-} from "../app/api/daemons/[daemonId]/tasks/[taskId]/interventions/route.ts";
+	POST as daemonMessageMutation,
+	GET as daemonMessages,
+} from "../app/api/daemons/[daemonId]/tasks/[taskId]/messages/route.ts";
 import {
 	DELETE as daemonTaskDelete,
 	GET as daemonTaskDetail,
@@ -117,9 +119,15 @@ test("every daemon read rejects a missing session before registry access", async
 			),
 			{ params: Promise.resolve({ ...taskParams }) },
 		),
-		await daemonResource(
+		await daemonLegacyInterventions(
 			new Request(
 				"http://localhost:3000/api/daemons/daemon-a/tasks/task-1/interventions",
+			),
+			{ params: Promise.resolve({ ...taskParams }) },
+		),
+		await daemonMessages(
+			new Request(
+				"http://localhost:3000/api/daemons/daemon-a/tasks/task-1/messages",
 			),
 			{ params: Promise.resolve({ ...taskParams }) },
 		),
@@ -158,14 +166,24 @@ test("every daemon mutation rejects foreign origins before session access", asyn
 		{ params: Promise.resolve(commandParams) },
 	);
 	assert.equal(commandResponse.status, 403);
-	const resourceResponse = await daemonResourceMutation(
+	const resourceResponse = await daemonMessageMutation(
 		new Request(
-			"http://localhost:3000/api/daemons/daemon-a/tasks/task-1/interventions",
+			"http://localhost:3000/api/daemons/daemon-a/tasks/task-1/messages",
 			{ method: "POST", headers: foreign, body: "{}" },
 		),
 		{ params: Promise.resolve({ ...taskParams }) },
 	);
 	assert.equal(resourceResponse.status, 403);
+	const retryResponse = await daemonRetry(
+		new Request(
+			"http://localhost:3000/api/daemons/daemon-a/tasks/task-1/attempts/attempt-1/retry",
+			{ method: "POST", headers: foreign, body: "{}" },
+		),
+		{
+			params: Promise.resolve({ ...taskParams, attemptId: "attempt-1" }),
+		},
+	);
+	assert.equal(retryResponse.status, 403);
 	const deleteResponse = await daemonTaskDelete(
 		new Request("http://localhost:3000/api/daemons/daemon-a/tasks/task-1", {
 			method: "DELETE",
@@ -186,6 +204,7 @@ test("every daemon mutation rejects foreign origins before session access", asyn
 		createResponse,
 		commandResponse,
 		resourceResponse,
+		retryResponse,
 		deleteResponse,
 		daemonDeleteResponse,
 	]) {

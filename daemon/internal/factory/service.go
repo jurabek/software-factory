@@ -19,7 +19,8 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/google/uuid"
+	"uuid"
+
 	"github.com/jurabek/software-factory/daemon/internal/config"
 	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
 	"github.com/jurabek/software-factory/daemon/internal/harness"
@@ -43,7 +44,12 @@ type Service struct {
 	harnesses  harness.Registry
 	git        factorygit.Runner
 	mu         sync.Mutex
-	cancel     map[string]context.CancelFunc
+	cancel     map[string]*execution
+	taskLocks  sync.Map
+}
+
+type execution struct {
+	cancel context.CancelFunc
 }
 
 type Repository struct {
@@ -80,7 +86,7 @@ type RepositoryDiff struct {
 }
 
 func NewService(root string, db *store.DB, cfg config.Config, configPath string, harnesses harness.Registry, gitRunner factorygit.Runner) *Service {
-	return &Service{root: root, db: db, config: cfg, configPath: configPath, harnesses: harnesses, git: gitRunner, cancel: map[string]context.CancelFunc{}}
+	return &Service{root: root, db: db, config: cfg, configPath: configPath, harnesses: harnesses, git: gitRunner, cancel: map[string]*execution{}}
 }
 
 func (s *Service) Create(ctx context.Context, request CreateRequest) (store.Task, error) {
@@ -182,6 +188,9 @@ func (s *Service) create(ctx context.Context, request CreateRequest, parentTaskI
 }
 
 func (s *Service) Start(ctx context.Context, id string) error {
+	lock := s.taskLock(id)
+	lock.Lock()
+	defer lock.Unlock()
 	if err := s.db.Claim(ctx, id, string(Draft), string(Preparing)); err != nil {
 		return err
 	}
@@ -245,7 +254,14 @@ func (s *Service) Comment(ctx context.Context, taskID, actor string, request Int
 	return stored, nil
 }
 
-func (s *Service) Approve(ctx context.Context, id, actor string) error {
+func (s *Service) Approve(ctx context.Context, id, actor, expectedDigest string) error {
+	lock := s.taskLock(id)
+	lock.Lock()
+	defer lock.Unlock()
+	expectedDigest = strings.TrimSpace(expectedDigest)
+	if expectedDigest == "" {
+		return fmt.Errorf("plan_digest is required")
+	}
 	task, err := s.db.Task(ctx, id)
 	if err != nil {
 		return err
@@ -262,7 +278,11 @@ func (s *Service) Approve(ctx context.Context, id, actor string) error {
 		return store.ErrConflict
 	}
 	digest := sha256.Sum256([]byte(payload))
-	if err := s.db.SetApproval(ctx, id, hex.EncodeToString(digest[:]), actor); err != nil {
+	currentDigest := hex.EncodeToString(digest[:])
+	if expectedDigest != currentDigest {
+		return ErrStalePlan
+	}
+	if err := s.db.SetApproval(ctx, id, currentDigest, actor); err != nil {
 		return err
 	}
 	if err := s.db.Transition(ctx, id, string(AwaitingApproval), string(Building), "", ""); err != nil {
@@ -327,6 +347,9 @@ func mustPlanQuestions(payload string) []string {
 }
 
 func (s *Service) Pause(ctx context.Context, id string) error {
+	lock := s.taskLock(id)
+	lock.Lock()
+	defer lock.Unlock()
 	task, err := s.db.Task(ctx, id)
 	if err != nil {
 		return err
@@ -340,6 +363,9 @@ func (s *Service) Pause(ctx context.Context, id string) error {
 }
 
 func (s *Service) Abort(ctx context.Context, id string) error {
+	lock := s.taskLock(id)
+	lock.Lock()
+	defer lock.Unlock()
 	task, err := s.db.Task(ctx, id)
 	if err != nil {
 		return err
@@ -347,17 +373,40 @@ func (s *Service) Abort(ctx context.Context, id string) error {
 	if !CanTransition(State(task.State), Aborted) {
 		return store.ErrConflict
 	}
+	messages, err := s.db.AbortTask(ctx, id, task.State, task.ActivePhase)
+	if err != nil {
+		return err
+	}
 	s.stop(id)
-	return s.db.Transition(ctx, id, task.State, string(Aborted), task.ActivePhase, "")
+	for _, message := range messages {
+		_ = s.traceMessage(ctx, message, nil)
+	}
+	return nil
 }
 
 func (s *Service) Resume(ctx context.Context, id string) error {
+	lock := s.taskLock(id)
+	lock.Lock()
+	defer lock.Unlock()
 	task, err := s.db.Task(ctx, id)
 	if err != nil {
 		return err
 	}
 	if task.State != string(Paused) && task.State != string(Blocked) {
 		return store.ErrConflict
+	}
+	if message, messageErr := s.db.NextQueuedTaskMessage(ctx, id); messageErr == nil {
+		target := stateForRole(message.RecipientRole)
+		if !CanTransition(State(task.State), target) {
+			return store.ErrConflict
+		}
+		if err := s.db.Transition(ctx, id, task.State, string(target), task.ActivePhase, ""); err != nil {
+			return err
+		}
+		s.launch(id, func(ctx context.Context, id string) error { return s.continueMessages(ctx, id, message.RecipientRole) })
+		return nil
+	} else if !errors.Is(messageErr, store.ErrNotFound) {
+		return messageErr
 	}
 	target := State(task.PreviousState)
 	if target == AwaitingApproval || target == Draft || target == "" {
@@ -432,15 +481,27 @@ func (s *Service) Diff(ctx context.Context, id string) (Diff, error) {
 
 func (s *Service) launch(id string, run func(context.Context, string) error) {
 	ctx, cancel := context.WithCancel(context.Background())
+	active := &execution{cancel: cancel}
 	s.mu.Lock()
-	s.cancel[id] = cancel
+	s.cancel[id] = active
 	s.mu.Unlock()
 	go func() {
-		defer func() { s.mu.Lock(); delete(s.cancel, id); s.mu.Unlock() }()
-		if err := run(ctx, id); err != nil && !errors.Is(err, context.Canceled) {
+		var runErr error
+		defer func() {
+			s.mu.Lock()
+			if s.cancel[id] == active {
+				delete(s.cancel, id)
+			}
+			s.mu.Unlock()
+			if !errors.Is(runErr, context.Canceled) {
+				s.kickQueuedMessage(id)
+			}
+		}()
+		runErr = run(ctx, id)
+		if runErr != nil && !errors.Is(runErr, context.Canceled) {
 			task, getErr := s.db.Task(context.Background(), id)
 			if getErr == nil && task.State != string(Paused) && task.State != string(Aborted) && task.State != string(Blocked) {
-				_ = s.db.Transition(context.Background(), id, task.State, string(Blocked), task.ActivePhase, err.Error())
+				_ = s.db.Transition(context.Background(), id, task.State, string(Blocked), task.ActivePhase, runErr.Error())
 			}
 		}
 	}()
@@ -449,8 +510,8 @@ func (s *Service) launch(id string, run func(context.Context, string) error) {
 func (s *Service) Shutdown(ctx context.Context) {
 	s.mu.Lock()
 	ids := make([]string, 0, len(s.cancel))
-	for id, cancel := range s.cancel {
-		cancel()
+	for id, active := range s.cancel {
+		active.cancel()
 		ids = append(ids, id)
 	}
 	s.mu.Unlock()
@@ -464,10 +525,10 @@ func (s *Service) Shutdown(ctx context.Context) {
 
 func (s *Service) stop(id string) {
 	s.mu.Lock()
-	cancel := s.cancel[id]
+	active := s.cancel[id]
 	s.mu.Unlock()
-	if cancel != nil {
-		cancel()
+	if active != nil {
+		active.cancel()
 	}
 }
 
@@ -586,25 +647,23 @@ func (s *Service) plan(ctx context.Context, task store.Task, revision map[string
 	for key, value := range revision {
 		data[key] = value
 	}
-	payload, err := s.runRole(ctx, task, phase, "planner", data, func(text string) (any, error) { return ValidatePlan(text) })
+	validate := validatorForRole("planner")
+	payload, err := s.runRole(ctx, task, phase, "planner", data, validate)
 	if err != nil {
 		s.failPhase(ctx, phase, err)
 		return err
 	}
-	after, err := taskChangedFiles(ctx, s.git, task.Repositories)
-	if err != nil {
-		return err
-	}
-	if !sameStrings(before, after) {
-		err = fmt.Errorf("planner modified repository")
-		s.failPhase(ctx, phase, err)
-		return err
-	}
-	if err = s.endPhase(ctx, phase, "success", nil); err != nil {
-		return err
-	}
-	_ = payload
-	return s.db.Transition(ctx, task.ID, string(Planning), string(AwaitingApproval), "", "")
+	_, err = s.completeAgentPhase(ctx, task, phase, "planner", validate, payload, func(payload string) error {
+		after, changedErr := taskChangedFiles(ctx, s.git, task.Repositories)
+		if changedErr != nil {
+			return changedErr
+		}
+		if !sameStrings(before, after) {
+			return fmt.Errorf("planner modified repository")
+		}
+		return nil
+	}, AwaitingApproval)
+	return err
 }
 
 func (s *Service) buildCheckReview(ctx context.Context, id string) error {
@@ -625,28 +684,17 @@ func (s *Service) buildCheckReview(ctx context.Context, id string) error {
 		if beginErr != nil {
 			return beginErr
 		}
-		_, err = s.runRole(ctx, task, phase, "builder", map[string]any{"TaskID": task.ID, "Request": task.Request, "Plan": plan}, func(text string) (any, error) { return ValidateBuild(text) })
+		validate := validatorForRole("builder")
+		payload, runErr := s.runRole(ctx, task, phase, "builder", map[string]any{"TaskID": task.ID, "Request": task.Request, "Plan": plan}, validate)
+		err = runErr
 		if err != nil {
 			s.failPhase(ctx, phase, err)
 			return err
 		}
-		for _, repository := range task.Repositories {
-			files, diffErr := factorygit.ChangedFiles(ctx, s.git, repository.WorkingPath)
-			if diffErr != nil {
-				return diffErr
-			}
-			for _, file := range files {
-				if factorygit.MatchesPath(file, profiles[repository.Name].Protected) {
-					err = fmt.Errorf("builder changed protected path %s/%s", repository.Name, file)
-					s.failPhase(ctx, phase, err)
-					return err
-				}
-			}
-		}
-		if err = s.endPhase(ctx, phase, "success", nil); err != nil {
-			return err
-		}
-		if err = s.db.Transition(ctx, id, string(Building), string(Checking), "", ""); err != nil {
+		_, err = s.completeAgentPhase(ctx, task, phase, "builder", validate, payload, func(string) error {
+			return s.validateBuilderPaths(ctx, task, profiles)
+		}, Checking)
+		if err != nil {
 			return err
 		}
 	}
@@ -684,27 +732,30 @@ func (s *Service) buildCheckReview(ctx context.Context, id string) error {
 		s.failPhase(ctx, phase, err)
 		return err
 	}
-	reviewPayload, err := s.runRole(ctx, task, phase, "reviewer", map[string]any{"TaskID": task.ID, "Request": task.Request, "Plan": plan, "Checks": checks, "ChangedFiles": before, "Diff": changes.Repositories}, func(text string) (any, error) { return ValidateReview(text) })
+	validate := validatorForRole("reviewer")
+	reviewPayload, err := s.runRole(ctx, task, phase, "reviewer", map[string]any{"TaskID": task.ID, "Request": task.Request, "Plan": plan, "Checks": checks, "ChangedFiles": before, "Diff": changes.Repositories}, validate)
 	if err != nil {
 		s.failPhase(ctx, phase, err)
 		return err
 	}
-	review, _ := ValidateReview(reviewPayload)
-	if !review.Approved {
-		err = fmt.Errorf("reviewer rejected implementation")
-		s.failPhase(ctx, phase, err)
-		return err
-	}
-	after, _ := taskChangedFiles(ctx, s.git, task.Repositories)
-	if !sameStrings(before, after) {
-		err = fmt.Errorf("reviewer modified repository")
-		s.failPhase(ctx, phase, err)
-		return err
-	}
-	if err = s.endPhase(ctx, phase, "success", nil); err != nil {
-		return err
-	}
-	return s.db.Transition(ctx, id, string(Reviewing), string(Completed), "", "")
+	_, err = s.completeAgentPhase(ctx, task, phase, "reviewer", validate, reviewPayload, func(payload string) error {
+		review, validateErr := ValidateReview(payload)
+		if validateErr != nil {
+			return validateErr
+		}
+		if !review.Approved {
+			return fmt.Errorf("reviewer rejected implementation")
+		}
+		after, changedErr := taskChangedFiles(ctx, s.git, task.Repositories)
+		if changedErr != nil {
+			return changedErr
+		}
+		if !sameStrings(before, after) {
+			return fmt.Errorf("reviewer modified repository")
+		}
+		return nil
+	}, Completed)
+	return err
 }
 
 type validator func(string) (any, error)
@@ -730,7 +781,7 @@ func (s *Service) runRole(ctx context.Context, task store.Task, phase store.Phas
 	sessionDir := filepath.Join(s.taskDir(task.ID), "sessions", role, harnessName)
 	storedSession, sessionErr := s.db.AgentSession(ctx, task.ID, role)
 	if errors.Is(sessionErr, store.ErrNotFound) {
-		storedSession, sessionErr = s.db.ReserveAgentSession(ctx, task.ID, store.AgentSession{Role: role, Harness: harnessName, Model: agent.Model, Thinking: agent.Thinking, Color: agent.Color, HarnessSessionID: uuid.NewString(), SessionDirectory: sessionDir, AccountingComplete: true})
+		storedSession, sessionErr = s.db.ReserveAgentSession(ctx, task.ID, store.AgentSession{Role: role, Harness: harnessName, Model: agent.Model, Thinking: agent.Thinking, Color: agent.Color, HarnessSessionID: uuid.New().String(), SessionDirectory: sessionDir, AccountingComplete: true})
 	}
 	if sessionErr != nil {
 		return "", sessionErr
@@ -750,7 +801,7 @@ func (s *Service) runRole(ctx context.Context, task store.Task, phase store.Phas
 		if attempt > 0 {
 			request.Prompt = "Your previous final response was invalid: " + err.Error() + "\n" + envelopeInstructions(role)
 		}
-		invocationID := uuid.NewString()
+		invocationID := uuid.New().String()
 		if err := s.db.BeginAgentInvocation(ctx, task.ID, role, invocationID); err != nil {
 			return "", err
 		}
@@ -1084,6 +1135,11 @@ func agentForRole(configured config.Config, role string) (config.Agent, bool) {
 	return config.Agent{}, false
 }
 func (s *Service) taskDir(id string) string { return filepath.Join(s.root, "tasks", id) }
+
+func (s *Service) taskLock(id string) *sync.Mutex {
+	value, _ := s.taskLocks.LoadOrStore(id, &sync.Mutex{})
+	return value.(*sync.Mutex)
+}
 
 func taskRepositories(taskID string, inputs []Repository, createdAt string) ([]store.TaskRepository, error) {
 	values := make([]store.TaskRepository, 0, len(inputs))

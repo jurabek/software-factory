@@ -25,9 +25,14 @@ func TestSwaggerSpecDocumentsAPIRoutes(t *testing.T) {
 	}
 
 	var spec struct {
-		Swagger  string                    `yaml:"swagger"`
-		BasePath string                    `yaml:"basePath"`
-		Paths    map[string]map[string]any `yaml:"paths"`
+		Swagger     string                    `yaml:"swagger"`
+		BasePath    string                    `yaml:"basePath"`
+		Paths       map[string]map[string]any `yaml:"paths"`
+		Definitions map[string]struct {
+			AdditionalProperties *bool          `yaml:"additionalProperties"`
+			Required             []string       `yaml:"required"`
+			Properties           map[string]any `yaml:"properties"`
+		} `yaml:"definitions"`
 	}
 	if err := yaml.Unmarshal(response.Body.Bytes(), &spec); err != nil {
 		t.Fatalf("decode swagger spec: %v", err)
@@ -40,27 +45,28 @@ func TestSwaggerSpecDocumentsAPIRoutes(t *testing.T) {
 	}
 
 	routes := map[string][]string{
-		"/identity":                 {"get"},
-		"/health":                   {"get"},
-		"/config":                   {"get"},
-		"/harnesses":                {"get"},
-		"/models":                   {"get"},
-		"/tasks":                    {"get", "post"},
-		"/tasks/{id}":               {"get", "delete"},
-		"/tasks/{id}/sessions":      {"get", "post"},
-		"/tasks/{id}/start":         {"post"},
-		"/tasks/{id}/approve":       {"post"},
-		"/tasks/{id}/feedback":      {"post"},
-		"/tasks/{id}/interventions": {"get", "post"},
-		"/tasks/{id}/pause":         {"post"},
-		"/tasks/{id}/resume":        {"post"},
-		"/tasks/{id}/abort":         {"post"},
-		"/tasks/{id}/attempts":      {"get"},
-		"/tasks/{id}/events":        {"get"},
-		"/tasks/{id}/events/stream": {"get"},
-		"/tasks/{id}/results":       {"get"},
-		"/tasks/{id}/checks":        {"get"},
-		"/tasks/{id}/diff":          {"get"},
+		"/identity":                              {"get"},
+		"/health":                                {"get"},
+		"/config":                                {"get"},
+		"/harnesses":                             {"get"},
+		"/models":                                {"get"},
+		"/tasks":                                 {"get", "post"},
+		"/tasks/{id}":                            {"get", "delete"},
+		"/tasks/{id}/sessions":                   {"get", "post"},
+		"/tasks/{id}/start":                      {"post"},
+		"/tasks/{id}/approve":                    {"post"},
+		"/tasks/{id}/messages":                   {"get", "post"},
+		"/tasks/{id}/interventions":              {"get"},
+		"/tasks/{id}/pause":                      {"post"},
+		"/tasks/{id}/resume":                     {"post"},
+		"/tasks/{id}/abort":                      {"post"},
+		"/tasks/{id}/attempts":                   {"get"},
+		"/tasks/{id}/attempts/{attemptID}/retry": {"post"},
+		"/tasks/{id}/events":                     {"get"},
+		"/tasks/{id}/events/stream":              {"get"},
+		"/tasks/{id}/results":                    {"get"},
+		"/tasks/{id}/checks":                     {"get"},
+		"/tasks/{id}/diff":                       {"get"},
 	}
 	for path, methods := range routes {
 		operations, ok := spec.Paths[path]
@@ -73,6 +79,21 @@ func TestSwaggerSpecDocumentsAPIRoutes(t *testing.T) {
 				t.Errorf("missing operation %s %s", method, path)
 			}
 		}
+	}
+	if _, exists := spec.Paths["/tasks/{id}/feedback"]; exists {
+		t.Fatal("feedback write remains documented")
+	}
+	if _, exists := spec.Paths["/tasks/{id}/interventions"]["post"]; exists {
+		t.Fatal("intervention write remains documented")
+	}
+	for _, name := range []string{"ApprovalRequest", "MessageTarget", "SendMessageRequest", "RetryRequest"} {
+		definition := spec.Definitions[name]
+		if definition.AdditionalProperties == nil || *definition.AdditionalProperties {
+			t.Errorf("%s must reject unknown properties", name)
+		}
+	}
+	if _, exists := spec.Definitions["Task"].Properties["available_actions"]; !exists {
+		t.Fatal("Task.available_actions missing")
 	}
 	if !strings.Contains(response.Body.String(), "DaemonToken") {
 		t.Fatal("swagger spec does not document daemon bearer authentication")

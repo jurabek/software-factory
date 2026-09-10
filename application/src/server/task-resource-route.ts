@@ -1,6 +1,7 @@
 import { getDaemonRegistry } from "./daemon-registry.ts";
 import { daemonErrorResponse, privateJSON } from "./daemon-route.ts";
 import { readAuthenticationEnvironment } from "./environment.ts";
+import { isMessageTarget } from "./message-contract.ts";
 import { hasTrustedOrigin } from "./request-origin.ts";
 import { getRequestSession } from "./session.ts";
 
@@ -9,6 +10,7 @@ export type TaskResource =
 	| "attempts"
 	| "branches"
 	| "artifacts"
+	| "messages"
 	| "interventions"
 	| "checks"
 	| "results"
@@ -48,7 +50,7 @@ export async function postTaskResource(
 	request: Request,
 	daemonId: string,
 	taskId: string,
-	resource: "sessions" | "interventions" | "feedback",
+	resource: "sessions" | "messages",
 ): Promise<Response> {
 	try {
 		const environment = readAuthenticationEnvironment(process.env);
@@ -83,44 +85,55 @@ export async function postTaskResource(
 				201,
 			);
 		}
-		if (resource === "feedback") {
-			const input = body as {
-				feedback?: unknown;
-				current_plan_digest?: unknown;
-			};
-			const result = await registry.feedback(
-				daemonId,
-				taskId,
-				session.login,
-				{
-					feedback: typeof input.feedback === "string" ? input.feedback : "",
-					...(typeof input.current_plan_digest === "string"
-						? { current_plan_digest: input.current_plan_digest }
-						: {}),
-				},
-				request.signal,
-			);
+		const input = body as {
+			text?: unknown;
+			target?: unknown;
+			idempotency_key?: unknown;
+		};
+		if (
+			!body ||
+			typeof body !== "object" ||
+			Array.isArray(body) ||
+			Object.keys(body).some(
+				(key) => !["text", "target", "idempotency_key"].includes(key),
+			)
+		)
 			return privateJSON(
 				{
-					daemon: result.connection,
-					taskId: result.taskId,
-					result: result.result,
+					error: "invalid_request",
+					message: "Message request contains unsupported fields.",
 				},
-				202,
+				400,
 			);
-		}
-		const result = await registry.intervene(
+		if (input.target !== undefined && !isMessageTarget(input.target))
+			return privateJSON(
+				{
+					error: "invalid_request",
+					message: "Message target is invalid.",
+				},
+				400,
+			);
+		const result = await registry.sendMessage(
 			daemonId,
 			taskId,
 			session.login,
-			body as never,
+			{
+				text: typeof input.text === "string" ? input.text : "",
+				...(input.target !== undefined
+					? { target: input.target as never }
+					: {}),
+				idempotency_key:
+					typeof input.idempotency_key === "string"
+						? input.idempotency_key
+						: "",
+			},
 			request.signal,
 		);
 		return privateJSON(
 			{
 				daemon: result.connection,
 				taskId: result.taskId,
-				result: result.result,
+				message: result.result,
 			},
 			202,
 		);

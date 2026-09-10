@@ -12,7 +12,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/google/uuid"
+	"uuid"
+
 	"github.com/jurabek/software-factory/daemon/internal/harness"
 	"github.com/jurabek/software-factory/daemon/internal/session"
 )
