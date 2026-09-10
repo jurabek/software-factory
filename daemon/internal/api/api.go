@@ -40,6 +40,17 @@ type APIError struct {
 	Message string `json:"message"`
 }
 
+type taskResponse struct {
+	store.Task
+	AvailableActions []string `json:"available_actions"`
+}
+
+type taskSessionResponse struct {
+	store.Task
+	AgentSessions    []store.AgentSession `json:"agent_sessions"`
+	AvailableActions []string             `json:"available_actions"`
+}
+
 func New(db *store.DB, service *factory.Service, cfg config.Config, problems []string, loadErr error, harnesses []string, models func(context.Context, string) ([]config.Model, error), access Access) (*Server, error) {
 	if access.Token == "" {
 		return nil, errors.New("daemon token is required")
@@ -65,9 +76,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/tasks/{id}", s.task)
 	mux.HandleFunc("POST /api/v1/tasks/{id}/sessions", s.createSession)
 	mux.HandleFunc("GET /api/v1/tasks/{id}/sessions", s.taskSessions)
+	mux.HandleFunc("POST /api/v1/tasks/{id}/messages", s.sendMessage)
+	mux.HandleFunc("GET /api/v1/tasks/{id}/messages", s.messages)
+	mux.HandleFunc("POST /api/v1/tasks/{id}/attempts/{attemptID}/retry", s.retry)
 	mux.HandleFunc("POST /api/v1/tasks/{id}/{command}", s.command)
-	mux.HandleFunc("POST /api/v1/tasks/{id}/feedback", s.feedback)
-	mux.HandleFunc("POST /api/v1/tasks/{id}/interventions", s.createIntervention)
 	mux.HandleFunc("GET /api/v1/tasks/{id}/interventions", s.interventions)
 	mux.HandleFunc("DELETE /api/v1/tasks/{id}", s.delete)
 	mux.HandleFunc("GET /api/v1/tasks/{id}/attempts", s.attempts)
@@ -185,7 +197,12 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusUnprocessableEntity, "invalid_task", err.Error())
 		return
 	}
-	write(w, http.StatusCreated, task)
+	value, err := s.taskResponse(r.Context(), task)
+	if err != nil {
+		internal(w, err)
+		return
+	}
+	write(w, http.StatusCreated, value)
 }
 
 func (s *Server) tasks(w http.ResponseWriter, r *http.Request) {
@@ -194,7 +211,16 @@ func (s *Server) tasks(w http.ResponseWriter, r *http.Request) {
 		internal(w, err)
 		return
 	}
-	write(w, http.StatusOK, values)
+	response := make([]taskResponse, 0, len(values))
+	for _, task := range values {
+		value, viewErr := s.taskResponse(r.Context(), task)
+		if viewErr != nil {
+			internal(w, viewErr)
+			return
+		}
+		response = append(response, value)
+	}
+	write(w, http.StatusOK, response)
 }
 
 func (s *Server) task(w http.ResponseWriter, r *http.Request) {
@@ -203,7 +229,12 @@ func (s *Server) task(w http.ResponseWriter, r *http.Request) {
 		storeError(w, err)
 		return
 	}
-	write(w, http.StatusOK, value)
+	response, err := s.taskResponse(r.Context(), value)
+	if err != nil {
+		internal(w, err)
+		return
+	}
+	write(w, http.StatusOK, response)
 }
 
 func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
@@ -224,7 +255,32 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		storeError(w, err)
 		return
 	}
-	write(w, http.StatusCreated, session)
+	value, err := s.taskResponse(r.Context(), session)
+	if err != nil {
+		internal(w, err)
+		return
+	}
+	write(w, http.StatusCreated, value)
+}
+
+func (s *Server) taskResponse(ctx context.Context, task store.Task) (taskResponse, error) {
+	phases, err := s.db.Phases(ctx, task.ID)
+	if err != nil {
+		return taskResponse{}, err
+	}
+	var phase *store.Phase
+	if task.ActivePhase != "" {
+		for index := range phases {
+			if phases[index].ID == task.ActivePhase {
+				phase = &phases[index]
+				break
+			}
+		}
+	}
+	if phase == nil && len(phases) > 0 {
+		phase = &phases[len(phases)-1]
+	}
+	return taskResponse{Task: task, AvailableActions: factory.AvailableActions(phase, task.State)}, nil
 }
 
 func (s *Server) taskSessions(w http.ResponseWriter, r *http.Request) {
@@ -233,7 +289,16 @@ func (s *Server) taskSessions(w http.ResponseWriter, r *http.Request) {
 		storeError(w, err)
 		return
 	}
-	write(w, http.StatusOK, values)
+	response := make([]taskSessionResponse, 0, len(values))
+	for _, session := range values {
+		view, viewErr := s.taskResponse(r.Context(), session.Task)
+		if viewErr != nil {
+			internal(w, viewErr)
+			return
+		}
+		response = append(response, taskSessionResponse{Task: session.Task, AgentSessions: session.AgentSessions, AvailableActions: view.AvailableActions})
+	}
+	write(w, http.StatusOK, response)
 }
 
 func (s *Server) command(w http.ResponseWriter, r *http.Request) {
@@ -244,18 +309,35 @@ func (s *Server) command(w http.ResponseWriter, r *http.Request) {
 	var err error
 	switch r.PathValue("command") {
 	case "start":
+		if !emptyBody(w, r) {
+			return
+		}
 		err = s.factory.Start(r.Context(), id)
 	case "approve":
+		request, decodeErr := decode[approvalRequest](r)
+		if decodeErr != nil {
+			fail(w, http.StatusUnprocessableEntity, "invalid_request", decodeErr.Error())
+			return
+		}
 		actor := r.Header.Get("X-Software-Factory-Actor")
 		if actor == "" {
 			actor = "local-user"
 		}
-		err = s.factory.Approve(r.Context(), id, actor)
+		err = s.factory.Approve(r.Context(), id, actor, request.PlanDigest)
 	case "pause":
+		if !emptyBody(w, r) {
+			return
+		}
 		err = s.factory.Pause(r.Context(), id)
 	case "resume":
+		if !emptyBody(w, r) {
+			return
+		}
 		err = s.factory.Resume(r.Context(), id)
 	case "abort":
+		if !emptyBody(w, r) {
+			return
+		}
 		err = s.factory.Abort(r.Context(), id)
 	default:
 		fail(w, http.StatusNotFound, "not_found", "route not found")
@@ -268,16 +350,12 @@ func (s *Server) command(w http.ResponseWriter, r *http.Request) {
 	write(w, http.StatusAccepted, map[string]any{"accepted": true})
 }
 
-type feedbackRequest struct {
-	Feedback   string `json:"feedback"`
-	PlanDigest string `json:"current_plan_digest,omitempty"`
+type approvalRequest struct {
+	PlanDigest string `json:"plan_digest"`
 }
 
-func (s *Server) feedback(w http.ResponseWriter, r *http.Request) {
-	if !s.ready(w) {
-		return
-	}
-	request, err := decode[feedbackRequest](r)
+func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
+	request, err := decode[factory.SendMessageRequest](r)
 	if err != nil {
 		fail(w, http.StatusUnprocessableEntity, "invalid_request", err.Error())
 		return
@@ -286,33 +364,33 @@ func (s *Server) feedback(w http.ResponseWriter, r *http.Request) {
 	if actor == "" {
 		actor = "local-user"
 	}
-	err = s.factory.Feedback(r.Context(), r.PathValue("id"), actor, request.Feedback, request.PlanDigest)
-	if errors.Is(err, factory.ErrStalePlan) {
-		fail(w, http.StatusConflict, "stale_plan", err.Error())
-		return
-	}
-	if errors.Is(err, factory.ErrInvalidFeedback) {
-		fail(w, http.StatusUnprocessableEntity, "invalid_feedback", err.Error())
-		return
-	}
+	value, err := s.factory.SendMessage(r.Context(), r.PathValue("id"), actor, request)
 	if err != nil {
 		storeError(w, err)
 		return
 	}
-	write(w, http.StatusAccepted, map[string]any{"accepted": true})
+	write(w, http.StatusAccepted, value)
 }
 
-func (s *Server) createIntervention(w http.ResponseWriter, r *http.Request) {
-	request, err := decode[factory.InterveneRequest](r)
+func (s *Server) messages(w http.ResponseWriter, r *http.Request) {
+	if !s.exists(w, r) {
+		return
+	}
+	values, err := s.db.Messages(r.Context(), r.PathValue("id"))
+	if err != nil {
+		internal(w, err)
+		return
+	}
+	write(w, http.StatusOK, values)
+}
+
+func (s *Server) retry(w http.ResponseWriter, r *http.Request) {
+	request, err := decode[factory.RetryRequest](r)
 	if err != nil {
 		fail(w, http.StatusUnprocessableEntity, "invalid_request", err.Error())
 		return
 	}
-	actor := r.Header.Get("X-Software-Factory-Actor")
-	if actor == "" {
-		actor = "local-user"
-	}
-	value, err := s.factory.Intervene(r.Context(), r.PathValue("id"), actor, request)
+	value, err := s.factory.Retry(r.Context(), r.PathValue("id"), r.PathValue("attemptID"), request)
 	if err != nil {
 		storeError(w, err)
 		return
@@ -542,6 +620,19 @@ func decode[T any](r *http.Request) (T, error) {
 	return value, nil
 }
 
+func emptyBody(w http.ResponseWriter, r *http.Request) bool {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		fail(w, http.StatusUnprocessableEntity, "invalid_request", err.Error())
+		return false
+	}
+	if strings.TrimSpace(string(body)) != "" {
+		fail(w, http.StatusUnprocessableEntity, "invalid_request", "control request body must be empty")
+		return false
+	}
+	return true
+}
+
 func write(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -559,7 +650,7 @@ func internal(w http.ResponseWriter, err error) {
 func storeError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, store.ErrNotFound):
-		fail(w, http.StatusNotFound, "not_found", "task not found")
+		fail(w, http.StatusNotFound, "not_found", "resource not found")
 	case errors.Is(err, store.ErrStaleBranch):
 		fail(w, http.StatusConflict, "stale_branch", "selected branch head is stale; refresh lineage and reselect the action")
 	case errors.Is(err, store.ErrStaleAnchor):
@@ -580,7 +671,7 @@ func storeError(w http.ResponseWriter, err error) {
 }
 
 func containsInvalid(message string) bool {
-	for _, prefix := range []string{"intent ", "message is required", "idempotency_key is required", "target accepts", "anchor ", "unknown anchor", "delivery is rejected", "intent is required"} {
+	for _, prefix := range []string{"text is required", "plan_digest is required", "idempotency_key is required", "attempt input snapshot is required", "target accepts", "anchor ", "unknown anchor"} {
 		if len(message) >= len(prefix) && message[:len(prefix)] == prefix {
 			return true
 		}

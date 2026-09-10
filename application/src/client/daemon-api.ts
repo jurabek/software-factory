@@ -46,11 +46,21 @@ async function apiMessage(response: Response): Promise<string> {
 	return `Request failed with status ${response.status}.`;
 }
 
+class APIRequestError extends Error {
+	constructor(
+		public readonly status: number,
+		message: string,
+	) {
+		super(message);
+	}
+}
+
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
 	const response = await fetch(path, { cache: "no-store", ...init });
 	if (response.status === 401)
-		throw new Error("Session expired. Sign in again.");
-	if (!response.ok) throw new Error(await apiMessage(response));
+		throw new APIRequestError(401, "Session expired. Sign in again.");
+	if (!response.ok)
+		throw new APIRequestError(response.status, await apiMessage(response));
 	return response.json() as Promise<T>;
 }
 
@@ -142,6 +152,7 @@ export function daemonCommand(
 	daemonId: string,
 	taskId: string,
 	command: string,
+	input: { plan_digest: string } | undefined = undefined,
 	signal?: AbortSignal,
 ) {
 	return apiFetch<{
@@ -151,7 +162,14 @@ export function daemonCommand(
 		accepted: boolean;
 	}>(
 		`/api/daemons/${encodeURIComponent(daemonId)}/tasks/${encodeURIComponent(taskId)}/${encodeURIComponent(command)}`,
-		{ method: "POST", signal },
+		command === "approve" && input
+			? {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify(input),
+					signal,
+				}
+			: { method: "POST", signal },
 	);
 }
 
@@ -224,6 +242,36 @@ export type TaskIntervention = {
 	attempt_id?: string;
 	created_at: string;
 };
+export type MessageDeliveryStatus = "queued" | "delivered" | "failed";
+export type MessageTarget =
+	| { attempt_id: string }
+	| { event_id: string }
+	| {
+			artifact_id: string;
+			anchor?: {
+				kind: string;
+				start?: number;
+				end?: number;
+				quote?: string;
+				pointer?: string;
+				value_digest?: string;
+				block?: string;
+			};
+	  };
+export type TaskMessage = {
+	id: string;
+	task_id: string;
+	actor: string;
+	text: string;
+	target?: MessageTarget;
+	recipient_role: string;
+	agent_session_id: string;
+	delivery_status: MessageDeliveryStatus;
+	failure_reason?: string;
+	created_at: string;
+	delivered_at?: string;
+	failed_at?: string;
+};
 
 export type AgentSession = {
 	role: string;
@@ -245,16 +293,9 @@ export type AgentSession = {
 	last_used_at: string;
 };
 
-export type InterventionInput = {
-	target: {
-		event_id?: string;
-		artifact_id?: string;
-		attempt_id?: string;
-		anchor?: { kind: string; start?: number; end?: number; quote?: string };
-	};
-	intent: string;
-	message: string;
-	expected_branch_head?: string;
+export type MessageInput = {
+	text: string;
+	target?: MessageTarget;
 	idempotency_key: string;
 };
 
@@ -268,6 +309,7 @@ export type TaskDetails = QualifiedTask & {
 		primary: boolean;
 	}[];
 	plan_digest?: string;
+	available_actions?: string[];
 	agent_sessions?: AgentSession[];
 };
 
@@ -334,45 +376,45 @@ export function daemonCreateSession(
 	);
 }
 
-export function daemonFeedback(
+export function daemonSendMessage(
 	daemonId: string,
 	taskId: string,
-	feedback: string,
-	currentPlanDigest?: string,
-	signal?: AbortSignal,
-) {
-	return apiFetch<{ accepted: boolean }>(
-		`/api/daemons/${encodeURIComponent(daemonId)}/tasks/${encodeURIComponent(taskId)}/feedback`,
-		{
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({
-				feedback,
-				...(currentPlanDigest
-					? { current_plan_digest: currentPlanDigest }
-					: {}),
-			}),
-			signal,
-		},
-	);
-}
-
-export function daemonIntervene(
-	daemonId: string,
-	taskId: string,
-	input: InterventionInput,
+	input: MessageInput,
 	signal?: AbortSignal,
 ) {
 	return apiFetch<{
 		daemon: DaemonConnection;
 		taskId: string;
-		result: { branch_id?: string; attempt_id?: string };
+		message: TaskMessage;
 	}>(
-		`/api/daemons/${encodeURIComponent(daemonId)}/tasks/${encodeURIComponent(taskId)}/interventions`,
+		`/api/daemons/${encodeURIComponent(daemonId)}/tasks/${encodeURIComponent(taskId)}/messages`,
 		{
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify(input),
+			signal,
+		},
+	);
+}
+
+export function daemonRetryAttempt(
+	daemonId: string,
+	taskId: string,
+	attemptId: string,
+	idempotencyKey: string,
+	signal?: AbortSignal,
+) {
+	return apiFetch<{
+		daemon: DaemonConnection;
+		taskId: string;
+		attemptId: string;
+		result: unknown;
+	}>(
+		`/api/daemons/${encodeURIComponent(daemonId)}/tasks/${encodeURIComponent(taskId)}/attempts/${encodeURIComponent(attemptId)}/retry`,
+		{
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ idempotency_key: idempotencyKey }),
 			signal,
 		},
 	);
@@ -454,6 +496,26 @@ export function daemonInterventions(
 		daemonId,
 		taskId,
 		"interventions",
+		signal,
+	).catch((error: unknown) => {
+		if (
+			error instanceof APIRequestError &&
+			(error.status === 404 || error.status === 410)
+		)
+			return { interventions: [] as TaskIntervention[] };
+		throw error;
+	});
+}
+
+export function daemonMessages(
+	daemonId: string,
+	taskId: string,
+	signal?: AbortSignal,
+) {
+	return daemonTaskResource<TaskMessage[]>(
+		daemonId,
+		taskId,
+		"messages",
 		signal,
 	);
 }

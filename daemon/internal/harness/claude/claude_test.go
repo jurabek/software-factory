@@ -7,7 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/google/uuid"
+	"uuid"
+
 	"github.com/jurabek/software-factory/daemon/internal/harness"
 )
 
@@ -31,7 +32,7 @@ echo '{"type":"result","subtype":"success","session_id":"` + session + `","resul
 
 func TestBuildArgsNewVsResume(t *testing.T) {
 	h := Harness{Config: Config{AllowedTools: []string{"Read", "Bash"}}}
-	id := uuid.NewString()
+	id := uuid.New().String()
 	newArgs, err := h.BuildArgs(harness.Request{SessionID: id, Model: "anthropic/sonnet", Thinking: "medium", SystemPrompt: "sys", AdditionalDirectories: []string{"/other"}}, false)
 	if err != nil {
 		t.Fatal(err)
@@ -56,13 +57,13 @@ func TestBuildArgsNewVsResume(t *testing.T) {
 
 func TestNativeModelAndEffortValidation(t *testing.T) {
 	h := Harness{}
-	if _, err := h.BuildArgs(harness.Request{SessionID: uuid.NewString(), Model: "github-copilot/gpt-5", Thinking: "medium"}, false); err == nil {
+	if _, err := h.BuildArgs(harness.Request{SessionID: uuid.New().String(), Model: "github-copilot/gpt-5", Thinking: "medium"}, false); err == nil {
 		t.Fatal("expected third-party provider rejection")
 	}
-	if _, err := h.BuildArgs(harness.Request{SessionID: uuid.NewString(), Model: "sonnet", Thinking: "off"}, false); err == nil {
+	if _, err := h.BuildArgs(harness.Request{SessionID: uuid.New().String(), Model: "sonnet", Thinking: "off"}, false); err == nil {
 		t.Fatal("expected off effort rejection")
 	}
-	if _, err := h.BuildArgs(harness.Request{SessionID: uuid.NewString(), Model: "sonnet", Thinking: "minimal"}, false); err == nil {
+	if _, err := h.BuildArgs(harness.Request{SessionID: uuid.New().String(), Model: "sonnet", Thinking: "minimal"}, false); err == nil {
 		t.Fatal("expected minimal effort rejection")
 	}
 }
@@ -95,7 +96,7 @@ func TestModelsCatalog(t *testing.T) {
 }
 
 func TestRunInitialAndResume(t *testing.T) {
-	sessionID := uuid.NewString()
+	sessionID := uuid.New().String()
 	fake := writeFakeClaude(t, successScript(sessionID))
 	root := t.TempDir()
 	sessionDir := t.TempDir()
@@ -152,7 +153,7 @@ func TestRunInitialAndResume(t *testing.T) {
 }
 
 func TestRunMissingNativeStateErrors(t *testing.T) {
-	sessionID := uuid.NewString()
+	sessionID := uuid.New().String()
 	fake := writeFakeClaude(t, successScript(sessionID))
 	h := Harness{Config: Config{Path: fake, ConfigRoot: t.TempDir()}}
 	request := harness.Request{
@@ -167,7 +168,7 @@ func TestRunMissingNativeStateErrors(t *testing.T) {
 }
 
 func TestRunNonzeroExitWithTextFails(t *testing.T) {
-	sessionID := uuid.NewString()
+	sessionID := uuid.New().String()
 	script := `#!/bin/sh
 read prompt
 echo '{"type":"system","subtype":"init","session_id":"` + sessionID + `","model":"sonnet"}'
@@ -191,7 +192,7 @@ exit 1
 }
 
 func TestRunMalformedStreamFails(t *testing.T) {
-	sessionID := uuid.NewString()
+	sessionID := uuid.New().String()
 	fake := writeFakeClaude(t, "#!/bin/sh\nread prompt\necho 'not json'\n")
 	h := Harness{Config: Config{Path: fake, ConfigRoot: t.TempDir()}}
 	request := harness.Request{
@@ -215,7 +216,7 @@ func TestRunRejectsNonUUID(t *testing.T) {
 
 func TestArchivePathContainment(t *testing.T) {
 	nativeDir := t.TempDir()
-	sessionID := uuid.NewString()
+	sessionID := uuid.New().String()
 	nativePath := filepath.Join(nativeDir, sessionID+".jsonl")
 	if err := os.WriteFile(nativePath, []byte(`{"sessionId":"`+sessionID+`"}`+"\n"), 0o600); err != nil {
 		t.Fatal(err)

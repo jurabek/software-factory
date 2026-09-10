@@ -25,11 +25,33 @@ export async function POST(
 				404,
 			);
 		}
+		let input: { plan_digest: string } | undefined;
+		if (command === "approve") {
+			let body: Record<string, unknown>;
+			try {
+				body = (await request.json()) as Record<string, unknown>;
+			} catch {
+				return privateJSON({ error: "invalid_request" }, 400);
+			}
+			if (
+				!body ||
+				typeof body !== "object" ||
+				Array.isArray(body) ||
+				Object.keys(body).some((key) => key !== "plan_digest") ||
+				typeof body.plan_digest !== "string" ||
+				!body.plan_digest
+			)
+				return privateJSON({ error: "invalid_request" }, 400);
+			input = { plan_digest: body.plan_digest };
+		} else if (request.body !== null) {
+			return privateJSON({ error: "invalid_request" }, 400);
+		}
 		const result = await getDaemonRegistry().command(
 			daemonId,
 			taskId,
 			command as DaemonCommand,
 			session.login,
+			input,
 			request.signal,
 		);
 		return privateJSON(
