@@ -28,7 +28,7 @@ func TestLegacyWritesAreRemovedAndNewWritesRejectOrchestrationFields(t *testing.
 		body string
 		want int
 	}{
-		{path: "/api/v1/tasks/task/interventions", body: `{}`, want: http.StatusNotFound},
+		{path: "/api/v1/tasks/task/interventions", body: `{}`, want: http.StatusMethodNotAllowed},
 		{path: "/api/v1/tasks/task/feedback", body: `{}`, want: http.StatusNotFound},
 		{path: "/api/v1/tasks/task/messages", body: `{"text":"change","idempotency_key":"one","intent":"repair"}`, want: http.StatusUnprocessableEntity},
 		{path: "/api/v1/tasks/task/attempts/attempt/retry", body: `{"idempotency_key":"one","text":"change it"}`, want: http.StatusUnprocessableEntity},
@@ -38,7 +38,7 @@ func TestLegacyWritesAreRemovedAndNewWritesRejectOrchestrationFields(t *testing.
 		request := httptest.NewRequest(http.MethodPost, test.path, bytes.NewBufferString(test.body))
 		authorize(request)
 		response := httptest.NewRecorder()
-		server.Handler().ServeHTTP(response, request)
+		server.ServeHTTP(response, request)
 		if response.Code != test.want {
 			t.Errorf("POST %s status = %d, want %d: %s", test.path, response.Code, test.want, response.Body.String())
 		}
@@ -64,7 +64,7 @@ func TestTaskReadsExposeAuthoritativeAvailableActions(t *testing.T) {
 		request := httptest.NewRequest(http.MethodGet, path, nil)
 		authorize(request)
 		response := httptest.NewRecorder()
-		server.Handler().ServeHTTP(response, request)
+		server.ServeHTTP(response, request)
 		if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(`"available_actions":["start","abort"]`)) {
 			t.Fatalf("GET %s = %d %s", path, response.Code, response.Body.String())
 		}
@@ -79,7 +79,7 @@ func TestTaskReadsExposeAuthoritativeAvailableActions(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/tasks/task-actions", nil)
 	authorize(request)
 	response := httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, request)
+	server.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(`"available_actions":["retry"]`)) {
 		t.Fatalf("completed task = %d %s", response.Code, response.Body.String())
 	}

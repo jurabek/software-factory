@@ -162,36 +162,3 @@ func TestDeleteRootTaskDeletesAllSessionWorkspaces(t *testing.T) {
 		t.Fatalf("child session lookup error = %v, want not found", err)
 	}
 }
-
-func TestCommentIsIdempotent(t *testing.T) {
-	root := t.TempDir()
-	db, err := store.Open(filepath.Join(root, "factory.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	service := NewService(root, Dependencies{Store: db})
-	task, err := service.Create(context.Background(), CreateRequest{Request: "change", Repositories: []Repository{{Type: "github", Repo: "owner/repository"}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	request := InterventionRequest{TargetType: "task", TargetID: task.ID, Message: "Keep the public interface", IdempotencyKey: "comment-1"}
-	first, err := service.Comment(context.Background(), task.ID, "tester", request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := service.Comment(context.Background(), task.ID, "tester", request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if first.ID != second.ID {
-		t.Fatalf("intervention IDs differ: %s %s", first.ID, second.ID)
-	}
-	values, err := db.Interventions(context.Background(), task.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(values) != 1 {
-		t.Fatalf("interventions = %d, want 1", len(values))
-	}
-}

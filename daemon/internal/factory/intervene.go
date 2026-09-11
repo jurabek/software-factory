@@ -36,8 +36,6 @@ type InterventionTarget struct {
 	Anchor     *Anchor `json:"anchor,omitempty"`
 }
 
-// InterveneRequest is the clean-break intervention payload. Legacy flat
-// target_type/target_id payloads are accepted for compatibility.
 type InterveneRequest struct {
 	Target             InterventionTarget `json:"target"`
 	Intent             string             `json:"intent"`
@@ -45,45 +43,6 @@ type InterveneRequest struct {
 	ExpectedBranchHead string             `json:"expected_branch_head,omitempty"`
 	IdempotencyKey     string             `json:"idempotency_key,omitempty"`
 	Delivery           string             `json:"delivery,omitempty"`
-}
-
-func (request *InterveneRequest) UnmarshalJSON(data []byte) error {
-	type raw InterveneRequest
-	var nested struct {
-		raw
-		TargetType     string `json:"target_type"`
-		TargetID       string `json:"target_id"`
-		IdempotencyUnd string `json:"idempotency_key"`
-	}
-	_ = nested
-	var probe map[string]any
-	if err := json.Unmarshal(data, &probe); err != nil {
-		return err
-	}
-	var base raw
-	if err := json.Unmarshal(data, &base); err != nil {
-		return err
-	}
-	*request = InterveneRequest(base)
-	if target, ok := probe["target"]; !ok || target == nil {
-		legacyType, _ := probe["target_type"].(string)
-		legacyID, _ := probe["target_id"].(string)
-		switch legacyType {
-		case "attempt":
-			request.Target.AttemptID = legacyID
-		case "event":
-			request.Target.EventID = legacyID
-		case "artifact":
-			request.Target.ArtifactID = legacyID
-		case "task", "":
-			if legacyID != "" && legacyType == "task" {
-				break
-			}
-		default:
-			return fmt.Errorf("target_type must be task, attempt, event, or artifact")
-		}
-	}
-	return nil
 }
 
 // Intervene persists the intervention and, for state-changing intents,

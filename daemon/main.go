@@ -188,18 +188,13 @@ func run() error {
 		Store: db, Config: configured, ConfigPath: configPath,
 		Harnesses: registry, Git: factorygit.OSRunner{},
 	})
-	apiServer, err := api.New(db, service, configured, problems, loadErr, harnessNames, catalog, api.Access{DaemonID: daemonID, Token: daemonToken})
+	apiHandler, err := api.New(db, service, configured, problems, loadErr, harnessNames, catalog, api.Access{DaemonID: daemonID, Token: daemonToken})
 	if err != nil {
 		return err
 	}
-	mux := http.NewServeMux()
-	mux.Handle("/api/v1/", apiServer.Handler())
-	mux.HandleFunc("GET /swagger.yaml", serveSwaggerSpec)
-	mux.HandleFunc("GET /docs", serveSwaggerUI)
-	mux.HandleFunc("GET /docs/", serveSwaggerUI)
 	server := &http.Server{
 		Addr:              address,
-		Handler:           requestLog(logger, staticSecurityHeaders(mux)),
+		Handler:           newServer(logger, apiHandler),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -413,6 +408,15 @@ func serveSwaggerSpec(w http.ResponseWriter, _ *http.Request) {
 func serveSwaggerUI(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = io.WriteString(w, swaggerUI)
+}
+
+func newServer(logger *slog.Logger, apiHandler http.Handler) http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("/api/v1/", apiHandler)
+	mux.HandleFunc("GET /swagger.yaml", serveSwaggerSpec)
+	mux.HandleFunc("GET /docs", serveSwaggerUI)
+	mux.HandleFunc("GET /docs/", serveSwaggerUI)
+	return requestLog(logger, staticSecurityHeaders(mux))
 }
 
 func staticSecurityHeaders(next http.Handler) http.Handler {

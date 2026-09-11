@@ -62,7 +62,7 @@ func TestEventsTailReturnsNewestEventsInSequenceOrder(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/tasks/task-1/events?tail=2", nil)
 	authorize(request)
 	response := httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, request)
+	server.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d", response.Code)
 	}
@@ -104,7 +104,7 @@ func TestEmptyCollectionsAreJSONArrays(t *testing.T) {
 			request := httptest.NewRequest(http.MethodGet, test.path, nil)
 			authorize(request)
 			response := httptest.NewRecorder()
-			server.Handler().ServeHTTP(response, request)
+			server.ServeHTTP(response, request)
 			if response.Code != http.StatusOK {
 				t.Fatalf("status = %d", response.Code)
 			}
@@ -131,7 +131,7 @@ func TestCreateTaskAcceptsMultipleRepositories(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/tasks", bytes.NewReader(body))
 	authorize(request)
 	response := httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, request)
+	server.ServeHTTP(response, request)
 	if response.Code != http.StatusCreated {
 		t.Fatalf("status = %d: %s", response.Code, response.Body.String())
 	}
@@ -164,7 +164,7 @@ func TestCreateAndListTaskSessions(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+task.ID+"/sessions", bytes.NewBufferString(`{"request":"Investigate another approach"}`))
 	authorize(request)
 	response := httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, request)
+	server.ServeHTTP(response, request)
 	if response.Code != http.StatusCreated {
 		t.Fatalf("status = %d: %s", response.Code, response.Body.String())
 	}
@@ -179,7 +179,7 @@ func TestCreateAndListTaskSessions(t *testing.T) {
 	request = httptest.NewRequest(http.MethodGet, "/api/v1/tasks/"+task.ID+"/sessions", nil)
 	authorize(request)
 	response = httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, request)
+	server.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d: %s", response.Code, response.Body.String())
 	}
@@ -199,7 +199,7 @@ func TestCreateAndListTaskSessions(t *testing.T) {
 	request = httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+task.ID+"/sessions", bytes.NewBufferString(`{"request":" "}`))
 	authorize(request)
 	response = httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, request)
+	server.ServeHTTP(response, request)
 	if response.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("empty request status = %d, want %d", response.Code, http.StatusUnprocessableEntity)
 	}
@@ -218,7 +218,7 @@ func TestLegacyRouteHasNoAlias(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/campaigns", nil)
 	authorize(request)
 	response := httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, request)
+	server.ServeHTTP(response, request)
 	if response.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", response.Code)
 	}
@@ -254,7 +254,7 @@ func TestTokenRequiredForAPI(t *testing.T) {
 				request.Header.Set("Authorization", test.authorization)
 			}
 			response := httptest.NewRecorder()
-			server.Handler().ServeHTTP(response, request)
+			server.ServeHTTP(response, request)
 			if response.Code != test.wantStatus {
 				t.Fatalf("status = %d, want %d: %s", response.Code, test.wantStatus, response.Body.String())
 			}

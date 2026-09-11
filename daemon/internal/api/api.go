@@ -18,7 +18,7 @@ import (
 	"github.com/jurabek/software-factory/daemon/internal/store"
 )
 
-type Server struct {
+type server struct {
 	db               *store.DB
 	factory          *factory.Service
 	config           config.Config
@@ -51,7 +51,7 @@ type taskSessionResponse struct {
 	AvailableActions []string             `json:"available_actions"`
 }
 
-func New(db *store.DB, service *factory.Service, cfg config.Config, problems []string, loadErr error, harnesses []string, models func(context.Context, string) ([]config.Model, error), access Access) (*Server, error) {
+func New(db *store.DB, service *factory.Service, cfg config.Config, problems []string, loadErr error, harnesses []string, models func(context.Context, string) ([]config.Model, error), access Access) (http.Handler, error) {
 	if access.Token == "" {
 		return nil, errors.New("daemon token is required")
 	}
@@ -61,10 +61,11 @@ func New(db *store.DB, service *factory.Service, cfg config.Config, problems []s
 	if models == nil {
 		models = func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil }
 	}
-	return &Server{db: db, factory: service, config: cfg, validationErrors: problems, loadError: loadErr, harnesses: harnesses, models: models, token: access.Token, daemonID: access.DaemonID}, nil
+	s := &server{db: db, factory: service, config: cfg, validationErrors: problems, loadError: loadErr, harnesses: harnesses, models: models, token: access.Token, daemonID: access.DaemonID}
+	return noStore(s.routes()), nil
 }
 
-func (s *Server) Handler() http.Handler {
+func (s *server) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/identity", s.identity)
 	mux.HandleFunc("GET /api/v1/health", s.health)
@@ -80,7 +81,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/tasks/{id}/messages", s.sendMessage)
 	mux.HandleFunc("GET /api/v1/tasks/{id}/messages", s.messages)
 	mux.HandleFunc("POST /api/v1/tasks/{id}/attempts/{attemptID}/retry", s.retry)
-	mux.HandleFunc("POST /api/v1/tasks/{id}/{command}", s.command)
+	mux.Handle("POST /api/v1/tasks/{id}/start", s.control(func(ctx context.Context, id string) error { return s.factory.Start(ctx, id) }))
+	mux.HandleFunc("POST /api/v1/tasks/{id}/approve", s.approve)
+	mux.Handle("POST /api/v1/tasks/{id}/pause", s.control(func(ctx context.Context, id string) error { return s.factory.Pause(ctx, id) }))
+	mux.Handle("POST /api/v1/tasks/{id}/resume", s.control(func(ctx context.Context, id string) error { return s.factory.Resume(ctx, id) }))
+	mux.Handle("POST /api/v1/tasks/{id}/abort", s.control(func(ctx context.Context, id string) error { return s.factory.Abort(ctx, id) }))
 	mux.HandleFunc("GET /api/v1/tasks/{id}/interventions", s.interventions)
 	mux.HandleFunc("DELETE /api/v1/tasks/{id}", s.delete)
 	mux.HandleFunc("GET /api/v1/tasks/{id}/attempts", s.attempts)
@@ -92,15 +97,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/tasks/{id}/results", s.results)
 	mux.HandleFunc("GET /api/v1/tasks/{id}/checks", s.checks)
 	mux.HandleFunc("GET /api/v1/tasks/{id}/diff", s.diff)
-	return headers(s.authenticate(mux))
+	return s.authenticate(mux)
 }
 
-func (s *Server) authenticate(next http.Handler) http.Handler {
+func (s *server) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasPrefix(r.URL.Path, "/api/") {
-			next.ServeHTTP(w, r)
-			return
-		}
 		if r.URL.Path == "/api/v1/health" {
 			next.ServeHTTP(w, r)
 			return
@@ -120,11 +121,11 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 	})
 }
 
-func (s *Server) identity(w http.ResponseWriter, _ *http.Request) {
+func (s *server) identity(w http.ResponseWriter, _ *http.Request) {
 	write(w, http.StatusOK, map[string]string{"id": s.daemonID})
 }
 
-func (s *Server) health(w http.ResponseWriter, r *http.Request) {
+func (s *server) health(w http.ResponseWriter, r *http.Request) {
 	status := "ok"
 	problems := append([]string{}, s.validationErrors...)
 	if s.loadError != nil {
@@ -138,7 +139,7 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	write(w, http.StatusOK, map[string]any{"status": status, "errors": problems})
 }
 
-func (s *Server) configRead(w http.ResponseWriter, _ *http.Request) {
+func (s *server) configRead(w http.ResponseWriter, _ *http.Request) {
 	problems := append([]string{}, s.validationErrors...)
 	if s.loadError != nil {
 		problems = append(problems, s.loadError.Error())
@@ -146,11 +147,11 @@ func (s *Server) configRead(w http.ResponseWriter, _ *http.Request) {
 	write(w, http.StatusOK, map[string]any{"config": s.config, "errors": problems})
 }
 
-func (s *Server) harnessesRead(w http.ResponseWriter, _ *http.Request) {
+func (s *server) harnessesRead(w http.ResponseWriter, _ *http.Request) {
 	write(w, http.StatusOK, map[string]any{"harnesses": s.harnesses})
 }
 
-func (s *Server) defaultHarness() string {
+func (s *server) defaultHarness() string {
 	if s.config.Defaults.CodingAgent != "" {
 		return s.config.Defaults.CodingAgent
 	}
@@ -160,7 +161,7 @@ func (s *Server) defaultHarness() string {
 	return "pi"
 }
 
-func (s *Server) modelsRead(w http.ResponseWriter, r *http.Request) {
+func (s *server) modelsRead(w http.ResponseWriter, r *http.Request) {
 	harness := strings.TrimSpace(r.URL.Query().Get("harness"))
 	if harness == "" {
 		harness = s.defaultHarness()
@@ -184,11 +185,11 @@ func (s *Server) modelsRead(w http.ResponseWriter, r *http.Request) {
 	write(w, http.StatusOK, map[string]any{"harness": harness, "models": models})
 }
 
-func (s *Server) pipelinesRead(w http.ResponseWriter, _ *http.Request) {
+func (s *server) pipelinesRead(w http.ResponseWriter, _ *http.Request) {
 	write(w, http.StatusOK, s.config.Pipelines)
 }
 
-func (s *Server) create(w http.ResponseWriter, r *http.Request) {
+func (s *server) create(w http.ResponseWriter, r *http.Request) {
 	if !s.ready(w) {
 		return
 	}
@@ -210,7 +211,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	write(w, http.StatusCreated, value)
 }
 
-func (s *Server) tasks(w http.ResponseWriter, r *http.Request) {
+func (s *server) tasks(w http.ResponseWriter, r *http.Request) {
 	values, err := s.db.Tasks(r.Context())
 	if err != nil {
 		internal(w, err)
@@ -228,7 +229,7 @@ func (s *Server) tasks(w http.ResponseWriter, r *http.Request) {
 	write(w, http.StatusOK, response)
 }
 
-func (s *Server) task(w http.ResponseWriter, r *http.Request) {
+func (s *server) task(w http.ResponseWriter, r *http.Request) {
 	value, err := s.db.Task(r.Context(), r.PathValue("id"))
 	if err != nil {
 		storeError(w, err)
@@ -242,7 +243,7 @@ func (s *Server) task(w http.ResponseWriter, r *http.Request) {
 	write(w, http.StatusOK, response)
 }
 
-func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
+func (s *server) createSession(w http.ResponseWriter, r *http.Request) {
 	if !s.ready(w) {
 		return
 	}
@@ -268,7 +269,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	write(w, http.StatusCreated, value)
 }
 
-func (s *Server) taskResponse(ctx context.Context, task store.Task) (taskResponse, error) {
+func (s *server) taskResponse(ctx context.Context, task store.Task) (taskResponse, error) {
 	phases, err := s.db.Phases(ctx, task.ID)
 	if err != nil {
 		return taskResponse{}, err
@@ -295,7 +296,7 @@ func (s *Server) taskResponse(ctx context.Context, task store.Task) (taskRespons
 	return taskResponse{Task: task, AvailableActions: factory.AvailableActions(phase, task.State)}, nil
 }
 
-func (s *Server) taskSessions(w http.ResponseWriter, r *http.Request) {
+func (s *server) taskSessions(w http.ResponseWriter, r *http.Request) {
 	values, err := s.db.TaskSessionsWithAgents(r.Context(), r.PathValue("id"))
 	if err != nil {
 		storeError(w, err)
@@ -308,65 +309,49 @@ func (s *Server) taskSessions(w http.ResponseWriter, r *http.Request) {
 			internal(w, viewErr)
 			return
 		}
-		response = append(response, taskSessionResponse{Task: session.Task, AgentSessions: session.AgentSessions, AvailableActions: view.AvailableActions})
+		response = append(response, taskSessionResponse{Task: view.Task, AgentSessions: session.AgentSessions, AvailableActions: view.AvailableActions})
 	}
 	write(w, http.StatusOK, response)
 }
 
-func (s *Server) command(w http.ResponseWriter, r *http.Request) {
-	if !s.ready(w) {
-		return
-	}
-	id := r.PathValue("id")
-	var err error
-	switch r.PathValue("command") {
-	case "start":
-		if !emptyBody(w, r) {
+func (s *server) control(action func(context.Context, string) error) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.ready(w) || !emptyBody(w, r) {
 			return
 		}
-		err = s.factory.Start(r.Context(), id)
-	case "approve":
-		request, decodeErr := decode[approvalRequest](r)
-		if decodeErr != nil {
-			fail(w, http.StatusUnprocessableEntity, "invalid_request", decodeErr.Error())
+		if err := action(r.Context(), r.PathValue("id")); err != nil {
+			storeError(w, err)
 			return
 		}
-		actor := r.Header.Get("X-Software-Factory-Actor")
-		if actor == "" {
-			actor = "local-user"
-		}
-		err = s.factory.Approve(r.Context(), id, actor, request.PlanDigest)
-	case "pause":
-		if !emptyBody(w, r) {
-			return
-		}
-		err = s.factory.Pause(r.Context(), id)
-	case "resume":
-		if !emptyBody(w, r) {
-			return
-		}
-		err = s.factory.Resume(r.Context(), id)
-	case "abort":
-		if !emptyBody(w, r) {
-			return
-		}
-		err = s.factory.Abort(r.Context(), id)
-	default:
-		fail(w, http.StatusNotFound, "not_found", "route not found")
-		return
-	}
-	if err != nil {
-		storeError(w, err)
-		return
-	}
-	write(w, http.StatusAccepted, map[string]any{"accepted": true})
+		write(w, http.StatusAccepted, map[string]any{"accepted": true})
+	})
 }
 
 type approvalRequest struct {
 	PlanDigest string `json:"plan_digest"`
 }
 
-func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
+func (s *server) approve(w http.ResponseWriter, r *http.Request) {
+	if !s.ready(w) {
+		return
+	}
+	request, err := decode[approvalRequest](r)
+	if err != nil {
+		fail(w, http.StatusUnprocessableEntity, "invalid_request", err.Error())
+		return
+	}
+	actor := r.Header.Get("X-Software-Factory-Actor")
+	if actor == "" {
+		actor = "local-user"
+	}
+	if err = s.factory.Approve(r.Context(), r.PathValue("id"), actor, request.PlanDigest); err != nil {
+		storeError(w, err)
+		return
+	}
+	write(w, http.StatusAccepted, map[string]any{"accepted": true})
+}
+
+func (s *server) sendMessage(w http.ResponseWriter, r *http.Request) {
 	request, err := decode[factory.SendMessageRequest](r)
 	if err != nil {
 		fail(w, http.StatusUnprocessableEntity, "invalid_request", err.Error())
@@ -384,7 +369,7 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) {
 	write(w, http.StatusAccepted, value)
 }
 
-func (s *Server) messages(w http.ResponseWriter, r *http.Request) {
+func (s *server) messages(w http.ResponseWriter, r *http.Request) {
 	if !s.exists(w, r) {
 		return
 	}
@@ -396,7 +381,7 @@ func (s *Server) messages(w http.ResponseWriter, r *http.Request) {
 	write(w, http.StatusOK, values)
 }
 
-func (s *Server) retry(w http.ResponseWriter, r *http.Request) {
+func (s *server) retry(w http.ResponseWriter, r *http.Request) {
 	request, err := decode[factory.RetryRequest](r)
 	if err != nil {
 		fail(w, http.StatusUnprocessableEntity, "invalid_request", err.Error())
@@ -410,7 +395,7 @@ func (s *Server) retry(w http.ResponseWriter, r *http.Request) {
 	write(w, http.StatusAccepted, value)
 }
 
-func (s *Server) interventions(w http.ResponseWriter, r *http.Request) {
+func (s *server) interventions(w http.ResponseWriter, r *http.Request) {
 	if !s.exists(w, r) {
 		return
 	}
@@ -422,7 +407,7 @@ func (s *Server) interventions(w http.ResponseWriter, r *http.Request) {
 	write(w, http.StatusOK, values)
 }
 
-func (s *Server) delete(w http.ResponseWriter, r *http.Request) {
+func (s *server) delete(w http.ResponseWriter, r *http.Request) {
 	if err := s.factory.Delete(r.Context(), r.PathValue("id")); err != nil {
 		storeError(w, err)
 		return
@@ -430,7 +415,7 @@ func (s *Server) delete(w http.ResponseWriter, r *http.Request) {
 	write(w, http.StatusOK, map[string]any{"deleted": true})
 }
 
-func (s *Server) attempts(w http.ResponseWriter, r *http.Request) {
+func (s *server) attempts(w http.ResponseWriter, r *http.Request) {
 	if !s.exists(w, r) {
 		return
 	}
@@ -442,7 +427,7 @@ func (s *Server) attempts(w http.ResponseWriter, r *http.Request) {
 	write(w, http.StatusOK, values)
 }
 
-func (s *Server) attempt(w http.ResponseWriter, r *http.Request) {
+func (s *server) attempt(w http.ResponseWriter, r *http.Request) {
 	value, err := s.db.PhaseByID(r.Context(), r.PathValue("id"), r.PathValue("attemptID"))
 	if err != nil {
 		storeError(w, err)
@@ -451,7 +436,7 @@ func (s *Server) attempt(w http.ResponseWriter, r *http.Request) {
 	write(w, http.StatusOK, value)
 }
 
-func (s *Server) branches(w http.ResponseWriter, r *http.Request) {
+func (s *server) branches(w http.ResponseWriter, r *http.Request) {
 	if !s.exists(w, r) {
 		return
 	}
@@ -463,7 +448,7 @@ func (s *Server) branches(w http.ResponseWriter, r *http.Request) {
 	write(w, http.StatusOK, values)
 }
 
-func (s *Server) artifacts(w http.ResponseWriter, r *http.Request) {
+func (s *server) artifacts(w http.ResponseWriter, r *http.Request) {
 	if !s.exists(w, r) {
 		return
 	}
@@ -475,7 +460,7 @@ func (s *Server) artifacts(w http.ResponseWriter, r *http.Request) {
 	write(w, http.StatusOK, values)
 }
 
-func (s *Server) checks(w http.ResponseWriter, r *http.Request) {
+func (s *server) checks(w http.ResponseWriter, r *http.Request) {
 	if !s.exists(w, r) {
 		return
 	}
@@ -487,7 +472,7 @@ func (s *Server) checks(w http.ResponseWriter, r *http.Request) {
 	write(w, http.StatusOK, values)
 }
 
-func (s *Server) results(w http.ResponseWriter, r *http.Request) {
+func (s *server) results(w http.ResponseWriter, r *http.Request) {
 	if !s.exists(w, r) {
 		return
 	}
@@ -499,7 +484,7 @@ func (s *Server) results(w http.ResponseWriter, r *http.Request) {
 	write(w, http.StatusOK, values)
 }
 
-func (s *Server) diff(w http.ResponseWriter, r *http.Request) {
+func (s *server) diff(w http.ResponseWriter, r *http.Request) {
 	value, err := s.factory.Diff(r.Context(), r.PathValue("id"))
 	if err != nil {
 		storeError(w, err)
@@ -508,7 +493,7 @@ func (s *Server) diff(w http.ResponseWriter, r *http.Request) {
 	write(w, http.StatusOK, value)
 }
 
-func (s *Server) events(w http.ResponseWriter, r *http.Request) {
+func (s *server) events(w http.ResponseWriter, r *http.Request) {
 	if !s.exists(w, r) {
 		return
 	}
@@ -533,7 +518,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	write(w, http.StatusOK, map[string]any{"events": values, "cursor": cursor, "format_version": session.FormatVersion})
 }
 
-func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
+func (s *server) stream(w http.ResponseWriter, r *http.Request) {
 	if !s.exists(w, r) {
 		return
 	}
@@ -587,7 +572,7 @@ func (s *Server) stream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) exists(w http.ResponseWriter, r *http.Request) bool {
+func (s *server) exists(w http.ResponseWriter, r *http.Request) bool {
 	if _, err := s.db.Task(r.Context(), r.PathValue("id")); err != nil {
 		storeError(w, err)
 		return false
@@ -595,7 +580,7 @@ func (s *Server) exists(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
-func (s *Server) ready(w http.ResponseWriter) bool {
+func (s *server) ready(w http.ResponseWriter) bool {
 	if s.loadError != nil || len(s.validationErrors) > 0 {
 		fail(w, http.StatusUnprocessableEntity, "configuration_invalid", "factory configuration is invalid")
 		return false
@@ -603,14 +588,9 @@ func (s *Server) ready(w http.ResponseWriter) bool {
 	return true
 }
 
-func headers(next http.Handler) http.Handler {
+func noStore(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("X-Frame-Options", "DENY")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'")
-		if strings.HasPrefix(r.URL.Path, "/api/") {
-			w.Header().Set("Cache-Control", "no-store")
-		}
+		w.Header().Set("Cache-Control", "no-store")
 		next.ServeHTTP(w, r)
 	})
 }
@@ -674,7 +654,7 @@ func storeError(w http.ResponseWriter, err error) {
 	case errors.Is(err, factory.ErrInvalidFeedback):
 		fail(w, http.StatusUnprocessableEntity, "invalid_feedback", err.Error())
 	default:
-		if err != nil && (containsInvalid(err.Error())) {
+		if err != nil && containsInvalid(err.Error()) {
 			fail(w, http.StatusUnprocessableEntity, "invalid_request", err.Error())
 			return
 		}
@@ -684,22 +664,7 @@ func storeError(w http.ResponseWriter, err error) {
 
 func containsInvalid(message string) bool {
 	for _, prefix := range []string{"text is required", "plan_digest is required", "idempotency_key is required", "attempt input snapshot is required", "target accepts", "anchor ", "unknown anchor"} {
-		if len(message) >= len(prefix) && message[:len(prefix)] == prefix {
-			return true
-		}
-		if len(prefix) > 0 && containsSubstring(message, prefix) {
-			return true
-		}
-	}
-	return false
-}
-
-func containsSubstring(haystack, needle string) bool {
-	if needle == "" {
-		return true
-	}
-	for index := 0; index+len(needle) <= len(haystack); index++ {
-		if haystack[index:index+len(needle)] == needle {
+		if strings.Contains(message, prefix) {
 			return true
 		}
 	}

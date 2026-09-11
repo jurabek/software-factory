@@ -133,12 +133,6 @@ type CreateRequest struct {
 type CreateSessionRequest struct {
 	Request string `json:"request"`
 }
-type InterventionRequest struct {
-	TargetType     string `json:"target_type"`
-	TargetID       string `json:"target_id"`
-	Message        string `json:"message"`
-	IdempotencyKey string `json:"idempotency_key"`
-}
 type Diff struct {
 	Repositories []RepositoryDiff `json:"repositories"`
 }
@@ -326,37 +320,6 @@ func (s *Service) ensureBranch(ctx context.Context, taskID, parent string) error
 	return s.db.SelectBranch(ctx, taskID, branch.ID)
 }
 
-func (s *Service) Comment(ctx context.Context, taskID, actor string, request InterventionRequest) (store.Intervention, error) {
-	request.Message = strings.TrimSpace(request.Message)
-	request.IdempotencyKey = strings.TrimSpace(request.IdempotencyKey)
-	if request.Message == "" {
-		return store.Intervention{}, fmt.Errorf("message is required")
-	}
-	if request.IdempotencyKey == "" {
-		return store.Intervention{}, fmt.Errorf("idempotency_key is required")
-	}
-	switch request.TargetType {
-	case "task", "attempt", "event", "artifact":
-	default:
-		return store.Intervention{}, fmt.Errorf("target_type must be task, attempt, event, or artifact")
-	}
-	if strings.TrimSpace(request.TargetID) == "" {
-		return store.Intervention{}, fmt.Errorf("target_id is required")
-	}
-	if _, err := s.db.Task(ctx, taskID); err != nil {
-		return store.Intervention{}, err
-	}
-	value := store.Intervention{ID: randomID(), TaskID: taskID, TargetType: request.TargetType, TargetID: request.TargetID, Actor: actor, Intent: "comment", Text: request.Message, Delivery: "applied", IdempotencyKey: request.IdempotencyKey, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
-	stored, created, err := s.db.SaveIntervention(ctx, value)
-	if err != nil {
-		return store.Intervention{}, err
-	}
-	if created {
-		_ = s.trace(ctx, taskID, "", session.NewIntervention(session.InterventionPayload{Actor: stored.Actor, Intent: stored.Intent, Text: stored.Text, Delivery: stored.Delivery, InterventionID: stored.ID, TargetType: stored.TargetType, TargetID: stored.TargetID}))
-	}
-	return stored, nil
-}
-
 func (s *Service) Approve(ctx context.Context, id, actor, expectedDigest string) error {
 	lock := s.taskLock(id)
 	lock.Lock()
@@ -393,60 +356,6 @@ func (s *Service) Approve(ctx context.Context, id, actor, expectedDigest string)
 	}
 	s.launch(id, s.progress)
 	return nil
-}
-
-func (s *Service) Feedback(ctx context.Context, id, actor, text, digest string) error {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return ErrInvalidFeedback
-	}
-	task, err := s.db.Task(ctx, id)
-	if err != nil {
-		return err
-	}
-	if task.State != string(AwaitingApproval) {
-		return store.ErrConflict
-	}
-	payload, err := s.db.ValidEnvelope(ctx, id, "planner")
-	if err != nil {
-		return err
-	}
-	current := fmt.Sprintf("%x", sha256.Sum256([]byte(payload)))
-	if digest != "" && digest != current {
-		return ErrStalePlan
-	}
-	if err = s.db.SaveFeedback(ctx, store.Feedback{ID: randomID(), TaskID: id, Actor: actor, PlanDigest: current, Text: text, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
-		return err
-	}
-	if err = s.trace(ctx, id, "", session.NewPlanFeedback(session.PlanFeedbackPayload{Actor: actor, PlanDigest: current, Feedback: text})); err != nil {
-		return err
-	}
-	if err = s.db.Transition(ctx, id, string(AwaitingApproval), string(Planning), "", ""); err != nil {
-		return err
-	}
-	s.launch(id, s.revisePlan)
-	return nil
-}
-
-func (s *Service) revisePlan(ctx context.Context, id string) error {
-	task, err := s.db.Task(ctx, id)
-	if err != nil {
-		return err
-	}
-	payload, err := s.db.ValidEnvelope(ctx, id, "planner")
-	if err != nil {
-		return err
-	}
-	feedback, err := s.db.Feedback(ctx, id)
-	if err != nil || len(feedback) == 0 {
-		return fmt.Errorf("feedback not found")
-	}
-	return s.plan(ctx, task, map[string]any{"CurrentPlan": payload, "Questions": mustPlanQuestions(payload), "Feedback": feedback[len(feedback)-1].Text})
-}
-
-func mustPlanQuestions(payload string) []string {
-	plan, _ := ValidatePlan(payload)
-	return plan.Questions
 }
 
 func (s *Service) Pause(ctx context.Context, id string) error {

@@ -36,7 +36,6 @@ create table if not exists envelopes (id text primary key, task_id text not null
 create table if not exists checks (id text not null, task_id text not null references tasks(id) on delete cascade, phase_id text, repository_id text, stage_id text, check_phase text not null default 'primary', comparison_baseline text, name text not null, command text not null, attempt integer not null, status text not null, exit_code integer, output text, artifact_path text, duration_ms integer, started_at text, ended_at text, primary key (task_id, id, attempt));
 create table if not exists processes (id integer primary key autoincrement, task_id text not null references tasks(id) on delete cascade, phase_id text, kind text not null, name text not null, pid integer not null, display_command text not null, status text not null, exit_code integer, started_at text not null, ended_at text);
 create table if not exists agent_sessions (task_id text not null, stage_id text not null, agent_name text not null, role text not null default '', harness text not null, provider text, model text, thinking text, color text, harness_session_id text not null, session_directory text not null, session_ready integer not null default 0, native_transcript_path text, pending_invocation_id text, context_tokens integer, context_window integer, usage_json text, cost real not null default 0, accounting_complete integer not null default 1, created_at text not null, last_used_at text not null, primary key(task_id, stage_id));
-create table if not exists feedback (id text primary key, task_id text not null references tasks(id) on delete cascade, actor text not null, plan_digest text not null, text text not null, created_at text not null);
 create table if not exists interventions (
  id text primary key, task_id text not null references tasks(id) on delete cascade,
  target_type text not null, target_id text not null, actor text not null, intent text not null,
@@ -477,15 +476,6 @@ type Comparison struct {
 	OverlayPaths     []string `json:"overlay_paths"`
 	CreatedAt        string `json:"created_at"`
 	DurationMS       int    `json:"duration_ms"`
-}
-
-type Feedback struct {
-	ID         string `json:"id"`
-	TaskID     string `json:"task_id"`
-	Actor      string `json:"actor"`
-	PlanDigest string `json:"plan_digest"`
-	Text       string `json:"text"`
-	CreatedAt  string `json:"created_at"`
 }
 
 type Intervention struct {
@@ -1183,12 +1173,6 @@ func (db *DB) AppendEvent(ctx context.Context, taskDir string, event Event) (int
 	return sequence, file.Sync()
 }
 
-func AppendEvent(ctx context.Context, db *sql.DB, taskDir string, event Event) error {
-	wrapped := &DB{DB: db}
-	_, err := wrapped.AppendEvent(ctx, taskDir, event)
-	return err
-}
-
 func (db *DB) Events(ctx context.Context, taskID string, after int64, limit int) ([]Event, error) {
 	limit = eventLimit(limit)
 	rows, err := db.QueryContext(ctx, `select sequence,id,task_id,coalesce(phase_id,''),coalesce(parent_event_id,''),kind,format_version,coalesce(name,''),payload_json,display_json,token_count,started_at,ended_at,coalesce(attempt_id,''),coalesce(artifact_id,''),coalesce(branch_id,''),coalesce(actions_json,'[]') from events where task_id=? and sequence>? order by sequence limit ?`, taskID, after, limit)
@@ -1264,28 +1248,6 @@ func scanEvents(rows *sql.Rows) ([]Event, error) {
 			event.EndedAt = &value
 		}
 		values = append(values, event)
-	}
-	return values, rows.Err()
-}
-
-func (db *DB) SaveFeedback(ctx context.Context, feedback Feedback) error {
-	_, err := db.ExecContext(ctx, `insert into feedback(id,task_id,actor,plan_digest,text,created_at) values(?,?,?,?,?,?)`, feedback.ID, feedback.TaskID, feedback.Actor, feedback.PlanDigest, feedback.Text, feedback.CreatedAt)
-	return wrap("save feedback", err)
-}
-
-func (db *DB) Feedback(ctx context.Context, taskID string) ([]Feedback, error) {
-	rows, err := db.QueryContext(ctx, `select id,task_id,actor,plan_digest,text,created_at from feedback where task_id=? order by created_at`, taskID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	values := make([]Feedback, 0)
-	for rows.Next() {
-		var value Feedback
-		if err := rows.Scan(&value.ID, &value.TaskID, &value.Actor, &value.PlanDigest, &value.Text, &value.CreatedAt); err != nil {
-			return nil, err
-		}
-		values = append(values, value)
 	}
 	return values, rows.Err()
 }
