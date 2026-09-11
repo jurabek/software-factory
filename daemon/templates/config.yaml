@@ -23,6 +23,18 @@ agents:
     color: "#fb7185"
     purpose: Review the implementation without changing files.
     prompt_engineering: {system: prompts/reviewer/system.md, user: prompts/reviewer/user.md}
+pipelines:
+  - name: standard
+    default: true
+    stages:
+      - {id: build, kind: build, agent: builder}
+      - {id: check, kind: verify}
+      - {id: review, kind: review, agent: reviewer}
+  - name: quick
+    stages:
+      - {id: build, kind: build, agent: builder}
+      - {id: check, kind: verify}
+      - {id: review, kind: review, agent: reviewer}
 claude:
   # Allowed tools are additive to inherited Claude permissions, not an
   # exclusive allowlist. Empty by default; inherited rules still apply.

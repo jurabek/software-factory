@@ -252,7 +252,6 @@ Existing typed routes remain for:
 
 [source,text]
 ----
-POST /api/v1/tasks/{task-id}/start
 POST /api/v1/tasks/{task-id}/approve
 POST /api/v1/tasks/{task-id}/pause
 POST /api/v1/tasks/{task-id}/resume

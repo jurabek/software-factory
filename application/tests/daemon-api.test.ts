@@ -19,7 +19,7 @@ test("browser controls omit bodies except exact approval digest", async () => {
 		return Response.json({ accepted: true });
 	}) as typeof fetch;
 
-	await daemonCommand("daemon-1", "task-1", "start", undefined);
+	await daemonCommand("daemon-1", "task-1", "pause", undefined);
 	await daemonCommand("daemon-1", "task-1", "approve", {
 		plan_digest: "digest-1",
 	});
@@ -40,14 +40,14 @@ test("task details preserve daemon available actions", async () => {
 			task: {
 				id: "task-1",
 				request: "Build",
-				state: "draft",
+				state: "preparing",
 				created_at: "2026-09-06T12:00:00Z",
-				available_actions: ["start"],
+				available_actions: ["pause"],
 			},
 		})) as typeof fetch;
 
 	const result = await daemonTask("daemon-1", "task-1");
-	assert.deepEqual(result.task.available_actions, ["start"]);
+	assert.deepEqual(result.task.available_actions, ["pause"]);
 });
 
 test("missing legacy intervention endpoint returns empty history", async () => {

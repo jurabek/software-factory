@@ -5,7 +5,6 @@ import "fmt"
 type State string
 
 const (
-	Draft            State = "draft"
 	Preparing        State = "preparing"
 	Planning         State = "planning"
 	AwaitingApproval State = "awaiting_plan_approval"
@@ -19,9 +18,8 @@ const (
 )
 
 var transitions = map[State]map[State]bool{
-	Draft:            {Preparing: true, Aborted: true},
-	Preparing:        {Planning: true, Blocked: true, Paused: true, Aborted: true},
-	Planning:         {AwaitingApproval: true, Blocked: true, Paused: true, Aborted: true},
+	Preparing:        {Planning: true, Building: true, Blocked: true, Paused: true, Aborted: true},
+	Planning:         {Planning: true, AwaitingApproval: true, Building: true, Blocked: true, Paused: true, Aborted: true},
 	AwaitingApproval: {Planning: true, Building: true, Blocked: true, Aborted: true},
 	Building:         {Checking: true, Blocked: true, Paused: true, Aborted: true},
 	Checking:         {Reviewing: true, Blocked: true, Paused: true, Aborted: true},

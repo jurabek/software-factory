@@ -112,7 +112,7 @@ function daemonClient(taskID = "task-1"): DaemonClient & {
 				{
 					id: taskID,
 					request: "Test task",
-					state: "draft",
+					state: "preparing",
 					created_at: createdAt.toISOString(),
 				},
 			];
@@ -132,13 +132,24 @@ function daemonClient(taskID = "task-1"): DaemonClient & {
 			check(options);
 			return { harness, models: [{ provider: "test", id: "model-a" }] };
 		},
+		async pipelines(_endpoint, _credential, options) {
+			state.calls.push({ method: "pipelines", options });
+			check(options);
+			return [
+				{
+					name: "standard",
+					default: true,
+					stages: [{ id: "build", kind: "build" }],
+				},
+			];
+		},
 		async createTask(_endpoint, _credential, input, options) {
 			state.calls.push({ method: "createTask", options });
 			check(options);
 			return {
 				id: "task-new",
 				request: input.request,
-				state: "draft",
+				state: "preparing",
 				created_at: createdAt.toISOString(),
 			};
 		},
@@ -269,7 +280,7 @@ test("unknown registrations and unsafe input fail before contacting a daemon", a
 			error instanceof DaemonRegistryError && error.status === 404,
 	);
 	await assert.rejects(
-		registry.command("guessed", "task-1", "start", "owner"),
+		registry.command("guessed", "task-1", "pause", "owner"),
 		(error: unknown) =>
 			error instanceof DaemonRegistryError && error.status === 404,
 	);
@@ -320,10 +331,60 @@ test("every operation reaches the daemon over the authenticated connection", asy
 	await registry.tasks("daemon-a");
 	await registry.creationOptions("daemon-a");
 	await registry.createTask("daemon-a", validInput);
-	await registry.command("daemon-a", "task-1", "start", "owner");
+	await registry.command("daemon-a", "task-1", "pause", "owner");
 	await registry.events("daemon-a", "task-1", { tail: 10 });
 	await registry.eventStream("daemon-a", "task-1", { after: 0 });
 	assert.ok(client.calls.length >= 6);
+});
+
+test("pipeline catalog failure does not block otherwise valid creation options", async () => {
+	const database = registryStore();
+	const failing = {
+		...daemonClient(),
+		async pipelines() {
+			throw new DaemonRequestError(
+				502,
+				"daemon_unavailable",
+				"Daemon is unavailable.",
+			);
+		},
+	};
+	const registry = createDaemonRegistry({
+		store: database.store,
+		client: failing,
+		allowedOrigins: ["http://127.0.0.1:8080"],
+		createID: () => "daemon-a",
+	});
+	await registry.register({ token: connectionToken(), name: "A" });
+	const result = await registry.creationOptions("daemon-a");
+	assert.deepEqual(result.pipelines, []);
+});
+
+test("pipeline authentication failure is not swallowed", async () => {
+	const database = registryStore();
+	const failing = {
+		...daemonClient(),
+		async pipelines() {
+			throw new DaemonRequestError(
+				401,
+				"daemon_unauthorized",
+				"Daemon credential missing or invalid.",
+			);
+		},
+	};
+	const registry = createDaemonRegistry({
+		store: database.store,
+		client: failing,
+		allowedOrigins: ["http://127.0.0.1:8080"],
+		createID: () => "daemon-a",
+	});
+	await registry.register({ token: connectionToken(), name: "A" });
+	await assert.rejects(
+		registry.creationOptions("daemon-a"),
+		(error: unknown) =>
+			error instanceof DaemonRequestError &&
+			error.code === "daemon_unauthorized",
+	);
 });
 
 test("unsupported commands and invalid task input fail without daemon access", async () => {

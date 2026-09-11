@@ -70,14 +70,14 @@ test("task groups include each root and oldest-first sessions", () => {
 			id: "child-new",
 			parent_task_id: "root",
 			request: "new",
-			state: "draft",
+			state: "preparing",
 			created_at: "2026-01-03",
 		},
 		{
 			daemonId: "a",
 			id: "root",
 			request: "root",
-			state: "draft",
+			state: "preparing",
 			created_at: "2026-01-01",
 		},
 		{
@@ -85,7 +85,7 @@ test("task groups include each root and oldest-first sessions", () => {
 			id: "child-old",
 			parent_task_id: "root",
 			request: "old",
-			state: "draft",
+			state: "preparing",
 			created_at: "2026-01-02",
 		},
 	]);
@@ -101,7 +101,7 @@ test("selection recovers invalid records and preserves session deep links", () =
 			daemonId: "a",
 			id: "root",
 			request: "root",
-			state: "draft",
+			state: "preparing",
 			created_at: "2026-01-01",
 		},
 		{
@@ -109,7 +109,7 @@ test("selection recovers invalid records and preserves session deep links", () =
 			id: "session",
 			parent_task_id: "root",
 			request: "session",
-			state: "draft",
+			state: "preparing",
 			created_at: "2026-01-02",
 		},
 	];
