@@ -18,6 +18,7 @@ import {
 import {
 	GET as daemonTasks,
 	POST as daemonTasksCreate,
+	isTaskCreationBody,
 } from "../app/api/daemons/[daemonId]/tasks/route.ts";
 import {
 	GET as daemonList,
@@ -156,11 +157,11 @@ test("every daemon mutation rejects foreign origins before session access", asyn
 	const commandParams = {
 		daemonId: "daemon-a",
 		taskId: "task-1",
-		command: "start",
+		command: "pause",
 	} as unknown as { daemonId: string; taskId: string; command: string };
 	const commandResponse = await daemonCommand(
 		new Request(
-			"http://localhost:3000/api/daemons/daemon-a/tasks/task-1/start",
+			"http://localhost:3000/api/daemons/daemon-a/tasks/task-1/pause",
 			{ method: "POST", headers: foreign },
 		),
 		{ params: Promise.resolve(commandParams) },
@@ -239,4 +240,19 @@ test("malformed event cursors fail without daemon access", async () => {
 	);
 	assert.ok([400, 401].includes(response.status));
 	assert.equal(response.headers.get("Cache-Control"), "private, no-store");
+});
+
+test("task creation route whitelists the pipeline field and rejects unknown fields", () => {
+	assert.equal(
+		isTaskCreationBody({
+			request: "Build",
+			repositories: [],
+			pipeline: "thorough",
+		}),
+		true,
+	);
+	assert.equal(
+		isTaskCreationBody({ request: "Build", repositories: [], unknown: true }),
+		false,
+	);
 });

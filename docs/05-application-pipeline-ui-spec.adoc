@@ -1,0 +1,85 @@
+= Application Pipeline UI Specification
+:toc:
+:sectnums:
+
+== Status
+
+Proposed. Implement after the contracts in 02 and the Git foundation in 01. Advisory quality comparison in 03 follows.
+
+Dependencies: `02-pipeline-model-spec.adoc`.
+
+== Problem
+
+The application cannot express or display the configured pipeline:
+
+* Task creation offers coding agent, model, and thinking, but no workflow choice (`application/src/components/task-creation.tsx:82-104`).
+* The task view has no notion of stages. Progress is inferred from Task state alone.
+
+== Goals
+
+* Let the user choose a pipeline when creating a task.
+* Show pipeline stage progress for a running task.
+
+== Product value and first release
+
+The first usable journey is: choose a pipeline, approve the existing planner result, then inspect execution and evidence. Include pipeline selection and server-provided progress in this delivery slice.
+
+Expected value is clearer Task progress; it is not yet measured. Evaluate time to approval and post-approval rework.
+
+== Non-goals
+
+* Authoring or editing pipelines in the application. Pipelines are daemon configuration.
+* Diff syntax highlighting or a file-tree diff viewer.
+* Rendering Markdown in the event timeline or event dialog.
+
+== Required behavior
+
+=== Pipeline selection
+
+The daemon creation-options payload (`application/app/api/daemons/[daemonId]/creation-options/route.ts`, assembled in `application/src/server/daemon-registry.ts:485-518`) MUST be extended with the pipeline list from `GET /api/v1/pipelines`.
+
+The task creation interface MUST:
+
+* present a pipeline selector alongside the existing coding agent, model, and thinking controls;
+* preselect the default pipeline;
+* display each pipeline's ordered stages;
+* submit a non-default selection by name; omit `pipeline` when the daemon-default option is selected.
+
+`daemonCreateTask` (`application/src/client/daemon-api.ts:123-141`) gains an optional `pipeline` field. The proxy route MUST forward it. Field whitelisting on the server route MUST be extended to permit it and MUST continue to reject unknown fields.
+
+A pipeline list that fails to load MUST NOT block task creation when the existing creation options are otherwise available. Show that the daemon default will be used and omit the field. Isolate pipeline-list failure from the other options; do not swallow authentication or daemon identity errors. An omitted field always selects the default at Task creation time.
+
+=== Stage progress
+
+The task detail interface MUST render the Task's frozen `stages` projection from 02. It MUST NOT reconstruct historical Stage definitions from the current `GET /api/v1/pipelines` response or infer completion from `active_stage` position.
+
+Display the server-provided status: `not_started`, `running`, `awaiting_approval`, `blocked`, `paused`, `completed`, `failed`, or `aborted`. Show the current Attempt and blocking reason when present.
+
+This belongs in the existing right-hand tab group (`application/src/components/task-detail.tsx:1328-1354`).
+
+Stage status MUST be derived from server-provided data. The interface MUST NOT reimplement transition policy, consistent with the existing rule that controls come from server-provided `available_actions`.
+
+After Message delivery, approval, resume, or retry, refresh the authoritative projection. Keep existing history navigation separate from selected-branch progress.
+
+Approval MUST submit the planner approval revision token (`plan_digest`). Surface stale-approval errors and reload the current planner candidate.
+
+== Implementation guidance
+
+The shared code-quality requirements in `01-git-foundation-spec.adoc` are mandatory. Each delivery MUST improve the touched interface code's readability and responsibility boundaries rather than adding workflow policy to the Task detail component.
+
+Keep pipeline selection and Stage progress as focused components. Reuse the existing resource client/proxy pattern; do not build a frontend workflow engine. Extract shared code when it removes real duplication, not to add forwarding layers.
+
+== Acceptance criteria
+
+. The task creation interface lists available pipelines with the daemon default preselected.
+. Selecting a pipeline displays its ordered stages.
+. Creating a task with a non-default selection submits its name and the created task reports it.
+. Creating a task with the default selection omits the field and the daemon assigns its default.
+. A failure to load the pipeline list still permits task creation.
+. The proxy route rejects unknown fields on task creation.
+. The task detail interface renders server-provided Stage statuses, including paused, blocked, and failed states.
+. A configured pipeline edit does not change an existing Task's displayed Stage definition.
+. Exact retry shows the current branch's results without treating superseded Attempts as current completion.
+. Approval sends the planner revision token and stale approval errors reload the current candidate.
+. Task state never takes a per-Stage value; `available_actions` remains server-computed with Attempt retry eligibility preserved.
+. Application typecheck, build, and route tests pass.
