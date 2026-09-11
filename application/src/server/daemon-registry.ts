@@ -14,12 +14,17 @@ import type {
 	DaemonEvent,
 	DaemonHarnessModel,
 	DaemonHealth,
+	DaemonPipeline,
 	DaemonTask,
 	EventQuery,
 	MessageInput,
 	RetryInput,
 } from "./daemon-client.ts";
-import { createDaemonClient, daemonCommands } from "./daemon-client.ts";
+import {
+	createDaemonClient,
+	DaemonRequestError,
+	daemonCommands,
+} from "./daemon-client.ts";
 import { getDatabasePool } from "./database.ts";
 import {
 	normalizeDaemonEndpoint,
@@ -316,9 +321,16 @@ function validatedCreateInput(input: CreateTaskInput): CreateTaskInput {
 			"Thinking level is invalid.",
 		);
 	}
+	if (input.pipeline !== undefined && typeof input.pipeline !== "string")
+		throw new DaemonRegistryError(
+			400,
+			"invalid_pipeline",
+			"Pipeline selection is invalid.",
+		);
 	return {
 		request: input.request.trim(),
 		repositories: input.repositories,
+		...(input.pipeline?.trim() ? { pipeline: input.pipeline.trim() } : {}),
 		...(input.coding_agent ? { coding_agent: input.coding_agent } : {}),
 		...(input.model ? { model: input.model } : {}),
 		...(input.thinking ? { thinking: input.thinking } : {}),
@@ -484,6 +496,7 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
 			defaults: DaemonCreationDefaults;
 			harnesses: string[];
 			models: { harness: string; models: DaemonHarnessModel[] };
+			pipelines: DaemonPipeline[];
 		}> {
 			const resolved = await resolve(id);
 			const operation = { signal };
@@ -515,7 +528,31 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
 					selected,
 					operation,
 				);
-				return { connection: resolved.connection, defaults, harnesses, models };
+				let pipelines: DaemonPipeline[] = [];
+				try {
+					pipelines = await options.client.pipelines(
+						resolved.endpoint,
+						resolved.credential,
+						operation,
+					);
+				} catch (pipelineError) {
+					if (
+						pipelineError instanceof DaemonRequestError &&
+						[
+							"daemon_unauthorized",
+							"invalid_daemon_identity",
+							"daemon_identity_mismatch",
+						].includes(pipelineError.code)
+					)
+						throw pipelineError;
+				}
+				return {
+					connection: resolved.connection,
+					defaults,
+					harnesses,
+					models,
+					pipelines,
+				};
 			} catch (error) {
 				if (error instanceof DaemonRegistryError) throw error;
 				throw remapIdentityMismatch(error);

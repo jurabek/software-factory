@@ -17,18 +17,17 @@ Export the token:
 TOKEN=$(cat ~/.software-factory/daemon-token)
 ```
 
-Create and start a local draft:
+Create a local task:
 
 ```bash
-TASK_ID=$(curl -s -X POST http://127.0.0.1:8080/api/v1/tasks \
+curl -s -X POST http://127.0.0.1:8080/api/v1/tasks \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -d '{"request":"Implement feature X","repositories":[{"type":"local","path":"/absolute/repository","primary":true}]}' | jq -r .id)
-curl -s -X POST "http://127.0.0.1:8080/api/v1/tasks/$TASK_ID/start" -H "Authorization: Bearer $TOKEN"
+  -d '{"request":"Implement feature X","repositories":[{"type":"local","path":"/absolute/repository","primary":true}]}'
 ```
 
-For GitHub, use `{"type":"github","repo":"owner/repository"}` inside `repositories`. Add more entries for a multi-repository Task and mark exactly one `primary`; repository access starts only after Start.
+For GitHub, use `{"type":"github","repo":"owner/repository"}` inside `repositories`. Add more entries for a multi-repository Task and mark exactly one `primary`; repository access starts immediately after creation.
 
-Read routes include Tasks, attempts, events, results, checks, interventions, and repository diffs. Live events use `/api/v1/tasks/{id}/events/stream`; reconnect with `Last-Event-ID` or `?after=`. Mutation routes are `start`, `approve`, `pause`, `resume`, `abort`, `feedback`, and `interventions`; inactive Tasks support `DELETE`.
+Read routes include Tasks, attempts, events, results, checks, interventions, and repository diffs. Live events use `/api/v1/tasks/{id}/events/stream`; reconnect with `Last-Event-ID` or `?after=`. Mutation routes are `approve`, `pause`, `resume`, `abort`, `feedback`, and `interventions`; inactive Tasks support `DELETE`.
 
 `GET /api/v1/tasks/{id}/sessions` returns the bare task array extended with
 `agent_sessions` per item: `{role, harness, provider?, model?, thinking?,
@@ -122,7 +121,7 @@ Task state and normalized events are stored in SQLite WAL and mirrored to task J
 The Next.js application owns the initial-user session and daemon registrations. Sign in, then register each tunneled daemon once; the browser only calls same-origin `/api/daemons/...` routes and never sees daemon credentials:
 
 - `GET /api/daemons` lists registrations; `POST /api/daemons` registers `{name, endpoint, credential}`.
-- `GET /api/daemons/{daemonId}/tasks` lists that daemon's tasks; `POST` with `{request, repositories, coding_agent?, model?, thinking?}` creates a draft.
+- `GET /api/daemons/{daemonId}/tasks` lists that daemon's tasks; `POST` with `{request, repositories, coding_agent?, model?, thinking?}` creates and starts a task.
 - `GET /api/daemons/{daemonId}/creation-options[?harness=]` returns projected defaults, harnesses, and models for the creation form.
 - `POST /api/daemons/{daemonId}/tasks/{taskId}/{start|approve|pause|resume|abort}` runs one lifecycle command; the approval actor comes from the login session.
 - `GET /api/daemons/{daemonId}/tasks/{taskId}/events[?after=&limit=|?tail=]` replays events; `GET .../events/stream[?after=]` proxies the live SSE feed with `Last-Event-ID` support. Open streams revalidate the login session and close on logout or disconnect.

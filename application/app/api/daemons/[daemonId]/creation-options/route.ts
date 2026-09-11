@@ -33,6 +33,7 @@ export async function GET(
 			defaults: result.defaults,
 			harnesses: result.harnesses,
 			models: result.models,
+			pipelines: result.pipelines,
 		});
 	} catch (error) {
 		return daemonErrorResponse(error);

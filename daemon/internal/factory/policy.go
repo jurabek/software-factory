@@ -9,8 +9,6 @@ import (
 func AvailableActions(phase *store.Phase, taskState string) []string {
 	actions := make([]string, 0, 3)
 	switch taskState {
-	case string(Draft):
-		actions = append(actions, "start", "abort")
 	case string(AwaitingApproval):
 		actions = append(actions, "approve", "abort")
 	case string(Paused):

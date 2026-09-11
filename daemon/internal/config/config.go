@@ -87,6 +87,7 @@ type Config struct {
 	Observability Observability `yaml:"observability" json:"observability"`
 	Runtime       Runtime       `yaml:"runtime" json:"runtime"`
 	Agents        []Agent       `yaml:"agents" json:"agents"`
+	Pipelines     []Pipeline    `yaml:"pipelines" json:"pipelines"`
 	Claude        ClaudeConfig  `yaml:"claude" json:"claude"`
 }
 type Defaults struct {
@@ -111,8 +112,22 @@ type Agent struct {
 	PromptEngineering PromptEngineering `yaml:"prompt_engineering" json:"prompt_engineering"`
 }
 type PromptEngineering struct {
-	System string `yaml:"system" json:"system"`
-	User   string `yaml:"user" json:"user"`
+	System        string `yaml:"system" json:"system"`
+	User          string `yaml:"user" json:"user"`
+	SystemContent string `yaml:"system_content,omitempty" json:"system_content,omitempty"`
+	UserContent   string `yaml:"user_content,omitempty" json:"user_content,omitempty"`
+}
+
+type Pipeline struct {
+	Name    string  `yaml:"name" json:"name"`
+	Default bool    `yaml:"default" json:"default"`
+	Stages  []Stage `yaml:"stages" json:"stages"`
+}
+
+type Stage struct {
+	ID    string `yaml:"id" json:"id"`
+	Kind  string `yaml:"kind" json:"kind"`
+	Agent string `yaml:"agent,omitempty" json:"agent,omitempty"`
 }
 
 // Load reads and validates config.yaml. Prompt contents are intentionally not loaded.
@@ -157,45 +172,119 @@ func validate(c Config, base string) []string {
 	}
 	seen := map[string]bool{}
 	for _, agent := range c.Agents {
-		if agent.Name != "planner" && agent.Name != "builder" && agent.Name != "reviewer" {
-			problems = append(problems, "unsupported agent: "+agent.Name)
+		if strings.TrimSpace(agent.Name) == "" {
+			problems = append(problems, "agent name is required")
+			continue
 		}
-	}
-	for _, role := range []string{"planner", "builder", "reviewer"} {
-		found := false
-		for _, a := range c.Agents {
-			if a.Name == role {
-				found = true
-				if seen[role] {
-					problems = append(problems, "duplicate agent: "+role)
+		if seen[agent.Name] {
+			problems = append(problems, "duplicate agent: "+agent.Name)
+		}
+		seen[agent.Name] = true
+		if !validThinking[agent.Thinking] {
+			problems = append(problems, agent.Name+" thinking is invalid")
+		}
+		if agent.Model == "" {
+			problems = append(problems, agent.Name+" model is required")
+		}
+		if agent.PromptEngineering.System == "" || agent.PromptEngineering.User == "" {
+			problems = append(problems, agent.Name+" prompt paths are required")
+		}
+		for _, p := range []string{agent.PromptEngineering.System, agent.PromptEngineering.User} {
+			if p != "" {
+				clean := filepath.Clean(p)
+				if filepath.IsAbs(p) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+					problems = append(problems, agent.Name+" prompt path escapes config directory: "+p)
+					continue
 				}
-				seen[role] = true
-				if !validThinking[a.Thinking] {
-					problems = append(problems, role+" thinking is invalid")
-				}
-				if a.Model == "" {
-					problems = append(problems, role+" model is required")
-				}
-				if a.PromptEngineering.System == "" || a.PromptEngineering.User == "" {
-					problems = append(problems, role+" prompt paths are required")
-				}
-				for _, p := range []string{a.PromptEngineering.System, a.PromptEngineering.User} {
-					if p != "" {
-						clean := filepath.Clean(p)
-						if filepath.IsAbs(p) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-							problems = append(problems, role+" prompt path escapes config directory: "+p)
-							continue
-						}
-						if info, err := os.Stat(filepath.Join(base, clean)); err != nil || info.IsDir() {
-							problems = append(problems, role+" prompt missing: "+p)
-						}
-					}
+				if info, err := os.Stat(filepath.Join(base, clean)); err != nil || info.IsDir() {
+					problems = append(problems, agent.Name+" prompt missing: "+p)
 				}
 			}
 		}
-		if !found {
-			problems = append(problems, "missing agent: "+role)
+	}
+	if len(c.Pipelines) == 0 {
+		problems = append(problems, "at least one pipeline is required")
+	}
+	defaultCount := 0
+	pipelineNames := map[string]bool{}
+	for _, pipeline := range c.Pipelines {
+		if strings.TrimSpace(pipeline.Name) == "" || pipelineNames[pipeline.Name] {
+			problems = append(problems, "pipeline names must be non-empty and unique")
+		}
+		pipelineNames[pipeline.Name] = true
+		if pipeline.Default {
+			defaultCount++
+		}
+		problems = append(problems, validatePipeline(pipeline, seen)...)
+	}
+	if defaultCount != 1 {
+		problems = append(problems, "exactly one pipeline must be default")
+	}
+	return problems
+}
+
+func validatePipeline(pipeline Pipeline, agents map[string]bool) []string {
+	var problems []string
+	seenIDs := map[string]bool{}
+	builds, verifies, reviews := 0, 0, 0
+	for _, stage := range pipeline.Stages {
+		if stage.ID == "" || seenIDs[stage.ID] {
+			problems = append(problems, "pipeline "+pipeline.Name+" stage ids must be non-empty and unique")
+		}
+		seenIDs[stage.ID] = true
+		switch stage.Kind {
+		case "build":
+			builds++
+			if !agents[stage.Agent] {
+				problems = append(problems, "pipeline "+pipeline.Name+" stage "+stage.ID+" references undefined agent "+stage.Agent)
+			}
+		case "verify":
+			verifies++
+			if stage.Agent != "" {
+				problems = append(problems, "pipeline "+pipeline.Name+" verify stage "+stage.ID+" cannot name an agent")
+			}
+		case "review":
+			reviews++
+			if !agents[stage.Agent] {
+				problems = append(problems, "pipeline "+pipeline.Name+" stage "+stage.ID+" references undefined agent "+stage.Agent)
+			}
+		default:
+			problems = append(problems, "pipeline "+pipeline.Name+" stage "+stage.ID+" has invalid kind "+stage.Kind)
+		}
+	}
+	if builds != 1 || verifies != 1 || reviews > 1 {
+		problems = append(problems, "pipeline "+pipeline.Name+" must contain one build -> one verify -> optional review")
+	}
+	want := []string{"build", "verify"}
+	if reviews == 1 {
+		want = append(want, "review")
+	}
+	if len(pipeline.Stages) != len(want) {
+		return problems
+	}
+	for index, stage := range pipeline.Stages {
+		if stage.Kind != want[index] {
+			problems = append(problems, fmt.Sprintf("pipeline %s stage order is invalid at index %d", pipeline.Name, index))
+			break
 		}
 	}
 	return problems
+}
+
+func (c Config) DefaultPipeline() (Pipeline, bool) {
+	for _, pipeline := range c.Pipelines {
+		if pipeline.Default {
+			return pipeline, true
+		}
+	}
+	return Pipeline{}, false
+}
+
+func (c Config) Pipeline(name string) (Pipeline, bool) {
+	for _, pipeline := range c.Pipelines {
+		if pipeline.Name == name {
+			return pipeline, true
+		}
+	}
+	return Pipeline{}, false
 }

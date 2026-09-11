@@ -1,0 +1,172 @@
+= Git Foundation Specification
+:toc:
+:sectnums:
+
+== Status
+
+Proposed. Implement first.
+
+Dependencies: none.
+
+Required by `02-pipeline-model-spec.adoc` and `03-quality-gates-spec.adoc`. The first usable release combines 01, 02, and 05; advisory quality evidence in 03 follows.
+
+== Problem
+
+The factory computes repository change sets relative to `HEAD`:
+
+* `ChangedFiles` runs `git diff --name-only -z HEAD` plus `git ls-files --others --exclude-standard -z` (`daemon/internal/git/git.go:196-217`).
+* `Diff` runs `git diff --no-ext-diff --binary HEAD` (`daemon/internal/git/git.go:219-225`).
+
+Four behaviors depend on that:
+
+* task diff exposure (`daemon/internal/factory/service.go:465-473`);
+* planner read-only enforcement (`daemon/internal/factory/service.go:634`, `:651-659`);
+* protected-path enforcement after build (`daemon/internal/factory/service.go:690-702`);
+* reviewer read-only enforcement (`daemon/internal/factory/service.go:730`, `:755-760`).
+
+Local repositories are materialized as detached worktrees (`daemon/internal/git/git.go:75`), so new commits have no named branch retaining their history after the worktree is removed.
+
+Read-only enforcement compares changed-file names. Editing a file already in that list does not change the list. A stable diff base is necessary, but does not by itself prove that an agent left repository content unchanged.
+
+== Product value
+
+This is a correctness prerequisite for trustworthy review. Its standalone user value is limited. Success means Task output stays visible and read-only violations are detected. No demand or delivery-time measurements are available yet.
+
+== Goals
+
+* Make change detection independent of `HEAD` movement.
+* Give each materialized repository a named branch so commits are reachable.
+* Provide a commit operation that stages an explicit path set.
+* Separate the base used for user-facing diff from the base used for enforcement.
+* Preserve review bases and Git history across exact retry.
+
+== Non-goals
+
+* Pushing, merging, opening pull requests, or deploying. The factory MUST NOT invoke `git push`, `git merge`, `gh pr`, or any remote-mutating command.
+* Committing agent output. This specification provides the commit primitive only.
+* Rewriting history, rebasing, or squashing.
+
+== Domain model
+
+=== Base SHA
+
+`base_sha` is the commit a repository was materialized at. It is already captured and persisted (`daemon/internal/factory/service.go:586`, column `task_repositories.base_sha`). It never changes for the lifetime of the Task.
+
+=== Review base SHA
+
+`review_base_sha` is the commit from which agent-authored change is measured on the selected execution branch. It starts equal to `base_sha` and MUST NOT advance past agent-authored commits.
+
+Each Attempt's input records the per-repository review base and Git HEAD alongside its filesystem snapshot. The repository-level value represents the selected execution branch, not a monotonically increasing Task-wide value.
+
+The distinction exists so factory-authored commits are visible to the user but invisible to enforcement:
+
+[cols="2,1,3",options="header"]
+|===
+|Consumer |Base |Rationale
+
+|`GET /api/v1/tasks/{id}/diff`
+|`base_sha`
+|The user sees every change the Task produced.
+
+|Protected-path gate
+|`review_base_sha`
+|Factory-authored commits MUST NOT be attributed to the builder.
+
+|Reviewer diff and changed-file list
+|`review_base_sha`
+|The reviewer judges agent work, not factory bookkeeping.
+
+|Read-only role enforcement
+|Content fingerprint captured immediately before the invocation
+|Detect edits even when the changed-file names stay the same. Factory publication happens after this comparison.
+|===
+
+== Required behavior
+
+=== Branch creation
+
+`PrepareLocal` (`daemon/internal/git/git.go:70-84`) MUST create a named branch instead of a detached worktree. Its name MUST be derived from Task and repository identity, so two materializations of the same source cannot collide.
+
+`PrepareGitHub` (`daemon/internal/git/git.go:88-100`) MUST use the same naming rule after cloning.
+
+Branch creation failure MUST fail repository preparation with a descriptive error.
+
+=== Base-relative change detection
+
+`ChangedFiles` and `Diff` MUST accept a base commit argument and diff against it rather than `HEAD`.
+
+Untracked-file collection MUST be preserved: a file created but not yet committed MUST still appear in the changed-file list.
+
+All consumers, including Message continuations and exact-retry executors, MUST use the appropriate base or content fingerprint. Reviewer diff generation MUST NOT reuse the user-facing diff with its different base.
+
+=== Read-only enforcement
+
+Capture a deterministic fingerprint before and after each read-only agent turn, including envelope-repair turns. Compare repository-relative paths, content bytes, file types, executable bits, symlink targets, Git HEAD, and staged content. Include all tracked files and all non-ignored untracked files, including files already modified before the turn. Generated output may be excluded only when it is both untracked and ignored; tracked generated files remain covered. This is not a general filesystem sandbox.
+
+A mismatch MUST fail the Stage before any subsequent pipeline operation. Comparing changed-file names alone MUST NOT satisfy this requirement. Planner and review executors MUST share this implementation.
+
+=== Review base persistence
+
+`review_base_sha` MUST be persisted per repository and initialized to `base_sha` at preparation. It MUST remain the stable comparison base for planner and reviewer read-only enforcement and for build/review diffs.
+
+=== Exact retry and history
+
+Exact retry MUST restore the selected Attempt's recorded review bases and Git state along with its input files. It MUST create a fresh Git branch for the restored execution rather than moving a branch that retains existing commits.
+
+Every recorded commit MUST remain reachable through a retained ref. Retry MUST NOT replace a clone's Git object database with an older filesystem snapshot or reuse a copied worktree `.git` pointer as independent Git state. Filesystem snapshot restoration and Git restoration are separate operations with one recorded input identity.
+
+=== Commit operation
+
+The git package MUST expose a commit operation accepting a repository root, a commit message, and an explicit list of relative paths.
+
+The operation MUST:
+
+* accept literal, relative file paths; reject escaping paths and Git pathspec interpretation;
+* stage and commit only the supplied paths, including when unrelated changes are already staged;
+* force-add paths so ignored destinations are committable;
+* set an explicit factory author and committer identity rather than relying on ambient git configuration;
+* return the resulting commit SHA;
+* be a no-op returning the current HEAD when the supplied paths do not differ from HEAD, even if unrelated changes are staged;
+* preserve unrelated working-tree and staged content on success, no-op, and failure;
+* return a descriptive error on failure. If the commit was created but the caller lost its result, publication recovery MUST discover it before retrying.
+
+The operation MUST NOT run `git add -A`, `git add .`, or stage anything outside the supplied paths.
+
+== Implementation guidance
+
+Keep Git operations in the existing Git package. Expose small operations for explicit-base diffs, repository fingerprints, exact-path commits, and recorded Git restoration. Keep Task transitions and persistence in their owning modules. Reuse one implementation across normal execution, Messages, and retry; do not introduce a generic version-control framework.
+
+=== Code-quality requirements for 01–05
+
+These are delivery requirements for every change implementing any of these five specifications. Functional correctness alone is not sufficient. Each change MUST leave the touched code easier to read, reason about, or maintain, with a concrete design improvement identified in review.
+
+* Use domain-revealing names, explicit inputs and results, and readable error paths. Comments explain constraints or non-obvious decisions rather than narrating the code.
+* Give each function, component, and module one cohesive responsibility. Keep orchestration separate from Git, persistence, process execution, and presentation details.
+* Introduce an abstraction only for a present need: removing meaningful duplication, hiding a complex responsibility behind a small interface, or isolating an external dependency for behavioral verification. Explain that need; speculative reuse is not a reason.
+* Keep the codebase small by reusing existing capabilities and removing superseded paths within the feature's scope. Do not preserve parallel implementations, add pass-through layers, or trade readability for fewer lines. Preserve unrelated behavior.
+* Keep each delivery focused and reviewable. Explain which responsibility became clearer, which duplication or obsolete path disappeared, or which dependency became easier to reason about. Prefer the simplest design that satisfies the contract.
+* Verify observable behavior and the meaningful failure/recovery boundaries in these criteria. Tests MUST remain readable and avoid mirroring private implementation steps or introducing unnecessary mocks.
+
+Review MUST reject needless complexity or an unexplained abstraction even when the functional checks pass. Do not require arbitrary file-size or line-count targets; the standard is a clear, cohesive design with fewer concepts to understand.
+
+== Acceptance criteria
+
+. A materialized local repository is on a named branch, not a detached HEAD.
+. A materialized GitHub clone is on a named branch.
+. Two Tasks materializing the same source repository produce distinct branch names and do not collide.
+. `ChangedFiles` returns tracked modifications and untracked files relative to a supplied base.
+. `GET /api/v1/tasks/{id}/diff` includes factory-authored commits when called with `base_sha`.
+. The protected-path gate still fails a build that touches a protected path after a factory commit has occurred.
+. Planner read-only enforcement still fails a planner that modifies a repository after a factory commit has occurred.
+. Reviewer read-only enforcement still fails a reviewer that modifies a repository after a factory commit has occurred.
+. A read-only turn modifying an already-dirty file, its executable bit, a symlink target, or staged content fails even when changed-file names are unchanged.
+. The commit operation stages a path inside an ignored directory.
+. The commit operation leaves unrelated modified and already-staged files uncommitted, preserving their contents and staging state on success and failure.
+. The commit operation returns the existing HEAD and creates no commit when supplied paths are unchanged.
+. A no-op commit remains a no-op when unrelated files are already staged.
+. An escaping path or Git pathspec expression cannot stage an unintended file.
+. Two materializations of the same source within one Task use distinct branch names.
+. Exact retry restores the Attempt's review base and Git input without hiding prior agent work, for local worktrees and clones.
+. Code review identifies the concrete readability/design improvement in each change and verifies the shared code-quality requirements, including one shared Git implementation across normal, Message, and retry paths.
+. No daemon code path invokes `git push`, `git merge`, or `gh pr`.
+. Daemon tests, race tests, application typecheck, and application build pass.
