@@ -15,7 +15,7 @@ import (
 func TestSwaggerSpecDocumentsAPIRoutes(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/swagger.yaml", nil)
 	response := httptest.NewRecorder()
-	serveSwaggerSpec(response, request)
+	newSwaggerHandler().serveSpec(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", response.Code, http.StatusOK)
@@ -53,7 +53,6 @@ func TestSwaggerSpecDocumentsAPIRoutes(t *testing.T) {
 		"/tasks":                                 {"get", "post"},
 		"/tasks/{id}":                            {"get", "delete"},
 		"/tasks/{id}/sessions":                   {"get", "post"},
-		"/tasks/{id}/start":                      {"post"},
 		"/tasks/{id}/approve":                    {"post"},
 		"/tasks/{id}/messages":                   {"get", "post"},
 		"/tasks/{id}/interventions":              {"get"},
@@ -199,7 +198,7 @@ func TestDaemonNetworkConfiguration(t *testing.T) {
 }
 
 func TestSwaggerUIUsesSameOriginAPI(t *testing.T) {
-	handler := staticSecurityHeaders(http.HandlerFunc(serveSwaggerUI))
+	handler := staticSecurityHeaders(http.HandlerFunc(newSwaggerHandler().serveUI))
 	request := httptest.NewRequest(http.MethodGet, "/docs", nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)

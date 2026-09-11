@@ -5,6 +5,27 @@ import { hasTrustedOrigin } from "@/server/request-origin.ts";
 import { getRequestSession } from "@/server/session.ts";
 
 export const runtime = "nodejs";
+const taskCreateFields = [
+	"request",
+	"repositories",
+	"pipeline",
+	"coding_agent",
+	"model",
+	"thinking",
+] as const;
+
+export function isTaskCreationBody(
+	body: unknown,
+): body is Record<string, unknown> {
+	return (
+		!!body &&
+		typeof body === "object" &&
+		!Array.isArray(body) &&
+		Object.keys(body).every((key) =>
+			(taskCreateFields as readonly string[]).includes(key),
+		)
+	);
+}
 
 export async function GET(
 	request: Request,
@@ -44,9 +65,18 @@ export async function POST(
 				400,
 			);
 		}
+		if (!isTaskCreationBody(body))
+			return privateJSON(
+				{
+					error: "invalid_request",
+					message: "Task request contains unsupported fields.",
+				},
+				400,
+			);
 		const input = body as {
 			request?: unknown;
 			repositories?: unknown;
+			pipeline?: unknown;
 			coding_agent?: unknown;
 			model?: unknown;
 			thinking?: unknown;
@@ -58,6 +88,9 @@ export async function POST(
 				repositories: Array.isArray(input.repositories)
 					? (input.repositories as never)
 					: [],
+				...(typeof input.pipeline === "string"
+					? { pipeline: input.pipeline }
+					: {}),
 				...(typeof input.coding_agent === "string"
 					? { coding_agent: input.coding_agent }
 					: {}),

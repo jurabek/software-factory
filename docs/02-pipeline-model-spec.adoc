@@ -1,0 +1,294 @@
+= Pipeline Model Specification
+:toc:
+:sectnums:
+
+== Status
+
+Proposed. Implement after 01. This changes execution and its recovery paths.
+
+Dependencies: `01-git-foundation-spec.adoc`.
+
+Required by `03-quality-gates-spec.adoc` and `05-application-pipeline-ui-spec.adoc`.
+
+Replaces the hardcoded `planner -> builder -> reviewer` workflow with named, configurable Pipelines composed of typed Stages.
+
+== Problem
+
+The workflow is fixed in several places:
+
+* Task states encode workflow steps (`daemon/internal/factory/state.go:7-31`).
+* Role names are validated against a literal set (`daemon/internal/config/config.go:160`, `:164`) and again at task creation (`daemon/internal/factory/service.go:1045`).
+* Envelope schemas switch on role name (`daemon/internal/factory/envelope.go:44-56`).
+* The sequence is hardcoded across two drivers, `prepareAndPlan` (`daemon/internal/factory/service.go:531-631`) and `buildCheckReview` (`daemon/internal/factory/service.go:667-765`).
+* Agent sessions are keyed by role (`agent_sessions` primary key `(task_id, role)`), so one role cannot appear twice in a workflow.
+* Message routing and exact retry have their own role-based execution paths (`daemon/internal/factory/message.go`, `messageRecipient`, `continueMessages`, and `runRetryAgent`).
+
+Consequences:
+
+* Every Task pays for the same workflow. A copy tweak and a subsystem redesign run identical stages.
+
+== Goals
+
+* Express a workflow as configuration.
+* Configure the build, verification, and optional review stages.
+* Preserve the existing planner approval/feedback flow alongside pipeline execution.
+* Preserve explicit Controls, durable Messages, cancellation, and exact retry while making pipeline execution Stage-aware.
+
+== Product value and validation
+
+The target use cases are bounded fixes that benefit from `quick`, and larger changes where a readable plan and human approval can reduce implementation rework. These are value hypotheses, not measured demand.
+
+Compare time and model cost per accepted Task across the two Pipelines, together with revisions requested after approval. A shorter workflow is valuable only if accepted output quality is maintained. Evaluate comparable Task sizes; do not infer improvement from raw completion counts.
+
+== Non-goals
+
+* Arbitrary directed graphs. A Pipeline is a linear sequence.
+* Concurrent stage execution.
+* Multiple builds or a general workflow/plugin framework.
+* Push, pull request, or deployment stages.
+* Per-step or vertical-slice build execution. The build stage remains a single pass over the whole plan.
+* Lifting the one-active-task-per-daemon constraint (`daemon/internal/store/store.go:547`).
+* Migrating existing Task data. Destructive schema change is permitted.
+
+== Domain model
+
+=== Pipeline
+
+A Pipeline is a named, ordered sequence of Stages. Exactly one Pipeline MUST be marked default.
+
+The first release supports only `build -> verify -> review?`: exactly one build, exactly one verification, and at most one final review. The existing planner runs before the selected Pipeline.
+
+Repository preparation is implicit, always executes first, and MUST NOT be declared as a Stage.
+
+=== Stage
+
+A Stage has an id unique within its Pipeline, a kind, and, for agent kinds, a reference to an Agent.
+
+[cols="1,1,2",options="header"]
+|===
+|Kind |Executor |Output
+
+|`build`
+|Write agent
+|Changed files and commit message
+
+|`verify`
+|Deterministic
+|Check results
+
+|`review`
+|Read-only agent
+|Approval verdict with findings
+|===
+
+=== Agent
+
+The existing `agents` list (`daemon/internal/config/config.go:105-116`) remains a library of named agent configurations: model, thinking, color, purpose, and prompt paths. Pipeline Stages reference the builder or reviewer agents by name. The existing planner remains the separate planning agent.
+
+=== Planner approval
+
+The existing planner approval binds `tasks.plan_digest` to the SHA-256 digest of the validated planner envelope. Planner feedback invalidates that approval and re-runs the planner; stale approval and feedback digests MUST be rejected.
+
+== Configuration
+
+`pipelines` is a new top-level key in `config.yaml`.
+
+[source,yaml]
+----
+pipelines:
+  - name: standard
+    default: true
+    stages:
+      - {id: build,  kind: build,  agent: builder}
+      - {id: check,  kind: verify}
+      - {id: review, kind: review, agent: reviewer}
+  - name: quick
+    stages:
+      - {id: build,  kind: build,  agent: builder}
+      - {id: check,  kind: verify}
+      - {id: review, kind: review, agent: reviewer}
+----
+
+Both Pipelines MUST ship in the installed template.
+
+=== Validation
+
+Configuration validation (`daemon/internal/config/config.go:150-201`) MUST replace the literal role checks at `:160` and `:164` with:
+
+* at least one Pipeline;
+* exactly one Pipeline marked default;
+* unique Pipeline names;
+* unique Stage ids within a Pipeline;
+* every Stage kind is one of `build`, `verify`, `review`;
+* every `build` and `review` Stage names an Agent present in `agents`;
+* a `verify` Stage MUST NOT name an Agent;
+* Stage order matches `build -> verify -> review?`;
+* every referenced Agent has a valid model, valid thinking level, and existing prompt files. The existing prompt path checks (`daemon/internal/config/config.go:182-193`) MUST be preserved.
+
+== Required behavior
+
+=== Task creation
+
+`CreateRequest` (`daemon/internal/factory/service.go:59-65`) gains an optional `pipeline` field. An empty value selects the default Pipeline. An unknown name MUST be rejected at creation with a descriptive error, before any repository is touched.
+
+At creation, persist the selected Pipeline name and freeze its resolved definition, referenced agent settings, and prompt template contents. Prompt paths alone do not freeze prompt contents. Preparation and subsequent turns MUST use this Task snapshot, so edits between creation, start, and retry do not change execution.
+
+=== Persistence
+
+`tasks` gains:
+
+* `pipeline` — the selected Pipeline name;
+* `active_stage` — the Stage id currently executing or awaiting approval.
+
+`agent_sessions` primary key MUST change from `(task_id, role)` to `(task_id, stage_id)`, with the Agent name retained as a display field. Session identity, reservation, and invocation accounting behavior are otherwise unchanged.
+
+Attempts, definitions, envelopes, Messages, prompt audit files, and session reservations MUST carry Stage identity. Agent names are configuration/display data, not execution keys. Lookups MUST select the Stage revision valid on the selected execution branch, not the latest row for that Stage across all history.
+
+`tasks.plan_digest` carries the existing planner approval digest. Planner feedback and completed approvals remain in Task history.
+
+Record the per-repository Git inputs from 01 with Attempt snapshots. On first entry to build, record a pre-implementation snapshot for that execution branch. Message-driven build continuations retain it for quality comparison; exact retry restores the recorded comparison baseline alongside the selected Attempt's own input. These may differ when retrying a continuation.
+
+=== State mapping
+
+Task states remain coarse and MUST NOT gain per-stage values. Stage kind maps to state:
+
+[cols="1,2",options="header"]
+|===
+|Stage kind |Task state
+
+|Planner
+|`planning`
+
+|Planner after a valid question-free result
+|`awaiting_approval`
+
+|`build`
+|`building`
+
+|`verify`
+|`checking`
+
+|`review`
+|`reviewing`
+|===
+
+The transition policy MUST support every adjacent pair in the allowed Stage order:
+
+* `preparing -> planning`;
+* `planning -> planning`, for planner feedback;
+* `planning -> awaiting_approval`;
+* `awaiting_approval -> planning`, for planner feedback;
+* `awaiting_approval -> building`, only after valid planner approval;
+* `building -> checking`;
+* `checking -> reviewing` or `checking -> completed`;
+* `reviewing -> completed`.
+
+Keep existing pause, abort, block, and resume transitions. Same-state transitions used to update the active Attempt MUST remain valid. Only the server decides progression; accepting a state transition does not permit skipping a required Stage or approval.
+
+`AvailableActions` MUST remain server-owned and use coarse Task state and Attempt eligibility. Preserve Attempt-based retry eligibility; the existing function is not based on Task state alone. The UI MUST NOT infer actions from Pipeline configuration.
+
+=== Execution
+
+`prepareAndPlan` and `buildCheckReview` MUST be replaced by a single driver that:
+
+. resolves the Pipeline from the Task's configuration snapshot after planner approval;
+. resolves the next action from `active_stage` and its persisted Attempt;
+. updates `active_stage` and Task state before each Stage;
+. transitions to `completed` after the final Stage.
+
+`start`, `approve`, `resume`, Message continuations, and exact retry MUST preserve the planner behavior and use the same Pipeline Stage executors and progression policy. Stage failure MUST block the Task with the failure reason. Restart or resume MUST NOT skip planner approval or start the next Stage twice.
+
+Exact retry reuses the selected Attempt's frozen definition, comparison baseline, and input snapshot. Restore Git state using 01, create a child execution branch, and invalidate downstream results on that branch. Earlier valid results are inherited from the parent; later results remain historical. After the retried Stage completes, normal progression applies.
+
+Message acceptance, approval, publication finalization, and Stage advancement MUST be serialized per Task. If pause or abort wins, no subsequent invocation starts. Recovery may reconcile an already-created commit but MUST preserve the paused or aborted state.
+
+
+=== Envelope contracts
+
+`envelopeInstructions` (`daemon/internal/factory/envelope.go:44-56`) MUST retain the existing planner, builder, and reviewer contracts. A rejecting review MUST block the Task; review is optional in configuration, but its verdict is binding when present.
+
+The existing invalid-envelope repair loop (`daemon/internal/factory/service.go:806-862`) applies unchanged to all kinds.
+
+=== Stage context
+
+Each Pipeline Stage receives its own agent session, so context does not carry across Stages. The builder receives the validated planner envelope and the Task request; the reviewer receives the planner envelope and check evidence. This keeps behavior identical across harnesses; the Pi adapter ignores resume semantics and derives continuity from session identity alone (`daemon/internal/harness/pi/pi.go:61`).
+
+=== Messages
+
+Keep the Message request shape from `docs/task-control-agent-messaging-spec.adoc`. Routing uses Stage identity, including when two Stages reference one Agent. With no explicit target, route to the active agent Stage; during verification use the final review Stage if present, otherwise build; after a deterministic failure or completion use build. Before preparation use the first agent Stage. Paused Messages remain queued until resume.
+
+Planner Messages continue to invalidate the planner approval and re-run the planner before build. Pipeline Stage Messages target the active Stage session. Once build has started, planner history remains context and does not rewrite the approved planner result.
+
+== Prompts
+
+The existing planner, builder, and reviewer templates MUST be provided. The planner produces the validated implementation steps and unresolved questions used by the existing approval/feedback flow.
+
+== Factory home versioning
+
+Prompt templates and `config.yaml` install only when absent (`daemon/main.go:357`, `:361`), so existing installations retain incompatible agent definitions and no `pipelines` block.
+
+The factory home MUST record a version. On startup, a version mismatch MUST cause the daemon to refuse to start with an actionable message naming the factory home path and the required action. The daemon MUST NOT silently overwrite operator-edited prompts, and MUST NOT start with a configuration it cannot execute.
+
+This mirrors the existing incompatible-schema behavior (`daemon/internal/store/store.go:104-140`).
+
+== Public HTTP interface
+
+=== List pipelines
+
+[source,http]
+----
+GET /api/v1/pipelines
+----
+
+Returns each currently configured Pipeline with its name, default flag, and ordered Stages. Each Stage exposes id, kind, and agent name. Consumed by the task creation interface; it is not historical Task configuration.
+
+=== Create task
+
+`POST /api/v1/tasks` accepts an optional `pipeline` field. All other fields are unchanged.
+
+=== Read task
+
+Task representations MUST include `pipeline`, `active_stage`, and a `stages` projection built from the frozen Pipeline and selected execution branch. Each entry exposes its definition fields, status, current Attempt id, and blocking reason when present. Status is one of `not_started`, `running`, `awaiting_approval`, `blocked`, `paused`, `completed`, `failed`, or `aborted`.
+
+The server derives this projection from existing Attempt records; do not create a competing workflow state machine. Expose Stage identity in Attempt, result, session, and Message responses and update the daemon OpenAPI contract.
+
+== Implementation guidance
+
+The shared code-quality requirements in `01-git-foundation-spec.adoc` are mandatory. Each delivery MUST improve the touched execution design, not merely add another branch to an existing large driver.
+
+Use one linear driver with the existing planner and small build, verify, and review executors. Keep configuration validation and Stage progression cohesive and separate. Reuse the existing harness, check runner, and store; extract helpers where normal execution, Messages, and retry genuinely share behavior. Avoid parallel drivers, speculative interfaces, and a general workflow engine. Prefer domain names and short functions over layers of forwarding wrappers.
+
+== Removal
+
+The following MUST be removed:
+
+* `ValidateIntent` (`daemon/internal/factory/policy.go:31-83`) — intervention-era policy superseded by Controls and Messages.
+* `Service.Comment` (`daemon/internal/factory/service.go:218-247`) — unrouted and superseded.
+* The `repository-profile.json` write (`daemon/internal/factory/service.go:595-606`) — read paths use `repository-profiles/<name>.json` only.
+* Literal role validation at `daemon/internal/config/config.go:160` and `:164`.
+
+== Acceptance criteria
+
+. A Task created without a pipeline name runs the default Pipeline.
+. A Task created with an unknown pipeline name is rejected before any repository is materialized.
+. A Task runs the planner before the selected Pipeline and waits for planner approval.
+. A selected Pipeline executes its configured build, verify, and optional review Stages in order.
+. Planner output containing questions cannot be approved until the questions are resolved.
+. Approval uses the planner envelope digest and rejects a stale token after planner output changes.
+. Planner feedback re-runs the planner and requires a new approval.
+. Two Stages referencing the same Agent hold independent sessions.
+. Configuration declaring two default Pipelines is rejected.
+. Configuration referencing an undefined Agent is rejected.
+. A factory home at an older version causes the daemon to refuse to start with an actionable message.
+. `GET /api/v1/pipelines` returns both shipped Pipelines with their Stages.
+. Task state never takes a per-Stage value; `available_actions` remains server-computed with Attempt retry eligibility preserved.
+. Invalid Stage order, multiple builds/verifications, or an unsupported Stage kind is rejected.
+. A Pipeline without review completes after verification; a rejecting configured review blocks completion.
+. Editing configuration or prompt files after Task creation does not change its execution or displayed Stage definition.
+. Message, resume, and exact-retry paths execute the correct Stage when multiple Stages share an Agent.
+. Planner Messages revise the planner before build; Pipeline Stage Messages target the active Stage session.
+. Exact retry restores the selected Stage's inputs and resumes the bounded Pipeline.
+. Restart after a Stage completes does not repeat it or skip planner approval; pause and abort cannot lose to later Stage advancement.
+. Task responses contain the frozen Stage projection, including awaiting approval, paused, blocked, failed, and historical-branch cases.
+. Code review demonstrates a readability/design improvement in each change: progression has one owner, Stage executors have cohesive responsibilities, and replaced role-specific drivers are removed rather than duplicated. New abstractions satisfy the shared requirements in 01.
+. Daemon tests, race tests, application typecheck, and application build pass.

@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"log/slog"
 	"net"
@@ -35,37 +34,9 @@ import (
 //go:embed templates
 var defaultTemplates embed.FS
 
-//go:embed swagger.yaml
-var swaggerSpec []byte
-
 const (
 	defaultPort = "8080"
 	defaultBind = "127.0.0.1"
-	swaggerUI   = `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Software Factory API</title>
-  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5.32.15/swagger-ui.css">
-</head>
-<body>
-  <div id="swagger-ui"></div>
-  <script src="https://unpkg.com/swagger-ui-dist@5.32.15/swagger-ui-bundle.js"></script>
-  <script>
-    window.onload = function () {
-      SwaggerUIBundle({
-        url: "/swagger.yaml",
-        dom_id: "#swagger-ui",
-        deepLinking: true,
-        displayRequestDuration: true,
-        persistAuthorization: true,
-        tryItOutEnabled: true
-      });
-    };
-  </script>
-</body>
-</html>`
 )
 
 func main() {
@@ -184,19 +155,17 @@ func run() error {
 			}
 		}
 	}
-	service := factory.NewService(root, db, configured, configPath, registry, factorygit.OSRunner{})
-	apiServer, err := api.New(db, service, configured, problems, loadErr, harnessNames, catalog, api.Access{DaemonID: daemonID, Token: daemonToken})
+	service := factory.NewService(root, factory.Dependencies{
+		Store: db, Config: configured, ConfigPath: configPath,
+		Harnesses: registry, Git: factorygit.OSRunner{},
+	})
+	apiHandler, err := api.New(db, service, configured, problems, loadErr, harnessNames, catalog, api.Access{DaemonID: daemonID, Token: daemonToken})
 	if err != nil {
 		return err
 	}
-	mux := http.NewServeMux()
-	mux.Handle("/api/v1/", apiServer.Handler())
-	mux.HandleFunc("GET /swagger.yaml", serveSwaggerSpec)
-	mux.HandleFunc("GET /docs", serveSwaggerUI)
-	mux.HandleFunc("GET /docs/", serveSwaggerUI)
 	server := &http.Server{
 		Addr:              address,
-		Handler:           requestLog(logger, staticSecurityHeaders(mux)),
+		Handler:           newServer(logger, apiHandler),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -402,14 +371,11 @@ func envOrDefault(name, fallback string) string {
 	return fallback
 }
 
-func serveSwaggerSpec(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "application/yaml")
-	_, _ = w.Write(swaggerSpec)
-}
-
-func serveSwaggerUI(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = io.WriteString(w, swaggerUI)
+func newServer(logger *slog.Logger, apiHandler http.Handler) http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("/api/v1/", apiHandler)
+	newSwaggerHandler().registerRoutes(mux)
+	return requestLog(logger, staticSecurityHeaders(mux))
 }
 
 func staticSecurityHeaders(next http.Handler) http.Handler {

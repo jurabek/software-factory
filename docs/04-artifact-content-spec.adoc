@@ -1,0 +1,16 @@
+= Artifact Persistence and Content Specification
+:toc:
+:sectnums:
+
+== Status
+
+Deferred. This specification is not active in the current pipeline. No implementation work is required for document artifacts or their content.
+
+The following requirements remain deferred:
+
+* Document artifact publication, persistence, revision identity, and recovery.
+* Artifact-content endpoints and immutable content reads.
+* Markdown rendering and source-to-rendered-content mapping.
+* Source quoting and document-anchor validation.
+
+The existing generic artifact records and artifact targets remain unchanged. Generic artifact listing, Messages, and anchors unrelated to document artifacts remain in scope. This deferred specification creates no active implementation requirement.
