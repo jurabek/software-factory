@@ -33,7 +33,7 @@ export type DaemonStageProjection = {
 	attempt_id?: string;
 	blocking_reason?: string;
 };
-export type DaemonCommand = "start" | "approve" | "pause" | "resume" | "abort";
+export type DaemonCommand = "approve" | "pause" | "resume" | "abort";
 export type DaemonCommandInput = { plan_digest: string };
 export type DaemonRequestOptions = {
 	signal?: AbortSignal;
@@ -113,7 +113,6 @@ export type MessageInput = {
 export type RetryInput = { idempotency_key: string };
 
 export const daemonCommands: readonly DaemonCommand[] = [
-	"start",
 	"approve",
 	"pause",
 	"resume",

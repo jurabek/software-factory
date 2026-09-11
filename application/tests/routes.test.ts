@@ -157,11 +157,11 @@ test("every daemon mutation rejects foreign origins before session access", asyn
 	const commandParams = {
 		daemonId: "daemon-a",
 		taskId: "task-1",
-		command: "start",
+		command: "pause",
 	} as unknown as { daemonId: string; taskId: string; command: string };
 	const commandResponse = await daemonCommand(
 		new Request(
-			"http://localhost:3000/api/daemons/daemon-a/tasks/task-1/start",
+			"http://localhost:3000/api/daemons/daemon-a/tasks/task-1/pause",
 			{ method: "POST", headers: foreign },
 		),
 		{ params: Promise.resolve(commandParams) },

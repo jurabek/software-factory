@@ -22,6 +22,7 @@ func TestCreateTaskAllocatesWorkspaceForMultipleRepositories(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	service.Shutdown(context.Background())
 	if len(task.Repositories) != 2 {
 		t.Fatalf("repositories = %d, want 2", len(task.Repositories))
 	}
@@ -81,15 +82,17 @@ func TestCreateSessionInheritsTaskConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	service.Shutdown(context.Background())
 
 	session, err := service.CreateSession(context.Background(), task.ID, CreateSessionRequest{Request: "Review the API"})
 	if err != nil {
 		t.Fatal(err)
 	}
+	service.Shutdown(context.Background())
 	if session.ParentTaskID != task.ID {
 		t.Fatalf("parent task = %q, want %q", session.ParentTaskID, task.ID)
 	}
-	if session.Request != "Review the API" || session.State != string(Draft) {
+	if session.Request != "Review the API" || session.State != string(Preparing) {
 		t.Fatalf("session = %#v", session)
 	}
 	if session.CodingAgent != task.CodingAgent || session.Model != task.Model || session.Thinking != task.Thinking {
@@ -120,14 +123,17 @@ func TestCreateSessionUsesRootForNestedSessionRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	service.Shutdown(context.Background())
 	first, err := service.CreateSession(context.Background(), task.ID, CreateSessionRequest{Request: "First session"})
 	if err != nil {
 		t.Fatal(err)
 	}
+	service.Shutdown(context.Background())
 	second, err := service.CreateSession(context.Background(), first.ID, CreateSessionRequest{Request: "Second session"})
 	if err != nil {
 		t.Fatal(err)
 	}
+	service.Shutdown(context.Background())
 	if second.ParentTaskID != task.ID {
 		t.Fatalf("parent task = %q, want root %q", second.ParentTaskID, task.ID)
 	}
@@ -145,10 +151,12 @@ func TestDeleteRootTaskDeletesAllSessionWorkspaces(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	service.Shutdown(context.Background())
 	session, err := service.CreateSession(context.Background(), task.ID, CreateSessionRequest{Request: "Session"})
 	if err != nil {
 		t.Fatal(err)
 	}
+	service.Shutdown(context.Background())
 
 	if err = service.Delete(context.Background(), task.ID); err != nil {
 		t.Fatal(err)

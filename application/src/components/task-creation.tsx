@@ -666,7 +666,7 @@ export function TaskCreation({
 						!!modelsError
 					}
 				>
-					{submitting ? "Creating..." : "Create draft"}
+					{submitting ? "Creating..." : "Create task"}
 				</Button>
 			</footer>
 		</form>

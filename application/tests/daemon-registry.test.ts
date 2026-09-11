@@ -112,7 +112,7 @@ function daemonClient(taskID = "task-1"): DaemonClient & {
 				{
 					id: taskID,
 					request: "Test task",
-					state: "draft",
+					state: "preparing",
 					created_at: createdAt.toISOString(),
 				},
 			];
@@ -149,7 +149,7 @@ function daemonClient(taskID = "task-1"): DaemonClient & {
 			return {
 				id: "task-new",
 				request: input.request,
-				state: "draft",
+				state: "preparing",
 				created_at: createdAt.toISOString(),
 			};
 		},
@@ -280,7 +280,7 @@ test("unknown registrations and unsafe input fail before contacting a daemon", a
 			error instanceof DaemonRegistryError && error.status === 404,
 	);
 	await assert.rejects(
-		registry.command("guessed", "task-1", "start", "owner"),
+		registry.command("guessed", "task-1", "pause", "owner"),
 		(error: unknown) =>
 			error instanceof DaemonRegistryError && error.status === 404,
 	);
@@ -331,7 +331,7 @@ test("every operation reaches the daemon over the authenticated connection", asy
 	await registry.tasks("daemon-a");
 	await registry.creationOptions("daemon-a");
 	await registry.createTask("daemon-a", validInput);
-	await registry.command("daemon-a", "task-1", "start", "owner");
+	await registry.command("daemon-a", "task-1", "pause", "owner");
 	await registry.events("daemon-a", "task-1", { tail: 10 });
 	await registry.eventStream("daemon-a", "task-1", { after: 0 });
 	assert.ok(client.calls.length >= 6);

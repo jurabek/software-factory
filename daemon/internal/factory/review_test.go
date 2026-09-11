@@ -66,7 +66,7 @@ func TestRunRoleProvidesReviewerEnvelopeContract(t *testing.T) {
 		Store: db, Config: cfg, ConfigPath: filepath.Join(root, "config.yaml"),
 		Harnesses: harness.Registry{"pi": agent},
 	})
-	task, err := service.Create(context.Background(), CreateRequest{Request: "Review change", Repositories: []Repository{{Type: "github", Repo: "owner/repository"}}})
+	task, err := service.tasks.create(context.Background(), CreateRequest{Request: "Review change", Repositories: []Repository{{Type: "github", Repo: "owner/repository"}}}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestRunRoleProvidesReviewerEnvelopeContract(t *testing.T) {
 func TestReadOnlyPhaseReusesUnchangedSnapshot(t *testing.T) {
 	service, db, _ := testService(t)
 	ctx := context.Background()
-	task, err := service.Create(ctx, CreateRequest{Request: "Review change", Repositories: []Repository{{Type: "github", Repo: "owner/repository"}}})
+	task, err := service.tasks.create(ctx, CreateRequest{Request: "Review change", Repositories: []Repository{{Type: "github", Repo: "owner/repository"}}}, "")
 	if err != nil {
 		t.Fatal(err)
 	}

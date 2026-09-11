@@ -114,7 +114,7 @@ paths:
     post:
       tags: [Tasks]
       operationId: createTask
-      summary: Create a task draft
+      summary: Create and start a task
       parameters:
         - in: body
           name: task
@@ -123,11 +123,13 @@ paths:
             $ref: "#/definitions/CreateTaskRequest"
       responses:
         "201":
-          description: Task draft created
+          description: Task created and started
           schema:
             $ref: "#/definitions/Task"
         "403":
           $ref: "#/responses/Forbidden"
+        "409":
+          $ref: "#/responses/Conflict"
         "422":
           $ref: "#/responses/UnprocessableEntity"
   /tasks/{id}:
@@ -197,25 +199,9 @@ paths:
             $ref: "#/definitions/CreateSessionRequest"
       responses:
         "201":
-          description: Session draft created
+          description: Session created and started
           schema:
             $ref: "#/definitions/Task"
-        "403":
-          $ref: "#/responses/Forbidden"
-        "404":
-          $ref: "#/responses/NotFound"
-        "422":
-          $ref: "#/responses/UnprocessableEntity"
-  /tasks/{id}/start:
-    parameters:
-      - $ref: "#/parameters/TaskID"
-    post:
-      tags: [Tasks]
-      operationId: startTask
-      summary: Start repository preparation and planning
-      responses:
-        "202":
-          $ref: "#/responses/Accepted"
         "403":
           $ref: "#/responses/Forbidden"
         "404":
@@ -787,7 +773,7 @@ definitions:
           $ref: "#/definitions/TaskRepository"
       state:
         type: string
-        enum: [draft, preparing, planning, awaiting_plan_approval, building, checking, reviewing, completed, blocked, paused, aborted]
+        enum: [preparing, planning, awaiting_plan_approval, building, checking, reviewing, completed, blocked, paused, aborted]
       previous_state:
         type: string
       active_phase:
@@ -815,7 +801,7 @@ definitions:
         description: Authoritative deterministic controls currently available for this Task
         items:
           type: string
-          enum: [start, approve, pause, resume, abort, retry]
+          enum: [approve, pause, resume, abort, retry]
       created_at:
         type: string
         format: date-time

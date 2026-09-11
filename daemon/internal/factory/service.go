@@ -53,7 +53,7 @@ type runtime struct {
 }
 
 type taskStore interface {
-	CreateTask(context.Context, store.Task) error
+	CreateActiveTask(context.Context, store.Task) error
 	DeleteTask(context.Context, string) error
 	Task(context.Context, string) (store.Task, error)
 	TaskSessions(context.Context, string) ([]store.Task, error)
@@ -168,11 +168,28 @@ func NewService(root string, dependencies Dependencies) *Service {
 }
 
 func (s *Service) Create(ctx context.Context, request CreateRequest) (store.Task, error) {
-	return s.tasks.create(ctx, request, "")
+	task, err := s.tasks.create(ctx, request, "")
+	return s.launchCreatedTask(ctx, task, err)
 }
 
 func (s *Service) CreateSession(ctx context.Context, taskID string, request CreateSessionRequest) (store.Task, error) {
-	return s.tasks.CreateSession(ctx, taskID, request)
+	task, err := s.tasks.CreateSession(ctx, taskID, request)
+	return s.launchCreatedTask(ctx, task, err)
+}
+
+func (s *Service) launchCreatedTask(ctx context.Context, task store.Task, err error) (store.Task, error) {
+	if err != nil {
+		return store.Task{}, err
+	}
+	if err = s.ensureBranch(ctx, task.ID, ""); err != nil {
+		return store.Task{}, err
+	}
+	created, err := s.db.Task(ctx, task.ID)
+	if err != nil {
+		return store.Task{}, err
+	}
+	s.launch(task.ID, s.progress)
+	return created, nil
 }
 
 func (s *taskService) CreateSession(ctx context.Context, taskID string, request CreateSessionRequest) (store.Task, error) {
@@ -267,7 +284,7 @@ func (s *taskService) create(ctx context.Context, request CreateRequest, parentT
 	if len(configured.Agents) == 0 {
 		configSnapshot = ""
 	}
-	task := store.Task{ID: id, ParentTaskID: parentTaskID, Request: request.Request, WorkspacePath: workspace, Repositories: repositories, State: string(Draft), Pipeline: selectedPipeline.Name, ConfigSnapshot: configSnapshot, CreatedAt: createdAt, CodingAgent: request.CodingAgent, Model: request.Model, Thinking: request.Thinking}
+	task := store.Task{ID: id, ParentTaskID: parentTaskID, Request: request.Request, WorkspacePath: workspace, Repositories: repositories, State: string(Preparing), Pipeline: selectedPipeline.Name, ConfigSnapshot: configSnapshot, CreatedAt: createdAt, StartedAt: createdAt, CodingAgent: request.CodingAgent, Model: request.Model, Thinking: request.Thinking}
 	metadata, err := json.MarshalIndent(task, "", "  ")
 	if err != nil {
 		_ = os.RemoveAll(workspace)
@@ -277,25 +294,11 @@ func (s *taskService) create(ctx context.Context, request CreateRequest, parentT
 		_ = os.RemoveAll(workspace)
 		return store.Task{}, fmt.Errorf("write task metadata: %w", err)
 	}
-	if err := s.db.CreateTask(ctx, task); err != nil {
+	if err := s.db.CreateActiveTask(ctx, task); err != nil {
 		_ = os.RemoveAll(workspace)
 		return store.Task{}, err
 	}
 	return task, nil
-}
-
-func (s *Service) Start(ctx context.Context, id string) error {
-	lock := s.taskLock(id)
-	lock.Lock()
-	defer lock.Unlock()
-	if err := s.db.Claim(ctx, id, string(Draft), string(Preparing)); err != nil {
-		return err
-	}
-	if err := s.ensureBranch(ctx, id, ""); err != nil {
-		return err
-	}
-	s.launch(id, s.progress)
-	return nil
 }
 
 func (s *Service) ensureBranch(ctx context.Context, taskID, parent string) error {
@@ -1303,6 +1306,9 @@ func readTaskProfiles(task store.Task) (map[string]factorygit.Profile, error) {
 }
 
 func (s *Service) prepareRepository(ctx context.Context, repository store.TaskRepository, destination string) (factorygit.Profile, error) {
+	if s.git == nil {
+		return factorygit.Profile{}, fmt.Errorf("git runner unavailable")
+	}
 	if repository.SourceType == "local" {
 		return factorygit.PrepareLocal(ctx, s.git, repository.SourceValue, destination)
 	}

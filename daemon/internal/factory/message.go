@@ -144,7 +144,7 @@ func (s *Service) messageRecipient(ctx context.Context, task store.Task, target 
 	if state == Paused {
 		state = State(task.PreviousState)
 	}
-	if state == Draft || state == Preparing || state == Planning || state == AwaitingApproval {
+	if state == Preparing || state == Planning || state == AwaitingApproval {
 		return "planner", latest, nil
 	}
 	if _, pipeline, pipelineErr := s.taskPipeline(task); pipelineErr == nil {
@@ -174,7 +174,7 @@ func (s *Service) messageRecipient(ctx context.Context, task store.Task, target 
 		}
 	}
 	switch state {
-	case Draft, Preparing, Planning, AwaitingApproval:
+	case Preparing, Planning, AwaitingApproval:
 		return "planner", latest, nil
 	case Building:
 		return "builder", latest, nil

@@ -24,7 +24,7 @@ func testService(t *testing.T) (*Service, *store.DB, string) {
 func createTaskWithAttempt(t *testing.T, service *Service, db *store.DB) (store.Task, store.Phase) {
 	t.Helper()
 	ctx := context.Background()
-	task, err := service.Create(ctx, CreateRequest{Request: "fix", Repositories: []Repository{{Type: "github", Repo: "owner/repository"}}})
+	task, err := service.tasks.create(ctx, CreateRequest{Request: "fix", Repositories: []Repository{{Type: "github", Repo: "owner/repository"}}}, "")
 	if err != nil {
 		t.Fatal(err)
 	}

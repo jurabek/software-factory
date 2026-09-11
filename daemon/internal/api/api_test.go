@@ -35,7 +35,7 @@ func TestEventsTailReturnsNewestEventsInSequenceOrder(t *testing.T) {
 	defer db.Close()
 
 	createdAt := time.Now().UTC().Format(time.RFC3339Nano)
-	task := store.Task{ID: "task-1", Request: "request", WorkspacePath: t.TempDir(), State: "draft", CreatedAt: createdAt, Repositories: []store.TaskRepository{{ID: "repository-1", TaskID: "task-1", Name: "source", SourceType: "local", SourceValue: t.TempDir(), Primary: true, CreatedAt: createdAt}}}
+	task := store.Task{ID: "task-1", Request: "request", WorkspacePath: t.TempDir(), State: "preparing", CreatedAt: createdAt, Repositories: []store.TaskRepository{{ID: "repository-1", TaskID: "task-1", Name: "source", SourceType: "local", SourceValue: t.TempDir(), Primary: true, CreatedAt: createdAt}}}
 	if err := db.CreateTask(context.Background(), task); err != nil {
 		t.Fatal(err)
 	}
@@ -132,6 +132,7 @@ func TestCreateTaskAcceptsMultipleRepositories(t *testing.T) {
 	authorize(request)
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, request)
+	service.Shutdown(context.Background())
 	if response.Code != http.StatusCreated {
 		t.Fatalf("status = %d: %s", response.Code, response.Body.String())
 	}
@@ -160,11 +161,13 @@ func TestCreateAndListTaskSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	service.Shutdown(context.Background())
 
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+task.ID+"/sessions", bytes.NewBufferString(`{"request":"Investigate another approach"}`))
 	authorize(request)
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, request)
+	service.Shutdown(context.Background())
 	if response.Code != http.StatusCreated {
 		t.Fatalf("status = %d: %s", response.Code, response.Body.String())
 	}

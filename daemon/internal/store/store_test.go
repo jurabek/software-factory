@@ -18,6 +18,34 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+func TestCreateActiveTaskClaimsOnlyExecutionSlot(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "factory.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	startedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	first := Task{ID: "task-1", Request: "first", WorkspacePath: t.TempDir(), State: "preparing", CreatedAt: startedAt, StartedAt: startedAt}
+	if err = db.CreateActiveTask(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := db.Task(ctx, first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.StartedAt != startedAt {
+		t.Fatalf("started at = %q, want %q", stored.StartedAt, startedAt)
+	}
+	second := Task{ID: "task-2", Request: "second", WorkspacePath: t.TempDir(), State: "preparing", CreatedAt: startedAt, StartedAt: startedAt}
+	if err = db.CreateActiveTask(ctx, second); !errors.Is(err, ErrConflict) {
+		t.Fatalf("second active task error = %v, want conflict", err)
+	}
+	if _, err = db.Task(ctx, second.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("second task lookup error = %v, want not found", err)
+	}
+}
+
 func TestReserveAgentSessionConcurrentCallersShareWinner(t *testing.T) {
 	db, err := Open(filepath.Join(t.TempDir(), "factory.db"))
 	if err != nil {
@@ -25,7 +53,7 @@ func TestReserveAgentSessionConcurrentCallersShareWinner(t *testing.T) {
 	}
 	defer db.Close()
 	ctx := context.Background()
-	if err = db.CreateTask(ctx, Task{ID: "task", Request: "request", WorkspacePath: t.TempDir(), State: "draft", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+	if err = db.CreateTask(ctx, Task{ID: "task", Request: "request", WorkspacePath: t.TempDir(), State: "preparing", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
 		t.Fatal(err)
 	}
 	const callers = 8
@@ -58,7 +86,7 @@ func TestRepositoryReviewBaseAndPhaseGitInputsRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if err = db.CreateTask(ctx, Task{ID: "task", Request: "request", WorkspacePath: t.TempDir(), State: "draft", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), Repositories: []TaskRepository{{ID: "repo", TaskID: "task", Name: "app", SourceType: "local", SourceValue: "/source", Primary: true, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}}}); err != nil {
+	if err = db.CreateTask(ctx, Task{ID: "task", Request: "request", WorkspacePath: t.TempDir(), State: "preparing", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), Repositories: []TaskRepository{{ID: "repo", TaskID: "task", Name: "app", SourceType: "local", SourceValue: "/source", Primary: true, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}}}); err != nil {
 		t.Fatal(err)
 	}
 	repository := TaskRepository{ID: "repo", TaskID: "task", CanonicalPath: "/source", WorkingPath: "/work", BaseSHA: "base", ReviewBaseSHA: "base", BranchName: "software-factory/task", Primary: true}
@@ -129,11 +157,11 @@ func TestOpenAddsTaskSessionRelationship(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	root := Task{ID: "task-1", Request: "Task", WorkspacePath: t.TempDir(), State: "draft", CreatedAt: "2026-09-05T00:00:00Z"}
+	root := Task{ID: "task-1", Request: "Task", WorkspacePath: t.TempDir(), State: "preparing", CreatedAt: "2026-09-05T00:00:00Z"}
 	if err = db.CreateTask(context.Background(), root); err != nil {
 		t.Fatal(err)
 	}
-	session := Task{ID: "session-1", ParentTaskID: root.ID, Request: "Session", WorkspacePath: t.TempDir(), State: "draft", CreatedAt: "2026-09-05T00:01:00Z"}
+	session := Task{ID: "session-1", ParentTaskID: root.ID, Request: "Session", WorkspacePath: t.TempDir(), State: "preparing", CreatedAt: "2026-09-05T00:01:00Z"}
 	if err = db.CreateTask(context.Background(), session); err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +221,7 @@ func TestEventContractRoundTrip(t *testing.T) {
 	defer db.Close()
 
 	createdAt := "2026-09-08T00:00:00Z"
-	if err = db.CreateTask(ctx, Task{ID: "task-1", Request: "Task", WorkspacePath: taskDir, State: "draft", CreatedAt: createdAt}); err != nil {
+	if err = db.CreateTask(ctx, Task{ID: "task-1", Request: "Task", WorkspacePath: taskDir, State: "preparing", CreatedAt: createdAt}); err != nil {
 		t.Fatal(err)
 	}
 	startedAt := time.Date(2026, time.September, 8, 1, 2, 3, 4, time.UTC)
@@ -274,7 +302,7 @@ func TestAgentInvocationFinalizationIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if err := db.CreateTask(ctx, Task{ID: "task-1", Request: "Task", WorkspacePath: t.TempDir(), State: "draft", CreatedAt: "2026-09-08T00:00:00Z"}); err != nil {
+	if err := db.CreateTask(ctx, Task{ID: "task-1", Request: "Task", WorkspacePath: t.TempDir(), State: "preparing", CreatedAt: "2026-09-08T00:00:00Z"}); err != nil {
 		t.Fatal(err)
 	}
 	reserved, err := db.ReserveAgentSession(ctx, "task-1", AgentSession{Role: "builder", Harness: "pi", HarnessSessionID: "018f0f79-9f0a-7d02-8c44-214f711a6c47", SessionDirectory: "/tmp/session", AccountingComplete: true})
@@ -324,7 +352,7 @@ func TestOpenRecoversPendingAgentInvocation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.CreateTask(ctx, Task{ID: "task-1", Request: "Task", WorkspacePath: t.TempDir(), State: "draft", CreatedAt: "2026-09-08T00:00:00Z"}); err != nil {
+	if err := db.CreateTask(ctx, Task{ID: "task-1", Request: "Task", WorkspacePath: t.TempDir(), State: "preparing", CreatedAt: "2026-09-08T00:00:00Z"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.ReserveAgentSession(ctx, "task-1", AgentSession{Role: "planner", Harness: "pi", HarnessSessionID: "018f0f79-9f0a-7d02-8c44-214f711a6c48", SessionDirectory: "/tmp/session", AccountingComplete: true}); err != nil {

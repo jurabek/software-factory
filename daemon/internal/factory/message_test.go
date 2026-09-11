@@ -41,8 +41,11 @@ func messageTestService(t *testing.T, adapter harness.Harness) (*Service, *store
 		Store: db, Config: cfg, ConfigPath: filepath.Join(root, "config.yaml"),
 		Harnesses: harness.Registry{"pi": adapter},
 	})
-	task, err := service.Create(context.Background(), CreateRequest{Request: "change", Repositories: []Repository{{Type: "github", Repo: "owner/repository"}}})
+	task, err := service.tasks.create(context.Background(), CreateRequest{Request: "change", Repositories: []Repository{{Type: "github", Repo: "owner/repository"}}}, "")
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err = service.ensureBranch(context.Background(), task.ID, ""); err != nil {
 		t.Fatal(err)
 	}
 	return service, db, task
@@ -71,7 +74,7 @@ func TestMessagesAreIdempotentFIFOAndAbortFailsQueue(t *testing.T) {
 		t.Fatalf("routing = first %+v second %+v", first, second)
 	}
 	unchanged, err := db.Task(ctx, task.ID)
-	if err != nil || unchanged.State != string(Draft) {
+	if err != nil || unchanged.State != string(Preparing) {
 		t.Fatalf("message executed control: task = %+v err = %v", unchanged, err)
 	}
 	if err = service.Abort(ctx, task.ID); err != nil {
@@ -276,13 +279,13 @@ func TestExactRetryIsIdempotentAndUsesOriginalInput(t *testing.T) {
 
 func TestAvailableActionsContainControlsOnly(t *testing.T) {
 	for _, actions := range [][]string{
-		AvailableActions(nil, string(Draft)),
+		AvailableActions(nil, string(Preparing)),
 		AvailableActions(&store.Phase{Status: "running", Kind: "agent"}, string(Building)),
 		AvailableActions(&store.Phase{Status: "failed", Kind: "check"}, string(Blocked)),
 	} {
 		for _, action := range actions {
 			switch action {
-			case "start", "approve", "pause", "resume", "abort", "retry":
+			case "approve", "pause", "resume", "abort", "retry":
 			default:
 				t.Fatalf("non-control action %q in %v", action, actions)
 			}

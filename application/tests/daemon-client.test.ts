@@ -53,7 +53,7 @@ test("daemon task and health responses project only known safe fields", async ()
 					{
 						id: "task-1",
 						request: "request",
-						state: "draft",
+						state: "preparing",
 						created_at: "2026-09-06T12:00:00Z",
 						pipeline: "standard",
 						active_stage: "verify",
@@ -73,7 +73,7 @@ test("daemon task and health responses project only known safe fields", async ()
 		{
 			id: "task-1",
 			request: "request",
-			state: "draft",
+			state: "preparing",
 			created_at: "2026-09-06T12:00:00Z",
 			pipeline: "standard",
 			active_stage: "verify",
@@ -142,15 +142,15 @@ test("commands send approval input only when required", async () => {
 		"http://127.0.0.1:8080",
 		"credential",
 		"task-1",
-		"start",
+		"pause",
 		undefined,
 		{ actor: "owner" },
 	);
 	assert.equal(requests[1].init?.body, undefined);
-	const startHeaders = requests[1].init?.headers as
+	const pauseHeaders = requests[1].init?.headers as
 		| Record<string, string>
 		| undefined;
-	assert.equal(startHeaders?.["Content-Type"], undefined);
+	assert.equal(pauseHeaders?.["Content-Type"], undefined);
 });
 
 test("unsupported commands fail before any fetch", async () => {
@@ -220,7 +220,7 @@ test("creation posts JSON bodies with the expected identity", async () => {
 				{
 					id: "task-1",
 					request: "Build",
-					state: "draft",
+					state: "preparing",
 					created_at: "2026-09-06T12:00:00Z",
 				},
 				{ status: 201 },
@@ -574,7 +574,7 @@ test("redirects are rejected for mutations", async () => {
 			"http://127.0.0.1:8080",
 			"credential",
 			"task-1",
-			"start",
+			"pause",
 			undefined,
 			{ actor: "owner" },
 		),

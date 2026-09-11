@@ -219,7 +219,7 @@ func TestComparisonFailureIsPersistedAsAdvisoryObservation(t *testing.T) {
 
 func qualityTask(t *testing.T, db *store.DB, root string, repository store.TaskRepository) store.Task {
 	t.Helper()
-	task := store.Task{ID: "task-1", Request: "quality", WorkspacePath: filepath.Join(root, "task"), State: string(Draft), CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), Repositories: []store.TaskRepository{repository}}
+	task := store.Task{ID: "task-1", Request: "quality", WorkspacePath: filepath.Join(root, "task"), State: string(Preparing), CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), Repositories: []store.TaskRepository{repository}}
 	if err := os.MkdirAll(task.WorkspacePath, 0o700); err != nil {
 		t.Fatal(err)
 	}

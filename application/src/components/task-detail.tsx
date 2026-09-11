@@ -89,7 +89,7 @@ import { Textarea } from "@/components/ui/textarea.tsx";
 import { stateTextClass } from "@/lib/state-style.ts";
 import { cn } from "@/lib/utils.ts";
 
-const commands = ["start", "approve", "pause", "resume", "abort"] as const;
+const commands = ["approve", "pause", "resume", "abort"] as const;
 type Command = (typeof commands)[number];
 const liveTone: Record<string, string> = {
 	live: "bg-success shadow-[0_0_0.4rem_var(--success)]",

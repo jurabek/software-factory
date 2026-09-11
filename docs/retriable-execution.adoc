@@ -490,9 +490,9 @@ The UI never directly writes a Task or Attempt status. It renders server-provide
 |Typical actions
 |Visible result
 
-|Draft Task
-|start, comment
-|First branch and queued preparation attempt
+|Preparing Task
+|comment, pause, abort
+|Repository preparation progress
 
 |Running Agent Attempt
 |comment, steer, follow-up, pause, abort
