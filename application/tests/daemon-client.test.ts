@@ -53,8 +53,14 @@ test("daemon task and health responses project only known safe fields", async ()
 					{
 						id: "task-1",
 						request: "request",
-						state: "draft",
+						state: "preparing",
 						created_at: "2026-09-06T12:00:00Z",
+						pipeline: "standard",
+						active_stage: "verify",
+						stages: [
+							{ id: "build", kind: "build", status: "completed" },
+							{ id: "verify", kind: "verify", status: "running" },
+						],
 						extra: credential,
 					},
 				]),
@@ -67,8 +73,14 @@ test("daemon task and health responses project only known safe fields", async ()
 		{
 			id: "task-1",
 			request: "request",
-			state: "draft",
+			state: "preparing",
 			created_at: "2026-09-06T12:00:00Z",
+			pipeline: "standard",
+			active_stage: "verify",
+			stages: [
+				{ id: "build", kind: "build", status: "completed" },
+				{ id: "verify", kind: "verify", status: "running" },
+			],
 		},
 	]);
 });
@@ -130,15 +142,15 @@ test("commands send approval input only when required", async () => {
 		"http://127.0.0.1:8080",
 		"credential",
 		"task-1",
-		"start",
+		"pause",
 		undefined,
 		{ actor: "owner" },
 	);
 	assert.equal(requests[1].init?.body, undefined);
-	const startHeaders = requests[1].init?.headers as
+	const pauseHeaders = requests[1].init?.headers as
 		| Record<string, string>
 		| undefined;
-	assert.equal(startHeaders?.["Content-Type"], undefined);
+	assert.equal(pauseHeaders?.["Content-Type"], undefined);
 });
 
 test("unsupported commands fail before any fetch", async () => {
@@ -208,7 +220,7 @@ test("creation posts JSON bodies with the expected identity", async () => {
 				{
 					id: "task-1",
 					request: "Build",
-					state: "draft",
+					state: "preparing",
 					created_at: "2026-09-06T12:00:00Z",
 				},
 				{ status: 201 },
@@ -227,6 +239,53 @@ test("creation posts JSON bodies with the expected identity", async () => {
 		request: "Build",
 		repositories: [{ type: "github", repo: "owner/app" }],
 	});
+	await client.createTask(
+		"http://127.0.0.1:8080",
+		"credential",
+		{
+			request: "Build",
+			repositories: [{ type: "github", repo: "owner/app" }],
+			pipeline: "thorough",
+		},
+		{},
+	);
+	assert.deepEqual(JSON.parse(String(requests[1].init?.body)), {
+		request: "Build",
+		repositories: [{ type: "github", repo: "owner/app" }],
+		pipeline: "thorough",
+	});
+});
+
+test("pipeline reads project ordered public stages", async () => {
+	const requests: string[] = [];
+	const client = createDaemonClient(async (input) => {
+		requests.push(String(input));
+		return Response.json([
+			{
+				name: "standard",
+				default: true,
+				stages: [
+					{ id: "build", kind: "build", agent: "builder" },
+					{ id: "verify", kind: "verify" },
+				],
+				secret: "must not leak",
+			},
+		]);
+	});
+	assert.deepEqual(
+		await client.pipelines("http://127.0.0.1:8080", "credential"),
+		[
+			{
+				name: "standard",
+				default: true,
+				stages: [
+					{ id: "build", kind: "build", agent: "builder" },
+					{ id: "verify", kind: "verify" },
+				],
+			},
+		],
+	);
+	assert.equal(requests[0], "http://127.0.0.1:8080/api/v1/pipelines");
 });
 
 test("task workflow resources stay on the authenticated daemon connection", async () => {
@@ -515,7 +574,7 @@ test("redirects are rejected for mutations", async () => {
 			"http://127.0.0.1:8080",
 			"credential",
 			"task-1",
-			"start",
+			"pause",
 			undefined,
 			{ actor: "owner" },
 		),

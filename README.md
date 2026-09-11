@@ -60,7 +60,81 @@ curl -s -X POST http://127.0.0.1:8080/api/v1/tasks \
   -d '{"request":"Implement feature X","repositories":[{"type":"local","path":"/absolute/repository","primary":true}]}'
 ```
 
-Creating a Task allocates its private workspace but does not access its repositories. `POST /api/v1/tasks/{id}/start` materializes every repository and uses the designated primary repository as the default agent/check working directory. Plans contain `questions`; when non-empty, answer them with `POST /api/v1/tasks/{id}/feedback` before approval.
+Creating a Task allocates its private workspace, materializes every repository, and starts execution. The designated primary repository is the default agent/check working directory. Plans contain `questions`; when non-empty, answer them with `POST /api/v1/tasks/{id}/feedback` before approval.
+
+## Task execution sequence
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant Browser
+    participant App as Next.js application
+    participant Registry as Daemon registry
+    participant API as Daemon tasks handler
+    participant Factory
+    participant Store as SQLite store
+    participant Git
+    participant Harness as Agent harness
+
+    User->>Browser: Submit Task
+    Browser->>App: POST /api/daemons/{daemonId}/tasks
+    App->>Registry: Resolve daemon and credential
+    Registry->>API: POST /api/v1/tasks
+    API->>Factory: Create(request)
+    Factory->>Factory: Allocate Task Workspace
+    Factory->>Store: Persist preparing Task and select branch
+    Store-->>Factory: Task
+    Factory-->>API: Launch background execution
+    Factory-->>API: Task
+    API-->>Browser: 201 Created
+
+    Factory->>Git: Materialize repositories
+    Git-->>Factory: Repository profiles and base SHAs
+    Factory->>Store: Persist preparation phase and repository state
+    Factory->>Harness: Run Planner
+    Harness-->>Factory: Validated plan envelope
+    Factory->>Store: Persist plan, events, awaiting approval
+
+    Browser->>App: Open events stream
+    App->>API: GET /api/v1/tasks/{id}/events/stream
+    API->>Store: Poll events after cursor
+    Store-->>API: New events
+    API-->>App: SSE events
+    App-->>Browser: SSE events
+
+    User->>Browser: Approve current plan digest
+    Browser->>App: POST .../tasks/{taskId}/approve
+    App->>Registry: Resolve daemon and credential
+    Registry->>API: POST /api/v1/tasks/{id}/approve
+    API->>Factory: Approve(id, actor, digest)
+    Factory->>Store: Persist approval and transition Task
+    Factory-->>API: Launch background execution
+    API-->>Browser: 202 Accepted
+
+    loop Each configured pipeline stage
+        alt Build or review stage
+            Factory->>Harness: Run stage agent
+            Harness-->>Factory: Validated result envelope
+        else Verify stage
+            Factory->>Git: Run deterministic checks and comparisons
+            Git-->>Factory: Check evidence
+        end
+        Factory->>Store: Persist attempt, evidence, and events
+    end
+
+    alt All stages succeed
+        Factory->>Store: Transition Task to completed
+    else Stage fails
+        Factory->>Store: Transition Task to blocked
+    end
+
+    Browser->>App: Read latest Task state and events
+    App->>API: GET Task and events
+    API->>Store: Read state and evidence
+    Store-->>API: Task and events
+    API-->>App: Current result
+    App-->>Browser: Render completed or blocked state
+```
 
 The factory never commits, pushes, merges, deploys, or cleans up automatically.
 

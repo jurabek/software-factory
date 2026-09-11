@@ -70,7 +70,10 @@ func TestClaudeHarnessTaskResumeFlow(t *testing.T) {
 			PromptEngineering: config.PromptEngineering{System: "prompts/reviewer/system.md", User: "prompts/reviewer/user.md"},
 		}},
 	}
-	service := NewService(root, db, cfg, filepath.Join(root, "config.yaml"), harness.Registry{"claude": claude}, nil)
+	service := NewService(root, Dependencies{
+		Store: db, Config: cfg, ConfigPath: filepath.Join(root, "config.yaml"),
+		Harnesses: harness.Registry{"claude": claude},
+	})
 	task, err := service.Create(context.Background(), CreateRequest{Request: "Review change", Repositories: []Repository{{Type: "github", Repo: "owner/repository"}}})
 	if err != nil {
 		t.Fatal(err)

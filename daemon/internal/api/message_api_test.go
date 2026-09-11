@@ -28,17 +28,17 @@ func TestLegacyWritesAreRemovedAndNewWritesRejectOrchestrationFields(t *testing.
 		body string
 		want int
 	}{
-		{path: "/api/v1/tasks/task/interventions", body: `{}`, want: http.StatusNotFound},
+		{path: "/api/v1/tasks/task/interventions", body: `{}`, want: http.StatusMethodNotAllowed},
 		{path: "/api/v1/tasks/task/feedback", body: `{}`, want: http.StatusNotFound},
 		{path: "/api/v1/tasks/task/messages", body: `{"text":"change","idempotency_key":"one","intent":"repair"}`, want: http.StatusUnprocessableEntity},
 		{path: "/api/v1/tasks/task/attempts/attempt/retry", body: `{"idempotency_key":"one","text":"change it"}`, want: http.StatusUnprocessableEntity},
-		{path: "/api/v1/tasks/task/start", body: `{"text":"start"}`, want: http.StatusUnprocessableEntity},
+		{path: "/api/v1/tasks/task/pause", body: `{"text":"pause"}`, want: http.StatusUnprocessableEntity},
 	}
 	for _, test := range tests {
 		request := httptest.NewRequest(http.MethodPost, test.path, bytes.NewBufferString(test.body))
 		authorize(request)
 		response := httptest.NewRecorder()
-		server.Handler().ServeHTTP(response, request)
+		server.ServeHTTP(response, request)
 		if response.Code != test.want {
 			t.Errorf("POST %s status = %d, want %d: %s", test.path, response.Code, test.want, response.Body.String())
 		}
@@ -52,7 +52,7 @@ func TestTaskReadsExposeAuthoritativeAvailableActions(t *testing.T) {
 	}
 	defer db.Close()
 	createdAt := time.Now().UTC().Format(time.RFC3339Nano)
-	task := store.Task{ID: "task-actions", Request: "request", WorkspacePath: t.TempDir(), State: "draft", CreatedAt: createdAt, Repositories: []store.TaskRepository{{ID: "repo", TaskID: "task-actions", Name: "repo", SourceType: "github", SourceValue: "owner/repo", Primary: true, CreatedAt: createdAt}}}
+	task := store.Task{ID: "task-actions", Request: "request", WorkspacePath: t.TempDir(), State: "preparing", CreatedAt: createdAt, Repositories: []store.TaskRepository{{ID: "repo", TaskID: "task-actions", Name: "repo", SourceType: "github", SourceValue: "owner/repo", Primary: true, CreatedAt: createdAt}}}
 	if err = db.CreateTask(context.Background(), task); err != nil {
 		t.Fatal(err)
 	}
@@ -64,8 +64,8 @@ func TestTaskReadsExposeAuthoritativeAvailableActions(t *testing.T) {
 		request := httptest.NewRequest(http.MethodGet, path, nil)
 		authorize(request)
 		response := httptest.NewRecorder()
-		server.Handler().ServeHTTP(response, request)
-		if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(`"available_actions":["start","abort"]`)) {
+		server.ServeHTTP(response, request)
+		if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(`"available_actions":["pause","abort"]`)) {
 			t.Fatalf("GET %s = %d %s", path, response.Code, response.Body.String())
 		}
 	}
@@ -79,7 +79,7 @@ func TestTaskReadsExposeAuthoritativeAvailableActions(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/tasks/task-actions", nil)
 	authorize(request)
 	response := httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, request)
+	server.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(`"available_actions":["retry"]`)) {
 		t.Fatalf("completed task = %d %s", response.Code, response.Body.String())
 	}

@@ -298,7 +298,12 @@ export function DaemonConnections({ login }: { login: string }) {
 						daemon={selected}
 						offline={Boolean(selectedState?.offline)}
 						onCreated={(task) => {
-							selectRecord(task);
+							pendingSelectionIds.current.set(task.id, Date.now());
+							navigate({
+								daemonId: task.daemonId,
+								taskId: task.id,
+								sessionId: task.id,
+							});
 							void loadTasks(selected);
 						}}
 					/>

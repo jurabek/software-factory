@@ -1,0 +1,179 @@
+= Test Change Evidence and Pre-change Verification Specification
+:toc:
+:sectnums:
+
+== Status
+
+Proposed. Deliver after the usable workflow in 01, 02, and 05. Ship test-change evidence first, followed by opt-in advisory pre-change comparison. Blocking on pre-change comparison is deferred.
+
+Dependencies: `01-git-foundation-spec.adoc`, `02-pipeline-model-spec.adoc`.
+
+== Problem
+
+Declared checks establish whether commands exit successfully. Protected-path enforcement adds a separate constraint, but neither determines whether changed tests retain their assertions or cover the intended behavior.
+
+The factory lacks explicit evidence about test changes:
+
+* `protected` is empty in this repository's own factory block (`AGENTS.md`);
+* nothing classifies a changed file as a test;
+* nothing verifies that a new test would have failed before the change.
+
+The reviewer judges the diff and blocks completion when it rejects the implementation (`daemon/internal/factory/service.go`, `buildCheckReview`). Recording a reason for a test change helps that review; it does not prove that a test was not weakened.
+
+A pre-change comparison can provide additional observations. Any nonzero exit, however, may be caused by compilation, missing dependencies, infrastructure, or unrelated checks. Conversely, characterization tests and behavior-preserving refactors may correctly pass against old code. Neither outcome alone is a reliable blocking verdict.
+
+== Goals
+
+* Make every test change, including removal and rename, explicit in review evidence.
+* Record reproducible baseline and test-overlay check results without overstating what they prove.
+* Preserve declared checks and reviewer rejection as the existing completion gates.
+
+== Product value and validation
+
+Expected value is better review evidence and fewer unnoticed test regressions. Value is unmeasured. Track comparison duration, baseline failures, inconclusive results, and cases where reviewers find the evidence actionable. Before proposing a blocking mode, measure false blocks separately for bug fixes, new features, and refactors.
+
+== Non-goals
+
+* Measuring coverage.
+* Mutation testing or proving that every changed test discriminates.
+* Scoring architecture or maintainability.
+* Automatically deciding whether assertions, skips, fixtures, or test configuration weaken checks.
+* Introducing a blocking pre-change mode or changing reviewer rejection behavior.
+* Adding tests solely to satisfy a gate for every Task.
+
+== Domain model
+
+=== Test path patterns
+
+The `AGENTS.md` factory block (`daemon/internal/git/git.go:40-44`, parsed at `:116-155`) gains a `tests` key: a list of glob patterns identifying test files.
+
+[source,yaml]
+----
+tests:
+  - "**/*_test.go"
+  - "**/*.test.ts"
+----
+
+When the key is absent, defaults MUST apply: `**/*_test.go`, `**/*.test.ts`, `**/*.spec.ts`, `**/test_*.py`, `tests/**`.
+
+An explicitly empty list matches no test files and MUST be visible as such in the stored profile. Matching MUST use documented glob semantics: `*` does not cross `/`, `**` matches zero or more directories, and matching is relative to the repository root. The existing prefix-only `MatchesPath` helper is not a glob implementation. Preserve the semantics of `generated` and `protected` when introducing test matching.
+
+Patterns MUST be validated as relative and non-escaping, consistent with the existing `generated` and `protected` validation (`daemon/internal/git/git.go:149-153`).
+
+The parsed patterns MUST be exposed on the repository profile (`daemon/internal/git/git.go:29-38`) and persisted with it.
+
+=== Comparison configuration
+
+The same repository factory block MAY set `pre_change_verification: true`. It defaults to false, is validated as a boolean, and is frozen in the Task's repository profile. This controls the expensive advisory comparison, not test-change collection or declared checks.
+
+=== Verification placement
+
+Build-envelope validation collects and persists test-change evidence before build can finish. The `verify` Stage reports that evidence and performs comparison as distinct check phases. Neither introduces a Task state.
+
+Execution order within `verify`:
+
+. declared checks;
+. report the persisted test-change evidence;
+. pre-change comparison for opted-in repositories.
+
+Declared check failures MUST block the Task. Missing or invalid required envelope data uses the normal repair loop. Test deletions and advisory comparison outcomes MUST NOT independently block the Task. A failure to persist required evidence or preserve workspace isolation is an execution failure and MUST block the Stage with that reason.
+
+== Required behavior
+
+=== Test-change evidence
+
+After each build turn, classify every changed file in every repository against its frozen test patterns, using the selected branch's `review_base_sha`. Include additions, modifications, deletions, and both paths of renames. Classification MUST use Git and include non-ignored untracked tests.
+
+Record deletions and renames explicitly for the reviewer. A renamed test MUST NOT be presented as proven loss of coverage, and an agent-provided explanation MUST NOT be presented as proof of integrity.
+
+The `build` envelope (`daemon/internal/factory/envelope.go:27-31`) gains:
+
+[source,json]
+----
+"test_changes":[{"repository_id":"...","path":"...","reason":"..."}]
+----
+
+Validation rules:
+
+* `test_changes` MUST be present as an array.
+* Every changed test path MUST have exactly one entry, keyed by repository id and relative path, with a non-empty `reason`.
+* Unknown repositories, duplicate entries, escaping paths, and entries not in the Git-derived changed test set MUST be rejected.
+* For a rename, require entries for each old/new path that matches the patterns; retain the Git-derived rename relation in evidence.
+
+The entry set MUST be derived from git, not from the agent. An agent that omits an entry for a test file it touched produces an invalid envelope and enters the existing repair loop (`daemon/internal/factory/service.go:806-862`).
+
+Recorded reasons, change kinds, and affected repository identities MUST be persisted and included in reviewer template data, even when pre-change comparison is disabled. Test runner configuration and fixtures outside these patterns still require normal diff review; this mechanism makes no completeness guarantee about them.
+
+=== Pre-change comparison
+
+The comparison records what happens when current added/modified tests are overlaid on the selected branch's pre-implementation snapshot. It does not label a Task or its tests as correct.
+
+For each repository, the factory MUST:
+
+. record `skipped` without materializing scratch when comparison is disabled or the repository has no declared checks;
+. otherwise determine added/modified test paths relative to the recorded pre-implementation snapshot from 02. Build continuations MUST use the same comparison baseline, not their already-modified input. Record skipped when this set is empty;
+. materialize an independent scratch workspace from that snapshot and run its frozen declared checks without an overlay to establish baseline health;
+. record `inconclusive` and stop comparison if the baseline fails, setup cannot reproduce the environment, or a required snapshot is unavailable;
+. create a fresh scratch workspace from the same snapshot, so baseline check side effects do not contaminate the comparison;
+. overlay only the current added/modified test files for that repository. Do not copy implementation changes, new dependency manifests, or arbitrary agent-selected files to make the comparison pass;
+. run the same frozen checks in that workspace and record their actual exits and output.
+
+Run each repository comparison independently while preserving multi-repository layout. Retain deleted tests in the baseline; deletion evidence is reported separately. Record exactly which test paths were overlaid and which baseline was used.
+
+Result meanings:
+
+* `overlay_checks_passed`: all overlay checks passed. This does not prove that the tests lack value or that a refactor is incorrect.
+* `overlay_checks_failed`: at least one overlay check exited nonzero after a healthy baseline. This records an observation, not a successful quality gate or proof that the intended regression was caught.
+* `inconclusive`: baseline/setup/execution prevented a usable comparison. Preserve the reason and raw evidence.
+* `skipped`: comparison was disabled or not applicable, with the reason recorded.
+* `cancelled`: a Control cancelled comparison; cancellation is never a successful observation.
+
+Known missing-dependency, infrastructure, and process-start failures MUST be marked inconclusive. Raw compilation, lint, or other nonzero exits MUST never be promoted to proof of a failing behavioral test. The first release does not need a cross-language test-result interpretation framework.
+
+Any later blocking proposal MUST establish a healthy baseline, identify a relevant executed test failure, separate compilation/setup/cancellation, define applicability by Task type, and demonstrate an acceptable false-block rate. One failing test still cannot prove that all other tests were preserved.
+
+Execution requirements:
+
+* Checks MUST run with the same process-group, cancellation, and output-capture behavior as the primary check runner (`daemon/internal/factory/service.go:909-963`).
+* Comparison check exits MUST remain visible, but MUST NOT be mixed with primary check failure status or labelled as a passing quality gate.
+* Persist check records with repository, Stage, Attempt, phase (`primary`, `baseline`, or `test_overlay`), comparison baseline, status, command, exit, output, and duration. Records and log paths MUST distinguish phases and repeated Attempts so comparison cannot overwrite primary evidence.
+* The scratch directory MUST be removed on completion, on failure, and on cancellation.
+* No Task repository, index, Git ref, or artifact commit may be modified by comparison.
+
+Scratch materialization MUST preserve executable bits, content, and symlink meaning. It MUST NOT copy a live worktree `.git` pointer or share a writable Git object database/index with the Task. A repository needing Git for checks requires independent scratch Git metadata. Symlinks escaping into the live workspace MUST cause an inconclusive result rather than permitting writes through them. Preserve the multi-repository directory layout and record environment/setup limitations.
+
+The existing snapshot copier (`daemon/internal/factory/snapshot.go`) writes regular files with mode `0600` and copies `.git` entries; it cannot be reused unchanged as evidence of scratch fidelity. Provide a scratch destination operation rather than calling `MaterializeSnapshot`, which replaces the Task's repository directory.
+
+An enabled comparison may require primary, baseline, and overlay check runs plus two scratch materializations. Measure wall-clock and storage cost; do not promise a fixed multiplier.
+
+== Implementation guidance
+
+The shared code-quality requirements in `01-git-foundation-spec.adoc` are mandatory. Each delivery MUST make the touched checking code easier to understand and reuse while preserving its observable behavior.
+
+Keep path classification and comparison orchestration as small, cohesive functions. Reuse one process runner for primary and advisory checks, with explicit working directory and evidence phase. Keep persistence identity separate from outcome interpretation. Avoid a general policy engine, language plugin system, or automatic dependency repair.
+
+== Acceptance criteria
+
+. A repository profile without a `tests` key resolves the documented default patterns.
+. A repository profile with a `tests` key resolves exactly those patterns.
+. A `tests` pattern that is absolute or escapes the repository root is rejected at profile parse time.
+. Root and nested test files match the documented glob semantics; an explicit empty list matches none.
+. A deletion or rename is recorded accurately and does not independently block the Task.
+. A build envelope omitting a `test_changes` entry for a modified test file is rejected and retried.
+. A build envelope containing a `test_changes` entry for a file that is not a changed test file is rejected.
+. Recorded `test_changes` reasons appear in reviewer template data.
+. Identical test paths in different repositories remain distinct; duplicate or unknown repository/path entries fail validation.
+. Disabled comparison or a Task with no added/modified tests records skipped and creates no scratch workspace.
+. A failing baseline records inconclusive and does not execute an overlay comparison.
+. A healthy baseline followed by a nonzero overlay check records overlay_checks_failed without claiming a regression was detected or blocking the Task.
+. Characterization tests passing against the baseline record overlay_checks_passed without blocking the Task.
+. Missing dependencies, failed setup, and process-start errors record inconclusive; compilation errors are never labelled successful behavioral evidence.
+. Build continuation and exact retry select the recorded comparison baseline rather than silently comparing against partially implemented code.
+. Primary, baseline, and overlay records remain separately readable through the checks endpoint, across retries, without overwriting logs.
+. Declared primary check failure and reviewer rejection still block completion.
+. The scratch directory is removed after success, after failure, and after task cancellation.
+. Every Task repository's content, executable bits, symlinks, index, and Git refs are unchanged by comparison, for both worktrees and clones.
+. Scratch executable files stay executable, baseline-run side effects are absent from the fresh overlay workspace, and escaping symlinks cannot mutate the live workspace.
+. Cancelling a Task during pre-change comparison terminates its check processes.
+. Code review demonstrates a readability/design improvement in each change: one process runner serves all check phases, classification is separate from comparison, and evidence persistence does not hide outcome policy. New abstractions satisfy the shared requirements in 01.
+. Daemon tests, race tests, application typecheck, and application build pass.

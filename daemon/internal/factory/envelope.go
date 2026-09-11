@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -26,8 +27,14 @@ type Plan struct {
 }
 type Build struct {
 	Common
-	ChangedFiles  []string `json:"changed_files"`
-	CommitMessage string   `json:"commit_message"`
+	ChangedFiles  []string     `json:"changed_files"`
+	CommitMessage string       `json:"commit_message"`
+	TestChanges   []TestChange `json:"test_changes"`
+}
+type TestChange struct {
+	RepositoryID string `json:"repository_id"`
+	Path         string `json:"path"`
+	Reason       string `json:"reason"`
 }
 type Finding struct {
 	Requirement string `json:"requirement"`
@@ -46,9 +53,9 @@ func envelopeInstructions(role string) string {
 	switch role {
 	case "planner":
 		return `Return exactly one JSON object with no Markdown: {` + common + `,"steps":[{"id":"...","description":"...","expected_files":[],"acceptance_criteria":[]}],"questions":[]}`
-	case "builder":
-		return `Return exactly one JSON object with no Markdown: {` + common + `,"changed_files":[],"commit_message":"..."}`
-	case "reviewer":
+	case "builder", "build":
+		return `Return exactly one JSON object with no Markdown: {` + common + `,"changed_files":[],"commit_message":"...","test_changes":[{"repository_id":"...","path":"...","reason":"..."}]}`
+	case "reviewer", "review":
 		return `Return exactly one JSON object with no Markdown: {` + common + `,"approved":true,"findings":[],"blocking":[]}. Finding objects require "requirement", "met", and "evidence". A rejected review requires approved=false and a non-empty blocking array.`
 	default:
 		return "Return exactly one JSON object with every required field and no Markdown."
@@ -138,19 +145,26 @@ func ValidatePlan(text string) (Plan, error) {
 			return value, fmt.Errorf("planner questions cannot contain blank entries")
 		}
 	}
-	seen := map[string]bool{}
-	for _, step := range value.Steps {
-		if strings.TrimSpace(step.ID) == "" || strings.TrimSpace(step.Description) == "" || step.ExpectedFiles == nil || step.AcceptanceCriteria == nil || seen[step.ID] {
-			return value, fmt.Errorf("invalid or duplicate plan step")
-		}
-		seen[step.ID] = true
+	if err := validateSteps(value.Steps); err != nil {
+		return value, err
 	}
 	return value, nil
 }
 
+func validateSteps(steps []PlanStep) error {
+	seen := map[string]bool{}
+	for _, step := range steps {
+		if strings.TrimSpace(step.ID) == "" || strings.TrimSpace(step.Description) == "" || step.ExpectedFiles == nil || step.AcceptanceCriteria == nil || seen[step.ID] {
+			return fmt.Errorf("invalid or duplicate plan step")
+		}
+		seen[step.ID] = true
+	}
+	return nil
+}
+
 func ValidateBuild(text string) (Build, error) {
 	var value Build
-	fields := append(append([]string{}, commonFields...), "changed_files", "commit_message")
+	fields := append(append([]string{}, commonFields...), "changed_files", "commit_message", "test_changes")
 	if _, err := decodeExact(text, &value, fields, fields); err != nil {
 		return value, err
 	}
@@ -159,6 +173,30 @@ func ValidateBuild(text string) (Build, error) {
 	}
 	if value.ChangedFiles == nil {
 		return value, fmt.Errorf("builder changed_files array is required")
+	}
+	if value.TestChanges == nil {
+		return value, fmt.Errorf("builder test_changes array is required")
+	}
+	seen := make(map[string]struct{}, len(value.TestChanges))
+	for _, change := range value.TestChanges {
+		if strings.TrimSpace(change.RepositoryID) == "" || strings.TrimSpace(change.Path) == "" || strings.TrimSpace(change.Reason) == "" {
+			return value, fmt.Errorf("builder test_changes entries require repository_id, path, and reason")
+		}
+		if filepath.IsAbs(change.Path) || strings.HasPrefix(change.Path, ":") {
+			return value, fmt.Errorf("builder test change path must be relative: %q", change.Path)
+		}
+		clean := filepath.Clean(change.Path)
+		if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+			return value, fmt.Errorf("builder test change path escapes root: %q", change.Path)
+		}
+		if filepath.ToSlash(clean) != change.Path {
+			return value, fmt.Errorf("builder test change path must be canonical: %q", change.Path)
+		}
+		key := change.RepositoryID + "\x00" + filepath.ToSlash(clean)
+		if _, exists := seen[key]; exists {
+			return value, fmt.Errorf("duplicate builder test change %q", key)
+		}
+		seen[key] = struct{}{}
 	}
 	return value, nil
 }
