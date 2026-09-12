@@ -28,7 +28,7 @@ statuses, or roles from payload keys.
 `GET /tasks/{id}/sessions` returns a bare array of tasks extended with
 `agent_sessions` per item (see `AgentSession` in Swagger).
 
-Native UUIDs (Claude `--session-id` / `--resume`, Pi `--session-id`) identify
+Native UUIDs (Pi `--session-id`) identify
 the harness-native conversation. Daemon event `id` values identify folded
 contract events. Folding many source records into one event (and omitting
 partial/thinking records) means native `uuid`/`parentUuid`/`message.id` never
@@ -57,8 +57,7 @@ scope.
 Bounded JSON stays marshalable: oversized objects become
 `{truncated: true, preview: "..."}` within the limit; the full record stays in
 the raw audit file. String truncation preserves UTF-8. Tool display lookup
-normalizes case and covers Claude names (`Bash`, `Read`, `Edit`, `Write`,
-`Glob`, `Grep`, `WebFetch`, `WebSearch`, `Agent`) without changing the payload.
+normalizes case without changing the payload.
 
 ## Display derivation (single deterministic point)
 
@@ -94,65 +93,6 @@ Source: deterministic Pi JSONL session format
 `tool_execution_end` vs `message_end`-toolResult ordering is not guaranteed;
 the `folded` flag (not map deletion) dedupes. Raw JSONL is mirrored
 append-only; `result.Text` and usage accumulation are unchanged.
-
-## Claude saved-transcript mapping (`transcript.go`)
-
-Pinned reference: community JSONL schema at
-https://github.com/weirdgiraffe/claude-code-sessions-explorer/blob/f993edf8c845b36fa0277f849644f42b431f27cf/docs/JSONL-SCHEMA.md
-(reference only, not an official transport spec; tolerate unknown fields).
-
-| Source | Normalized behavior |
-|---|---|
-| `user.message.content` string or text blocks, `isMeta != true` | `message/user`; non-tool text preserved when mixed with results |
-| `user` with `isMeta=true` | `custom/claude.meta_user`, never a human message |
-| `assistant.message.content` text blocks | `message/assistant` with block order, model, final stop reason, deduped usage |
-| assistant `tool_use` + user `tool_result` | one folded `tool_call` in session/subagent scope; `is_error` decides success |
-| result content string/object/block array | bounded text; stdout/stderr/interrupted and structured Agent results supported |
-| unmatched tool use at end | incomplete `tool_call`, unknown success |
-| orphan tool result | `custom/claude.orphan_tool_result` with correlation ID |
-| `thinking` / redacted thinking | omitted everywhere, including nested custom data |
-| `system` `local_command` with text | `message/system` |
-| `system` `turn_duration` or other subtype | `custom/claude.system.<subtype>` |
-| `permission-mode`, `attachment`, `file-history-snapshot`, `custom-title`, `agent-name`, `last-prompt` | `custom/claude.<type>` |
-| `progress`, sidechain, nested subagent records | scoped custom metadata; no main-chat attribution |
-| `summary`, `queue-operation`, unrecognized types/blocks | bounded custom; no silent loss except partial/thinking |
-
-Notes: native `uuid` dedupes records; `message.id` + session/agent scope
-groups an API response for usage (final usage once per message, cache
-read/write mapped separately, `total = input + output + cache_read +
-cache_write`); transcript replay leaves USD cost unknown and accounting
-incomplete; partial/final snapshots sharing `message.id` collapse repeated
-prefixes; subagent files archive but replay as scoped custom entries, not
-per-role sessions.
-
-## Claude live stream mapping (`stream.go`)
-
-Sources: official programmatic usage (https://code.claude.com/docs/en/headless),
-CLI reference (https://code.claude.com/docs/en/cli-reference), cost tracking
-(https://code.claude.com/docs/en/agent-sdk/cost-tracking). Verified baseline:
-`claude --version` 2.1.263 on 2026-09-08 (flags, not auth/proof of billing).
-
-- `session_id` / `parent_tool_use_id` are transport fields, not transcript
-  `sessionId` / `parentUuid`. Startup hook/system records may precede
-  `system/init`; init is not guaranteed first.
-- `system/init` captures session/model metadata → bounded `claude.init`
-  custom; never a timeline message.
-- Main-loop assistant/user blocks feed shared normalization; `stream_event`
-  partial deltas are dropped; non-null `parent_tool_use_id` becomes scoped
-  `claude.subagent` custom and never overwrites the root response.
-- Block fragments sharing message IDs are deduplicated by record UUID;
-  tool IDs emit once; reception time is the live tool timing.
-- `result` is the terminal outcome, not another assistant message. Root result
-  text becomes `harness.Result.Text`. Error subtype / `is_error`, missing
-  result, nonzero exit, session mismatch, or malformed stream return an error
-  even with text; denials surface as bounded `claude.error_result` /
-  `claude.permission_denial` customs.
-- `total_cost_usd` is the single-invocation estimate, added once across
-  resume invocations. `modelUsage` whole-tree totals are preferred over root
-  `usage` (never both). Context window comes from selected-model metadata;
-  cumulative tokens are not occupancy. Placeholder per-message usage is
-  omitted; failures without terminal totals keep known input/cache counts,
-  mark incomplete, and fabricate nothing.
 
 ## Custom / incomplete policy
 

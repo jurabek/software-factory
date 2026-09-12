@@ -651,7 +651,7 @@ definitions:
     properties:
       coding_agent:
         type: string
-        enum: [pi, codex, claude]
+        enum: [pi, codex]
       model:
         type: string
       thinking:
@@ -738,7 +738,7 @@ definitions:
           $ref: "#/definitions/Repository"
       coding_agent:
         type: string
-        enum: [pi, codex, claude]
+        enum: [pi, codex]
         description: Coding agent harness for the task (defaults to server config)
       model:
         type: string

@@ -643,7 +643,6 @@ func (s *Service) Retry(ctx context.Context, taskID, attemptID string, request R
 	if err = s.MaterializeSnapshot(ctx, task, phase.InputSnapshot); err != nil {
 		return store.RetryResult{}, err
 	}
-	s.resetClaudeSessions(ctx, taskID)
 	parentBranch := task.SelectedBranchID
 	if phase.BranchID != "" {
 		parentBranch = phase.BranchID
