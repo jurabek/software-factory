@@ -8,31 +8,37 @@ import (
 )
 
 type Task struct {
-	ID                    string            `json:"id"`
-	ParentTaskID          string            `json:"parent_task_id,omitempty"`
-	Request               string            `json:"request"`
-	WorkspacePath         string            `json:"workspace_path"`
-	PrimaryRepositoryPath string            `json:"primary_repository_path,omitempty"`
-	Repositories          []TaskRepository  `json:"repositories"`
-	State                 string            `json:"state"`
-	PreviousState         string            `json:"previous_state,omitempty"`
-	ActivePhase           string            `json:"active_phase,omitempty"`
-	ActiveStage           string            `json:"active_stage,omitempty"`
-	Pipeline              string            `json:"pipeline,omitempty"`
-	Error                 string            `json:"error,omitempty"`
-	ConfigSnapshot        string            `json:"-"`
-	PlanDigest            string            `json:"plan_digest,omitempty"`
-	ApprovalActor         string            `json:"approval_actor,omitempty"`
-	ApprovalAt            string            `json:"approval_at,omitempty"`
-	CreatedAt             string            `json:"created_at"`
-	StartedAt             string            `json:"started_at,omitempty"`
-	EndedAt               string            `json:"ended_at,omitempty"`
-	TotalCost             float64           `json:"total_cost"`
-	SelectedBranchID      string            `json:"selected_branch_id,omitempty"`
-	CodingAgent           string            `json:"coding_agent,omitempty"`
-	Model                 string            `json:"model,omitempty"`
-	Thinking              string            `json:"thinking,omitempty"`
-	Stages                []StageProjection `json:"stages,omitempty"`
+	ID                      string            `json:"id"`
+	ParentTaskID            string            `json:"parent_task_id,omitempty"`
+	Request                 string            `json:"request"`
+	WorkspacePath           string            `json:"workspace_path"`
+	RepositoryType          string            `json:"repository_type"`
+	RepositorySource        string            `json:"repository_source"`
+	SubmittedRepositoryPath string            `json:"submitted_repository_path,omitempty"`
+	CanonicalRepositoryPath string            `json:"canonical_repository_path,omitempty"`
+	RepositoryPath          string            `json:"repository_path,omitempty"`
+	BaseSHA                 string            `json:"base_sha,omitempty"`
+	ReviewBaseSHA           string            `json:"review_base_sha,omitempty"`
+	BranchName              string            `json:"branch_name,omitempty"`
+	State                   string            `json:"state"`
+	PreviousState           string            `json:"previous_state,omitempty"`
+	ActivePhase             string            `json:"active_phase,omitempty"`
+	ActiveStage             string            `json:"active_stage,omitempty"`
+	Pipeline                string            `json:"pipeline,omitempty"`
+	Error                   string            `json:"error,omitempty"`
+	ConfigSnapshot          string            `json:"-"`
+	PlanDigest              string            `json:"plan_digest,omitempty"`
+	ApprovalActor           string            `json:"approval_actor,omitempty"`
+	ApprovalAt              string            `json:"approval_at,omitempty"`
+	CreatedAt               string            `json:"created_at"`
+	StartedAt               string            `json:"started_at,omitempty"`
+	EndedAt                 string            `json:"ended_at,omitempty"`
+	TotalCost               float64           `json:"total_cost"`
+	SelectedBranchID        string            `json:"selected_branch_id,omitempty"`
+	CodingAgent             string            `json:"coding_agent,omitempty"`
+	Model                   string            `json:"model,omitempty"`
+	Thinking                string            `json:"thinking,omitempty"`
+	Stages                  []StageProjection `json:"stages,omitempty"`
 }
 
 type TaskSession struct {
@@ -50,32 +56,44 @@ type StageProjection struct {
 }
 
 func (db *DB) CreateTask(ctx context.Context, task Task) error {
-	return db.createTask(ctx, task)
+	return db.createTask(ctx, task, false)
 }
 
-func (db *DB) createTask(ctx context.Context, task Task) error {
+func (db *DB) CreateActiveTask(ctx context.Context, task Task) error {
+	return db.createTask(ctx, task, true)
+}
+
+func (db *DB) createTask(ctx context.Context, task Task, requireAvailableSlot bool) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin create task: %w", err)
 	}
 	defer tx.Rollback()
-	_, err = tx.ExecContext(ctx, `insert into tasks(id,parent_task_id,request,workspace_path,state,pipeline,active_stage,config_snapshot,created_at,started_at,coding_agent,model,thinking) values(?,?,?,?,?,?,?,?,?,?,?,?,?)`, task.ID, nullIfEmpty(task.ParentTaskID), task.Request, task.WorkspacePath, task.State, nullIfEmpty(task.Pipeline), nullIfEmpty(task.ActiveStage), nullIfEmpty(task.ConfigSnapshot), task.CreatedAt, nullIfEmpty(task.StartedAt), task.CodingAgent, task.Model, task.Thinking)
+	query := `insert into tasks(id,parent_task_id,request,workspace_path,repository_type,repository_source,submitted_repository_path,state,pipeline,active_stage,config_snapshot,created_at,started_at,coding_agent,model,thinking) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+	if requireAvailableSlot {
+		query = `insert into tasks(id,parent_task_id,request,workspace_path,repository_type,repository_source,submitted_repository_path,state,pipeline,active_stage,config_snapshot,created_at,started_at,coding_agent,model,thinking) select ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? where not exists(select 1 from tasks where state in ('preparing','planning','awaiting_plan_approval','building','checking','reviewing'))`
+	}
+	result, err := tx.ExecContext(ctx, query, task.ID, nullIfEmpty(task.ParentTaskID), task.Request, task.WorkspacePath, task.RepositoryType, task.RepositorySource, nullIfEmpty(task.SubmittedRepositoryPath), task.State, nullIfEmpty(task.Pipeline), nullIfEmpty(task.ActiveStage), nullIfEmpty(task.ConfigSnapshot), task.CreatedAt, nullIfEmpty(task.StartedAt), task.CodingAgent, task.Model, task.Thinking)
 	if err != nil {
 		return wrap("create task", err)
 	}
-	for _, repository := range task.Repositories {
-		if _, err = tx.ExecContext(ctx, `insert into task_repositories(id,task_id,name,source_type,source_value,submitted_path,is_primary,created_at) values(?,?,?,?,?,?,?,?)`, repository.ID, task.ID, repository.Name, repository.SourceType, repository.SourceValue, nullIfEmpty(repository.SubmittedPath), repository.Primary, repository.CreatedAt); err != nil {
-			return wrap("create task repository", err)
+	if requireAvailableSlot {
+		count, rowsErr := result.RowsAffected()
+		if rowsErr != nil {
+			return wrap("check task creation", rowsErr)
+		}
+		if count != 1 {
+			return ErrConflict
 		}
 	}
 	return wrap("commit task", tx.Commit())
 }
 
-const taskColumns = `id,coalesce(parent_task_id,''),request,workspace_path,coalesce(primary_repository_path,''),state,coalesce(previous_state,''),coalesce(active_phase,''),coalesce(active_stage,''),coalesce(pipeline,''),coalesce(error,''),coalesce(config_snapshot,''),coalesce(plan_digest,''),coalesce(approval_actor,''),coalesce(approval_at,''),total_cost,created_at,coalesce(started_at,''),coalesce(ended_at,''),coalesce(selected_branch_id,''),coalesce(coding_agent,''),coalesce(model,''),coalesce(thinking,'')`
+const taskColumns = `id,coalesce(parent_task_id,''),request,workspace_path,repository_type,repository_source,coalesce(submitted_repository_path,''),coalesce(canonical_repository_path,''),coalesce(repository_path,''),coalesce(base_sha,''),coalesce(review_base_sha,''),coalesce(branch_name,''),state,coalesce(previous_state,''),coalesce(active_phase,''),coalesce(active_stage,''),coalesce(pipeline,''),coalesce(error,''),coalesce(config_snapshot,''),coalesce(plan_digest,''),coalesce(approval_actor,''),coalesce(approval_at,''),total_cost,created_at,coalesce(started_at,''),coalesce(ended_at,''),coalesce(selected_branch_id,''),coalesce(coding_agent,''),coalesce(model,''),coalesce(thinking,'')`
 
 func scanTask(scanner interface{ Scan(...any) error }) (Task, error) {
 	var value Task
-	err := scanner.Scan(&value.ID, &value.ParentTaskID, &value.Request, &value.WorkspacePath, &value.PrimaryRepositoryPath, &value.State, &value.PreviousState, &value.ActivePhase, &value.ActiveStage, &value.Pipeline, &value.Error, &value.ConfigSnapshot, &value.PlanDigest, &value.ApprovalActor, &value.ApprovalAt, &value.TotalCost, &value.CreatedAt, &value.StartedAt, &value.EndedAt, &value.SelectedBranchID, &value.CodingAgent, &value.Model, &value.Thinking)
+	err := scanner.Scan(&value.ID, &value.ParentTaskID, &value.Request, &value.WorkspacePath, &value.RepositoryType, &value.RepositorySource, &value.SubmittedRepositoryPath, &value.CanonicalRepositoryPath, &value.RepositoryPath, &value.BaseSHA, &value.ReviewBaseSHA, &value.BranchName, &value.State, &value.PreviousState, &value.ActivePhase, &value.ActiveStage, &value.Pipeline, &value.Error, &value.ConfigSnapshot, &value.PlanDigest, &value.ApprovalActor, &value.ApprovalAt, &value.TotalCost, &value.CreatedAt, &value.StartedAt, &value.EndedAt, &value.SelectedBranchID, &value.CodingAgent, &value.Model, &value.Thinking)
 	return value, err
 }
 
@@ -87,8 +105,7 @@ func (db *DB) Task(ctx context.Context, id string) (Task, error) {
 	if err != nil {
 		return Task{}, wrap("read task", err)
 	}
-	value.Repositories, err = db.TaskRepositories(ctx, id)
-	return value, wrap("read task repositories", err)
+	return value, nil
 }
 
 func (db *DB) Tasks(ctx context.Context) ([]Task, error) {
@@ -102,10 +119,6 @@ func (db *DB) Tasks(ctx context.Context) ([]Task, error) {
 		value, scanErr := scanTask(rows)
 		if scanErr != nil {
 			return nil, fmt.Errorf("scan task: %w", scanErr)
-		}
-		value.Repositories, scanErr = db.TaskRepositories(ctx, value.ID)
-		if scanErr != nil {
-			return nil, fmt.Errorf("read task repositories: %w", scanErr)
 		}
 		values = append(values, value)
 	}
@@ -134,10 +147,6 @@ func (db *DB) TaskSessions(ctx context.Context, taskID string) ([]Task, error) {
 		value, scanErr := scanTask(rows)
 		if scanErr != nil {
 			return nil, fmt.Errorf("scan task session: %w", scanErr)
-		}
-		value.Repositories, scanErr = db.TaskRepositories(ctx, value.ID)
-		if scanErr != nil {
-			return nil, fmt.Errorf("read task session repositories: %w", scanErr)
 		}
 		values = append(values, value)
 	}
@@ -176,8 +185,8 @@ func (db *DB) Transition(ctx context.Context, id, from, to, activePhase, message
 	return nil
 }
 
-func (db *DB) SetPrepared(ctx context.Context, id, primaryPath, snapshot string) error {
-	_, err := db.ExecContext(ctx, `update tasks set primary_repository_path=?,config_snapshot=? where id=?`, primaryPath, snapshot, id)
+func (db *DB) SetPrepared(ctx context.Context, id, repositoryPath, snapshot string) error {
+	_, err := db.ExecContext(ctx, `update tasks set repository_path=?,config_snapshot=? where id=?`, repositoryPath, snapshot, id)
 	return wrap("save task workspace", err)
 }
 

@@ -242,17 +242,20 @@ test("malformed event cursors fail without daemon access", async () => {
 	assert.equal(response.headers.get("Cache-Control"), "private, no-store");
 });
 
-test("task creation route whitelists the pipeline field and rejects unknown fields", () => {
+test("task creation route accepts one repository and rejects legacy fields", () => {
 	assert.equal(
 		isTaskCreationBody({
 			request: "Build",
-			repositories: [],
+			repository: { type: "github", repo: "owner/app" },
 			pipeline: "thorough",
 		}),
 		true,
 	);
 	assert.equal(
-		isTaskCreationBody({ request: "Build", repositories: [], unknown: true }),
+		isTaskCreationBody({
+			request: "Build",
+			repositories: [{ type: "github", repo: "owner/app" }],
+		}),
 		false,
 	);
 });

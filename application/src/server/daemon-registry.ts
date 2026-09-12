@@ -221,73 +221,52 @@ function validatedCreateInput(input: CreateTaskInput): CreateTaskInput {
 			"Task request must contain 1-20000 characters.",
 		);
 	}
+	const repository = input.repository;
 	if (
-		!Array.isArray(input.repositories) ||
-		input.repositories.length < 1 ||
-		input.repositories.length > 10
+		!repository ||
+		typeof repository !== "object" ||
+		Array.isArray(repository)
 	) {
 		throw new DaemonRegistryError(
 			400,
-			"invalid_repositories",
-			"Provide 1-10 repositories.",
+			"invalid_repository",
+			"Provide one repository.",
 		);
 	}
-	for (const repository of input.repositories) {
-		if (!repository || typeof repository !== "object")
-			throw new DaemonRegistryError(
-				400,
-				"invalid_repositories",
-				"Repository entry is invalid.",
-			);
-		if (repository.type !== "local" && repository.type !== "github")
-			throw new DaemonRegistryError(
-				400,
-				"invalid_repositories",
-				"Repository type must be local or github.",
-			);
-		if (
-			repository.name !== undefined &&
-			(typeof repository.name !== "string" ||
-				!repository.name ||
-				repository.name.length > 80)
-		) {
-			throw new DaemonRegistryError(
-				400,
-				"invalid_repositories",
-				"Repository name is invalid.",
-			);
-		}
-		if (
-			repository.type === "local" &&
-			(typeof repository.path !== "string" || !repository.path.startsWith("/"))
-		) {
-			throw new DaemonRegistryError(
-				400,
-				"invalid_repositories",
-				"Local repositories need an absolute path.",
-			);
-		}
-		if (
-			repository.type === "github" &&
-			(typeof repository.repo !== "string" ||
-				!/^[^/\s]+\/[^/\s]+$/.test(repository.repo))
-		) {
-			throw new DaemonRegistryError(
-				400,
-				"invalid_repositories",
-				"GitHub repositories need owner/name.",
-			);
-		}
-		if (
-			repository.primary !== undefined &&
-			typeof repository.primary !== "boolean"
-		) {
-			throw new DaemonRegistryError(
-				400,
-				"invalid_repositories",
-				"Repository primary flag is invalid.",
-			);
-		}
+	const repositoryFields = Object.keys(repository);
+	const expectedFields =
+		repository.type === "local" ? ["type", "path"] : ["type", "repo"];
+	if (
+		(repository.type !== "local" && repository.type !== "github") ||
+		repositoryFields.length !== expectedFields.length ||
+		repositoryFields.some((field) => !expectedFields.includes(field))
+	) {
+		throw new DaemonRegistryError(
+			400,
+			"invalid_repository",
+			"Repository must contain a type and its source.",
+		);
+	}
+	if (
+		repository.type === "local" &&
+		(typeof repository.path !== "string" || !repository.path.startsWith("/"))
+	) {
+		throw new DaemonRegistryError(
+			400,
+			"invalid_repository",
+			"Local repositories need an absolute path.",
+		);
+	}
+	if (
+		repository.type === "github" &&
+		(typeof repository.repo !== "string" ||
+			!/^[^/\s]+\/[^/\s]+$/.test(repository.repo))
+	) {
+		throw new DaemonRegistryError(
+			400,
+			"invalid_repository",
+			"GitHub repositories need owner/name.",
+		);
 	}
 	if (
 		input.coding_agent !== undefined &&
@@ -329,7 +308,7 @@ function validatedCreateInput(input: CreateTaskInput): CreateTaskInput {
 		);
 	return {
 		request: input.request.trim(),
-		repositories: input.repositories,
+		repository,
 		...(input.pipeline?.trim() ? { pipeline: input.pipeline.trim() } : {}),
 		...(input.coding_agent ? { coding_agent: input.coding_agent } : {}),
 		...(input.model ? { model: input.model } : {}),

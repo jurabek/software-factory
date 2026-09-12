@@ -35,7 +35,7 @@ func TestEventsTailReturnsNewestEventsInSequenceOrder(t *testing.T) {
 	defer db.Close()
 
 	createdAt := time.Now().UTC().Format(time.RFC3339Nano)
-	task := store.Task{ID: "task-1", Request: "request", WorkspacePath: t.TempDir(), State: "preparing", CreatedAt: createdAt, Repositories: []store.TaskRepository{{ID: "repository-1", TaskID: "task-1", Name: "source", SourceType: "local", SourceValue: t.TempDir(), Primary: true, CreatedAt: createdAt}}}
+	task := store.Task{ID: "task-1", Request: "request", WorkspacePath: t.TempDir(), RepositoryType: "local", RepositorySource: t.TempDir(), State: "preparing", CreatedAt: createdAt}
 	if err := db.CreateTask(context.Background(), task); err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func TestEmptyCollectionsAreJSONArrays(t *testing.T) {
 	}
 }
 
-func TestCreateTaskAcceptsMultipleRepositories(t *testing.T) {
+func TestCreateTaskAcceptsOneRepository(t *testing.T) {
 	root := t.TempDir()
 	db, err := store.Open(filepath.Join(root, "factory.db"))
 	if err != nil {
@@ -127,7 +127,7 @@ func TestCreateTaskAcceptsMultipleRepositories(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := []byte(`{"request":"Coordinate changes","repositories":[{"name":"api","type":"github","repo":"owner/api","primary":true},{"name":"web","type":"github","repo":"owner/web"}]}`)
+	body := []byte(`{"request":"Coordinate changes","repository":{"type":"github","repo":"owner/api"}}`)
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/tasks", bytes.NewReader(body))
 	authorize(request)
 	response := httptest.NewRecorder()
@@ -140,8 +140,36 @@ func TestCreateTaskAcceptsMultipleRepositories(t *testing.T) {
 	if err = json.NewDecoder(response.Body).Decode(&task); err != nil {
 		t.Fatal(err)
 	}
-	if len(task.Repositories) != 2 || task.WorkspacePath == "" {
+	if task.RepositorySource != "owner/api" || task.WorkspacePath == "" {
 		t.Fatalf("task = %#v", task)
+	}
+}
+
+func TestCreateTaskRejectsLegacyRepositoryFields(t *testing.T) {
+	root := t.TempDir()
+	db, err := store.Open(filepath.Join(root, "factory.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	service := factory.NewService(root, factory.Dependencies{Store: db})
+	defer service.Shutdown(context.Background())
+	server, err := New(db, service, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil }, newTestAccess())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, body := range []string{
+		`{"request":"Coordinate changes","repositories":[{"type":"github","repo":"owner/api"}]}`,
+		`{"request":"Coordinate changes","repository":{"type":"github","repo":"owner/api","name":"api"}}`,
+		`{"request":"Coordinate changes","repository":{"type":"github","repo":"owner/api","primary":true}}`,
+	} {
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/tasks", bytes.NewBufferString(body))
+		authorize(request)
+		response := httptest.NewRecorder()
+		server.ServeHTTP(response, request)
+		if response.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("status = %d: %s", response.Code, response.Body.String())
+		}
 	}
 }
 
@@ -157,7 +185,7 @@ func TestCreateAndListTaskSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	task, err := service.Create(context.Background(), factory.CreateRequest{Request: "Parent task", Repositories: []factory.Repository{{Type: "github", Repo: "owner/app"}}})
+	task, err := service.Create(context.Background(), factory.CreateRequest{Request: "Parent task", Repository: factory.Repository{Type: "github", Repo: "owner/app"}})
 	if err != nil {
 		t.Fatal(err)
 	}
