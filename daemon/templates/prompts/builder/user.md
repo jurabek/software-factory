@@ -4,4 +4,4 @@ Task request:
 Approved plan:
 {{.Plan}}
 
-Implement it across the Task Workspace repositories referenced by the plan. Do not commit, push, merge, or deploy.
+Implement it in the Task repository. Do not commit, push, merge, or deploy.

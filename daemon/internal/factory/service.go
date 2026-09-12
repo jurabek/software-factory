@@ -119,31 +119,24 @@ type execution struct {
 }
 
 type Repository struct {
-	Name    string `json:"name,omitempty"`
-	Type    string `json:"type"`
-	Path    string `json:"path,omitempty"`
-	Repo    string `json:"repo,omitempty"`
-	Primary bool   `json:"primary,omitempty"`
+	Type string `json:"type"`
+	Path string `json:"path,omitempty"`
+	Repo string `json:"repo,omitempty"`
 }
 type CreateRequest struct {
-	Request      string       `json:"request"`
-	Repositories []Repository `json:"repositories"`
-	Pipeline     string       `json:"pipeline,omitempty"`
-	CodingAgent  string       `json:"coding_agent,omitempty"`
-	Model        string       `json:"model,omitempty"`
-	Thinking     string       `json:"thinking,omitempty"`
+	Request     string     `json:"request"`
+	Repository  Repository `json:"repository"`
+	Pipeline    string     `json:"pipeline,omitempty"`
+	CodingAgent string     `json:"coding_agent,omitempty"`
+	Model       string     `json:"model,omitempty"`
+	Thinking    string     `json:"thinking,omitempty"`
 }
 type CreateSessionRequest struct {
 	Request string `json:"request"`
 }
 type Diff struct {
-	Repositories []RepositoryDiff `json:"repositories"`
-}
-type RepositoryDiff struct {
-	RepositoryID string   `json:"repository_id"`
-	Name         string   `json:"name"`
-	Files        []string `json:"files"`
-	Patch        string   `json:"patch"`
+	Files []string `json:"files"`
+	Patch string   `json:"patch"`
 }
 
 func NewService(root string, dependencies Dependencies) *Service {
@@ -207,23 +200,19 @@ func (s *taskService) CreateSession(ctx context.Context, taskID string, request 
 			return store.Task{}, err
 		}
 	}
-	repositories := make([]Repository, 0, len(task.Repositories))
-	for _, repository := range task.Repositories {
-		input := Repository{Name: repository.Name, Type: repository.SourceType, Primary: repository.Primary}
-		if repository.SourceType == "local" {
-			input.Path = repository.SourceValue
-		} else {
-			input.Repo = repository.SourceValue
-		}
-		repositories = append(repositories, input)
+	repository := Repository{Type: task.RepositoryType}
+	if task.RepositoryType == "local" {
+		repository.Path = task.RepositorySource
+	} else {
+		repository.Repo = task.RepositorySource
 	}
 	return s.create(ctx, CreateRequest{
-		Request:      request.Request,
-		Repositories: repositories,
-		CodingAgent:  task.CodingAgent,
-		Model:        task.Model,
-		Thinking:     task.Thinking,
-		Pipeline:     task.Pipeline,
+		Request:     request.Request,
+		Repository:  repository,
+		CodingAgent: task.CodingAgent,
+		Model:       task.Model,
+		Thinking:    task.Thinking,
+		Pipeline:    task.Pipeline,
 	}, task.ID)
 }
 
@@ -231,9 +220,6 @@ func (s *taskService) create(ctx context.Context, request CreateRequest, parentT
 	request.Request = strings.TrimSpace(request.Request)
 	if request.Request == "" {
 		return store.Task{}, fmt.Errorf("task description is required")
-	}
-	if len(request.Repositories) == 0 {
-		return store.Task{}, fmt.Errorf("at least one repository is required")
 	}
 	request.CodingAgent = strings.TrimSpace(request.CodingAgent)
 	request.Model = strings.TrimSpace(request.Model)
@@ -268,12 +254,12 @@ func (s *taskService) create(ctx context.Context, request CreateRequest, parentT
 		return store.Task{}, err
 	}
 	createdAt := time.Now().UTC().Format(time.RFC3339Nano)
-	repositories, err := taskRepositories(id, request.Repositories, createdAt)
+	source, submitted, err := normalizeRepository(request.Repository)
 	if err != nil {
 		return store.Task{}, err
 	}
 	workspace := s.taskDir(id)
-	for _, directory := range []string{workspace, filepath.Join(workspace, "workspace", "repositories"), filepath.Join(workspace, "attempts"), filepath.Join(workspace, "snapshots"), filepath.Join(workspace, "artifacts"), filepath.Join(workspace, "sessions"), filepath.Join(workspace, "workspace", "snapshots"), filepath.Join(workspace, "workspace", "branches"), filepath.Join(workspace, "workspace", "attempts")} {
+	for _, directory := range []string{workspace, filepath.Join(workspace, "workspace", "repository"), filepath.Join(workspace, "attempts"), filepath.Join(workspace, "snapshots"), filepath.Join(workspace, "artifacts"), filepath.Join(workspace, "sessions"), filepath.Join(workspace, "workspace", "snapshots"), filepath.Join(workspace, "workspace", "branches"), filepath.Join(workspace, "workspace", "attempts")} {
 		if err = os.MkdirAll(directory, 0o700); err != nil {
 			_ = os.RemoveAll(workspace)
 			return store.Task{}, fmt.Errorf("create task workspace: %w", err)
@@ -288,7 +274,7 @@ func (s *taskService) create(ctx context.Context, request CreateRequest, parentT
 	if len(configured.Agents) == 0 {
 		configSnapshot = ""
 	}
-	task := store.Task{ID: id, ParentTaskID: parentTaskID, Request: request.Request, WorkspacePath: workspace, Repositories: repositories, State: string(Preparing), Pipeline: selectedPipeline.Name, ConfigSnapshot: configSnapshot, CreatedAt: createdAt, StartedAt: createdAt, CodingAgent: request.CodingAgent, Model: request.Model, Thinking: request.Thinking}
+	task := store.Task{ID: id, ParentTaskID: parentTaskID, Request: request.Request, WorkspacePath: workspace, RepositoryType: request.Repository.Type, RepositorySource: source, SubmittedRepositoryPath: submitted, State: string(Preparing), Pipeline: selectedPipeline.Name, ConfigSnapshot: configSnapshot, CreatedAt: createdAt, StartedAt: createdAt, CodingAgent: request.CodingAgent, Model: request.Model, Thinking: request.Thinking}
 	metadata, err := json.MarshalIndent(task, "", "  ")
 	if err != nil {
 		_ = os.RemoveAll(workspace)
@@ -472,11 +458,7 @@ func (s *taskService) Delete(ctx context.Context, id string) error {
 	}
 	for _, session := range tasks {
 		if s.sandbox != nil {
-			cleanup := make([]CleanupRepository, 0, len(session.Repositories))
-			for _, repository := range session.Repositories {
-				cleanup = append(cleanup, CleanupRepository{RepositoryID: repository.ID, Name: repository.Name, SourceType: repository.SourceType, CanonicalPath: repository.CanonicalPath, WorkingPath: repository.WorkingPath})
-			}
-			_ = s.sandbox.Cleanup(ctx, CleanupRequest{TaskID: session.ID, WorkspaceRoot: session.WorkspacePath, Repositories: cleanup})
+			_ = s.sandbox.Cleanup(ctx, CleanupRequest{TaskID: session.ID, WorkspaceRoot: session.WorkspacePath, SourceType: session.RepositoryType, CanonicalPath: session.CanonicalRepositoryPath, WorkingPath: session.RepositoryPath})
 		}
 		if err := os.RemoveAll(s.taskDir(session.ID)); err != nil {
 			return fmt.Errorf("remove task files: %w", err)
@@ -494,36 +476,29 @@ func (s *taskService) Diff(ctx context.Context, id string) (Diff, error) {
 	if err != nil {
 		return Diff{}, err
 	}
-	return s.diffRepositories(ctx, task, false)
+	return s.diffRepository(ctx, task, false)
 }
 
-func (s *taskService) diffRepositories(ctx context.Context, task store.Task, reviewBase bool) (Diff, error) {
-	result := Diff{Repositories: make([]RepositoryDiff, 0, len(task.Repositories))}
-	for _, repository := range task.Repositories {
-		if repository.WorkingPath == "" {
-			continue
-		}
-		base := repository.BaseSHA
-		if reviewBase && repository.ReviewBaseSHA != "" {
-			base = repository.ReviewBaseSHA
-		}
-		files, diffErr := factorygit.ChangedFiles(ctx, s.git, repository.WorkingPath, base)
-		if diffErr != nil {
-			return Diff{}, diffErr
-		}
-		patch, diffErr := factorygit.Diff(ctx, s.git, repository.WorkingPath, base)
-		if diffErr != nil {
-			return Diff{}, diffErr
-		}
-		result.Repositories = append(result.Repositories, RepositoryDiff{RepositoryID: repository.ID, Name: repository.Name, Files: files, Patch: patch})
+func (s *taskService) diffRepository(ctx context.Context, task store.Task, reviewBase bool) (Diff, error) {
+	base := task.BaseSHA
+	if reviewBase && task.ReviewBaseSHA != "" {
+		base = task.ReviewBaseSHA
 	}
-	return result, nil
+	files, err := factorygit.ChangedFiles(ctx, s.git, task.RepositoryPath, base)
+	if err != nil {
+		return Diff{}, err
+	}
+	patch, err := factorygit.Diff(ctx, s.git, task.RepositoryPath, base)
+	if err != nil {
+		return Diff{}, err
+	}
+	return Diff{Files: files, Patch: patch}, nil
 }
 
 func (s *taskService) taskDir(id string) string { return filepath.Join(s.root, "tasks", id) }
 
-func (s *Service) diffRepositories(ctx context.Context, task store.Task, reviewBase bool) (Diff, error) {
-	return s.tasks.diffRepositories(ctx, task, reviewBase)
+func (s *Service) diffRepository(ctx context.Context, task store.Task, reviewBase bool) (Diff, error) {
+	return s.tasks.diffRepository(ctx, task, reviewBase)
 }
 
 func (s *Service) launch(id string, run func(context.Context, string) error) {
@@ -584,7 +559,7 @@ func (s *Service) prepareAndPlan(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	if task.State == string(Planning) && task.PrimaryRepositoryPath != "" {
+	if task.State == string(Planning) && task.RepositoryPath != "" {
 		return s.plan(ctx, task, nil)
 	}
 	snapshot, err := os.ReadFile(s.configPath)
@@ -613,24 +588,20 @@ func (s *Service) prepareAndPlan(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	primaryPath, err := s.prepareRepositories(ctx, task, phase)
+	repositoryPath, err := s.prepareRepository(ctx, task)
 	if err != nil {
 		return err
 	}
-	profile, profileErr := os.ReadFile(filepath.Join(task.WorkspacePath, "repository-profiles", primaryRepositoryName(task)+".json"))
+	_, profileErr := os.ReadFile(filepath.Join(task.WorkspacePath, "repository-profile.json"))
 	if profileErr != nil {
 		s.failPhase(ctx, phase, profileErr)
 		return profileErr
-	}
-	if err = os.WriteFile(filepath.Join(task.WorkspacePath, "repository-profile.json"), profile, 0o600); err != nil {
-		s.failPhase(ctx, phase, err)
-		return err
 	}
 	if err = os.WriteFile(filepath.Join(s.taskDir(id), "config-snapshot.yaml"), snapshot, 0o600); err != nil {
 		s.failPhase(ctx, phase, err)
 		return err
 	}
-	if err = s.db.SetPrepared(ctx, id, primaryPath, string(snapshot)); err != nil {
+	if err = s.db.SetPrepared(ctx, id, repositoryPath, string(snapshot)); err != nil {
 		s.failPhase(ctx, phase, err)
 		return err
 	}
@@ -648,7 +619,7 @@ func (s *Service) prepareAndPlan(ctx context.Context, id string) error {
 }
 
 func (s *Service) plan(ctx context.Context, task store.Task, revision map[string]any) error {
-	before, err := repositoryFingerprints(ctx, s.git, task.Repositories)
+	before, err := repositoryFingerprint(ctx, s.git, task)
 	if err != nil {
 		return err
 	}
@@ -656,7 +627,7 @@ func (s *Service) plan(ctx context.Context, task store.Task, revision map[string
 	if err != nil {
 		return err
 	}
-	data := map[string]any{"TaskID": task.ID, "Request": task.Request, "Repository": task.PrimaryRepositoryPath, "Repositories": task.Repositories, "Workspace": task.WorkspacePath}
+	data := map[string]any{"TaskID": task.ID, "Request": task.Request, "Repository": task.RepositoryPath, "Workspace": task.WorkspacePath}
 	for key, value := range revision {
 		data[key] = value
 	}
@@ -667,11 +638,11 @@ func (s *Service) plan(ctx context.Context, task store.Task, revision map[string
 		return err
 	}
 	_, err = s.completeAgentPhase(ctx, task, phase, "planner", validate, payload, func(payload string) error {
-		after, changedErr := repositoryFingerprints(ctx, s.git, task.Repositories)
+		after, changedErr := repositoryFingerprint(ctx, s.git, task)
 		if changedErr != nil {
 			return changedErr
 		}
-		if !sameFingerprints(before, after) {
+		if before != after {
 			return fmt.Errorf("planner modified repository")
 		}
 		return nil
@@ -684,7 +655,7 @@ func (s *Service) buildCheckReview(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	profiles, err := readTaskProfiles(task)
+	profiles, err := readTaskProfile(task)
 	if err != nil {
 		return err
 	}
@@ -717,11 +688,9 @@ func (s *Service) buildCheckReview(ctx context.Context, id string) error {
 		if beginErr != nil {
 			return beginErr
 		}
-		for _, repository := range task.Repositories {
-			if err = s.runChecks(ctx, task, phase, repository, profiles[repository.Name].Checks, "primary", ""); err != nil {
-				s.failPhase(ctx, phase, err)
-				return err
-			}
+		if err = s.runChecks(ctx, task, phase, profiles.Checks, "primary", ""); err != nil {
+			s.failPhase(ctx, phase, err)
+			return err
 		}
 		if err = s.endPhase(ctx, phase, "success", nil); err != nil {
 			return err
@@ -731,11 +700,11 @@ func (s *Service) buildCheckReview(ctx context.Context, id string) error {
 		}
 	}
 	task, _ = s.db.Task(ctx, id)
-	before, err := repositoryFingerprints(ctx, s.git, task.Repositories)
+	before, err := repositoryFingerprint(ctx, s.git, task)
 	if err != nil {
 		return err
 	}
-	changedFiles, err := taskChangedFiles(ctx, s.git, task.Repositories, true)
+	changedFiles, err := taskChangedFiles(ctx, s.git, task, true)
 	if err != nil {
 		return err
 	}
@@ -755,13 +724,13 @@ func (s *Service) buildCheckReview(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	changes, err := s.diffRepositories(ctx, task, true)
+	changes, err := s.diffRepository(ctx, task, true)
 	if err != nil {
 		s.failPhase(ctx, phase, err)
 		return err
 	}
 	validate := validatorForRole("reviewer")
-	reviewPayload, err := s.runRole(ctx, task, phase, "reviewer", map[string]any{"TaskID": task.ID, "Request": task.Request, "Plan": plan, "Checks": checks, "TestChanges": testChanges, "Comparisons": comparisons, "ChangedFiles": changedFiles, "Diff": changes.Repositories}, validate)
+	reviewPayload, err := s.runRole(ctx, task, phase, "reviewer", map[string]any{"TaskID": task.ID, "Request": task.Request, "Plan": plan, "Checks": checks, "TestChanges": testChanges, "Comparisons": comparisons, "ChangedFiles": changedFiles, "Diff": changes}, validate)
 	if err != nil {
 		s.failPhase(ctx, phase, err)
 		return err
@@ -774,11 +743,11 @@ func (s *Service) buildCheckReview(ctx context.Context, id string) error {
 		if !review.Approved {
 			return fmt.Errorf("reviewer rejected implementation")
 		}
-		after, changedErr := repositoryFingerprints(ctx, s.git, task.Repositories)
+		after, changedErr := repositoryFingerprint(ctx, s.git, task)
 		if changedErr != nil {
 			return changedErr
 		}
-		if !sameFingerprints(before, after) {
+		if before != after {
 			return fmt.Errorf("reviewer modified repository")
 		}
 		return nil
@@ -823,13 +792,7 @@ func (s *Service) runRole(ctx context.Context, task store.Task, phase store.Phas
 	if storedSession.Harness != harnessName {
 		return "", fmt.Errorf("role %s session belongs to harness %s", role, storedSession.Harness)
 	}
-	additionalDirectories := make([]string, 0, len(task.Repositories))
-	for _, repository := range task.Repositories {
-		if !repository.Primary && repository.WorkingPath != "" {
-			additionalDirectories = append(additionalDirectories, repository.WorkingPath)
-		}
-	}
-	request := harness.Request{CWD: task.PrimaryRepositoryPath, Prompt: userPrompt, SystemPrompt: systemPrompt, Model: agent.Model, Thinking: agent.Thinking, SessionID: storedSession.HarnessSessionID, SessionDirectory: storedSession.SessionDirectory, RawOutputPath: filepath.Join(storedSession.SessionDirectory, "raw-output.jsonl"), DeadlineMS: taskConfig.Runtime.AgentDeadlineMS, Resume: storedSession.SessionReady, AdditionalDirectories: additionalDirectories}
+	request := harness.Request{CWD: task.RepositoryPath, Prompt: userPrompt, SystemPrompt: systemPrompt, Model: agent.Model, Thinking: agent.Thinking, SessionID: storedSession.HarnessSessionID, SessionDirectory: storedSession.SessionDirectory, RawOutputPath: filepath.Join(storedSession.SessionDirectory, "raw-output.jsonl"), DeadlineMS: taskConfig.Runtime.AgentDeadlineMS, Resume: storedSession.SessionReady}
 	sessionReady := storedSession.SessionReady
 	for attempt := 0; attempt <= taskConfig.Runtime.JSONFixAttempts; attempt++ {
 		if attempt > 0 {
@@ -839,19 +802,19 @@ func (s *Service) runRole(ctx context.Context, task store.Task, phase store.Phas
 		if err := s.db.BeginAgentInvocation(ctx, task.ID, stageID, invocationID); err != nil {
 			return "", err
 		}
-		var before map[string]string
+		var before string
 		if phaseReadOnly(phase, role) {
-			before, err = repositoryFingerprints(ctx, s.git, task.Repositories)
+			before, err = repositoryFingerprint(ctx, s.git, task)
 			if err != nil {
 				return "", err
 			}
 		}
 		result, runErr := adapter.Run(ctx, request, s.eventSink(task.ID, phase.ID, harnessName))
 		if phaseReadOnly(phase, role) {
-			after, fingerprintErr := repositoryFingerprints(ctx, s.git, task.Repositories)
+			after, fingerprintErr := repositoryFingerprint(ctx, s.git, task)
 			if fingerprintErr != nil {
 				runErr = errors.Join(runErr, fingerprintErr)
-			} else if !sameFingerprints(before, after) {
+			} else if before != after {
 				runErr = errors.Join(runErr, fmt.Errorf("%s modified repository", role))
 			}
 		}
@@ -984,24 +947,6 @@ func (s *Service) beginPhase(ctx context.Context, taskID, name, kind, owner, des
 	}
 	phase := store.Phase{ID: randomID(), TaskID: taskID, Sequence: len(phases) + 1, Name: name, Kind: kind, Owner: owner, Description: description, Status: "running", Attempt: 1, BranchID: task.SelectedBranchID, DefinitionID: definitionID, InputSnapshot: inputSnapshot}
 	if err = s.db.AddPhase(ctx, phase); err != nil {
-		return store.Phase{}, err
-	}
-	inputs := make([]store.PhaseRepositoryInput, 0, len(task.Repositories))
-	for _, repository := range task.Repositories {
-		if repository.WorkingPath == "" {
-			continue
-		}
-		head, headErr := factorygit.Head(ctx, s.git, repository.WorkingPath)
-		if headErr != nil {
-			return store.Phase{}, headErr
-		}
-		branch, branchErr := factorygit.Branch(ctx, s.git, repository.WorkingPath)
-		if branchErr != nil {
-			return store.Phase{}, branchErr
-		}
-		inputs = append(inputs, store.PhaseRepositoryInput{PhaseID: phase.ID, RepositoryID: repository.ID, ReviewBaseSHA: repositoryReviewBase(repository), HeadSHA: head, BranchName: branch})
-	}
-	if err = s.db.SavePhaseRepositoryInputs(ctx, phase.ID, inputs); err != nil {
 		return store.Phase{}, err
 	}
 	if phase.BranchID != "" {
@@ -1173,66 +1118,22 @@ func (s *Service) taskLock(id string) *sync.Mutex {
 	return value.(*sync.Mutex)
 }
 
-func taskRepositories(taskID string, inputs []Repository, createdAt string) ([]store.TaskRepository, error) {
-	values := make([]store.TaskRepository, 0, len(inputs))
-	seen := make(map[string]bool, len(inputs))
-	primaryCount := 0
-	for index, input := range inputs {
-		name, source, submitted, err := normalizeRepository(input)
-		if err != nil {
-			return nil, err
-		}
-		if seen[name] {
-			return nil, fmt.Errorf("repository name %q is duplicated", name)
-		}
-		seen[name] = true
-		primary := input.Primary
-		if len(inputs) == 1 || index == 0 && !hasExplicitPrimary(inputs) {
-			primary = true
-		}
-		if primary {
-			primaryCount++
-		}
-		values = append(values, store.TaskRepository{ID: randomID(), TaskID: taskID, Name: name, SourceType: input.Type, SourceValue: source, SubmittedPath: submitted, Primary: primary, CreatedAt: createdAt})
-	}
-	if primaryCount != 1 {
-		return nil, fmt.Errorf("repositories require exactly one primary")
-	}
-	return values, nil
-}
-
-func normalizeRepository(input Repository) (name, source, submitted string, err error) {
+func normalizeRepository(input Repository) (source, submitted string, err error) {
 	switch input.Type {
 	case "local":
 		if !filepath.IsAbs(input.Path) {
-			return "", "", "", fmt.Errorf("local repository path must be absolute")
+			return "", "", fmt.Errorf("local repository path must be absolute")
 		}
 		source, submitted = input.Path, input.Path
 	case "github":
 		if parts := strings.Split(input.Repo, "/"); len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-			return "", "", "", fmt.Errorf("github repository must be owner/repository")
+			return "", "", fmt.Errorf("github repository must be owner/repository")
 		}
 		source = input.Repo
 	default:
-		return "", "", "", fmt.Errorf("repository type must be local or github")
+		return "", "", fmt.Errorf("repository type must be local or github")
 	}
-	name = strings.TrimSpace(input.Name)
-	if name == "" {
-		name = strings.TrimSuffix(filepath.Base(source), ".git")
-	}
-	if name == "." || name == ".." || name == "" || strings.ContainsAny(name, `/\\`) {
-		return "", "", "", fmt.Errorf("repository name must be one path segment")
-	}
-	return name, source, submitted, nil
-}
-
-func hasExplicitPrimary(repositories []Repository) bool {
-	for _, repository := range repositories {
-		if repository.Primary {
-			return true
-		}
-	}
-	return false
+	return source, submitted, nil
 }
 
 func taskID() (string, error) {
@@ -1249,142 +1150,57 @@ func randomID() string {
 	return hex.EncodeToString(bytes[:])
 }
 
-func readTaskProfiles(task store.Task) (map[string]Materialization, error) {
-	profiles := make(map[string]Materialization, len(task.Repositories))
-	for _, repository := range task.Repositories {
-		body, err := os.ReadFile(filepath.Join(task.WorkspacePath, "repository-profiles", repository.Name+".json"))
-		if err != nil {
-			return nil, fmt.Errorf("read repository profile %s: %w", repository.Name, err)
-		}
-		var profile Materialization
-		if err = json.Unmarshal(body, &profile); err != nil {
-			return nil, fmt.Errorf("decode repository profile %s: %w", repository.Name, err)
-		}
-		profiles[repository.Name] = profile
+func readTaskProfile(task store.Task) (Materialization, error) {
+	body, err := os.ReadFile(filepath.Join(task.WorkspacePath, "repository-profile.json"))
+	if err != nil {
+		return Materialization{}, fmt.Errorf("read repository profile: %w", err)
 	}
-	return profiles, nil
+	var profile Materialization
+	if err = json.Unmarshal(body, &profile); err != nil {
+		return Materialization{}, fmt.Errorf("decode repository profile: %w", err)
+	}
+	return profile, nil
 }
 
-func (s *Service) prepareRepositories(ctx context.Context, task store.Task, phase store.Phase) (string, error) {
-	primaryPath := ""
-	for _, repository := range task.Repositories {
-		workingPath := filepath.Join(task.WorkspacePath, "workspace", "repositories", repository.Name)
-		profile, err := s.prepareRepository(ctx, task.ID, repository, workingPath)
-		if err != nil {
-			s.failPhase(ctx, phase, err)
-			return "", err
-		}
-		if repository.Primary && len(profile.Checks) == 0 {
-			err = fmt.Errorf("primary repository has no deterministic checks declared or detected")
-			s.failPhase(ctx, phase, err)
-			return "", err
-		}
-		repository.CanonicalPath, repository.WorkingPath, repository.BaseSHA = profile.Root, workingPath, profile.BaseSHA
-		repository.ReviewBaseSHA, repository.BranchName = profile.BaseSHA, profile.BranchName
-		if err = s.db.SetRepositoryPrepared(ctx, repository); err != nil {
-			s.failPhase(ctx, phase, err)
-			return "", err
-		}
-		if err = writeRepositoryProfile(task.WorkspacePath, repository.Name, profile); err != nil {
-			s.failPhase(ctx, phase, err)
-			return "", err
-		}
-		if repository.Primary {
-			primaryPath = workingPath
-		}
+func (s *Service) prepareRepository(ctx context.Context, task store.Task) (string, error) {
+	if s.sandbox == nil {
+		return "", fmt.Errorf("sandbox unavailable")
 	}
-	if primaryPath == "" {
-		err := fmt.Errorf("primary repository is missing")
-		s.failPhase(ctx, phase, err)
+	destination := filepath.Join(task.WorkspacePath, "workspace", "repository")
+	profile, err := s.sandbox.Materialize(ctx, MaterializationRequest{TaskID: task.ID, SourceType: task.RepositoryType, Source: task.RepositorySource, Destination: destination})
+	if err != nil {
 		return "", err
 	}
-	return primaryPath, nil
-}
-
-func primaryRepositoryName(task store.Task) string {
-	for _, repository := range task.Repositories {
-		if repository.Primary {
-			return repository.Name
-		}
+	if len(profile.Checks) == 0 {
+		return "", fmt.Errorf("repository has no deterministic checks declared or detected")
 	}
-	return ""
-}
-
-func (s *Service) prepareRepository(ctx context.Context, taskID string, repository store.TaskRepository, destination string) (Materialization, error) {
-	if s.sandbox == nil {
-		return Materialization{}, fmt.Errorf("sandbox unavailable")
-	}
-	return s.sandbox.Materialize(ctx, MaterializationRequest{TaskID: taskID, RepositoryID: repository.ID, Name: repository.Name, SourceType: repository.SourceType, Source: repository.SourceValue, Destination: destination})
-}
-
-func writeRepositoryProfile(taskWorkspace, name string, profile Materialization) error {
 	encoded, err := json.MarshalIndent(profile, "", "  ")
 	if err != nil {
-		return fmt.Errorf("encode repository profile: %w", err)
+		return "", fmt.Errorf("encode repository profile: %w", err)
 	}
-	directory := filepath.Join(taskWorkspace, "repository-profiles")
-	if err = os.MkdirAll(directory, 0o700); err != nil {
-		return fmt.Errorf("create repository profile directory: %w", err)
+	if err = os.WriteFile(filepath.Join(task.WorkspacePath, "repository-profile.json"), encoded, 0o600); err != nil {
+		return "", fmt.Errorf("write repository profile: %w", err)
 	}
-	if err = os.WriteFile(filepath.Join(directory, name+".json"), encoded, 0o600); err != nil {
-		return fmt.Errorf("write repository profile: %w", err)
+	_, err = s.db.ExecContext(ctx, `update tasks set canonical_repository_path=?,repository_path=?,base_sha=?,review_base_sha=?,branch_name=? where id=?`, profile.Root, destination, profile.BaseSHA, profile.BaseSHA, profile.BranchName, task.ID)
+	if err != nil {
+		return "", fmt.Errorf("save repository materialization: %w", err)
 	}
-	return nil
+	return destination, nil
 }
 
-func taskChangedFiles(ctx context.Context, runner factorygit.Runner, repositories []store.TaskRepository, reviewBase bool) ([]string, error) {
-	var changed []string
-	for _, repository := range repositories {
-		if repository.WorkingPath == "" {
-			continue
-		}
-		base := repository.BaseSHA
-		if reviewBase && repository.ReviewBaseSHA != "" {
-			base = repository.ReviewBaseSHA
-		}
-		files, err := factorygit.ChangedFiles(ctx, runner, repository.WorkingPath, base)
-		if err != nil {
-			return nil, err
-		}
-		for _, file := range files {
-			changed = append(changed, repository.Name+"/"+file)
-		}
+func taskChangedFiles(ctx context.Context, runner factorygit.Runner, task store.Task, reviewBase bool) ([]string, error) {
+	base := task.BaseSHA
+	if reviewBase && task.ReviewBaseSHA != "" {
+		base = task.ReviewBaseSHA
 	}
-	return changed, nil
+	return factorygit.ChangedFiles(ctx, runner, task.RepositoryPath, base)
 }
 
-func repositoryReviewBase(repository store.TaskRepository) string {
-	if repository.ReviewBaseSHA != "" {
-		return repository.ReviewBaseSHA
+func repositoryFingerprint(ctx context.Context, runner factorygit.Runner, task store.Task) (string, error) {
+	if task.RepositoryPath == "" {
+		return "", nil
 	}
-	return repository.BaseSHA
-}
-
-func repositoryFingerprints(ctx context.Context, runner factorygit.Runner, repositories []store.TaskRepository) (map[string]string, error) {
-	values := make(map[string]string, len(repositories))
-	for _, repository := range repositories {
-		if repository.WorkingPath == "" {
-			continue
-		}
-		fingerprint, err := factorygit.Fingerprint(ctx, runner, repository.WorkingPath)
-		if err != nil {
-			return nil, fmt.Errorf("fingerprint repository %s: %w", repository.Name, err)
-		}
-		values[repository.ID] = fingerprint
-	}
-	return values, nil
-}
-
-func sameFingerprints(left, right map[string]string) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for key, value := range left {
-		if right[key] != value {
-			return false
-		}
-	}
-	return true
+	return factorygit.Fingerprint(ctx, runner, task.RepositoryPath)
 }
 
 func isReadOnlyOwner(owner string) bool {

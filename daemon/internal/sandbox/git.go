@@ -10,7 +10,7 @@ import (
 	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
 )
 
-// Git materializes task repositories using Git worktrees and GitHub clones.
+// Git materializes a task repository using Git worktrees and GitHub clones.
 type Git struct {
 	Runner factorygit.Runner
 }
@@ -18,11 +18,8 @@ type Git struct {
 var _ factory.Sandbox = Git{}
 
 func (g Git) Materialize(ctx context.Context, request factory.MaterializationRequest) (factory.Materialization, error) {
-	if request.TaskID == "" || request.RepositoryID == "" || request.Name == "" {
-		return factory.Materialization{}, fmt.Errorf("task and repository identity are required")
-	}
-	if filepath.Base(filepath.Clean(request.Destination)) != request.Name {
-		return factory.Materialization{}, fmt.Errorf("repository destination does not match repository identity")
+	if request.TaskID == "" || request.Destination == "" {
+		return factory.Materialization{}, fmt.Errorf("task identity and destination are required")
 	}
 	if g.Runner == nil {
 		return factory.Materialization{}, fmt.Errorf("git runner unavailable")
@@ -53,25 +50,20 @@ func (g Git) Cleanup(ctx context.Context, request factory.CleanupRequest) error 
 	if g.Runner == nil {
 		return fmt.Errorf("git runner unavailable")
 	}
-	for _, repository := range request.Repositories {
-		if repository.RepositoryID == "" || repository.Name == "" {
-			return fmt.Errorf("repository identity is required")
-		}
-		if repository.SourceType != "local" || repository.CanonicalPath == "" || repository.WorkingPath == "" {
-			continue
-		}
-		if !ownedWorkingPath(request.WorkspaceRoot, repository.WorkingPath, repository.Name) {
-			return fmt.Errorf("repository sandbox is not owned by task")
-		}
-		if _, err := g.Runner.Run(ctx, "git", "-C", repository.CanonicalPath, "worktree", "remove", "--force", repository.WorkingPath); err != nil {
-			return fmt.Errorf("remove repository sandbox: %w", err)
-		}
+	if request.SourceType != "local" || request.CanonicalPath == "" || request.WorkingPath == "" {
+		return nil
+	}
+	if !ownedWorkingPath(request.WorkspaceRoot, request.WorkingPath) {
+		return fmt.Errorf("repository sandbox is not owned by task")
+	}
+	if _, err := g.Runner.Run(ctx, "git", "-C", request.CanonicalPath, "worktree", "remove", "--force", request.WorkingPath); err != nil {
+		return fmt.Errorf("remove repository sandbox: %w", err)
 	}
 	return nil
 }
 
-func ownedWorkingPath(workspaceRoot, workingPath, name string) bool {
-	if workspaceRoot == "" || name == "" {
+func ownedWorkingPath(workspaceRoot, workingPath string) bool {
+	if workspaceRoot == "" {
 		return false
 	}
 	root, err := filepath.Abs(filepath.Clean(workspaceRoot))
@@ -86,7 +78,7 @@ func ownedWorkingPath(workspaceRoot, workingPath, name string) bool {
 	if err != nil {
 		return false
 	}
-	return relative == filepath.Join("workspace", "repositories", name) && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+	return relative == filepath.Join("workspace", "repository") && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
 
 func fromProfile(profile factorygit.Profile) factory.Materialization {

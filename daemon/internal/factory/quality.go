@@ -16,17 +16,16 @@ import (
 )
 
 type expectedTestChange struct {
-	repository store.TaskRepository
-	change     factorygit.Change
+	change factorygit.Change
 }
 
-func (s *qualityService) builderValidator(ctx context.Context, task store.Task, profiles map[string]Materialization) validator {
+func (s *qualityService) builderValidator(ctx context.Context, task store.Task, profile Materialization) validator {
 	return func(text string) (any, error) {
 		build, err := ValidateBuild(text)
 		if err != nil {
 			return build, err
 		}
-		expected, err := s.changedTestSet(ctx, task, profiles)
+		expected, err := s.changedTestSet(ctx, task, profile)
 		if err != nil {
 			return build, err
 		}
@@ -37,21 +36,15 @@ func (s *qualityService) builderValidator(ctx context.Context, task store.Task, 
 	}
 }
 
-func (s *qualityService) changedTestSet(ctx context.Context, task store.Task, profiles map[string]Materialization) (map[string]expectedTestChange, error) {
+func (s *qualityService) changedTestSet(ctx context.Context, task store.Task, profile Materialization) (map[string]expectedTestChange, error) {
 	expected := make(map[string]expectedTestChange)
-	for _, repository := range task.Repositories {
-		profile, ok := profiles[repository.Name]
-		if !ok {
-			return nil, fmt.Errorf("repository profile %s is unavailable", repository.Name)
-		}
-		entries, err := factorygit.ChangedEntries(ctx, s.git, repository.WorkingPath, repositoryReviewBase(repository))
-		if err != nil {
-			return nil, fmt.Errorf("read changes for %s: %w", repository.Name, err)
-		}
-		for _, entry := range entries {
-			if factorygit.MatchesGlob(entry.Path, profile.Tests) {
-				expected[repository.ID+"\x00"+entry.Path] = expectedTestChange{repository: repository, change: entry}
-			}
+	entries, err := factorygit.ChangedEntries(ctx, s.git, task.RepositoryPath, reviewBase(task))
+	if err != nil {
+		return nil, fmt.Errorf("read changes: %w", err)
+	}
+	for _, entry := range entries {
+		if factorygit.MatchesGlob(entry.Path, profile.Tests) {
+			expected[entry.Path] = expectedTestChange{change: entry}
 		}
 	}
 	return expected, nil
@@ -61,9 +54,9 @@ func validateTestChangeSet(changes []TestChange, expected map[string]expectedTes
 	seen := make(map[string]struct{}, len(changes))
 	for _, change := range changes {
 		path := filepath.ToSlash(filepath.Clean(change.Path))
-		key := change.RepositoryID + "\x00" + path
+		key := path
 		if _, ok := expected[key]; !ok {
-			return fmt.Errorf("test_changes entry is not a Git-derived changed test: %s/%s", change.RepositoryID, change.Path)
+			return fmt.Errorf("test_changes entry is not a Git-derived changed test: %s", change.Path)
 		}
 		if path != change.Path {
 			return fmt.Errorf("test_changes path is not canonical: %q", change.Path)
@@ -77,7 +70,7 @@ func validateTestChangeSet(changes []TestChange, expected map[string]expectedTes
 		missing := make([]string, 0, len(expected)-len(seen))
 		for key, value := range expected {
 			if _, ok := seen[key]; !ok {
-				missing = append(missing, value.repository.Name+"/"+value.change.Path)
+				missing = append(missing, value.change.Path)
 			}
 		}
 		return fmt.Errorf("test_changes is missing Git-derived changed tests: %s", strings.Join(missing, ", "))
@@ -90,11 +83,11 @@ func (s *qualityService) persistBuilderEvidence(ctx context.Context, task store.
 	if err != nil {
 		return err
 	}
-	profiles, err := readTaskProfiles(task)
+	profile, err := readTaskProfile(task)
 	if err != nil {
 		return err
 	}
-	expected, err := s.changedTestSet(ctx, task, profiles)
+	expected, err := s.changedTestSet(ctx, task, profile)
 	if err != nil {
 		return err
 	}
@@ -103,20 +96,18 @@ func (s *qualityService) persistBuilderEvidence(ctx context.Context, task store.
 	}
 	changes := make([]store.TestChange, 0, len(build.TestChanges))
 	for _, change := range build.TestChanges {
-		value := expected[change.RepositoryID+"\x00"+change.Path]
+		value := expected[change.Path]
 		changes = append(changes, store.TestChange{
-			ID:             randomID(),
-			TaskID:         task.ID,
-			PhaseID:        phase.ID,
-			Attempt:        phase.Attempt,
-			RepositoryID:   change.RepositoryID,
-			RepositoryName: value.repository.Name,
-			Path:           change.Path,
-			Reason:         change.Reason,
-			ChangeKind:     value.change.Kind,
-			RenameFrom:     value.change.RenameFrom,
-			RenameTo:       value.change.RenameTo,
-			CreatedAt:      nowString(),
+			ID:         randomID(),
+			TaskID:     task.ID,
+			PhaseID:    phase.ID,
+			Attempt:    phase.Attempt,
+			Path:       change.Path,
+			Reason:     change.Reason,
+			ChangeKind: value.change.Kind,
+			RenameFrom: value.change.RenameFrom,
+			RenameTo:   value.change.RenameTo,
+			CreatedAt:  nowString(),
 		})
 	}
 	return s.db.SaveTestChanges(ctx, changes)
@@ -130,14 +121,14 @@ type checkRunError struct {
 func (e *checkRunError) Error() string { return e.err.Error() }
 func (e *checkRunError) Unwrap() error { return e.err }
 
-func (s *qualityService) runChecks(ctx context.Context, task store.Task, phase store.Phase, repository store.TaskRepository, checks []Check, checkPhase, baseline string) error {
-	return s.runChecksAt(ctx, task, phase, repository, repository.WorkingPath, checks, checkPhase, baseline)
+func (s *qualityService) runChecks(ctx context.Context, task store.Task, phase store.Phase, checks []Check, checkPhase, baseline string) error {
+	return s.runChecksAt(ctx, task, phase, task.RepositoryPath, checks, checkPhase, baseline)
 }
 
-func (s *qualityService) runChecksAt(ctx context.Context, task store.Task, phase store.Phase, repository store.TaskRepository, workingPath string, checks []Check, checkPhase, baseline string) error {
+func (s *qualityService) runChecksAt(ctx context.Context, task store.Task, phase store.Phase, workingPath string, checks []Check, checkPhase, baseline string) error {
 	var firstErr error
 	for index, declared := range checks {
-		check, err := s.runCheck(ctx, task, phase, repository, workingPath, declared, index, checkPhase, baseline)
+		check, err := s.runCheck(ctx, task, phase, workingPath, declared, index, checkPhase, baseline)
 		if err != nil && firstErr == nil {
 			firstErr = err
 		}
@@ -148,13 +139,12 @@ func (s *qualityService) runChecksAt(ctx context.Context, task store.Task, phase
 	return firstErr
 }
 
-func (s *qualityService) runCheck(ctx context.Context, task store.Task, phase store.Phase, repository store.TaskRepository, workingPath string, declared Check, index int, checkPhase, baseline string) (store.Check, error) {
+func (s *qualityService) runCheck(ctx context.Context, task store.Task, phase store.Phase, workingPath string, declared Check, index int, checkPhase, baseline string) (store.Check, error) {
 	started := time.Now().UTC()
 	check := store.Check{
 		ID:                 fmt.Sprintf("%s-%s-%s-%d", phase.ID, checkPhase, safeFileName(declared.ID), index),
 		TaskID:             task.ID,
 		PhaseID:            phase.ID,
-		RepositoryID:       repository.ID,
 		StageID:            phase.Name,
 		Phase:              checkPhase,
 		ComparisonBaseline: baseline,
@@ -164,7 +154,7 @@ func (s *qualityService) runCheck(ctx context.Context, task store.Task, phase st
 		ExitCode:           -1,
 		StartedAt:          started.Format(time.RFC3339Nano),
 	}
-	logPath := filepath.Join(task.WorkspacePath, "attempts", fmt.Sprintf("%d-%s", phase.Attempt, phase.ID), "checks", checkPhase, safeFileName(repository.Name), safeFileName(declared.ID)+".log")
+	logPath := filepath.Join(task.WorkspacePath, "attempts", fmt.Sprintf("%d-%s", phase.Attempt, phase.ID), "checks", checkPhase, safeFileName(declared.ID)+".log")
 	check.ArtifactPath = logPath
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
 		return check, err
@@ -291,117 +281,112 @@ func safeFileName(value string) string {
 	return builder.String()
 }
 
-func (s *qualityService) runComparisons(ctx context.Context, task store.Task, phase store.Phase, profiles map[string]Materialization) error {
+func (s *qualityService) runComparisons(ctx context.Context, task store.Task, phase store.Phase, profile Materialization) error {
 	baseline, err := s.comparisonBaseline(ctx, task, phase)
 	if err != nil {
 		return err
 	}
-	for _, repository := range task.Repositories {
-		started := time.Now()
-		profile := profiles[repository.Name]
-		comparison := store.Comparison{ID: randomID(), TaskID: task.ID, PhaseID: phase.ID, Attempt: phase.Attempt, RepositoryID: repository.ID, RepositoryName: repository.Name, BaselineSnapshot: baseline, OverlayPaths: []string{}, CreatedAt: nowString()}
-		if !profile.PreChangeVerification {
-			comparison.Status, comparison.Reason = "skipped", "pre-change verification disabled"
-			comparison.DurationMS = int(time.Since(started).Milliseconds())
-			if err = s.saveComparison(ctx, &comparison); err != nil {
-				return err
-			}
-			continue
-		}
-		if len(profile.Checks) == 0 {
-			comparison.Status, comparison.Reason = "skipped", "repository has no declared checks"
-			comparison.DurationMS = int(time.Since(started).Milliseconds())
-			if err = s.saveComparison(ctx, &comparison); err != nil {
-				return err
-			}
-			continue
-		}
-		entries, entriesErr := s.changedTestEntries(ctx, repository, profile)
-		if entriesErr != nil {
-			comparison.Status, comparison.Reason = "inconclusive", entriesErr.Error()
-			comparison.DurationMS = int(time.Since(started).Milliseconds())
-			if err = s.saveComparison(ctx, &comparison); err != nil {
-				return err
-			}
-			continue
-		}
-		comparison.OverlayPaths = comparisonPaths(entries)
-		if len(comparison.OverlayPaths) == 0 {
-			comparison.Status, comparison.Reason = "skipped", "no added or modified tests"
-			comparison.DurationMS = int(time.Since(started).Milliseconds())
-			if err = s.saveComparison(ctx, &comparison); err != nil {
-				return err
-			}
-			continue
-		}
-		if baseline == "" {
-			comparison.Status, comparison.Reason = "inconclusive", "pre-implementation snapshot is unavailable"
-			comparison.DurationMS = int(time.Since(started).Milliseconds())
-			if err = s.saveComparison(ctx, &comparison); err != nil {
-				return err
-			}
-			continue
-		}
-		if rootErr := os.MkdirAll(filepath.Join(task.WorkspacePath, "workspace"), 0o700); rootErr != nil {
-			return rootErr
-		}
-		comparisonRoot, rootErr := os.MkdirTemp(filepath.Join(task.WorkspacePath, "workspace"), "comparison-")
-		if rootErr != nil {
-			comparison.Status, comparison.Reason = "inconclusive", rootErr.Error()
-			if err = s.saveComparison(ctx, &comparison); err != nil {
-				return err
-			}
-			return rootErr
-		}
-		func() {
-			defer os.RemoveAll(comparisonRoot)
-			baselineRoot := filepath.Join(comparisonRoot, "baseline")
-			if materializeErr := s.snapshots.MaterializeScratch(ctx, task, baseline, baselineRoot); materializeErr != nil {
-				comparison.Status, comparison.Reason = "inconclusive", materializeErr.Error()
-				return
-			}
-			baselineDir := filepath.Join(baselineRoot, repository.Name)
-			if checkErr := s.runChecksAt(ctx, task, phase, repository, baselineDir, profile.Checks, "baseline", baseline); checkErr != nil {
-				comparison.Status, comparison.Reason = "inconclusive", checkErr.Error()
-				if runErr, ok := checkErr.(*checkRunError); ok && runErr.kind == "cancelled" {
-					comparison.Status = "cancelled"
-				}
-				return
-			}
-			overlayRoot := filepath.Join(comparisonRoot, "overlay")
-			if materializeErr := s.snapshots.MaterializeScratch(ctx, task, baseline, overlayRoot); materializeErr != nil {
-				comparison.Status, comparison.Reason = "inconclusive", materializeErr.Error()
-				return
-			}
-			overlayDir := filepath.Join(overlayRoot, repository.Name)
-			for _, path := range comparison.OverlayPaths {
-				if copyErr := copyOverlayPath(repository.WorkingPath, overlayDir, path); copyErr != nil {
-					comparison.Status, comparison.Reason = "inconclusive", copyErr.Error()
-					return
-				}
-			}
-			checkErr := s.runChecksAt(ctx, task, phase, repository, overlayDir, profile.Checks, "test_overlay", baseline)
-			switch {
-			case checkErr == nil:
-				comparison.Status, comparison.Reason = "overlay_checks_passed", "all overlay checks passed"
-			case errors.Is(checkErr, context.Canceled):
-				comparison.Status, comparison.Reason = "cancelled", checkErr.Error()
-			case func() bool { value, ok := checkErr.(*checkRunError); return ok && value.kind == "failed" }():
-				comparison.Status, comparison.Reason = "overlay_checks_failed", checkErr.Error()
-			default:
-				comparison.Status, comparison.Reason = "inconclusive", checkErr.Error()
-			}
-		}()
-		if ctx.Err() != nil {
-			comparison.Status, comparison.Reason = "cancelled", ctx.Err().Error()
-		}
+	started := time.Now()
+	comparison := store.Comparison{ID: randomID(), TaskID: task.ID, PhaseID: phase.ID, Attempt: phase.Attempt, BaselineSnapshot: baseline, OverlayPaths: []string{}, CreatedAt: nowString()}
+	if !profile.PreChangeVerification {
+		comparison.Status, comparison.Reason = "skipped", "pre-change verification disabled"
 		comparison.DurationMS = int(time.Since(started).Milliseconds())
 		if err = s.saveComparison(ctx, &comparison); err != nil {
 			return err
 		}
-		if comparison.Status == "cancelled" {
-			return context.Canceled
+		return nil
+	}
+	if len(profile.Checks) == 0 {
+		comparison.Status, comparison.Reason = "skipped", "repository has no declared checks"
+		comparison.DurationMS = int(time.Since(started).Milliseconds())
+		if err = s.saveComparison(ctx, &comparison); err != nil {
+			return err
 		}
+		return nil
+	}
+	entries, entriesErr := s.changedTestEntries(ctx, task, profile)
+	if entriesErr != nil {
+		comparison.Status, comparison.Reason = "inconclusive", entriesErr.Error()
+		comparison.DurationMS = int(time.Since(started).Milliseconds())
+		if err = s.saveComparison(ctx, &comparison); err != nil {
+			return err
+		}
+		return nil
+	}
+	comparison.OverlayPaths = comparisonPaths(entries)
+	if len(comparison.OverlayPaths) == 0 {
+		comparison.Status, comparison.Reason = "skipped", "no added or modified tests"
+		comparison.DurationMS = int(time.Since(started).Milliseconds())
+		if err = s.saveComparison(ctx, &comparison); err != nil {
+			return err
+		}
+		return nil
+	}
+	if baseline == "" {
+		comparison.Status, comparison.Reason = "inconclusive", "pre-implementation snapshot is unavailable"
+		comparison.DurationMS = int(time.Since(started).Milliseconds())
+		if err = s.saveComparison(ctx, &comparison); err != nil {
+			return err
+		}
+		return nil
+	}
+	if rootErr := os.MkdirAll(filepath.Join(task.WorkspacePath, "workspace"), 0o700); rootErr != nil {
+		return rootErr
+	}
+	comparisonRoot, rootErr := os.MkdirTemp(filepath.Join(task.WorkspacePath, "workspace"), "comparison-")
+	if rootErr != nil {
+		comparison.Status, comparison.Reason = "inconclusive", rootErr.Error()
+		if err = s.saveComparison(ctx, &comparison); err != nil {
+			return err
+		}
+		return rootErr
+	}
+	func() {
+		defer os.RemoveAll(comparisonRoot)
+		baselineRoot := filepath.Join(comparisonRoot, "baseline")
+		if materializeErr := s.snapshots.MaterializeScratch(ctx, task, baseline, baselineRoot); materializeErr != nil {
+			comparison.Status, comparison.Reason = "inconclusive", materializeErr.Error()
+			return
+		}
+		if checkErr := s.runChecksAt(ctx, task, phase, baselineRoot, profile.Checks, "baseline", baseline); checkErr != nil {
+			comparison.Status, comparison.Reason = "inconclusive", checkErr.Error()
+			if runErr, ok := checkErr.(*checkRunError); ok && runErr.kind == "cancelled" {
+				comparison.Status = "cancelled"
+			}
+			return
+		}
+		overlayRoot := filepath.Join(comparisonRoot, "overlay")
+		if materializeErr := s.snapshots.MaterializeScratch(ctx, task, baseline, overlayRoot); materializeErr != nil {
+			comparison.Status, comparison.Reason = "inconclusive", materializeErr.Error()
+			return
+		}
+		for _, path := range comparison.OverlayPaths {
+			if copyErr := copyOverlayPath(task.RepositoryPath, overlayRoot, path); copyErr != nil {
+				comparison.Status, comparison.Reason = "inconclusive", copyErr.Error()
+				return
+			}
+		}
+		checkErr := s.runChecksAt(ctx, task, phase, overlayRoot, profile.Checks, "test_overlay", baseline)
+		switch {
+		case checkErr == nil:
+			comparison.Status, comparison.Reason = "overlay_checks_passed", "all overlay checks passed"
+		case errors.Is(checkErr, context.Canceled):
+			comparison.Status, comparison.Reason = "cancelled", checkErr.Error()
+		case func() bool { value, ok := checkErr.(*checkRunError); return ok && value.kind == "failed" }():
+			comparison.Status, comparison.Reason = "overlay_checks_failed", checkErr.Error()
+		default:
+			comparison.Status, comparison.Reason = "inconclusive", checkErr.Error()
+		}
+	}()
+	if ctx.Err() != nil {
+		comparison.Status, comparison.Reason = "cancelled", ctx.Err().Error()
+	}
+	comparison.DurationMS = int(time.Since(started).Milliseconds())
+	if err = s.saveComparison(ctx, &comparison); err != nil {
+		return err
+	}
+	if comparison.Status == "cancelled" {
+		return context.Canceled
 	}
 	return nil
 }
@@ -414,15 +399,15 @@ func (s *qualityService) saveComparison(ctx context.Context, comparison *store.C
 	return s.db.SaveComparison(context.WithoutCancel(ctx), *comparison)
 }
 
-func (s *qualityService) changedTestEntries(ctx context.Context, repository store.TaskRepository, profile Materialization) ([]expectedTestChange, error) {
-	entries, err := factorygit.ChangedEntries(ctx, s.git, repository.WorkingPath, repositoryReviewBase(repository))
+func (s *qualityService) changedTestEntries(ctx context.Context, task store.Task, profile Materialization) ([]expectedTestChange, error) {
+	entries, err := factorygit.ChangedEntries(ctx, s.git, task.RepositoryPath, reviewBase(task))
 	if err != nil {
 		return nil, err
 	}
 	result := make([]expectedTestChange, 0)
 	for _, entry := range entries {
 		if factorygit.MatchesGlob(entry.Path, profile.Tests) {
-			result = append(result, expectedTestChange{repository: repository, change: entry})
+			result = append(result, expectedTestChange{change: entry})
 		}
 	}
 	return result, nil
@@ -467,20 +452,27 @@ func (s *qualityService) comparisonBaseline(ctx context.Context, task store.Task
 	return "", nil
 }
 
-func (s *Service) builderValidator(ctx context.Context, task store.Task, profiles map[string]Materialization) validator {
-	return s.quality.builderValidator(ctx, task, profiles)
+func (s *Service) builderValidator(ctx context.Context, task store.Task, profile Materialization) validator {
+	return s.quality.builderValidator(ctx, task, profile)
 }
 
 func (s *Service) persistBuilderEvidence(ctx context.Context, task store.Task, phase store.Phase, payload string) error {
 	return s.quality.persistBuilderEvidence(ctx, task, phase, payload)
 }
 
-func (s *Service) runChecks(ctx context.Context, task store.Task, phase store.Phase, repository store.TaskRepository, checks []Check, checkPhase, baseline string) error {
-	return s.quality.runChecks(ctx, task, phase, repository, checks, checkPhase, baseline)
+func (s *Service) runChecks(ctx context.Context, task store.Task, phase store.Phase, checks []Check, checkPhase, baseline string) error {
+	return s.quality.runChecks(ctx, task, phase, checks, checkPhase, baseline)
 }
 
-func (s *Service) runComparisons(ctx context.Context, task store.Task, phase store.Phase, profiles map[string]Materialization) error {
-	return s.quality.runComparisons(ctx, task, phase, profiles)
+func (s *Service) runComparisons(ctx context.Context, task store.Task, phase store.Phase, profile Materialization) error {
+	return s.quality.runComparisons(ctx, task, phase, profile)
+}
+
+func reviewBase(task store.Task) string {
+	if task.ReviewBaseSHA != "" {
+		return task.ReviewBaseSHA
+	}
+	return task.BaseSHA
 }
 
 func copyOverlayPath(sourceRoot, destinationRoot, relative string) error {

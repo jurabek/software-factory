@@ -41,7 +41,7 @@ func messageTestService(t *testing.T, adapter harness.Harness) (*Service, *store
 		Store: db, Config: cfg, ConfigPath: filepath.Join(root, "config.yaml"),
 		Harnesses: harness.Registry{"pi": adapter},
 	})
-	task, err := service.tasks.create(context.Background(), CreateRequest{Request: "change", Repositories: []Repository{{Type: "github", Repo: "owner/repository"}}}, "")
+	task, err := service.tasks.create(context.Background(), CreateRequest{Request: "change", Repository: Repository{Type: "github", Repo: "owner/repository"}}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,7 +238,7 @@ func TestExactRetryIsIdempotentAndUsesOriginalInput(t *testing.T) {
 	if err := db.AddPhase(ctx, phase); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.SaveSnapshot(ctx, store.WorkspaceSnapshot{Digest: phase.InputSnapshot, TaskID: task.ID, Path: filepath.Join(task.WorkspacePath, "workspace", "repositories"), CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
+	if err := db.SaveSnapshot(ctx, store.WorkspaceSnapshot{Digest: phase.InputSnapshot, TaskID: task.ID, Path: filepath.Join(task.WorkspacePath, "workspace", "repository"), CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.ExecContext(ctx, `update tasks set state='blocked' where id=?`, task.ID); err != nil {
