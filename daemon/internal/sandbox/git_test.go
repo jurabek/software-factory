@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/jurabek/software-factory/daemon/internal/factory"
+	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
 )
 
 type recordingRunner struct {
@@ -61,6 +63,65 @@ func TestGitCleanupUsesTaskOwnedRepositoriesInOrder(t *testing.T) {
 	}
 	if !reflect.DeepEqual(runner.calls, want) {
 		t.Fatalf("calls = %#v, want %#v", runner.calls, want)
+	}
+}
+
+func TestGitCleanupRemovesMultipleRealWorktrees(t *testing.T) {
+	source := t.TempDir()
+	runRealGit(t, source, "init")
+	if err := os.WriteFile(filepath.Join(source, "README"), []byte("initial"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runRealGit(t, source, "add", "README")
+	runRealGit(t, source, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "initial")
+	root := t.TempDir()
+	first := filepath.Join(root, "workspace", "repositories", "one")
+	second := filepath.Join(root, "workspace", "repositories", "two")
+	if _, err := factorygit.PrepareLocal(context.Background(), factorygit.OSRunner{}, source, first); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := factorygit.PrepareLocal(context.Background(), factorygit.OSRunner{}, source, second); err != nil {
+		t.Fatal(err)
+	}
+	adapter := Git{Runner: factorygit.OSRunner{}}
+	if err := adapter.Cleanup(context.Background(), factory.CleanupRequest{TaskID: "task-1", WorkspaceRoot: root, Repositories: []factory.CleanupRepository{
+		{RepositoryID: "one", Name: "one", SourceType: "local", CanonicalPath: source, WorkingPath: first},
+		{RepositoryID: "two", Name: "two", SourceType: "local", CanonicalPath: source, WorkingPath: second},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(first); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("first worktree stat error = %v", err)
+	}
+	if _, err := os.Stat(second); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("second worktree stat error = %v", err)
+	}
+}
+
+func TestGitCleanupLeavesRealForeignWorktreeUntouched(t *testing.T) {
+	source := t.TempDir()
+	runRealGit(t, source, "init")
+	if err := os.WriteFile(filepath.Join(source, "README"), []byte("initial"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runRealGit(t, source, "add", "README")
+	runRealGit(t, source, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "initial")
+	foreignRoot := t.TempDir()
+	foreignPath := filepath.Join(foreignRoot, "workspace", "repositories", "app")
+	if _, err := factorygit.PrepareLocal(context.Background(), factorygit.OSRunner{}, source, foreignPath); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { runRealGit(t, source, "worktree", "remove", "--force", foreignPath) })
+
+	err := (Git{Runner: factorygit.OSRunner{}}).Cleanup(context.Background(), factory.CleanupRequest{
+		TaskID: "task-1", WorkspaceRoot: filepath.Join(t.TempDir(), "task-workspace"),
+		Repositories: []factory.CleanupRepository{{RepositoryID: "repo-1", Name: "app", SourceType: "local", CanonicalPath: source, WorkingPath: foreignPath}},
+	})
+	if err == nil {
+		t.Fatal("expected foreign worktree rejection")
+	}
+	if _, err := os.Stat(foreignPath); err != nil {
+		t.Fatalf("foreign worktree was modified: %v", err)
 	}
 }
 
@@ -217,4 +278,14 @@ func TestGitMaterializeRequiresIdentity(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected identity validation failure")
 	}
+}
+
+func runRealGit(t *testing.T, root string, args ...string) string {
+	t.Helper()
+	command := exec.Command("git", append([]string{"-C", root}, args...)...)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, output)
+	}
+	return string(output)
 }

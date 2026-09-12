@@ -102,21 +102,29 @@ func (s *Service) sendMessage(ctx context.Context, taskID, actor string, request
 		Anchor: anchor, StageID: role, RecipientRole: agentSession.AgentName, AgentSessionID: agentSession.HarnessSessionID,
 		DeliveryStatus: "queued", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
 	}
-	stored, created, err := s.db.SaveMessage(ctx, value)
+	toState := scheduledMessageState(task.State, role)
+	eventState := task.State
+	if toState != "" {
+		eventState = toState
+	}
+	entry := session.NewTaskMessage(session.TaskMessagePayload{
+		MessageID: value.ID, TaskID: value.TaskID, Text: value.Text, RecipientRole: value.RecipientRole,
+		AgentSessionID: value.AgentSessionID, TargetType: value.TargetType, TargetID: value.TargetID,
+		Anchor: value.Anchor, DeliveryStatus: value.DeliveryStatus,
+	})
+	stored, created, err := s.db.CommitMessageAcceptance(ctx, value, task.State, toState, role == "planner", store.Event{
+		ID: randomID(), TaskID: taskID, PhaseID: phaseID(phase), AttemptID: phaseID(phase), BranchID: branchID(phase),
+		Kind: entry.Kind, Name: entry.Name, Payload: entry.Payload, Display: entry.Display,
+		AvailableActions: AvailableActions(phase, eventState), StartedAt: time.Now().UTC(),
+	}, s.taskDir(taskID))
 	if err != nil {
 		return store.Message{}, err
 	}
 	if !created {
 		return stored, nil
 	}
-	if role == "planner" {
-		if err = s.db.InvalidateApproval(ctx, taskID); err != nil {
-			return store.Message{}, err
-		}
-	}
-	_ = s.traceMessage(ctx, stored, phase)
-	if err = s.scheduleMessage(ctx, task, role); err != nil {
-		return store.Message{}, err
+	if toState != "" {
+		s.launchMessageContinuation(taskID, role)
 	}
 	return stored, nil
 }
@@ -255,6 +263,19 @@ func (s *Service) scheduleMessage(ctx context.Context, task store.Task, role str
 	return nil
 }
 
+func scheduledMessageState(current, role string) string {
+	switch State(current) {
+	case AwaitingApproval, Blocked, Completed:
+		return string(stateForRole(role))
+	default:
+		return ""
+	}
+}
+
+func (s *Service) launchMessageContinuation(taskID, role string) {
+	s.launch(taskID, func(ctx context.Context, id string) error { return s.continueMessages(ctx, id, role) })
+}
+
 func (s *Service) kickQueuedMessage(taskID string) {
 	ctx := context.Background()
 	_ = s.executions.withTask(taskID, func() error {
@@ -359,6 +380,10 @@ func stateAfterRole(role string) State {
 }
 
 func (s *Service) completeAgentPhase(ctx context.Context, task store.Task, phase store.Phase, role string, validate validator, payload string, verify func(string) error, next State) (string, error) {
+	return s.completeAgentPhaseWithEnvelope(ctx, task, phase, role, validate, payload, verify, next, nil)
+}
+
+func (s *Service) completeAgentPhaseWithEnvelope(ctx context.Context, task store.Task, phase store.Phase, role string, validate validator, payload string, verify func(string) error, next State, envelope *store.Envelope) (string, error) {
 	for {
 		continued, err := s.drainMessages(ctx, task, phase, role, validate)
 		if err != nil {
@@ -367,6 +392,7 @@ func (s *Service) completeAgentPhase(ctx context.Context, task store.Task, phase
 		}
 		if continued != "" {
 			payload = continued
+			envelope = nil
 		}
 		var completed bool
 		err = s.executions.withTask(task.ID, func() error {
@@ -385,8 +411,10 @@ func (s *Service) completeAgentPhase(ctx context.Context, task store.Task, phase
 				s.failPhase(ctx, phase, err)
 				return err
 			}
-			if err = s.endPhase(ctx, phase, "success", nil); err == nil {
-				err = s.db.Transition(ctx, task.ID, string(stateForRole(role)), string(next), "", "")
+			if envelope != nil {
+				err = s.endPhaseToState(ctx, phase, "success", nil, string(stateForRole(role)), string(next), *envelope)
+			} else {
+				err = s.endPhaseToState(ctx, phase, "success", nil, string(stateForRole(role)), string(next))
 			}
 			completed = err == nil
 			return err
@@ -646,14 +674,11 @@ func (s *Service) retry(ctx context.Context, taskID, attemptID string, request R
 		Description: phase.Description, Status: "queued", Attempt: phase.Attempt + 1, BranchID: branch.ID,
 		DefinitionID: phase.DefinitionID, InputSnapshot: phase.InputSnapshot,
 	}
-	result, created, err := s.db.ApplyRetry(ctx, request.IdempotencyKey, branch, retry, string(stateForPhase(phase)))
+	result, created, err := s.db.ApplyRetryWithInputs(ctx, request.IdempotencyKey, branch, retry, string(stateForPhase(phase)), retryInputs)
 	if err != nil {
 		return store.RetryResult{}, err
 	}
 	if created {
-		if err = s.db.SavePhaseRepositoryInputs(ctx, result.AttemptID, retryInputs); err != nil {
-			return store.RetryResult{}, err
-		}
 		s.launch(taskID, func(ctx context.Context, id string) error { return s.runRetryAttempt(ctx, id, result.AttemptID) })
 	}
 	return result, nil
@@ -667,14 +692,18 @@ func (s *Service) runRetryAttempt(ctx context.Context, taskID, attemptID string)
 	if err != nil {
 		return err
 	}
-	if err = s.db.StartQueuedPhase(ctx, taskID, attemptID); err != nil {
-		return err
-	}
 	task, err := s.db.Task(ctx, taskID)
 	if err != nil {
 		return err
 	}
-	_ = s.traceBranch(ctx, taskID, phase, session.NewPhaseStart(session.PhasePayload{Phase: phase.ID, Name: phase.Name, Owner: phase.Owner, Kind: phase.Kind, InputSnapshot: phase.InputSnapshot}))
+	entry := session.NewPhaseStart(session.PhasePayload{Phase: phase.ID, Name: phase.Name, Owner: phase.Owner, Kind: phase.Kind, InputSnapshot: phase.InputSnapshot})
+	if err = s.db.StartQueuedPhaseWithEvent(ctx, taskID, attemptID, store.Event{
+		ID: randomID(), TaskID: taskID, PhaseID: phase.ID, AttemptID: phase.ID, BranchID: phase.BranchID,
+		Kind: entry.Kind, Name: entry.Name, Payload: entry.Payload, Display: entry.Display,
+		AvailableActions: AvailableActions(&phase, task.State), StartedAt: time.Now().UTC(),
+	}, s.taskDir(taskID)); err != nil {
+		return err
+	}
 	switch phase.Kind {
 	case "agent", "build", "review":
 		return s.runRetryAgent(ctx, task, phase)
@@ -708,10 +737,7 @@ func (s *Service) runRetryPrepare(ctx context.Context, task store.Task, phase st
 		if err := s.executionGuard(ctx, task.ID); err != nil {
 			return err
 		}
-		if err := s.endPhase(ctx, phase, "success", nil); err != nil {
-			return err
-		}
-		return s.db.Transition(ctx, task.ID, string(Preparing), string(Planning), "", "")
+		return s.endPhaseToState(ctx, phase, "success", nil, string(Preparing), string(Planning))
 	})
 	if err != nil {
 		return err
@@ -832,10 +858,7 @@ func (s *Service) runRetryChecks(ctx context.Context, task store.Task, phase sto
 		if err := s.executionGuard(ctx, task.ID); err != nil {
 			return err
 		}
-		if err := s.endPhase(ctx, phase, "success", nil); err != nil {
-			return err
-		}
-		return s.db.Transition(ctx, task.ID, string(Checking), string(Reviewing), "", "")
+		return s.endPhaseToState(ctx, phase, "success", nil, string(Checking), string(Reviewing))
 	})
 	if err != nil {
 		return err

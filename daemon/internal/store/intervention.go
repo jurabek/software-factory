@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 )
 
 type Intervention struct {
@@ -49,6 +50,51 @@ func (db *DB) SaveIntervention(ctx context.Context, value Intervention) (Interve
 	err = db.QueryRowContext(ctx, `select id,task_id,target_type,target_id,actor,intent,text,delivery,idempotency_key,coalesce(anchor_json,''),coalesce(expected_branch_head,''),coalesce(branch_id,''),coalesce(attempt_id,''),created_at from interventions where task_id=? and idempotency_key=?`, value.TaskID, value.IdempotencyKey).Scan(&stored.ID, &stored.TaskID, &stored.TargetType, &stored.TargetID, &stored.Actor, &stored.Intent, &stored.Text, &stored.Delivery, &stored.IdempotencyKey, &stored.Anchor, &stored.ExpectedHead, &stored.BranchID, &stored.AttemptID, &stored.CreatedAt)
 	return stored, rows == 1, wrap("read intervention", err)
 }
+
+// SaveInterventionWithEvent atomically records a new intervention and its
+// history event. An idempotent replay returns the existing intervention
+// without appending another event.
+func (db *DB) SaveInterventionWithEvent(ctx context.Context, value Intervention, event Event, taskDir string) (Intervention, bool, error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return Intervention{}, false, wrap("begin intervention", err)
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `insert into interventions(id,task_id,target_type,target_id,actor,intent,text,delivery,idempotency_key,created_at,anchor_json,expected_branch_head,branch_id,attempt_id) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?) on conflict(task_id,idempotency_key) do nothing`, value.ID, value.TaskID, value.TargetType, value.TargetID, value.Actor, value.Intent, value.Text, value.Delivery, value.IdempotencyKey, value.CreatedAt, nullIfEmpty(value.Anchor), nullIfEmpty(value.ExpectedHead), nullIfEmpty(value.BranchID), nullIfEmpty(value.AttemptID))
+	if err != nil {
+		return Intervention{}, false, wrap("save intervention", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return Intervention{}, false, wrap("read intervention insert result", err)
+	}
+	var stored Intervention
+	if err = scanIntervention(tx.QueryRowContext(ctx, interventionSelect+` where task_id=? and idempotency_key=?`, value.TaskID, value.IdempotencyKey), &stored); err != nil {
+		return Intervention{}, false, wrap("read intervention", err)
+	}
+	var line []byte
+	if rows == 1 {
+		if _, line, err = insertEvent(ctx, tx, event); err != nil {
+			return Intervention{}, false, err
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return Intervention{}, false, wrap("commit intervention", err)
+	}
+	if rows == 1 {
+		if exportErr := exportEvent(taskDir, line); exportErr != nil {
+			log.Printf("event export after committed intervention: %v", exportErr)
+		}
+	}
+	return stored, rows == 1, nil
+}
+
+const interventionSelect = `select id,task_id,target_type,target_id,actor,intent,text,delivery,idempotency_key,coalesce(anchor_json,''),coalesce(expected_branch_head,''),coalesce(branch_id,''),coalesce(attempt_id,''),created_at from interventions`
+
+func scanIntervention(scanner interface{ Scan(...any) error }, value *Intervention) error {
+	return scanner.Scan(&value.ID, &value.TaskID, &value.TargetType, &value.TargetID, &value.Actor, &value.Intent, &value.Text, &value.Delivery, &value.IdempotencyKey, &value.Anchor, &value.ExpectedHead, &value.BranchID, &value.AttemptID, &value.CreatedAt)
+}
+
 func (db *DB) Interventions(ctx context.Context, taskID string) ([]Intervention, error) {
 	rows, err := db.QueryContext(ctx, `select id,task_id,target_type,target_id,actor,intent,text,delivery,idempotency_key,coalesce(anchor_json,''),coalesce(expected_branch_head,''),coalesce(branch_id,''),coalesce(attempt_id,''),created_at from interventions where task_id=? order by created_at`, taskID)
 	if err != nil {
@@ -67,6 +113,16 @@ func (db *DB) Interventions(ctx context.Context, taskID string) ([]Intervention,
 }
 
 func (db *DB) ApplyIntervention(ctx context.Context, intervention Intervention, branch *Branch, phase *Phase, definition *PhaseDefinition, newState string, reopen bool) (AppliedIntervention, error) {
+	return db.applyIntervention(ctx, intervention, branch, phase, definition, newState, reopen, nil, "")
+}
+
+// ApplyInterventionWithEvent atomically applies a state-changing intervention
+// and appends its history event.
+func (db *DB) ApplyInterventionWithEvent(ctx context.Context, intervention Intervention, branch *Branch, phase *Phase, definition *PhaseDefinition, newState string, reopen bool, event Event, taskDir string) (AppliedIntervention, error) {
+	return db.applyIntervention(ctx, intervention, branch, phase, definition, newState, reopen, &event, taskDir)
+}
+
+func (db *DB) applyIntervention(ctx context.Context, intervention Intervention, branch *Branch, phase *Phase, definition *PhaseDefinition, newState string, reopen bool, event *Event, taskDir string) (AppliedIntervention, error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return AppliedIntervention{}, err
@@ -134,8 +190,19 @@ func (db *DB) ApplyIntervention(ctx context.Context, intervention Intervention, 
 			}
 		}
 	}
+	var line []byte
+	if event != nil {
+		if _, line, err = insertEvent(ctx, tx, *event); err != nil {
+			return AppliedIntervention{}, err
+		}
+	}
 	if err = tx.Commit(); err != nil {
 		return AppliedIntervention{}, wrap("commit intervention", err)
+	}
+	if event != nil {
+		if err = exportEvent(taskDir, line); err != nil {
+			log.Printf("event export after committed intervention: %v", err)
+		}
 	}
 	return AppliedIntervention{Intervention: intervention, Created: true, BranchID: intervention.BranchID, AttemptID: intervention.AttemptID}, nil
 }

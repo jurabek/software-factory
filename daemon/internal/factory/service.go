@@ -338,10 +338,11 @@ func (s *Service) approve(ctx context.Context, id, actor, expectedDigest string)
 	if expectedDigest != currentDigest {
 		return ErrStalePlan
 	}
-	if err := s.db.SetApproval(ctx, id, currentDigest, actor); err != nil {
-		return err
-	}
-	if err := s.db.Transition(ctx, id, string(AwaitingApproval), string(Building), "", ""); err != nil {
+	entry := session.NewPlanFeedback(session.PlanFeedbackPayload{Feedback: "approved", Actor: actor, PlanDigest: currentDigest})
+	if err := s.db.CommitApproval(ctx, id, string(AwaitingApproval), currentDigest, actor, store.Event{
+		ID: randomID(), TaskID: id, Kind: entry.Kind, Name: entry.Name, Payload: entry.Payload,
+		Display: entry.Display, StartedAt: time.Now().UTC(),
+	}, s.taskDir(id)); err != nil {
 		return err
 	}
 	s.launch(id, s.progress)
@@ -602,10 +603,7 @@ func (s *Service) prepareAndPlan(ctx context.Context, id string) error {
 		s.failPhase(ctx, phase, err)
 		return err
 	}
-	if err = s.endPhase(ctx, phase, "success", nil); err != nil {
-		return err
-	}
-	if err = s.db.Transition(ctx, id, string(Preparing), string(Planning), "", ""); err != nil {
+	if err = s.endPhaseToState(ctx, phase, "success", nil, string(Preparing), string(Planning)); err != nil {
 		return err
 	}
 	task, err = s.db.Task(ctx, id)
@@ -629,12 +627,12 @@ func (s *Service) plan(ctx context.Context, task store.Task, revision map[string
 		data[key] = value
 	}
 	validate := validatorForRole("planner")
-	payload, err := s.runRole(ctx, task, phase, "planner", data, validate)
+	payload, envelope, err := s.runRoleDeferredEnvelope(ctx, task, phase, "planner", data, validate)
 	if err != nil {
 		s.failPhase(ctx, phase, err)
 		return err
 	}
-	_, err = s.completeAgentPhase(ctx, task, phase, "planner", validate, payload, func(payload string) error {
+	_, err = s.completeAgentPhaseWithEnvelope(ctx, task, phase, "planner", validate, payload, func(payload string) error {
 		after, changedErr := repositoryFingerprints(ctx, s.git, task.Repositories)
 		if changedErr != nil {
 			return changedErr
@@ -643,7 +641,7 @@ func (s *Service) plan(ctx context.Context, task store.Task, revision map[string
 			return fmt.Errorf("planner modified repository")
 		}
 		return nil
-	}, AwaitingApproval)
+	}, AwaitingApproval, &envelope)
 	return err
 }
 
@@ -691,10 +689,7 @@ func (s *Service) buildCheckReview(ctx context.Context, id string) error {
 				return err
 			}
 		}
-		if err = s.endPhase(ctx, phase, "success", nil); err != nil {
-			return err
-		}
-		if err = s.db.Transition(ctx, id, string(Checking), string(Reviewing), "", ""); err != nil {
+		if err = s.endPhaseToState(ctx, phase, "success", nil, string(Checking), string(Reviewing)); err != nil {
 			return err
 		}
 	}
@@ -757,9 +752,19 @@ func (s *Service) buildCheckReview(ctx context.Context, id string) error {
 type validator func(string) (any, error)
 
 func (s *Service) runRole(ctx context.Context, task store.Task, phase store.Phase, role string, data map[string]any, validate validator) (string, error) {
+	payload, _, err := s.runRoleWithOptions(ctx, task, phase, role, data, validate, false)
+	return payload, err
+}
+
+func (s *Service) runRoleDeferredEnvelope(ctx context.Context, task store.Task, phase store.Phase, role string, data map[string]any, validate validator) (string, store.Envelope, error) {
+	payload, envelope, err := s.runRoleWithOptions(ctx, task, phase, role, data, validate, true)
+	return payload, envelope, err
+}
+
+func (s *Service) runRoleWithOptions(ctx context.Context, task store.Task, phase store.Phase, role string, data map[string]any, validate validator, deferValid bool) (string, store.Envelope, error) {
 	taskConfig, err := s.taskConfig(task)
 	if err != nil {
-		return "", err
+		return "", store.Envelope{}, err
 	}
 	stageID := role
 	agentName := role
@@ -769,15 +774,15 @@ func (s *Service) runRole(ctx context.Context, task store.Task, phase store.Phas
 	}
 	agent, ok := agentForRole(taskConfig, agentName)
 	if !ok {
-		return "", fmt.Errorf("agent %s not configured", agentName)
+		return "", store.Envelope{}, fmt.Errorf("agent %s not configured", agentName)
 	}
 	adapter, ok := s.harnesses.Get(taskConfig.Defaults.CodingAgent)
 	if !ok {
-		return "", fmt.Errorf("harness %s unavailable", taskConfig.Defaults.CodingAgent)
+		return "", store.Envelope{}, fmt.Errorf("harness %s unavailable", taskConfig.Defaults.CodingAgent)
 	}
 	systemPrompt, userPrompt, err := s.renderPrompts(agent, data)
 	if err != nil {
-		return "", err
+		return "", store.Envelope{}, err
 	}
 	harnessName := taskConfig.Defaults.CodingAgent
 	sessionDir := filepath.Join(s.taskDir(task.ID), "sessions", stageID, harnessName)
@@ -786,10 +791,10 @@ func (s *Service) runRole(ctx context.Context, task store.Task, phase store.Phas
 		storedSession, sessionErr = s.db.ReserveAgentSession(ctx, task.ID, store.AgentSession{StageID: stageID, AgentName: agentName, Role: agentName, Harness: harnessName, Model: agent.Model, Thinking: agent.Thinking, Color: agent.Color, HarnessSessionID: uuid.New().String(), SessionDirectory: sessionDir, AccountingComplete: true})
 	}
 	if sessionErr != nil {
-		return "", sessionErr
+		return "", store.Envelope{}, sessionErr
 	}
 	if storedSession.Harness != harnessName {
-		return "", fmt.Errorf("role %s session belongs to harness %s", role, storedSession.Harness)
+		return "", store.Envelope{}, fmt.Errorf("role %s session belongs to harness %s", role, storedSession.Harness)
 	}
 	additionalDirectories := make([]string, 0, len(task.Repositories))
 	for _, repository := range task.Repositories {
@@ -805,13 +810,13 @@ func (s *Service) runRole(ctx context.Context, task store.Task, phase store.Phas
 		}
 		invocationID := uuid.New().String()
 		if err := s.db.BeginAgentInvocation(ctx, task.ID, stageID, invocationID); err != nil {
-			return "", err
+			return "", store.Envelope{}, err
 		}
 		var before map[string]string
 		if phaseReadOnly(phase, role) {
 			before, err = repositoryFingerprints(ctx, s.git, task.Repositories)
 			if err != nil {
-				return "", err
+				return "", store.Envelope{}, err
 			}
 		}
 		result, runErr := adapter.Run(ctx, request, s.eventSink(task.ID, phase.ID, harnessName))
@@ -839,11 +844,11 @@ func (s *Service) runRole(ctx context.Context, task store.Task, phase store.Phas
 		finalizeErr := s.db.FinalizeAgentInvocation(cleanupCtx, task.ID, stageID, invocationID, store.AgentSession{StageID: stageID, AgentName: agentName, Role: agentName, Harness: harnessName, Provider: result.Provider, Model: result.Model, Thinking: agent.Thinking, Color: agent.Color, HarnessSessionID: storedSession.HarnessSessionID, SessionDirectory: storedSession.SessionDirectory, SessionReady: sessionReady, NativeTranscriptPath: result.NativeTranscriptPath, ContextTokens: result.ContextTokens, ContextWindow: result.ContextWindow, Usage: persistedUsage(result.Usage), Cost: result.Usage.Cost, AccountingComplete: result.AccountingComplete})
 		cancel()
 		if finalizeErr != nil {
-			return "", finalizeErr
+			return "", store.Envelope{}, finalizeErr
 		}
 		request.Resume = sessionReady
 		if runErr != nil {
-			return "", runErr
+			return "", store.Envelope{}, runErr
 		}
 		_, validationErr := validate(result.Text)
 		valid := validationErr == nil
@@ -855,15 +860,19 @@ func (s *Service) runRole(ctx context.Context, task store.Task, phase store.Phas
 		if valid {
 			stored = result.Text
 		}
-		if err := s.db.SaveEnvelope(ctx, randomID(), task.ID, phase.ID, stageID, phaseEnvelopeKind(phase, role), stored, valid, attempt+1); err != nil {
-			return "", err
+		envelope := store.Envelope{ID: randomID(), TaskID: task.ID, PhaseID: phase.ID, StageID: stageID, AgentRole: stageID, OutputType: phaseEnvelopeKind(phase, role), Payload: stored, Valid: valid, Attempt: attempt + 1, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+		if valid && deferValid {
+			return result.Text, envelope, nil
+		}
+		if err := s.db.SaveEnvelope(ctx, envelope.ID, envelope.TaskID, envelope.PhaseID, envelope.AgentRole, envelope.OutputType, envelope.Payload, envelope.Valid, envelope.Attempt); err != nil {
+			return "", store.Envelope{}, err
 		}
 		if valid {
-			return result.Text, nil
+			return result.Text, store.Envelope{}, nil
 		}
 		err = validationErr
 	}
-	return "", fmt.Errorf("%s envelope invalid after corrections: %w", role, err)
+	return "", store.Envelope{}, fmt.Errorf("%s envelope invalid after corrections: %w", role, err)
 }
 
 func persistedUsage(value harness.Usage) session.Usage {
@@ -941,8 +950,13 @@ func (s *Service) beginPhase(ctx context.Context, taskID, name, kind, owner, des
 	if err != nil {
 		return store.Phase{}, err
 	}
-	_ = s.ensureBranch(ctx, taskID, "")
-	task, _ := s.db.Task(ctx, taskID)
+	if err = s.ensureBranch(ctx, taskID, ""); err != nil {
+		return store.Phase{}, err
+	}
+	task, err := s.db.Task(ctx, taskID)
+	if err != nil {
+		return store.Phase{}, err
+	}
 	definitionID := s.ensureDefinition(ctx, taskID, name, kind, owner)
 	inputSnapshot := ""
 	if isReadOnlyOwner(owner) && len(phases) > 0 {
@@ -954,9 +968,6 @@ func (s *Service) beginPhase(ctx context.Context, taskID, name, kind, owner, des
 		}
 	}
 	phase := store.Phase{ID: randomID(), TaskID: taskID, Sequence: len(phases) + 1, Name: name, Kind: kind, Owner: owner, Description: description, Status: "running", Attempt: 1, BranchID: task.SelectedBranchID, DefinitionID: definitionID, InputSnapshot: inputSnapshot}
-	if err = s.db.AddPhase(ctx, phase); err != nil {
-		return store.Phase{}, err
-	}
 	inputs := make([]store.PhaseRepositoryInput, 0, len(task.Repositories))
 	for _, repository := range task.Repositories {
 		if repository.WorkingPath == "" {
@@ -972,14 +983,11 @@ func (s *Service) beginPhase(ctx context.Context, taskID, name, kind, owner, des
 		}
 		inputs = append(inputs, store.PhaseRepositoryInput{PhaseID: phase.ID, RepositoryID: repository.ID, ReviewBaseSHA: repositoryReviewBase(repository), HeadSHA: head, BranchName: branch})
 	}
-	if err = s.db.SavePhaseRepositoryInputs(ctx, phase.ID, inputs); err != nil {
+	entry := session.NewPhaseStart(session.PhasePayload{Phase: phase.ID, Name: name, Owner: owner, Kind: kind, InputSnapshot: inputSnapshot})
+	event := store.Event{ID: randomID(), TaskID: taskID, PhaseID: phase.ID, AttemptID: phase.ID, BranchID: phase.BranchID, Kind: entry.Kind, Name: entry.Name, Payload: entry.Payload, Display: entry.Display, AvailableActions: AvailableActions(&phase, ""), StartedAt: time.Now().UTC()}
+	if err = s.db.CommitPhaseStart(ctx, phase, inputs, event, s.taskDir(taskID)); err != nil {
 		return store.Phase{}, err
 	}
-	if phase.BranchID != "" {
-		_ = s.db.SetBranchHead(ctx, taskID, phase.BranchID, phase.ID)
-	}
-	_ = s.db.Transition(ctx, taskID, task.State, task.State, phase.ID, "")
-	_ = s.traceBranch(ctx, taskID, phase, session.NewPhaseStart(session.PhasePayload{Phase: phase.ID, Name: name, Owner: owner, Kind: kind, InputSnapshot: inputSnapshot}))
 	return phase, nil
 }
 
@@ -998,6 +1006,18 @@ func (s *Service) ensureDefinition(ctx context.Context, taskID, key, executor, o
 }
 
 func (s *Service) endPhase(ctx context.Context, phase store.Phase, status string, cause error) error {
+	return s.endPhaseToState(ctx, phase, status, cause, "", "")
+}
+
+func (s *Service) endPhaseToState(ctx context.Context, phase store.Phase, status string, cause error, fromState, toState string, envelopes ...store.Envelope) error {
+	var envelope *store.Envelope
+	if len(envelopes) > 0 {
+		envelope = &envelopes[0]
+	}
+	return s.endPhasePublication(ctx, phase, status, cause, fromState, toState, envelope, nil)
+}
+
+func (s *Service) endPhasePublication(ctx context.Context, phase store.Phase, status string, cause error, fromState, toState string, envelope *store.Envelope, changes []store.TestChange) error {
 	if status == "success" {
 		if err := s.executionGuard(ctx, phase.TaskID); err != nil {
 			return err
@@ -1019,23 +1039,20 @@ func (s *Service) endPhase(ctx context.Context, phase store.Phase, status string
 			}
 		}
 	}
-	if outputSnapshot != "" && outputSnapshot != phase.InputSnapshot {
-		_, _ = s.db.ExecContext(context.Background(), `update phases set output_snapshot=? where id=?`, outputSnapshot, phase.ID)
-		phase.OutputSnapshot = outputSnapshot
-	} else if phase.InputSnapshot != "" {
-		_, _ = s.db.ExecContext(context.Background(), `update phases set output_snapshot=? where id=?`, phase.InputSnapshot, phase.ID)
-		phase.OutputSnapshot = phase.InputSnapshot
+	if outputSnapshot == "" {
+		outputSnapshot = phase.InputSnapshot
 	}
-	if err := s.db.EndPhase(ctx, phase.ID, status, message); err != nil {
-		return err
+	phase.OutputSnapshot = outputSnapshot
+	entry := session.NewPhaseEnd(session.PhasePayload{Phase: phase.ID, Name: phase.Name, Owner: phase.Owner, Kind: phase.Kind, Status: status, Error: message, InputSnapshot: phase.InputSnapshot, OutputSnapshot: phase.OutputSnapshot})
+	event := store.Event{ID: randomID(), TaskID: phase.TaskID, PhaseID: phase.ID, AttemptID: phase.ID, BranchID: phase.BranchID, Kind: entry.Kind, Name: entry.Name, Payload: entry.Payload, Display: entry.Display, AvailableActions: AvailableActions(&phase, ""), StartedAt: time.Now().UTC()}
+	var transition *store.TaskTransition
+	if fromState != "" || toState != "" {
+		transition = &store.TaskTransition{TaskID: phase.TaskID, FromState: fromState, ToState: toState}
 	}
-	return s.traceBranch(ctx, phase.TaskID, phase, session.NewPhaseEnd(session.PhasePayload{Phase: phase.ID, Name: phase.Name, Owner: phase.Owner, Kind: phase.Kind, Status: status, Error: message, InputSnapshot: phase.InputSnapshot, OutputSnapshot: phase.OutputSnapshot}))
-}
-
-func (s *Service) traceBranch(ctx context.Context, taskID string, phase store.Phase, entry session.Entry) error {
-	actions := AvailableActions(&phase, "")
-	_, err := s.db.AppendEvent(ctx, s.taskDir(taskID), store.Event{ID: randomID(), TaskID: taskID, PhaseID: phase.ID, AttemptID: phase.ID, BranchID: phase.BranchID, Kind: entry.Kind, Name: entry.Name, Payload: entry.Payload, Display: entry.Display, AvailableActions: actions, StartedAt: time.Now().UTC()})
-	return err
+	if envelope != nil {
+		return s.db.CommitAgentPhaseLifecycleWithEvidence(ctx, phase, status, message, outputSnapshot, transition, *envelope, changes, event, s.taskDir(phase.TaskID))
+	}
+	return s.db.CommitPhaseLifecycle(ctx, phase, status, message, outputSnapshot, transition, event, s.taskDir(phase.TaskID))
 }
 
 func (s *Service) failPhase(ctx context.Context, phase store.Phase, cause error) {

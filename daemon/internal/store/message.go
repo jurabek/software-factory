@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log"
 )
 
 type Message struct {
@@ -45,6 +46,61 @@ func (db *DB) SaveMessage(ctx context.Context, value Message) (Message, bool, er
 	}
 	stored, err := db.messageByKey(ctx, value.TaskID, value.IdempotencyKey)
 	return stored, rows == 1, err
+}
+
+// CommitMessageAcceptance atomically queues a Message, applies its optional
+// Task state change, invalidates approval when required, and appends its event.
+func (db *DB) CommitMessageAcceptance(ctx context.Context, value Message, fromState, toState string, invalidateApproval bool, event Event, taskDir string) (Message, bool, error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return Message{}, false, wrap("begin message acceptance", err)
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `insert into messages(id,task_id,actor,text,idempotency_key,target_type,target_id,anchor_json,stage_id,recipient_role,agent_session_id,delivery_status,created_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?) on conflict(task_id,idempotency_key) do nothing`, value.ID, value.TaskID, value.Actor, value.Text, value.IdempotencyKey, nullIfEmpty(value.TargetType), nullIfEmpty(value.TargetID), nullIfEmpty(value.Anchor), nullIfEmpty(value.StageID), value.RecipientRole, value.AgentSessionID, value.DeliveryStatus, value.CreatedAt)
+	if err != nil {
+		return Message{}, false, wrap("save message", err)
+	}
+	created, err := result.RowsAffected()
+	if err != nil {
+		return Message{}, false, wrap("read message insert result", err)
+	}
+	stored, err := scanMessage(tx.QueryRowContext(ctx, `select sequence,id,task_id,actor,text,idempotency_key,coalesce(target_type,''),coalesce(target_id,''),coalesce(anchor_json,''),coalesce(stage_id,''),recipient_role,agent_session_id,delivery_status,coalesce(failure_reason,''),created_at,coalesce(delivered_at,''),coalesce(failed_at,'') from messages where task_id=? and idempotency_key=?`, value.TaskID, value.IdempotencyKey))
+	if err != nil {
+		return Message{}, false, err
+	}
+	var line []byte
+	if created == 1 {
+		if invalidateApproval {
+			if _, err = tx.ExecContext(ctx, `update tasks set plan_digest=null,approval_actor=null,approval_at=null where id=?`, value.TaskID); err != nil {
+				return Message{}, false, wrap("invalidate message approval", err)
+			}
+		}
+		if toState != "" {
+			result, updateErr := tx.ExecContext(ctx, `update tasks set previous_state=state,state=?,active_phase=null,error=null,ended_at=null where id=? and state=?`, toState, value.TaskID, fromState)
+			if updateErr != nil {
+				return Message{}, false, wrap("schedule message task", updateErr)
+			}
+			count, countErr := result.RowsAffected()
+			if countErr != nil {
+				return Message{}, false, wrap("read scheduled message task", countErr)
+			}
+			if count != 1 {
+				return Message{}, false, ErrConflict
+			}
+		}
+		if _, line, err = insertEvent(ctx, tx, event); err != nil {
+			return Message{}, false, err
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return Message{}, false, wrap("commit message acceptance", err)
+	}
+	if created == 1 {
+		if err = exportEvent(taskDir, line); err != nil {
+			log.Printf("event export after committed message acceptance: %v", err)
+		}
+	}
+	return stored, created == 1, nil
 }
 func (db *DB) messageByKey(ctx context.Context, taskID, key string) (Message, error) {
 	return scanMessage(db.QueryRowContext(ctx, `select sequence,id,task_id,actor,text,idempotency_key,coalesce(target_type,''),coalesce(target_id,''),coalesce(anchor_json,''),coalesce(stage_id,''),recipient_role,agent_session_id,delivery_status,coalesce(failure_reason,''),created_at,coalesce(delivered_at,''),coalesce(failed_at,'') from messages where task_id=? and idempotency_key=?`, taskID, key))

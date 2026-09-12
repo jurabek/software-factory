@@ -116,13 +116,14 @@ func (s *Service) interveneLocked(ctx context.Context, taskID, actor string, req
 			value.Anchor = string(encoded)
 		}
 		value.ExpectedHead = request.ExpectedBranchHead
-		stored, created, err := s.db.SaveIntervention(ctx, value)
+		entry := session.NewIntervention(session.InterventionPayload{Actor: value.Actor, Intent: value.Intent, Text: value.Text, Delivery: value.Delivery, InterventionID: value.ID, TargetType: value.TargetType, TargetID: value.TargetID})
+		stored, _, err := s.db.SaveInterventionWithEvent(ctx, value, store.Event{
+			ID: randomID(), TaskID: taskID, PhaseID: phaseID(phase), AttemptID: phaseID(phase), BranchID: branchID(phase),
+			Kind: entry.Kind, Name: entry.Name, Payload: entry.Payload, Display: entry.Display,
+			AvailableActions: AvailableActions(phase, task.State), StartedAt: time.Now().UTC(),
+		}, s.taskDir(taskID))
 		if err != nil {
 			return store.InterventionResult{}, err
-		}
-		if created {
-			actions := AvailableActions(phase, task.State)
-			_ = s.traceAttempt(ctx, taskID, phase, stored.ID, session.NewIntervention(session.InterventionPayload{Actor: stored.Actor, Intent: stored.Intent, Text: stored.Text, Delivery: stored.Delivery, InterventionID: stored.ID, TargetType: stored.TargetType, TargetID: stored.TargetID}), actions)
 		}
 		return store.InterventionResult{Intervention: stored, Action: request.Intent}, nil
 	}
@@ -190,15 +191,30 @@ func (s *Service) interveneLocked(ctx context.Context, taskID, actor string, req
 			newState = string(Checking)
 		}
 	}
-	applied, err := s.db.ApplyIntervention(ctx, value, branch, newPhase, definition, newState, task.State == string(Completed) || task.State == string(Aborted))
+	entry := session.NewIntervention(session.InterventionPayload{Actor: value.Actor, Intent: value.Intent, Text: value.Text, Delivery: value.Delivery, InterventionID: value.ID, TargetType: value.TargetType, TargetID: value.TargetID})
+	applied, err := s.db.ApplyInterventionWithEvent(ctx, value, branch, newPhase, definition, newState, task.State == string(Completed) || task.State == string(Aborted), store.Event{
+		ID: randomID(), TaskID: taskID, PhaseID: newPhase.ID, AttemptID: newPhase.ID, BranchID: branchID,
+		Kind: entry.Kind, Name: entry.Name, Payload: entry.Payload, Display: entry.Display,
+		AvailableActions: AvailableActions(newPhase, newState), StartedAt: time.Now().UTC(),
+	}, s.taskDir(taskID))
 	if err != nil {
 		return store.InterventionResult{}, err
 	}
-	if applied.Created {
-		actions := AvailableActions(newPhase, newState)
-		_ = s.traceAttempt(ctx, taskID, newPhase, applied.Intervention.ID, session.NewIntervention(session.InterventionPayload{Actor: applied.Intervention.Actor, Intent: applied.Intervention.Intent, Text: applied.Intervention.Text, Delivery: applied.Intervention.Delivery, InterventionID: applied.Intervention.ID, TargetType: applied.Intervention.TargetType, TargetID: applied.Intervention.TargetID}), actions)
-	}
 	return store.InterventionResult{Intervention: applied.Intervention, BranchID: applied.BranchID, AttemptID: applied.AttemptID, Action: request.Intent}, nil
+}
+
+func phaseID(phase *store.Phase) string {
+	if phase == nil {
+		return ""
+	}
+	return phase.ID
+}
+
+func branchID(phase *store.Phase) string {
+	if phase == nil {
+		return ""
+	}
+	return phase.BranchID
 }
 
 func (s *Service) resolveTarget(ctx context.Context, taskID string, target InterventionTarget) (string, string, *store.Phase, error) {
@@ -319,18 +335,6 @@ func (s *Service) validateAnchor(ctx context.Context, taskID string, target Inte
 		return fmt.Errorf("unknown anchor kind %q", anchor.Kind)
 	}
 	return nil
-}
-
-func (s *Service) traceAttempt(ctx context.Context, taskID string, phase *store.Phase, interventionID string, entry session.Entry, actions []string) error {
-	phaseID, attemptID, branchID := "", "", ""
-	if phase != nil {
-		phaseID = phase.ID
-		attemptID = phase.ID
-		branchID = phase.BranchID
-	}
-	_, err := s.db.AppendEvent(ctx, s.taskDir(taskID), store.Event{ID: randomID(), TaskID: taskID, PhaseID: phaseID, AttemptID: attemptID, BranchID: branchID, Kind: entry.Kind, Name: entry.Name, Payload: entry.Payload, Display: entry.Display, AvailableActions: actions, StartedAt: time.Now().UTC()})
-	_ = interventionID
-	return err
 }
 
 func repairName(phase *store.Phase, intent string) string {
