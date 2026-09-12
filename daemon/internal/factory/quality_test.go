@@ -32,7 +32,7 @@ func TestBuilderValidatorRequiresExactlyGitDerivedTestChanges(t *testing.T) {
 	defer db.Close()
 	task := qualityTask(t, db, root, store.TaskRepository{ID: "repo-1", TaskID: "task-1", Name: "app", WorkingPath: repositoryPath, BaseSHA: base, ReviewBaseSHA: base})
 	service := NewService(root, Dependencies{Store: db, Config: configForQuality(), Git: factorygit.OSRunner{}})
-	profiles := map[string]factorygit.Profile{"app": {Tests: []string{"**/*_test.go"}}}
+	profiles := map[string]Materialization{"app": {Tests: []string{"**/*_test.go"}}}
 	validate := service.builderValidator(context.Background(), task, profiles)
 	valid := `{"status":"success","summary":"built","artifacts":[],"notes_for_next_agent":"","changed_files":["changed_test.go"],"commit_message":"test","test_changes":[{"repository_id":"repo-1","path":"changed_test.go","reason":"adds the regression assertion"}]}`
 	if _, err = validate(valid); err != nil {
@@ -151,7 +151,7 @@ func TestCheckCancellationKillsProcessGroupAndPersistsCancelledRecord(t *testing
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- service.runChecks(ctx, task, store.Phase{ID: "check-attempt", Name: "check", Attempt: 1}, task.Repositories[0], []factorygit.Check{{ID: "sleep", Command: "sleep 30"}}, "primary", "")
+		done <- service.runChecks(ctx, task, store.Phase{ID: "check-attempt", Name: "check", Attempt: 1}, task.Repositories[0], []Check{{ID: "sleep", Command: "sleep 30"}}, "primary", "")
 	}()
 	time.Sleep(100 * time.Millisecond)
 	cancel()
@@ -193,12 +193,12 @@ func TestComparisonFailureIsPersistedAsAdvisoryObservation(t *testing.T) {
 	}
 	qualityWrite(t, filepath.Join(repositoryPath, "changed_test.go"), "changed\n")
 	verify := store.Phase{ID: "verify-attempt", TaskID: task.ID, Sequence: 2, Name: "check", Kind: "verify", Status: "running", Attempt: 1, BranchID: "branch"}
-	profile := factorygit.Profile{
+	profile := Materialization{
 		Tests:                 []string{"**/*_test.go"},
-		Checks:                []factorygit.Check{{ID: "behavior", Command: `test "$(cat changed_test.go)" = "base"`}},
+		Checks:                []Check{{ID: "behavior", Command: `test "$(cat changed_test.go)" = "base"`}},
 		PreChangeVerification: true,
 	}
-	if err = service.runComparisons(context.Background(), task, verify, map[string]factorygit.Profile{"app": profile}); err != nil {
+	if err = service.runComparisons(context.Background(), task, verify, map[string]Materialization{"app": profile}); err != nil {
 		t.Fatal(err)
 	}
 	comparisons, err := db.Comparisons(context.Background(), task.ID)
