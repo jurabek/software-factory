@@ -1,0 +1,680 @@
+{
+  "title": "Daemon refactor: orchestration, execution ownership, Task Workspaces, events, and Markdown reports",
+  "status": "Implementation in progress",
+  "current_phase": "P02 - Centralize execution ownership",
+  "implementation_notes": {
+    "last_updated": "2026-09-12",
+    "completed_in_current_session": [
+      "Removed the global active-Task SQLite admission slot so independent Tasks can be created.",
+      "Added an owner-managed execution registry with per-Task single-flight admission, cancellation, execution identities, stale-completion fencing, and shutdown joining.",
+      "Routed Controls, Messages, retries, interventions, and stage finalization through owner-managed Task serialization.",
+      "Moved daemon root locking before bootstrap and startup recovery.",
+      "Added regression coverage for independent active Tasks, duplicate execution admission, shutdown joining, and same-root lock exclusion."
+    ],
+    "known_remaining_work": [
+      "Complete public HTTP/factory race coverage for pause or abort versus late stage completion, replacement admission, and restart settlement.",
+      "Complete confirmed child-process-group termination and actionable unconfirmed-termination handling before workspace reuse or cleanup.",
+      "Continue with P03 Task Workspace lifecycle extraction; P04-P07 have not started."
+    ],
+    "verification": {
+      "passed": [
+        "go -C daemon test -race ./internal/factory ./internal/store",
+        "npm run application:test",
+        "npm run typecheck",
+        "npm run build"
+      ],
+      "baseline_failure_preserved": "go -C daemon test ./... and go -C daemon test -race ./... fail only at the existing sandbox-dependent TestTaskFlowSuite/TestCreateApproveBuildAndCheck with sandbox unavailable."
+    }
+  },
+  "decision_basis": "The user accepted all recommendations in conversation questions Q1–Q23 and requested a local specification for another agent. This specification does not authorize issue publication or implementation by the authoring agent.",
+  "Problem Statement": "Maintainers need to change stage behavior and support different Repository Materializations without repeatedly changing factory orchestration. Task execution currently combines lifecycle management, agent invocation, workspace operations, persistence, and reporting responsibilities. Merely moving those responsibilities into wrappers would not reduce the knowledge required to change the system safely. Users also need readable, durable reports tied to the exact Attempt they came from, while retaining approval, deterministic verification, durable Messages, cancellation, explicit recovery, and trustworthy execution history.",
+  "Solution": "Keep the factory as the owner of Task transition policy and orchestration. Place execution ownership, Task Workspace lifecycle, event persistence, and stage execution behind cohesive modules with small interfaces. Reuse shared agent invocation machinery across planner, builder, and reviewer runners, and keep verification deterministic. Pass typed, explicitly identified inputs and immutable results through the orchestrator. Publish attempt-scoped Markdown reports alongside structured decisions, and render them safely in the existing Task interface. Replace one responsibility at a time while preserving supported public behavior, except for the explicitly approved extensions and correctness changes recorded below.",
+  "User Stories": [
+    "1. As a maintainer, I want workspace behavior localized in one module, so that adding a Repository Materialization adapter does not require editing Task orchestration.",
+    "2. As a maintainer, I want stage-specific behavior separated from progression, so that changing a planner, builder, reviewer, or verifier does not duplicate Task transition policy.",
+    "3. As a maintainer, I want small interfaces that hide meaningful behavior, so that this refactor reduces concepts and coupling rather than adding forwarding layers.",
+    "4. As a maintainer, I want shared agent invocation machinery, so that prompt rendering, envelope correction, session handling, and accounting behave consistently across agent stages.",
+    "5. As a maintainer, I want one execution owner, so that callers do not need to coordinate task locks, cancellation maps, or worker lifetime themselves.",
+    "6. As an operator, I want a second daemon prevented from owning the same root, so that independent processes cannot corrupt shared execution state.",
+    "7. As a user, I want independent Tasks to execute concurrently, so that unrelated work does not require one global execution slot.",
+    "8. As a user, I want at most one active Attempt in my Task, so that competing executions cannot modify its Task Workspace simultaneously.",
+    "9. As a user, I want pause and abort to win deterministically against stage completion, so that late output cannot restart or advance cancelled work.",
+    "10. As an operator, I want process termination confirmed before workspace reuse, so that an old process cannot modify a replacement Attempt's files.",
+    "11. As an operator, I want shutdown to cancel and settle owned execution, so that goroutines and child processes are not silently abandoned.",
+    "12. As a user, I want interrupted work blocked for explicit recovery after restart, so that non-idempotent agent work is not silently repeated.",
+    "13. As a user, I want local repositories materialized as isolated worktrees and GitHub repositories as isolated clones, so that current repository workflows continue to work.",
+    "14. As a user, I want multi-repository Tasks to retain repository identities, primary-repository selection, and stable Git inputs, so that coordinated changes remain reproducible.",
+    "15. As a user, I want exact retry to restore the selected Attempt's recorded inputs, so that historical work can be repeated without silently using newer state.",
+    "16. As a user, I want prior Attempts, results, and Git history retained across retry, so that recovery does not erase the evidence I am investigating.",
+    "17. As an operator, I want partial workspace preparation and cleanup recorded and repeatable, so that failures can be recovered without touching unrelated resources.",
+    "18. As a user, I want failed cleanup reported as failed deletion, so that a success response does not hide leftover Task resources.",
+    "19. As a user, I want Task Workspaces retained until explicit deletion, so that I can inspect completed and blocked work.",
+    "20. As an operator, I want configuration to select and order known stage types, so that supported workflows can vary without a general workflow engine.",
+    "21. As a user, I want preparation, planning, and approval to remain mandatory before build, so that pipeline flexibility cannot bypass consent.",
+    "22. As a user, I want pipeline prerequisites validated and final changes verified, so that a configurable sequence cannot complete using stale check evidence.",
+    "23. As a user, I want configured review rejection to remain binding, so that a negative review cannot be presented as successful completion.",
+    "24. As a user, I want read-only planner and reviewer restrictions preserved, so that those agent turns cannot silently change repository content.",
+    "25. As a user, I want protected-path checks, test-change evidence, and advisory comparisons preserved, so that simplification does not weaken existing quality rules.",
+    "26. As a user, I want configuration and prompt contents frozen at Task creation, so that later operator edits cannot change my Task mid-execution.",
+    "27. As a maintainer, I want each stage to receive explicit typed input references, so that hidden latest-result lookups cannot select evidence from the wrong Attempt or execution branch.",
+    "28. As a user, I want stage-specific Agent Session identity and recorded lineage, so that stages sharing an agent configuration do not accidentally share conversational state.",
+    "29. As a user, I want durable Messages delivered in order through the responsible stage, so that messaging continues to work after the runner extraction.",
+    "30. As a user, I want Messages kept separate from deterministic Controls, so that prose containing approve or abort never executes those Controls.",
+    "31. As a user, I want duplicate Messages and exact-retry requests to remain idempotent, so that retries of a client request do not duplicate delivery or execution.",
+    "32. As a user, I want Task transitions, Attempt results, and their lifecycle events committed together, so that the displayed history agrees with durable state.",
+    "33. As a user, I want event sequence identifiers and cursor replay preserved, so that reconnecting the browser does not lose or reorder persisted history.",
+    "34. As a user, I want browser disconnection independent of Task execution, so that closing a tab does not cancel my work.",
+    "35. As an operator, I want event persistence failures surfaced and execution stopped safely, so that work does not continue with silently missing required history.",
+    "36. As an operator, I want file exports treated as derived output, so that an export failure does not invalidate an already committed Task transition.",
+    "37. As a user, I want plan, build, review, and verification reports in Markdown, so that results are readable without interpreting raw envelopes or transcripts.",
+    "38. As a user, I want every report tied to an immutable Attempt and content digest, so that I can distinguish current results from historical reports.",
+    "39. As a user, I want approval bound to both the structured plan and its referenced reports, so that approved content cannot change without a new approval.",
+    "40. As a user, I want reports rendered without raw HTML execution or automatic remote-image fetching, so that viewing agent output does not introduce those security and privacy risks.",
+    "41. As a user, I want raw report access and downloads, so that I can inspect and reuse the exact stored Markdown.",
+    "42. As a user, I want existing historical targets and canonical anchors preserved, so that new report rendering does not break supported Message context.",
+    "43. As a client integrator, I want existing HTTP and SSE contracts retained with additive report capabilities, so that the refactor does not require unrelated client rewrites.",
+    "44. As a maintainer, I want behavior-focused regression tests at existing high-level seams, so that internal restructuring does not require tests that mirror private implementation steps.",
+    "45. As a maintainer, I want staged replacement with one authoritative execution path, so that each delivery can be reviewed and verified without retaining parallel orchestration implementations."
+  ],
+  "Implementation Decisions": [
+    {
+      "id": "D01",
+      "source": "Q1",
+      "title": "Optimize for locality and module depth",
+      "requirements": [
+        "Measure success by whether workspace changes and stage changes remain local to their owning modules, not by an arbitrary line-count target.",
+        "Introduce interfaces only to hide a cohesive complex responsibility, remove meaningful duplication, or substitute a real external dependency for behavioral verification.",
+        "Do not add forwarding-only modules or speculative adapter frameworks. Reuse existing capabilities and remove superseded paths within the agreed scope."
+      ]
+    },
+    {
+      "id": "D02",
+      "source": "Q2",
+      "title": "Preserve supported behavior and identify deliberate exceptions",
+      "requirements": [
+        "Preserve approval, pause, resume, abort, exact retry, durable Messages, task-session relationships, verification, session accounting, recovery, and supported history reads.",
+        "Destructive schema changes are permitted; historical-data migration is not required. This does not authorize deleting a running operator installation or user data while implementing or testing the refactor.",
+        "Do not remove a supported feature merely to reduce code size. Obsolete duplicate implementations may be deleted after the replacement preserves their supported behavior.",
+        "The approved exceptions are cross-Task concurrency, bounded configurable stage ordering, failure-visible cleanup, strengthened cancellation and event atomicity, immutable Markdown reports, and approval binding to report digests.",
+        "Preserving historical Intervention concepts does not mean restoring removed public intent selectors or legacy write routes. The completed Controls and Messages contract remains authoritative."
+      ]
+    },
+    {
+      "id": "D03",
+      "source": "Q3",
+      "title": "Distinguish repository isolation from execution environment",
+      "requirements": [
+        "A Repository Materialization strategy and an execution environment are separate design concerns: a container could execute against a clone or worktree.",
+        "Initially support the existing host execution environment, local worktrees, and GitHub clones.",
+        "Do not implement Docker, shared-checkout branch switching, or a speculative environment interface solely for hypothetical future use. A second concrete environment use case is required before generalizing that seam."
+      ]
+    },
+    {
+      "id": "D04",
+      "source": "Q4",
+      "title": "Keep configuration bounded",
+      "requirements": [
+        "Configuration may select and order known build, verify, and review stage types and configure supported prompts, agents, models, thinking settings, and execution limits.",
+        "Keep preparation and planning as mandatory pre-pipeline operations, including explicit plan approval.",
+        "Reject unknown stage types and invalid agent references. Stage identities must be unique within a pipeline.",
+        "Do not introduce arbitrary graphs, plugins, user-defined execution semantics, or push, deployment, and pull-request stages."
+      ]
+    },
+    {
+      "id": "D05",
+      "source": "Q5",
+      "title": "Keep persisted Task state authoritative",
+      "requirements": [
+        "Events record history; Task state is not reconstructed by replaying events.",
+        "Lifecycle events and the durable changes they describe must commit atomically.",
+        "Do not introduce event sourcing, a message broker, or a second authoritative file-based history."
+      ]
+    },
+    {
+      "id": "D06",
+      "source": "Q6",
+      "title": "Keep structured workflow results distinct from presentation",
+      "requirements": [
+        "The orchestrator consumes validated typed decisions, status, evidence, and Artifact references.",
+        "Markdown is report content, never the protocol used to select a transition, infer approval, or decide whether checks passed.",
+        "A contradiction in report prose cannot override a structured rejection, unresolved planning questions, a failed deterministic check, or missing approval."
+      ]
+    },
+    {
+      "id": "D07",
+      "source": "Q7",
+      "title": "Assign runner and orchestrator responsibilities",
+      "requirements": [
+        "Planner, builder, reviewer, and deterministic verification runners own stage-specific input preparation, validation, and evidence production.",
+        "Shared agent invocation machinery owns prompt rendering, envelope correction, Agent Session interaction, and invocation accounting. The harness remains the agent-specific adapter and is not responsible for Task transition policy.",
+        "Runners expose synchronous context-aware execution to the execution owner and return structured results. They may emit live observations through an injected event sink, but may not select or start the next stage.",
+        "Only the orchestrator applies Task transition policy and requests the atomic commit of a lifecycle change and its events.",
+        "Creation, approval, resume, Message continuation, and exact retry use the same runner implementations and progression policy. No separate legacy role-based pipeline remains authoritative.",
+        "Preserve deterministic check behavior, protected-path enforcement, per-turn read-only validation, and advisory-versus-blocking quality semantics."
+      ]
+    },
+    {
+      "id": "D08",
+      "source": "Q8",
+      "title": "Centralize execution ownership",
+      "requirements": [
+        "One execution module owns per-Task serialization, active execution tracking, cancellation, completion, and shutdown. Callers must not receive mutable execution records or locks they must coordinate themselves.",
+        "Allow at most one active Attempt per Task; independent Tasks may execute concurrently. Replace the global one-active-Task restriction wherever it affects admission, reopening, or recovery.",
+        "Serialize Controls, Message acceptance, Attempt finalization, and stage advancement per Task without blocking cancellation behind a long-running agent operation.",
+        "Associate completion with a persisted Attempt identity and a current execution identity or equivalent guard. A cancelled or replaced execution cannot publish successful completion or advance the Task.",
+        "Shared repository metadata operations must remain safe when different Tasks materialize the same source, without exposing new caller-managed locking.",
+        "Every worker has an owner, cancellation path, completion path, and shutdown join path. Do not copy the reference Docker registry's exposed mutable-pointer and mutex interface."
+      ]
+    },
+    {
+      "id": "D09",
+      "source": "Q9",
+      "title": "Extract Task Workspace lifecycle as a cohesive module",
+      "requirements": [
+        "The workspace module owns allocation, Repository Materialization, inspection, snapshot and Git input restoration for exact retry, and cleanup.",
+        "It does not own Task transitions or agent execution. Its callers use task-owned resource identities and structured workspace results instead of constructing internal directory layouts or issuing Git lifecycle commands.",
+        "Reuse the existing Git operations beneath this module. Preserve multi-repository layout, primary-repository identity, base SHAs, review bases, repository profiles, and isolation.",
+        "Keep snapshots and recorded Git state distinct. Exact retry must not replace live Git metadata with copied snapshot pointers or discard refs retaining prior work.",
+        "Preserve the separation between the user-facing diff base, review comparison base, and per-turn read-only content fingerprint. Host execution is not represented as a security sandbox."
+      ]
+    },
+    {
+      "id": "D10",
+      "source": "Q10",
+      "title": "Validate linear stage prerequisites and evidence freshness",
+      "requirements": [
+        "Preparation, planning, and approval must occur before the first build; unresolved plan questions prevent approval.",
+        "Post-approval pipelines remain finite linear lists of known stage types. Explicitly configured repeated stage kinds are permitted, but their identities remain distinct.",
+        "A verification stage requires prior build output. A review requires applicable successful verification and build evidence. A pipeline requires build work and successful verification after its final build before it can complete.",
+        "A later build that changes the Repository Materializations invalidates earlier verification and review evidence for progression, without deleting their historical results. Another verification must follow the final build.",
+        "A configured rejecting review blocks the Task. Stage failure does not silently skip to a later stage or synthesize an automatic review/build loop.",
+        "Keep coarse Task states and server-owned available Controls. Derive stage projections from the frozen configuration and selected execution history, not a competing workflow state machine.",
+        "This intentionally extends the earlier single-build, single-verification ordering restriction while preserving acceptance of existing valid pipelines."
+      ]
+    },
+    {
+      "id": "D11",
+      "source": "Q11",
+      "title": "Make persistence atomic without leaking transaction coordination",
+      "requirements": [
+        "Provide one persistence operation for each lifecycle change that commits the relevant Task state, Attempt result, required evidence and Artifact publication, and associated events in one SQLite transaction.",
+        "The event module owns event encoding, ordered append/read behavior, and event-contract handling. It participates in the transaction owned by the persistence operation; it must not independently commit the lifecycle event.",
+        "The orchestrator must not coordinate a sequence of separately committing SaveTask and AppendEvent calls.",
+        "Independent live agent observations may append outside a lifecycle transition transaction, retaining Task, stage, Attempt, and execution lineage.",
+        "Preserve cursor ordering and existing event payload contracts; add report references without repurposing existing fields.",
+        "Treat file traces and exports as derived from committed database records. Never report an already committed transition as uncommitted solely because a file export failed."
+      ]
+    },
+    {
+      "id": "D12",
+      "source": "Q12",
+      "title": "Persist immutable, attributable Markdown Artifacts",
+      "requirements": [
+        "Reports are immutable Attempt-scoped Artifacts with kind, media type, content digest, and provenance identifying Task, stage, Attempt, and producing execution or deterministic check.",
+        "Store Markdown content and its metadata in SQLite initially. Keep large process logs and native transcripts on disk under existing task-owned storage rules.",
+        "Publish successful structured results and their required report references atomically; a successful result must not reference missing report content.",
+        "A new report version creates a new Artifact identity rather than rewriting previously published bytes.",
+        "Approval binds the validated structured plan and the content digests of its referenced Artifacts. Preserve the public plan-digest token as an opaque value the client obtains from the server.",
+        "Render Markdown without raw HTML execution, unsafe active URLs, or automatic remote-image fetching. Rendering must not mutate source bytes or persisted anchors."
+      ]
+    },
+    {
+      "id": "D13",
+      "source": "Q13",
+      "title": "Preserve public contracts and explicit restart recovery",
+      "requirements": [
+        "Preserve supported HTTP request and response contracts, SSE sequence semantics, existing authentication behavior, and acceptance of existing valid configuration. Introduce report content and metadata capabilities additively.",
+        "Keep clients consuming server-provided available Controls and approval digests rather than recomputing policy locally.",
+        "No historical-data migration or compatibility with an incompatible on-disk schema is required. Fail clearly on unsupported storage rather than silently executing against it.",
+        "On restart, interrupted active execution becomes blocked for explicit recovery. Do not automatically rerun agent work, repeat a completed stage, bypass approval, or reinterpret paused and aborted Tasks as runnable.",
+        "Update affected daemon and application contracts together, without exposing formerly removed Intervention write modes."
+      ]
+    },
+    {
+      "id": "D14",
+      "source": "Q14",
+      "title": "Replace incrementally instead of maintaining parallel engines",
+      "requirements": [
+        "Establish behavior tests before replacing a responsibility and keep the supported execution path authoritative throughout each delivery.",
+        "Delete a superseded path only when its replacement passes the relevant behavior tests; do not retain two drivers as permanent fallbacks.",
+        "Keep changes focused and reviewable. Do not mix unrelated feature removal, repository-wide renaming, or speculative cleanup into these deliveries."
+      ]
+    },
+    {
+      "id": "D15",
+      "source": "Q15",
+      "title": "Use explicit typed handoffs",
+      "requirements": [
+        "A stage input identifies the Task request, approved plan, relevant prior Attempt results, workspace input reference, frozen configuration revision, and applicable evidence.",
+        "The orchestrator resolves lineage and prerequisites before invoking the runner. The runner prepares its role-specific prompts and checks from that explicit input.",
+        "Persist the exact input references used by an Attempt. Do not select an arbitrary latest envelope, check, or snapshot across all execution branches.",
+        "Terminal Attempt results and their input identities are immutable history. Retrying or continuing work creates a new Attempt rather than replacing a prior result."
+      ]
+    },
+    {
+      "id": "D16",
+      "source": "Q16",
+      "title": "Enforce single daemon ownership per root",
+      "requirements": [
+        "Acquire an exclusive process-level ownership lock for the daemon root before accessing mutable execution resources or performing startup recovery.",
+        "A competing daemon for the same root fails with an actionable error. Release ownership only when shutdown has relinquished the resources it owns.",
+        "Independent roots remain independent. Distributed scheduling, database leases, and multi-daemon shared-root execution are not part of this change."
+      ]
+    },
+    {
+      "id": "D17",
+      "source": "Q17",
+      "title": "Separate logical cancellation from confirmed termination",
+      "requirements": [
+        "A winning cancellation invalidates the execution immediately for publication and progression.",
+        "Cancel and wait for the owned child-process group, allowing bounded graceful termination before force termination.",
+        "Do not start a replacement Attempt, restore snapshots, or clean up its Task Workspace until termination is confirmed.",
+        "If termination cannot be confirmed, block reuse and cleanup with an actionable failure. A stale completion guard alone is not sufficient protection against filesystem writes.",
+        "Apply these rules to agents, deterministic checks, advisory comparisons, pause, abort, and daemon shutdown. Preserve cancellation as a cancellation outcome, not successful verification."
+      ]
+    },
+    {
+      "id": "D18",
+      "source": "Q18",
+      "title": "Make workspace side effects recoverable",
+      "requirements": [
+        "Record operation intent and task-owned resource identity durably before preparation, restoration, or deletion side effects that must be recovered.",
+        "Make those operations repeatable and capable of recognizing their already-completed steps. SQLite transactions cannot roll back Git or filesystem operations.",
+        "Retain failure records and sufficient resource identity for explicit recovery. Never clean up caller-owned repositories or a resource owned by another Task.",
+        "Deletion succeeds only after required cleanup succeeds. If cleanup partially succeeds, retain a recoverable record rather than deleting all evidence of the remaining resources.",
+        "Retain durable Task Workspaces until explicit deletion; preserve existing temporary scratch cleanup on success, failure, and cancellation. No retention scheduler or automatic garbage collection is introduced."
+      ]
+    },
+    {
+      "id": "D19",
+      "source": "Q19",
+      "title": "Freeze configuration and preserve explicit retry/session lineage",
+      "requirements": [
+        "Freeze resolved configuration, selected pipeline, agent settings, and prompt contents at Task creation. Neither preparation nor later turns may reread mutable operator files as authoritative Task configuration.",
+        "Record each Attempt's configuration or definition revision, workspace input, Git input, comparison baseline, and Agent Session lineage.",
+        "Key agent execution and session selection by stage identity, not only planner, builder, or reviewer role. Shared agent configuration does not imply shared session identity.",
+        "Preserve exact-retry semantics: restore the selected Attempt's definition and input, create a child execution branch and a new Attempt idempotently, retain prior history, and invalidate downstream results on the new branch.",
+        "Preserve supported Message semantics: normal continuations use the selected branch's current Task Workspace without rewinding; paused Messages stay queued; abort prevents further delivery; queued Messages are ordered and persisted before delivery.",
+        "Preserve session readiness, identity validation, usage and cost accounting, and idempotent finalization even when the harness returns an error.",
+        "References to revise or repair in the discussion describe existing recovery behavior where still supported, not permission to reintroduce user-facing intent fields removed by the Controls and Messages contract."
+      ]
+    },
+    {
+      "id": "D20",
+      "source": "Q20",
+      "title": "Define persistence and streaming failure semantics",
+      "requirements": [
+        "A lifecycle-event write failure rolls back its associated transition and result publication. The Task must not advance on a partial durable write.",
+        "A failure to persist required live agent output triggers cancellation and safe settlement, rather than silently continuing execution with missing history.",
+        "If the database remains unavailable, stop side effects and surface the operational error through available logging or error paths; do not pretend a blocked record was durably saved. Restart recovery handles unresolved active records once storage is available.",
+        "Derived file-export failures remain observable but do not fail a committed execution outcome.",
+        "SSE subscriber disconnection closes that subscriber's transport only. Reconnection resumes from persisted sequence identifiers, without cancelling the Task or renumbering history."
+      ]
+    },
+    {
+      "id": "D21",
+      "source": "Q21",
+      "title": "Require report content from its actual producer",
+      "requirements": [
+        "Agent structured responses include report Markdown in addition to machine-readable plan, build, or review fields. Runners validate and persist report content; harness adapters remain independent of Task report policy.",
+        "Missing required report content uses the existing bounded envelope-correction policy. Exhausting correction attempts blocks execution rather than publishing an incomplete successful result.",
+        "Deterministic verification generates its own report from recorded check evidence. An agent's prose cannot substitute for executed checks.",
+        "Keep correction turns subject to the same cancellation, read-only checks, session accounting, and lineage rules as ordinary turns.",
+        "Update built-in prompt instructions while continuing to accept existing valid operator configuration; do not silently overwrite operator-edited prompt files."
+      ]
+    },
+    {
+      "id": "D22",
+      "source": "Q22",
+      "title": "Keep report UI work narrowly scoped",
+      "requirements": [
+        "Expose and render Attempt-linked plan, build, review, and verification reports in the existing Task interface.",
+        "Provide raw content and download access to the exact immutable Markdown, retaining supported authentication and task ownership checks.",
+        "Preserve existing historical Event, Artifact, and Attempt targets and canonical anchor behavior. DOM positions and rendered offsets are not persistent identity.",
+        "Do not add a document editor, artifact search, a new document-selection/anchor mapping system, or a broad UI redesign.",
+        "This explicitly activates only the limited report-content work described here, not every capability in the previously deferred document-artifact specification."
+      ]
+    },
+    {
+      "id": "D23",
+      "source": "Q23",
+      "title": "Use the agreed delivery order and verification gates",
+      "requirements": [
+        "Deliver behavior tests, execution ownership, Task Workspace lifecycle, transactional persistence/events, runners and typed handoffs, then Markdown content and UI, in that order.",
+        "A delivery may make the minimal supporting persistence change required by its own invariant, such as recording workspace intent, without prematurely implementing later unrelated capabilities.",
+        "Run targeted tests for each delivery and the complete Go test, Go race, application test, typecheck, and build checks before completion.",
+        "Leave exact package names and private helper structure to the implementation agent. Preserve consumer-owned narrow interfaces, dependency injection, and absolute application imports."
+      ]
+    }
+  ],
+  "Testing Decisions": {
+    "principles": [
+      "Test observable outcomes, persisted history, filesystem effects, and contract behavior, not private helper call order, lock counts, or concrete struct layout.",
+      "Prefer the existing daemon HTTP Task-flow seam as the primary acceptance surface: drive real handlers and factory orchestration with a temporary SQLite database, temporary Git repositories, and scripted harness adapters.",
+      "Use the existing public factory interface for deterministic control-race tests when HTTP adds no useful coverage. Reuse harness and Git substitution seams rather than adding a new mock layer for every extracted module.",
+      "Use focused persistence and workspace tests only for rollback, resource ownership, process termination, and other failures that cannot be isolated reliably at the primary seam.",
+      "Use browser-level verification for Markdown rendering and user-visible navigation to report content; type checking alone does not prove runtime rendering or security behavior.",
+      "Coordinate concurrency tests with barriers or explicit lifecycle signals rather than arbitrary sleeps. Use temporary resources and ensure all test-owned processes and goroutines settle."
+    ],
+    "primary_seam": {
+      "interface": "Existing daemon HTTP Task operations and read interfaces",
+      "exercise": "Create, approve, pause, resume, abort, Message, exact retry, delete, and read Task state, Attempts, evidence, events, and report content through the real application flow.",
+      "dependencies": "Real temporary SQLite and local Git; scripted context-aware harness adapters; isolated process fixtures where cancellation behavior is under test.",
+      "prior_art": "TestTaskFlowSuite already drives Task creation, approval, build, deterministic checks, and result reads through an HTTP test server. Extend that style rather than introducing another orchestration test harness.",
+      "confirmation_basis": "Selected from the existing seams under the accepted behavior-test strategy. The user requested synthesis without another interview."
+    },
+    "supporting_seams": [
+      {
+        "interface": "Existing public factory operations",
+        "purpose": "Deterministically exercise Message acceptance versus completion, cancellation, idempotency, session lineage, and stale execution guards.",
+        "prior_art": "Existing Message FIFO/abort, final queue-check serialization, exact-retry original-input, task-session inheritance, and session-accounting tests. Preserve their externally meaningful assertions while replacing tests coupled to removed private helpers."
+      },
+      {
+        "interface": "Persistence operation and event read interfaces",
+        "purpose": "Inject commit and append failures, verify atomic rollback and ordered cursor reads, and verify idempotent finalization and restart reconciliation.",
+        "prior_art": "Existing event-contract round-trip, agent invocation finalization idempotency, and pending-invocation recovery tests."
+      },
+      {
+        "interface": "Workspace lifecycle and process execution interfaces",
+        "purpose": "Verify real worktree/clone isolation, recorded input restoration, foreign-resource rejection, partial cleanup recovery, root ownership, and process-group termination.",
+        "prior_art": "Existing sandbox identity and cleanup tests, Git restoration tests, scratch fidelity tests, and deterministic-check cancellation tests."
+      },
+      {
+        "interface": "Application Task/report UI and existing HTTP/SSE proxy contracts",
+        "purpose": "Verify exact report content, safe Markdown rendering, raw/download behavior, preserved historical targets, cursor replay, and subscriber-only cancellation.",
+        "prior_art": "Existing work-log filtering, stage progress, Message contract, Task UI-state, daemon-client, and stream framing/sequence/disconnection tests. Add focused browser coverage for new report presentation."
+      }
+    ],
+    "acceptance_cases": [
+      {
+        "id": "T01",
+        "decisions": ["D02", "D04", "D10", "D13"],
+        "expectation": "An existing valid pipeline still creates a Task, prepares repositories, plans, waits for approval, builds, verifies, and optionally reviews. Existing client contracts and server-owned available Controls remain valid."
+      },
+      {
+        "id": "T02",
+        "decisions": ["D06", "D10", "D12"],
+        "expectation": "Unresolved questions and stale digests prevent approval. Changing structured plan content or any referenced plan report digest requires a new approval. Markdown claiming approval cannot bypass these checks."
+      },
+      {
+        "id": "T03",
+        "decisions": ["D04", "D10"],
+        "expectation": "Reject unknown types, duplicate stage identities, unknown agents, verify before build, review without applicable verification, and final build without subsequent verification. Execute valid repeated kinds in configured order with distinct stage identities."
+      },
+      {
+        "id": "T04",
+        "decisions": ["D10", "D15"],
+        "expectation": "After a later build changes files, previous checks and reviews remain readable history but cannot satisfy completion. New downstream verification and any configured review use the updated input lineage."
+      },
+      {
+        "id": "T05",
+        "decisions": ["D08", "D16"],
+        "expectation": "Two Tasks in one daemon can execute independently, including materializing the same source under distinct identities. Competing commands for one Task never create two active Attempts. A second daemon cannot own the same root; separate roots remain usable."
+      },
+      {
+        "id": "T06",
+        "decisions": ["D08", "D17"],
+        "expectation": "Pause or abort winning against completion prevents advancement and rejects late successful results. Replacement execution and workspace restoration wait for child-process termination. Unconfirmed termination prevents reuse and cleanup."
+      },
+      {
+        "id": "T07",
+        "decisions": ["D08", "D13", "D17"],
+        "expectation": "Shutdown settles owned execution and restart blocks interrupted work for explicit recovery. Restart does not rerun a completed stage, bypass approval, or reactivate paused or aborted Tasks."
+      },
+      {
+        "id": "T08",
+        "decisions": ["D03", "D09"],
+        "expectation": "Local worktrees and GitHub-clone fixtures retain multi-repository layout, one primary repository, stable base and review SHAs, unique branches, and foreign-resource protection. No Docker or remote-mutating Git command is needed."
+      },
+      {
+        "id": "T09",
+        "decisions": ["D09", "D18"],
+        "expectation": "Failure partway through preparation or restoration leaves a durable resource record. Explicit recovery recognizes completed steps, avoids duplicate resources, and never modifies another Task's resources."
+      },
+      {
+        "id": "T10",
+        "decisions": ["D17", "D18"],
+        "expectation": "A cleanup failure makes deletion fail visibly while preserving enough identity to retry. Retrying after partial cleanup succeeds without harming foreign paths. Completed and blocked Task Workspaces are retained until explicit deletion."
+      },
+      {
+        "id": "T11",
+        "decisions": ["D09", "D15", "D19"],
+        "expectation": "Exact retry restores the selected Attempt's snapshot, Git input, review base, definition, and comparison baseline, creates one new Attempt and child execution branch idempotently, retains earlier Git history, and ignores later results from other branches."
+      },
+      {
+        "id": "T12",
+        "decisions": ["D02", "D07", "D19"],
+        "expectation": "Messages remain durable, idempotent, FIFO, and separate from Controls. A Message accepted at completion is delivered before progression; paused Messages wait; abort fails queued Messages; ordinary continuation does not rewind the workspace. Removed public intent fields remain rejected."
+      },
+      {
+        "id": "T13",
+        "decisions": ["D15", "D19"],
+        "expectation": "Editing operator configuration or prompt files after Task creation changes neither preparation nor later stage input. Two stages using one agent configuration have independent session identities and explicitly recorded input lineage."
+      },
+      {
+        "id": "T14",
+        "decisions": ["D07", "D19", "D21"],
+        "expectation": "Envelope correction preserves session readiness and identity; finalization records usage and cost even on harness error; duplicate finalization does not double-count; mismatched session identity fails safely."
+      },
+      {
+        "id": "T15",
+        "decisions": ["D07", "D09", "D21"],
+        "expectation": "Planner and reviewer turns, including correction and continuation turns, fail when they modify content, modes, symlinks, HEAD, or staged data in violation of read-only policy. Builder protected-path and test-change evidence validation remains enforced."
+      },
+      {
+        "id": "T16",
+        "decisions": ["D07", "D09", "D10"],
+        "expectation": "Declared primary-check failure and configured review rejection block completion. Advisory comparison outcomes remain advisory, preserve isolated scratch behavior and evidence, and do not become new quality gates."
+      },
+      {
+        "id": "T17",
+        "decisions": ["D05", "D11", "D12", "D20"],
+        "expectation": "Injected failure while writing a lifecycle event, required report, or result leaves no partial successful publication or Task advancement. A successful commit exposes a consistent Task, Attempt, result, report set, and event history."
+      },
+      {
+        "id": "T18",
+        "decisions": ["D11", "D20"],
+        "expectation": "Concurrent event appends remain ordered by persisted cursor. Derived export failure is visible without invalidating a committed transition. Required live-output persistence failure cancels execution instead of silently continuing."
+      },
+      {
+        "id": "T19",
+        "decisions": ["D13", "D20"],
+        "expectation": "Disconnecting an SSE client stops only that subscription. Task execution continues, and reconnecting from the last sequence replays committed subsequent events without renumbering them."
+      },
+      {
+        "id": "T20",
+        "decisions": ["D06", "D12", "D21"],
+        "expectation": "Planner, builder, and reviewer publish producer-supplied Markdown through validated structured results; verification publishes a deterministic report. Missing required Markdown invokes bounded correction and cannot produce an incomplete successful result."
+      },
+      {
+        "id": "T21",
+        "decisions": ["D12", "D22"],
+        "expectation": "Published report bytes and digests remain immutable across later Attempts. Rendered, raw, and downloaded content identify the correct Attempt, and authenticated content access cannot cross unauthorized Task access."
+      },
+      {
+        "id": "T22",
+        "decisions": ["D12", "D22"],
+        "expectation": "Browser coverage verifies readable Markdown, no execution of embedded raw HTML or active links, no automatic remote-image requests, and unchanged supported historical targeting without relying on DOM offsets as persisted identity."
+      },
+      {
+        "id": "T23",
+        "decisions": ["D01", "D07", "D14", "D23"],
+        "expectation": "Design review verifies one progression policy, one execution owner, shared agent invocation, no caller-managed lifecycle locks, and deletion of superseded execution paths. The complete repository verification commands pass."
+      }
+    ],
+    "verification_commands": [
+      "go -C daemon test ./...",
+      "go -C daemon test -race ./...",
+      "npm run application:test",
+      "npm run typecheck",
+      "npm run build"
+    ],
+    "runtime_verification": "Verify new report presentation and safe rendering in the running application; use existing application test tooling and add focused browser coverage rather than treating compilation as proof of behavior.",
+    "baseline_policy": "Run and record the current baseline before changing implementation. Existing failures are not permission to weaken tests. Replace assertions only where this specification explicitly changes their contract; distinguish baseline failures from regressions."
+  },
+  "Out of Scope": [
+    "Arbitrary workflow graphs, plugin systems, user-defined stage execution semantics, automatic review/build loops, and parallel stages inside one Task.",
+    "Docker implementation, shared-checkout branch execution, distributed scheduling, multi-daemon shared-root execution, database leases, and speculative execution-environment frameworks.",
+    "Event sourcing, message brokers, and file exports as a second source of truth.",
+    "Historical-data migration, silently upgrading incompatible storage, or deleting operator data as part of implementing this specification.",
+    "Removal of supported approval, Controls, Messages, exact retry, quality checks, session accounting, recovery, or history features solely to reduce code size.",
+    "Resurrecting removed public Intervention intent selectors, legacy write endpoints, or natural-language control execution.",
+    "Automatic replay of interrupted agent work and claims of exactly-once filesystem or Git side effects across a database transaction.",
+    "Automatic Task Workspace retention cleanup or a general garbage collector.",
+    "A document editor, artifact search, broad UI redesign, or a new rendered-selection-to-source anchor system.",
+    "Rendering untrusted raw HTML, automatically fetching remote report images, or using Markdown prose as a workflow decision protocol.",
+    "New blocking pre-change comparison policy, coverage scoring, mutation testing, or changes to existing advisory evidence semantics.",
+    "Git push, merge, pull-request creation, deployment, or additional remote-mutating capabilities.",
+    "Arbitrary file-size or line-count reduction targets, repository-wide cosmetic cleanup, and abstractions justified only by hypothetical future adapters."
+  ],
+  "Further Notes": {
+    "domain_vocabulary": {
+      "Task": "The durable requested outcome, execution history, repository inputs, checks, and risk constraints.",
+      "Task Workspace": "The private filesystem root owned by one Task, containing Repository Materializations, Attempts, snapshots, sessions, and Artifacts.",
+      "Repository Materialization": "An isolated clone or worktree of one repository inside a Task Workspace.",
+      "Attempt": "One execution of a Task phase against recorded inputs, with immutable input identity and terminal history; not a synonym for an Agent Session.",
+      "Task transition policy": "Deterministic rules selecting Task progression or branching after an observed outcome or Intervention.",
+      "Intervention": "The existing domain concept for persisted human input anchored to history. Supported new user writes follow the more specific Controls and Messages contract, not legacy intent selection.",
+      "Control": "An explicit deterministic Task or Attempt operation, distinct from natural-language Messages.",
+      "Message": "Durable human text delivered to an Agent Session, optionally carrying Event, Artifact, or Attempt context.",
+      "Stage": "An identified element of the frozen linear pipeline; agent configuration names are not stage execution identities.",
+      "Execution Branch": "Attempt lineage used for historical selection and exact retry; distinct from a Git branch retained by a Repository Materialization.",
+      "Artifact": "An immutable published result document or other existing supported artifact record; Markdown reports add attempt-scoped content and provenance.",
+      "Module": "Behavior behind an interface. A deep module hides meaningful complexity behind a small interface; an adapter supplies an implementation at a seam."
+    },
+    "existing_specification_alignment": [
+      "Preserve the Git Foundation rules for stable bases, per-turn fingerprints, retained Git history, explicit ownership, and no remote mutations.",
+      "Preserve the completed Task Control and Agent Messaging contract, including the absence of legacy intent fields and the separation of Messages from Controls.",
+      "Preserve the Pipeline Model rules for frozen configuration, stage identity, selected-branch evidence, server-owned Controls, and one driver, except that accepted decisions D08 and D10 supersede its one-active-Task and single-build restrictions.",
+      "Preserve the Test Change Evidence and Pre-change Verification distinction between required evidence, blocking primary checks, and advisory comparisons.",
+      "The earlier Artifact Persistence and Content specification is deferred. D12, D21, and D22 explicitly activate only immutable Markdown report storage, reads, downloads, and safe presentation; broader document editing and source-selection mapping remain deferred.",
+      "Approval now binds referenced report digests as well as the structured plan. Clients continue treating the server-provided plan digest as opaque."
+    ],
+    "known_contract_changes_for_tests": [
+      "The existing persistence test asserting that a second active Task conflicts must be replaced with cross-Task concurrency and per-Task exclusivity assertions, not preserved as the intended contract.",
+      "The existing factory test allowing deletion to succeed despite sandbox cleanup failure must be replaced with visible failure and repeatable recovery assertions.",
+      "Tests rejecting all repeated build or verification kinds must be revised to assert the bounded prerequisite and final-verification rules, while preserving rejection of invalid configurations.",
+      "Successful scripted agent responses and approval assertions must include the new required report content and report-bound digest behavior once report publication is introduced.",
+      "Tests that directly invoke private execution helpers should move to the existing public seams when those helpers are removed; do not recreate obsolete helpers only to keep private tests compiling."
+    ],
+    "execution_plan": [
+      {
+        "id": "P01",
+        "title": "Establish behavioral baseline and acceptance coverage",
+        "status": "partially_completed",
+        "depends_on": [],
+        "deliverables": [
+          "Record current verification results and identify baseline failures.",
+          "Extend the existing HTTP Task-flow fixtures and public factory tests around approval, Messages, exact retry, evidence, and restart behavior.",
+          "Add targeted regression cases alongside each subsequent replacement rather than creating a second test-only orchestration system."
+        ],
+        "exit_criteria": "Preserved contracts have executable coverage, and approved contract changes are explicitly distinguished from regressions.",
+        "completed_scope": [
+          "Ran and recorded the baseline Go, race, application test, typecheck, and build results.",
+          "Replaced the obsolete global active-Task store assertion with independent active-Task coverage.",
+          "Added focused execution-owner, root-lock, and independent-Task regression tests."
+        ],
+        "remaining_scope": [
+          "Extend the existing HTTP Task-flow and public factory fixtures for the specified control races and restart cases."
+        ]
+      },
+      {
+        "id": "P02",
+        "title": "Centralize execution ownership",
+        "status": "in_progress",
+        "depends_on": ["P01"],
+        "deliverables": [
+          "Introduce root ownership and the execution module with per-Task serialization and cross-Task concurrency.",
+          "Route Controls, Message scheduling, cancellation, and completion through the execution owner without exposing lifecycle locks.",
+          "Fence stale completion and confirm process termination before reuse; preserve explicit restart recovery."
+        ],
+        "exit_criteria": "T05–T07 and the Message/control race portions of T12 pass, including under the race detector; no duplicate active Attempt can be admitted for a Task.",
+        "completed_scope": [
+          "Introduced daemon-root ownership ordering and an owner-managed execution registry.",
+          "Added per-Task single-flight execution admission, cancellation, execution identity fencing, completion ordering, and shutdown worker joining.",
+          "Removed the global active-Task admission restriction and routed public lifecycle/message/retry/intervention operations through owner-managed Task serialization.",
+          "Made pause and abort wait for the current worker before publishing the control transition."
+        ],
+        "remaining_scope": [
+          "Add public service/HTTP race tests for cancellation winning against late stage completion, replacement admission, and restart behavior.",
+          "Implement or verify child-process-group termination confirmation and block reuse when termination cannot be confirmed."
+        ]
+      },
+      {
+        "id": "P03",
+        "title": "Extract recoverable Task Workspace lifecycle",
+        "status": "pending",
+        "depends_on": ["P02"],
+        "deliverables": [
+          "Move allocation, Repository Materialization, inspection, restoration, and cleanup behind the workspace interface while reusing Git operations.",
+          "Record recoverable operation intent and resource ownership before side effects.",
+          "Replace success-on-cleanup-failure behavior with visible failure and explicit repeatable recovery."
+        ],
+        "exit_criteria": "T08–T11 pass with real temporary Git resources; callers no longer own workspace layout or Git lifecycle coordination."
+      },
+      {
+        "id": "P04",
+        "title": "Unify transactional lifecycle persistence and event history",
+        "status": "pending",
+        "depends_on": ["P03"],
+        "deliverables": [
+          "Introduce atomic lifecycle commit operations and transaction-participating event persistence.",
+          "Move direct lifecycle event writes out of orchestration paths while retaining independent live observations.",
+          "Derive file exports from committed history and implement the specified persistence-failure and SSE behavior."
+        ],
+        "exit_criteria": "T17–T19 pass for currently published results; fault injection proves no partial state/event commit or false rollback after export failure. Extend T17 to report publication in P06."
+      },
+      {
+        "id": "P05",
+        "title": "Extract runners and typed handoffs under one progression policy",
+        "status": "pending",
+        "depends_on": ["P04"],
+        "deliverables": [
+          "Share prompt, harness, correction, session, and accounting machinery across role-specific runners.",
+          "Make verification deterministic and preserve all existing quality gates and advisory evidence rules.",
+          "Introduce explicit Attempt input/result lineage, frozen configuration use, and validated linear stage prerequisites.",
+          "Route normal execution, Messages, resume, and exact retry through the same runners and remove replaced parallel drivers."
+        ],
+        "exit_criteria": "T01–T04 and T11–T16 pass with explicit stage lineage; design review confirms only the orchestrator chooses progression. Report-specific assertions remain for P06."
+      },
+      {
+        "id": "P06",
+        "title": "Publish and render immutable Markdown reports",
+        "status": "pending",
+        "depends_on": ["P05"],
+        "deliverables": [
+          "Add required producer-authored report Markdown to structured agent results and generate deterministic verification reports.",
+          "Persist report bytes and provenance atomically with successful results; bind plan approval to referenced report digests.",
+          "Add authenticated additive content/raw/download capabilities and safe rendering in the existing Task UI.",
+          "Preserve current Message targeting, canonical anchors, and public contracts without broader document features."
+        ],
+        "exit_criteria": "T02 and T17 include reports; T20–T22 pass, including running-browser verification and bounded correction for missing reports."
+      },
+      {
+        "id": "P07",
+        "title": "Verify the complete refactor and remove superseded paths",
+        "status": "pending",
+        "depends_on": ["P06"],
+        "deliverables": [
+          "Confirm all acceptance cases and required verification commands pass, with any environmental blockers reported explicitly.",
+          "Verify the final module interfaces localize workspace behavior, execution ownership, event mechanics, and stage behavior.",
+          "Remove remaining superseded paths within this scope and retain no competing orchestration implementation."
+        ],
+        "exit_criteria": "All T01–T23 criteria are satisfied, no supported feature was silently removed, and the final implementation meets the agreed scope without speculative extensions."
+      }
+    ],
+    "implementation_discretion": [
+      "Choose private package and type names, the exact internal synchronization mechanism, and narrow interface method shapes to fit the repository. The observable ownership and failure semantics above are mandatory.",
+      "Choose a deterministic digest encoding for the structured plan and ordered report references and test it. Do not expose client-side recomputation as a new requirement.",
+      "Choose bounded process termination timings and report-input limits appropriate to existing runtime configuration; do not introduce an unbounded wait or a general configuration subsystem.",
+      "Do not ask the user to repeat the accepted architectural decisions. If an implementation discovery genuinely contradicts them, report that conflict rather than silently expanding scope."
+    ],
+    "definition_of_done": [
+      "The existing supported end-to-end Task workflow, Controls, Messages, and explicit recovery work through one authoritative orchestration path.",
+      "Each approved correctness change has behavior coverage, including cancellation settlement, cross-Task concurrency, transactional events, and repeatable workspace cleanup.",
+      "Users can read and download immutable attempt-linked Markdown reports without changing the structured workflow protocol or exposing unsafe rendering.",
+      "All required verification commands and relevant browser checks have been run, with results recorded by the implementation agent.",
+      "The design is demonstrably more local and cohesive; reduced line count is not substituted for correctness or readability."
+    ]
+  }
+}
