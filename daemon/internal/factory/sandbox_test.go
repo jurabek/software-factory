@@ -50,7 +50,7 @@ func TestPrepareRepositoriesPreservesSandboxOrderAndIdentity(t *testing.T) {
 	}
 }
 
-func TestDeleteDelegatesCleanupWithoutBlockingDeletion(t *testing.T) {
+func TestDeleteRetainsTaskWhenCleanupFailsAndAllowsRecovery(t *testing.T) {
 	root := t.TempDir()
 	db, err := store.Open(filepath.Join(root, "factory.db"))
 	if err != nil {
@@ -66,11 +66,22 @@ func TestDeleteDelegatesCleanupWithoutBlockingDeletion(t *testing.T) {
 	if err = db.Transition(context.Background(), task.ID, task.State, string(Blocked), "", ""); err != nil {
 		t.Fatal(err)
 	}
-	if err = service.Delete(context.Background(), task.ID); err != nil {
-		t.Fatal(err)
+	if err = service.Delete(context.Background(), task.ID); err == nil {
+		t.Fatal("expected cleanup failure")
 	}
 	if len(fake.cleanup) != 1 || fake.cleanup[0].TaskID != task.ID || fake.cleanup[0].WorkspaceRoot != task.WorkspacePath {
 		t.Fatalf("cleanup requests = %#v", fake.cleanup)
+	}
+	if _, err = db.Task(context.Background(), task.ID); err != nil {
+		t.Fatalf("task lookup error = %v, want retained task", err)
+	}
+	operations, err := db.WorkspaceOperations(context.Background(), task.ID)
+	if err != nil || len(operations) != 2 || operations[len(operations)-1].Status != "failed" {
+		t.Fatalf("workspace operations = %#v, err = %v", operations, err)
+	}
+	fake.cleanupErr = nil
+	if err = service.Delete(context.Background(), task.ID); err != nil {
+		t.Fatal(err)
 	}
 	if _, err = db.Task(context.Background(), task.ID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("task lookup error = %v, want not found", err)

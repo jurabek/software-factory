@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -48,7 +47,6 @@ type runtime struct {
 	configPath string
 	harnesses  harness.Registry
 	git        factorygit.Runner
-	sandbox    Sandbox
 	executions *executionOwner
 }
 
@@ -57,6 +55,7 @@ type taskStore interface {
 	DeleteTask(context.Context, string) error
 	Task(context.Context, string) (store.Task, error)
 	TaskSessions(context.Context, string) ([]store.Task, error)
+	Transition(context.Context, string, string, string, string, string) error
 }
 
 type taskService struct {
@@ -65,8 +64,8 @@ type taskService struct {
 	config    config.Config
 	harnesses harness.Registry
 	git       factorygit.Runner
-	sandbox   Sandbox
 	pipelines *pipelineService
+	workspace workspaceLifecycle
 }
 
 type pipelineStore interface {
@@ -101,14 +100,14 @@ type qualityStore interface {
 type qualityService struct {
 	db        qualityStore
 	git       factorygit.Runner
-	snapshots *snapshotService
+	workspace workspaceLifecycle
 }
 
 type Service struct {
 	*runtime
 	tasks     *taskService
 	pipelines *pipelineService
-	snapshots *snapshotService
+	workspace workspaceLifecycle
 	quality   *qualityService
 }
 
@@ -148,20 +147,20 @@ func NewService(root string, dependencies Dependencies) *Service {
 		configPath: dependencies.ConfigPath,
 		harnesses:  dependencies.Harnesses,
 		git:        dependencies.Git,
-		sandbox:    dependencies.Sandbox,
 		executions: newExecutionOwner(),
 	}
 	pipelines := &pipelineService{db: dependencies.Store, config: dependencies.Config, configPath: dependencies.ConfigPath}
 	snapshots := &snapshotService{db: dependencies.Store, git: dependencies.Git}
+	workspace := &workspaceService{root: root, db: dependencies.Store, sandbox: dependencies.Sandbox, snapshots: snapshots, git: dependencies.Git}
 	return &Service{
 		runtime: runtime,
 		tasks: &taskService{
 			root: root, db: dependencies.Store, config: dependencies.Config,
-			harnesses: dependencies.Harnesses, git: dependencies.Git, sandbox: dependencies.Sandbox, pipelines: pipelines,
+			harnesses: dependencies.Harnesses, git: dependencies.Git, pipelines: pipelines, workspace: workspace,
 		},
 		pipelines: pipelines,
-		snapshots: snapshots,
-		quality:   &qualityService{db: dependencies.Store, git: dependencies.Git, snapshots: snapshots},
+		workspace: workspace,
+		quality:   &qualityService{db: dependencies.Store, git: dependencies.Git, workspace: workspace},
 	}
 }
 
@@ -267,33 +266,20 @@ func (s *taskService) create(ctx context.Context, request CreateRequest, parentT
 		return store.Task{}, err
 	}
 	workspace := s.taskDir(id)
-	for _, directory := range []string{workspace, filepath.Join(workspace, "workspace", "repositories"), filepath.Join(workspace, "attempts"), filepath.Join(workspace, "snapshots"), filepath.Join(workspace, "artifacts"), filepath.Join(workspace, "sessions"), filepath.Join(workspace, "workspace", "snapshots"), filepath.Join(workspace, "workspace", "branches"), filepath.Join(workspace, "workspace", "attempts")} {
-		if err = os.MkdirAll(directory, 0o700); err != nil {
-			_ = os.RemoveAll(workspace)
-			return store.Task{}, fmt.Errorf("create task workspace: %w", err)
-		}
-	}
 	configured = config.ApplyTaskOverrides(configured, request.CodingAgent, request.Model, request.Thinking)
 	configSnapshot, err := snapshotConfig(configured)
 	if err != nil {
-		_ = os.RemoveAll(workspace)
 		return store.Task{}, fmt.Errorf("encode task config: %w", err)
 	}
 	if len(configured.Agents) == 0 {
 		configSnapshot = ""
 	}
 	task := store.Task{ID: id, ParentTaskID: parentTaskID, Request: request.Request, WorkspacePath: workspace, Repositories: repositories, State: string(Preparing), Pipeline: selectedPipeline.Name, ConfigSnapshot: configSnapshot, CreatedAt: createdAt, StartedAt: createdAt, CodingAgent: request.CodingAgent, Model: request.Model, Thinking: request.Thinking}
-	metadata, err := json.MarshalIndent(task, "", "  ")
-	if err != nil {
-		_ = os.RemoveAll(workspace)
-		return store.Task{}, fmt.Errorf("encode task metadata: %w", err)
-	}
-	if err = os.WriteFile(filepath.Join(workspace, "task.json"), metadata, 0o600); err != nil {
-		_ = os.RemoveAll(workspace)
-		return store.Task{}, fmt.Errorf("write task metadata: %w", err)
-	}
 	if err := s.db.CreateTask(ctx, task); err != nil {
-		_ = os.RemoveAll(workspace)
+		return store.Task{}, err
+	}
+	if err = s.workspace.Allocate(ctx, task); err != nil {
+		_ = s.db.Transition(context.WithoutCancel(ctx), id, string(Preparing), string(Blocked), "", err.Error())
 		return store.Task{}, err
 	}
 	return task, nil
@@ -475,15 +461,8 @@ func (s *taskService) Delete(ctx context.Context, id string) error {
 		}
 	}
 	for _, session := range tasks {
-		if s.sandbox != nil {
-			cleanup := make([]CleanupRepository, 0, len(session.Repositories))
-			for _, repository := range session.Repositories {
-				cleanup = append(cleanup, CleanupRepository{RepositoryID: repository.ID, Name: repository.Name, SourceType: repository.SourceType, CanonicalPath: repository.CanonicalPath, WorkingPath: repository.WorkingPath})
-			}
-			_ = s.sandbox.Cleanup(ctx, CleanupRequest{TaskID: session.ID, WorkspaceRoot: session.WorkspacePath, Repositories: cleanup})
-		}
-		if err := os.RemoveAll(s.taskDir(session.ID)); err != nil {
-			return fmt.Errorf("remove task files: %w", err)
+		if err := s.workspace.Cleanup(ctx, session); err != nil {
+			return err
 		}
 	}
 	return s.db.DeleteTask(ctx, id)
@@ -534,12 +513,12 @@ func (s *Service) launch(id string, run func(context.Context, string) error) {
 	executionID := randomID()
 	s.executions.start(id, executionID, func(ctx context.Context) error {
 		runErr := run(ctx, id)
-		if ctx.Err() != nil {
+		if ctx.Err() != nil && !errors.Is(runErr, harness.ErrProcessTerminationUnconfirmed) {
 			return ctx.Err()
 		}
 		return runErr
 	}, func(ctx context.Context, runErr error) {
-		if ctx.Err() != nil || errors.Is(runErr, context.Canceled) {
+		if (ctx.Err() != nil || errors.Is(runErr, context.Canceled)) && !errors.Is(runErr, harness.ErrProcessTerminationUnconfirmed) {
 			return
 		}
 		if runErr != nil {
@@ -548,7 +527,10 @@ func (s *Service) launch(id string, run func(context.Context, string) error) {
 				_ = s.db.Transition(context.Background(), id, task.State, string(Blocked), task.ActivePhase, runErr.Error())
 			}
 		}
-		s.kickQueuedMessage(id)
+	}, func(ctx context.Context, runErr error) {
+		if ctx.Err() == nil && !errors.Is(runErr, context.Canceled) {
+			s.kickQueuedMessage(id)
+		}
 	})
 }
 
@@ -670,7 +652,7 @@ func (s *Service) buildCheckReview(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	profiles, err := readTaskProfiles(task)
+	profiles, err := s.workspace.InspectProfiles(ctx, task)
 	if err != nil {
 		return err
 	}
@@ -1252,48 +1234,23 @@ func randomID() string {
 	return hex.EncodeToString(bytes[:])
 }
 
-func readTaskProfiles(task store.Task) (map[string]Materialization, error) {
-	profiles := make(map[string]Materialization, len(task.Repositories))
-	for _, repository := range task.Repositories {
-		body, err := os.ReadFile(filepath.Join(task.WorkspacePath, "repository-profiles", repository.Name+".json"))
-		if err != nil {
-			return nil, fmt.Errorf("read repository profile %s: %w", repository.Name, err)
-		}
-		var profile Materialization
-		if err = json.Unmarshal(body, &profile); err != nil {
-			return nil, fmt.Errorf("decode repository profile %s: %w", repository.Name, err)
-		}
-		profiles[repository.Name] = profile
-	}
-	return profiles, nil
-}
-
 func (s *Service) prepareRepositories(ctx context.Context, task store.Task, phase store.Phase) (string, error) {
 	primaryPath := ""
-	for _, repository := range task.Repositories {
-		workingPath := filepath.Join(task.WorkspacePath, "workspace", "repositories", repository.Name)
-		profile, err := s.prepareRepository(ctx, task.ID, repository, workingPath)
-		if err != nil {
-			s.failPhase(ctx, phase, err)
-			return "", err
-		}
+	prepared, err := s.workspace.Prepare(ctx, task)
+	if err != nil {
+		s.failPhase(ctx, phase, err)
+		return "", err
+	}
+	for _, value := range prepared {
+		repository := value.Repository
+		profile := value.Profile
 		if repository.Primary && len(profile.Checks) == 0 {
 			err = fmt.Errorf("primary repository has no deterministic checks declared or detected")
 			s.failPhase(ctx, phase, err)
 			return "", err
 		}
-		repository.CanonicalPath, repository.WorkingPath, repository.BaseSHA = profile.Root, workingPath, profile.BaseSHA
-		repository.ReviewBaseSHA, repository.BranchName = profile.BaseSHA, profile.BranchName
-		if err = s.db.SetRepositoryPrepared(ctx, repository); err != nil {
-			s.failPhase(ctx, phase, err)
-			return "", err
-		}
-		if err = writeRepositoryProfile(task.WorkspacePath, repository.Name, profile); err != nil {
-			s.failPhase(ctx, phase, err)
-			return "", err
-		}
 		if repository.Primary {
-			primaryPath = workingPath
+			primaryPath = repository.WorkingPath
 		}
 	}
 	if primaryPath == "" {
@@ -1311,28 +1268,6 @@ func primaryRepositoryName(task store.Task) string {
 		}
 	}
 	return ""
-}
-
-func (s *Service) prepareRepository(ctx context.Context, taskID string, repository store.TaskRepository, destination string) (Materialization, error) {
-	if s.sandbox == nil {
-		return Materialization{}, fmt.Errorf("sandbox unavailable")
-	}
-	return s.sandbox.Materialize(ctx, MaterializationRequest{TaskID: taskID, RepositoryID: repository.ID, Name: repository.Name, SourceType: repository.SourceType, Source: repository.SourceValue, Destination: destination})
-}
-
-func writeRepositoryProfile(taskWorkspace, name string, profile Materialization) error {
-	encoded, err := json.MarshalIndent(profile, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encode repository profile: %w", err)
-	}
-	directory := filepath.Join(taskWorkspace, "repository-profiles")
-	if err = os.MkdirAll(directory, 0o700); err != nil {
-		return fmt.Errorf("create repository profile directory: %w", err)
-	}
-	if err = os.WriteFile(filepath.Join(directory, name+".json"), encoded, 0o600); err != nil {
-		return fmt.Errorf("write repository profile: %w", err)
-	}
-	return nil
 }
 
 func taskChangedFiles(ctx context.Context, runner factorygit.Runner, repositories []store.TaskRepository, reviewBase bool) ([]string, error) {

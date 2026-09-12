@@ -39,19 +39,25 @@ func join(values []string) string {
 func TestGitCleanupUsesTaskOwnedRepositoriesInOrder(t *testing.T) {
 	runner := &recordingRunner{}
 	adapter := Git{Runner: runner}
+	root := t.TempDir()
+	for _, name := range []string{"one", "two"} {
+		if err := os.MkdirAll(filepath.Join(root, "workspace", "repositories", name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
 	err := adapter.Cleanup(context.Background(), factory.CleanupRequest{
-		TaskID: "task-1", WorkspaceRoot: "/tasks/task-1",
+		TaskID: "task-1", WorkspaceRoot: root,
 		Repositories: []factory.CleanupRepository{
-			{RepositoryID: "repo-1", Name: "one", SourceType: "local", CanonicalPath: "/repos/one", WorkingPath: "/tasks/task-1/workspace/repositories/one"},
-			{RepositoryID: "repo-2", Name: "two", SourceType: "local", CanonicalPath: "/repos/two", WorkingPath: "/tasks/task-1/workspace/repositories/two"},
+			{RepositoryID: "repo-1", Name: "one", SourceType: "local", CanonicalPath: "/repos/one", WorkingPath: filepath.Join(root, "workspace", "repositories", "one")},
+			{RepositoryID: "repo-2", Name: "two", SourceType: "local", CanonicalPath: "/repos/two", WorkingPath: filepath.Join(root, "workspace", "repositories", "two")},
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := []string{
-		"git -C /repos/one worktree remove --force /tasks/task-1/workspace/repositories/one",
-		"git -C /repos/two worktree remove --force /tasks/task-1/workspace/repositories/two",
+		"git -C /repos/one worktree remove --force " + filepath.Join(root, "workspace", "repositories", "one"),
+		"git -C /repos/two worktree remove --force " + filepath.Join(root, "workspace", "repositories", "two"),
 	}
 	if !reflect.DeepEqual(runner.calls, want) {
 		t.Fatalf("calls = %#v, want %#v", runner.calls, want)
@@ -60,11 +66,15 @@ func TestGitCleanupUsesTaskOwnedRepositoriesInOrder(t *testing.T) {
 
 func TestGitCleanupStopsOnFailure(t *testing.T) {
 	runner := &recordingRunner{errAt: 1}
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "workspace", "repositories", "one"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	err := (Git{Runner: runner}).Cleanup(context.Background(), factory.CleanupRequest{
-		TaskID: "task-1", WorkspaceRoot: "/tasks/task-1",
+		TaskID: "task-1", WorkspaceRoot: root,
 		Repositories: []factory.CleanupRepository{
-			{RepositoryID: "repo-1", Name: "one", SourceType: "local", CanonicalPath: "/repos/one", WorkingPath: "/tasks/task-1/workspace/repositories/one"},
-			{RepositoryID: "repo-2", Name: "two", SourceType: "local", CanonicalPath: "/repos/two", WorkingPath: "/tasks/task-1/workspace/repositories/two"},
+			{RepositoryID: "repo-1", Name: "one", SourceType: "local", CanonicalPath: "/repos/one", WorkingPath: filepath.Join(root, "workspace", "repositories", "one")},
+			{RepositoryID: "repo-2", Name: "two", SourceType: "local", CanonicalPath: "/repos/two", WorkingPath: filepath.Join(root, "workspace", "repositories", "two")},
 		},
 	})
 	if err == nil {

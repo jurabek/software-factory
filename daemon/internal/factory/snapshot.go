@@ -119,12 +119,15 @@ func (s *snapshotService) MaterializeSnapshot(ctx context.Context, task store.Ta
 	if err != nil {
 		return err
 	}
+	if snapshot.TaskID != task.ID {
+		return fmt.Errorf("workspace snapshot belongs to another task")
+	}
 	destination := filepath.Join(task.WorkspacePath, "workspace", "repositories")
 	if err := os.MkdirAll(destination, 0o700); err != nil {
 		return err
 	}
-	if _, err := os.Stat(snapshot.Path); os.IsNotExist(err) {
-		return nil
+	if _, err := os.Stat(snapshot.Path); err != nil {
+		return fmt.Errorf("workspace snapshot content is unavailable: %w", err)
 	}
 	if err := clearRepositoryContents(destination); err != nil {
 		return err
@@ -171,15 +174,15 @@ func (s *snapshotService) MaterializeScratch(ctx context.Context, task store.Tas
 }
 
 func (s *Service) CaptureSnapshot(ctx context.Context, task store.Task) (store.WorkspaceSnapshot, error) {
-	return s.snapshots.CaptureSnapshot(ctx, task)
+	return s.workspace.CaptureSnapshot(ctx, task)
 }
 
 func (s *Service) MaterializeSnapshot(ctx context.Context, task store.Task, digest string) error {
-	return s.snapshots.MaterializeSnapshot(ctx, task, digest)
+	return s.workspace.MaterializeSnapshot(ctx, task, digest)
 }
 
 func (s *Service) MaterializeScratch(ctx context.Context, task store.Task, digest, destination string) error {
-	return s.snapshots.MaterializeScratch(ctx, task, digest, destination)
+	return s.workspace.MaterializeScratch(ctx, task, digest, destination)
 }
 
 func clearRepositoryContents(root string) error {

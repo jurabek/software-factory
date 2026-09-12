@@ -69,6 +69,11 @@ create table if not exists artifacts (
  attempt_id text, type text not null default '', digest text,
  path text, metadata_json text, created_at text not null
 );
+create table if not exists workspace_operations (
+ id text primary key, task_id text not null references tasks(id) on delete cascade,
+ repository_id text, attempt_id text, kind text not null, status text not null,
+ request_json text not null default '{}', error text, created_at text not null, updated_at text not null
+);
 create table if not exists workspace_snapshots (
  digest text primary key, task_id text not null references tasks(id) on delete cascade,
  path text not null default '', size_bytes integer not null default 0,

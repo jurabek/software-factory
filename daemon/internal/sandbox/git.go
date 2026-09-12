@@ -2,7 +2,9 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -62,6 +64,11 @@ func (g Git) Cleanup(ctx context.Context, request factory.CleanupRequest) error 
 		}
 		if !ownedWorkingPath(request.WorkspaceRoot, repository.WorkingPath, repository.Name) {
 			return fmt.Errorf("repository sandbox is not owned by task")
+		}
+		if _, err := os.Lstat(repository.WorkingPath); errors.Is(err, os.ErrNotExist) {
+			continue
+		} else if err != nil {
+			return fmt.Errorf("inspect repository sandbox: %w", err)
 		}
 		if _, err := g.Runner.Run(ctx, "git", "-C", repository.CanonicalPath, "worktree", "remove", "--force", repository.WorkingPath); err != nil {
 			return fmt.Errorf("remove repository sandbox: %w", err)
