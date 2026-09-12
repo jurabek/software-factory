@@ -19,6 +19,7 @@ import (
 	"github.com/jurabek/software-factory/daemon/internal/factory"
 	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
 	"github.com/jurabek/software-factory/daemon/internal/harness"
+	"github.com/jurabek/software-factory/daemon/internal/sandbox"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 	"github.com/stretchr/testify/suite"
 )
@@ -116,7 +117,7 @@ func (s *taskFlowSuite) SetupSuite() {
 	s.harness = new(taskFlowHarness)
 	s.service = factory.NewService(filepath.Join(root, "tasks"), factory.Dependencies{
 		Store: s.db, Config: cfg, ConfigPath: filepath.Join(configRoot, "config.yaml"),
-		Harnesses: harness.Registry{"pi": s.harness}, Git: factorygit.OSRunner{},
+		Harnesses: harness.Registry{"pi": s.harness}, Git: factorygit.OSRunner{}, Sandbox: sandbox.Git{Runner: factorygit.OSRunner{}},
 	})
 	handler, err := New(s.db, s.service, cfg, nil, nil, []string{"pi"}, nil, newTestAccess())
 	s.Require().NoError(err)
@@ -139,8 +140,8 @@ func (s *taskFlowSuite) TearDownSuite() {
 func (s *taskFlowSuite) TestCreateApproveBuildAndCheck() {
 	var created taskResponse
 	s.request(http.MethodPost, "/api/v1/tasks", map[string]any{
-		"request":      flowTaskRequest,
-		"repositories": []map[string]any{{"name": "source", "type": "local", "path": s.repo, "primary": true}},
+		"request":    flowTaskRequest,
+		"repository": map[string]any{"type": "local", "path": s.repo},
 	}, http.StatusCreated, &created)
 	s.Require().NotEmpty(created.ID)
 

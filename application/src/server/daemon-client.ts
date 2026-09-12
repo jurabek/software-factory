@@ -16,7 +16,8 @@ export type DaemonTask = {
 	stages?: DaemonStageProjection[];
 	workspace_path?: string;
 	selected_branch_id?: string;
-	repositories?: unknown[];
+	repository_type?: string;
+	repository_source?: string;
 	plan_digest?: string;
 	total_cost?: number;
 	coding_agent?: string;
@@ -85,15 +86,13 @@ export type DaemonPipeline = {
 	stages: DaemonPipelineStage[];
 };
 export type RepositoryInput = {
-	name?: string;
 	type: "local" | "github";
 	path?: string;
 	repo?: string;
-	primary?: boolean;
 };
 export type CreateTaskInput = {
 	request: string;
-	repositories: RepositoryInput[];
+	repository: RepositoryInput;
 	pipeline?: string;
 	coding_agent?: string;
 	model?: string;
@@ -347,6 +346,30 @@ function projectTask(task: DaemonTask & Record<string, unknown>): DaemonTask {
 			? { active_stage: task.active_stage }
 			: {}),
 		...(typeof task.pipeline === "string" ? { pipeline: task.pipeline } : {}),
+		...(typeof task.repository_type === "string"
+			? { repository_type: task.repository_type }
+			: {}),
+		...(typeof task.repository_source === "string"
+			? { repository_source: task.repository_source }
+			: {}),
+		...(typeof task.plan_digest === "string"
+			? { plan_digest: task.plan_digest }
+			: {}),
+		...(typeof task.total_cost === "number"
+			? { total_cost: task.total_cost }
+			: {}),
+		...(typeof task.coding_agent === "string"
+			? { coding_agent: task.coding_agent }
+			: {}),
+		...(typeof task.model === "string" ? { model: task.model } : {}),
+		...(typeof task.thinking === "string" ? { thinking: task.thinking } : {}),
+		...(Array.isArray(task.available_actions)
+			? {
+					available_actions: task.available_actions.filter(
+						(action): action is string => typeof action === "string",
+					),
+				}
+			: {}),
 		...(stages ? { stages } : {}),
 	};
 }

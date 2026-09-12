@@ -40,7 +40,7 @@ go -C daemon run .
 
 Interactive Swagger API documentation is available at `http://127.0.0.1:8080/docs`; its OpenAPI document is served at `/swagger.yaml`. The daemon does not serve a frontend. `PORT` changes the port. `SOFTWARE_FACTORY_DIR` changes the default `~/.software-factory` state directory. `PI_PATH` selects Pi. The first run generates `config.yaml` and editable prompts without replacing existing files.
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for how the daemon coordinates repositories, agents, checks, events, persistence, recovery, and security. API examples are in [`docs/USAGE.md`](docs/USAGE.md).
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for how the daemon coordinates the Task repository, agents, checks, events, persistence, recovery, and security. API examples are in [`docs/USAGE.md`](docs/USAGE.md).
 
 The daemon binds only to loopback. Every `/api/*` request except `GET /api/v1/health` requires `Authorization: Bearer <daemon-token>`. The token is generated on first run, persisted at `$SOFTWARE_FACTORY_DIR/daemon-token`, and printed to stdout. To reach the daemon from the application, expose it through an encrypted tunnel whose exact origin is in `DAEMON_ALLOWED_ORIGINS`. Task workspaces, SQLite WAL state, JSONL traces, prompts, and Pi sessions remain under the factory directory until explicit deletion.
 
@@ -57,10 +57,10 @@ TOKEN=$(cat ~/.software-factory/daemon-token)
 curl -s -X POST http://127.0.0.1:8080/api/v1/tasks \
   -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"request":"Implement feature X","repositories":[{"type":"local","path":"/absolute/repository","primary":true}]}'
+  -d '{"request":"Implement feature X","repository":{"type":"local","path":"/absolute/repository"}}'
 ```
 
-Creating a Task allocates its private workspace, materializes every repository, and starts execution. The designated primary repository is the default agent/check working directory. Plans contain `questions`; when non-empty, answer them with `POST /api/v1/tasks/{id}/feedback` before approval.
+Creating a Task allocates its private workspace, materializes its repository at `workspace/repository`, and starts execution. Agents and checks use that repository as their working directory. Plans contain `questions`; when non-empty, answer them with `POST /api/v1/tasks/{id}/feedback` before approval.
 
 ## Task execution sequence
 
@@ -88,8 +88,8 @@ sequenceDiagram
     Factory-->>API: Task
     API-->>Browser: 201 Created
 
-    Factory->>Git: Materialize repositories
-    Git-->>Factory: Repository profiles and base SHAs
+    Factory->>Git: Materialize repository
+    Git-->>Factory: Repository profile and base SHA
     Factory->>Store: Persist preparation phase and repository state
     Factory->>Harness: Run Planner
     Harness-->>Factory: Validated plan envelope
