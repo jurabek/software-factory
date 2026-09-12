@@ -109,14 +109,17 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	if err = bootstrap(root); err != nil {
-		return fmt.Errorf("bootstrap factory: %w", err)
+	if err = os.MkdirAll(root, 0o700); err != nil {
+		return fmt.Errorf("create factory root: %w", err)
 	}
 	lock, err := acquireLock(filepath.Join(root, "server.lock"))
 	if err != nil {
 		return err
 	}
 	defer lock.Close()
+	if err = bootstrap(root); err != nil {
+		return fmt.Errorf("bootstrap factory: %w", err)
+	}
 	daemonID, err := loadDaemonID(root)
 	if err != nil {
 		return fmt.Errorf("load daemon identity: %w", err)

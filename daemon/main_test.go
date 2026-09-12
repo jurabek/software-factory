@@ -136,6 +136,28 @@ func TestDaemonTokenPersistsInFactoryRoot(t *testing.T) {
 	}
 }
 
+func TestAcquireLockExcludesAnotherDaemonForTheSameRoot(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "server.lock")
+	first, err := acquireLock(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	if _, err = acquireLock(path); err == nil {
+		t.Fatal("second daemon acquired the root lock")
+	}
+	if err = first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	second, err := acquireLock(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = second.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestMalformedDaemonIdentityFailsClosed(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "daemon-id"), []byte("not-an-identity\n"), 0o600); err != nil {

@@ -50,6 +50,36 @@ func TestCreateTaskAllocatesWorkspaceForMultipleRepositories(t *testing.T) {
 	}
 }
 
+func TestCreateAllowsIndependentActiveTasks(t *testing.T) {
+	root := t.TempDir()
+	db, err := store.Open(filepath.Join(root, "factory.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	service := NewService(root, Dependencies{Store: db})
+
+	first, err := service.Create(context.Background(), CreateRequest{Request: "first", Repositories: []Repository{{Type: "github", Repo: "owner/first"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.Create(context.Background(), CreateRequest{Request: "second", Repositories: []Repository{{Type: "github", Repo: "owner/second"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.Shutdown(context.Background())
+	if first.ID == second.ID {
+		t.Fatal("independent tasks share an id")
+	}
+	tasks, err := db.Tasks(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 2 {
+		t.Fatalf("tasks = %d, want 2", len(tasks))
+	}
+}
+
 func TestCreateTaskRequiresOnePrimaryRepository(t *testing.T) {
 	root := t.TempDir()
 	db, err := store.Open(filepath.Join(root, "factory.db"))

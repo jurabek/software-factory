@@ -189,6 +189,9 @@ func stageDefinition(pipeline config.Pipeline, id string) (config.Stage, int, bo
 }
 
 func (s *Service) prepareOnly(ctx context.Context, task store.Task) error {
+	if err := s.executionGuard(ctx, task.ID); err != nil {
+		return err
+	}
 	phase, err := s.beginPhase(ctx, task.ID, "prepare", "git", "factory", "Prepare repository")
 	if err != nil {
 		return err
@@ -208,6 +211,9 @@ func (s *Service) prepareOnly(ctx context.Context, task store.Task) error {
 }
 
 func (s *Service) progress(ctx context.Context, taskID string) error {
+	if err := s.executionGuard(ctx, taskID); err != nil {
+		return err
+	}
 	task, err := s.db.Task(ctx, taskID)
 	if err != nil {
 		return err
@@ -226,6 +232,9 @@ func (s *Service) progress(ctx context.Context, taskID string) error {
 		return err
 	}
 	for {
+		if err = s.executionGuard(ctx, taskID); err != nil {
+			return err
+		}
 		task, err = s.db.Task(ctx, taskID)
 		if err != nil {
 			return err
@@ -236,6 +245,9 @@ func (s *Service) progress(ctx context.Context, taskID string) error {
 		stageID := task.ActiveStage
 		if stageID == "" {
 			if task.State == string(Preparing) {
+				if err = s.executionGuard(ctx, taskID); err != nil {
+					return err
+				}
 				if err = s.db.Transition(ctx, taskID, task.State, string(Planning), "", ""); err != nil {
 					return err
 				}
@@ -297,6 +309,9 @@ func (s *Service) continueAfterBuilder(ctx context.Context, taskID string) error
 }
 
 func (s *Service) transition(ctx context.Context, task store.Task, to State, message string) error {
+	if err := s.executionGuard(ctx, task.ID); err != nil {
+		return err
+	}
 	if task.State == string(to) {
 		return nil
 	}
@@ -317,6 +332,9 @@ func (s *Service) latestStageAttempt(ctx context.Context, taskID, stageID string
 }
 
 func (s *Service) executeStage(ctx context.Context, task store.Task, stage config.Stage) error {
+	if err := s.executionGuard(ctx, task.ID); err != nil {
+		return err
+	}
 	phase, err := s.beginPhase(ctx, task.ID, stage.ID, stage.Kind, stage.Agent, "Execute "+stage.ID)
 	if err != nil {
 		return err
@@ -346,15 +364,23 @@ func (s *Service) executeBuild(ctx context.Context, task store.Task, stage confi
 		return err
 	}
 	_ = payload
-	if err = s.validateBuilderPaths(ctx, task, profiles); err != nil {
+	err = s.executions.withTask(task.ID, func() error {
+		if err := s.executionGuard(ctx, task.ID); err != nil {
+			return err
+		}
+		if err := s.validateBuilderPaths(ctx, task, profiles); err != nil {
+			return err
+		}
+		if err := s.persistBuilderEvidence(ctx, task, phase, payload); err != nil {
+			return err
+		}
+		return s.endPhase(ctx, phase, "success", nil)
+	})
+	if err != nil {
 		s.failPhase(ctx, phase, err)
 		return err
 	}
-	if err = s.persistBuilderEvidence(ctx, task, phase, payload); err != nil {
-		s.failPhase(ctx, phase, err)
-		return err
-	}
-	return s.endPhase(ctx, phase, "success", nil)
+	return nil
 }
 
 func (s *Service) executeVerify(ctx context.Context, task store.Task, phase store.Phase) error {
@@ -372,7 +398,12 @@ func (s *Service) executeVerify(ctx context.Context, task store.Task, phase stor
 		s.failPhase(ctx, phase, err)
 		return err
 	}
-	return s.endPhase(ctx, phase, "success", nil)
+	return s.executions.withTask(task.ID, func() error {
+		if err := s.executionGuard(ctx, task.ID); err != nil {
+			return err
+		}
+		return s.endPhase(ctx, phase, "success", nil)
+	})
 }
 
 func (s *Service) executeReview(ctx context.Context, task store.Task, stage config.Stage, phase store.Phase) error {
@@ -425,7 +456,12 @@ func (s *Service) executeReview(ctx context.Context, task store.Task, stage conf
 		s.failPhase(ctx, phase, err)
 		return err
 	}
-	return s.endPhase(ctx, phase, "success", nil)
+	return s.executions.withTask(task.ID, func() error {
+		if err := s.executionGuard(ctx, task.ID); err != nil {
+			return err
+		}
+		return s.endPhase(ctx, phase, "success", nil)
+	})
 }
 
 func (s *Service) stagePromptData(task store.Task) map[string]any {
