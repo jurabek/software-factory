@@ -87,20 +87,28 @@ func validateTestChangeSet(changes []TestChange, expected map[string]expectedTes
 }
 
 func (s *qualityService) persistBuilderEvidence(ctx context.Context, task store.Task, phase store.Phase, payload string) error {
-	build, err := ValidateBuild(payload)
+	changes, err := s.builderEvidence(ctx, task, phase, payload)
 	if err != nil {
 		return err
+	}
+	return s.db.SaveTestChanges(ctx, changes)
+}
+
+func (s *qualityService) builderEvidence(ctx context.Context, task store.Task, phase store.Phase, payload string) ([]store.TestChange, error) {
+	build, err := ValidateBuild(payload)
+	if err != nil {
+		return nil, err
 	}
 	profiles, err := s.workspace.InspectProfiles(ctx, task)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	expected, err := s.changedTestSet(ctx, task, profiles)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err = validateTestChangeSet(build.TestChanges, expected); err != nil {
-		return err
+		return nil, err
 	}
 	changes := make([]store.TestChange, 0, len(build.TestChanges))
 	for _, change := range build.TestChanges {
@@ -120,7 +128,7 @@ func (s *qualityService) persistBuilderEvidence(ctx context.Context, task store.
 			CreatedAt:      nowString(),
 		})
 	}
-	return s.db.SaveTestChanges(ctx, changes)
+	return changes, nil
 }
 
 type checkRunError struct {

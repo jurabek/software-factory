@@ -358,7 +358,7 @@ func (s *Service) executeBuild(ctx context.Context, task store.Task, stage confi
 	}
 	data := s.stagePromptData(task)
 	data["Plan"] = s.plannerEnvelope(ctx, task)
-	payload, err := s.runRole(ctx, task, phase, stage.ID, data, s.builderValidator(ctx, task, profiles))
+	payload, envelope, err := s.runRoleDeferredEnvelope(ctx, task, phase, stage.ID, data, s.builderValidator(ctx, task, profiles))
 	if err != nil {
 		s.failPhase(ctx, phase, err)
 		return err
@@ -371,10 +371,11 @@ func (s *Service) executeBuild(ctx context.Context, task store.Task, stage confi
 		if err := s.validateBuilderPaths(ctx, task, profiles); err != nil {
 			return err
 		}
-		if err := s.persistBuilderEvidence(ctx, task, phase, payload); err != nil {
+		changes, err := s.quality.builderEvidence(ctx, task, phase, payload)
+		if err != nil {
 			return err
 		}
-		return s.endPhase(ctx, phase, "success", nil)
+		return s.endPhasePublication(ctx, phase, "success", nil, string(Building), string(Checking), &envelope, changes)
 	})
 	if err != nil {
 		s.failPhase(ctx, phase, err)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"log"
 )
 
 type Phase struct {
@@ -46,6 +47,34 @@ func (db *DB) StartQueuedPhase(ctx context.Context, taskID, phaseID string) erro
 	}
 	if count, _ := result.RowsAffected(); count != 1 {
 		return ErrConflict
+	}
+	return nil
+}
+
+// StartQueuedPhaseWithEvent atomically starts a queued phase and appends its
+// phase-start event.
+func (db *DB) StartQueuedPhaseWithEvent(ctx context.Context, taskID, phaseID string, event Event, taskDir string) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return wrap("begin queued phase", err)
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `update phases set status='running',started_at=?,ended_at=null,error=null where task_id=? and id=? and status='queued'`, now(), taskID, phaseID)
+	if err != nil {
+		return wrap("start queued phase", err)
+	}
+	if count, _ := result.RowsAffected(); count != 1 {
+		return ErrConflict
+	}
+	_, line, err := insertEvent(ctx, tx, event)
+	if err != nil {
+		return err
+	}
+	if err = tx.Commit(); err != nil {
+		return wrap("commit queued phase", err)
+	}
+	if err = exportEvent(taskDir, line); err != nil {
+		log.Printf("event export after committed queued phase: %v", err)
 	}
 	return nil
 }
