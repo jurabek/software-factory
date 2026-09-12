@@ -14,6 +14,12 @@ type RetryResult struct {
 }
 
 func (db *DB) ApplyRetry(ctx context.Context, key string, branch Branch, phase Phase, nextState string) (RetryResult, bool, error) {
+	return db.ApplyRetryWithInputs(ctx, key, branch, phase, nextState, nil)
+}
+
+// ApplyRetryWithInputs atomically creates the retry branch and phase, records
+// its exact repository inputs, and updates the selected Task branch.
+func (db *DB) ApplyRetryWithInputs(ctx context.Context, key string, branch Branch, phase Phase, nextState string, inputs []PhaseRepositoryInput) (RetryResult, bool, error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return RetryResult{}, false, err
@@ -32,6 +38,11 @@ func (db *DB) ApplyRetry(ctx context.Context, key string, branch Branch, phase P
 	}
 	if _, err = tx.ExecContext(ctx, `insert into phases(id,task_id,sequence,name,kind,owner,description,status,attempt,retries,started_at,branch_id,definition_id,input_snapshot,output_snapshot,superseded) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)`, phase.ID, phase.TaskID, phase.Sequence, phase.Name, phase.Kind, phase.Owner, phase.Description, phase.Status, phase.Attempt, phase.Retries, now(), phase.BranchID, nullIfEmpty(phase.DefinitionID), nullIfEmpty(phase.InputSnapshot), nullIfEmpty(phase.OutputSnapshot)); err != nil {
 		return RetryResult{}, false, wrap("queue retry attempt", err)
+	}
+	for _, input := range inputs {
+		if _, err = tx.ExecContext(ctx, `insert into phase_repository_inputs(phase_id,repository_id,review_base_sha,head_sha,branch_name) values(?,?,?,?,?)`, phase.ID, input.RepositoryID, input.ReviewBaseSHA, input.HeadSHA, input.BranchName); err != nil {
+			return RetryResult{}, false, wrap("save retry Git input", err)
+		}
 	}
 	if _, err = tx.ExecContext(ctx, `update tasks set selected_branch_id=?,previous_state=state,state=?,active_phase=?,ended_at=null,error=null where id=?`, branch.ID, nextState, phase.ID, phase.TaskID); err != nil {
 		return RetryResult{}, false, wrap("select retry branch", err)
