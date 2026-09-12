@@ -12,6 +12,7 @@ import (
 	"time"
 
 	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
+	"github.com/jurabek/software-factory/daemon/internal/harness"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 )
 
@@ -90,7 +91,7 @@ func (s *qualityService) persistBuilderEvidence(ctx context.Context, task store.
 	if err != nil {
 		return err
 	}
-	profiles, err := readTaskProfiles(task)
+	profiles, err := s.workspace.InspectProfiles(ctx, task)
 	if err != nil {
 		return err
 	}
@@ -191,10 +192,12 @@ func (s *qualityService) runCheck(ctx context.Context, task store.Task, phase st
 		_, _ = command.Wait(), s.db.EndProcess(context.WithoutCancel(ctx), task.ID, pid, -1)
 		return check, err
 	}
-	waitErr, cancelled := waitForProcess(ctx, command)
+	waitErr, cancelled, terminationErr := waitForProcess(ctx, command)
 	check.ExitCode = processExitCode(waitErr)
 	check.Output = capture.String()
-	if cancelled || errors.Is(ctx.Err(), context.Canceled) {
+	if terminationErr != nil {
+		check.Status = "inconclusive"
+	} else if cancelled || errors.Is(ctx.Err(), context.Canceled) {
 		check.Status = "cancelled"
 	} else if waitErr != nil {
 		check.Status = "failed"
@@ -220,6 +223,9 @@ func (s *qualityService) runCheck(ctx context.Context, task store.Task, phase st
 	if check.Status == "cancelled" {
 		return check, &checkRunError{kind: "cancelled", err: ctx.Err()}
 	}
+	if terminationErr != nil {
+		return check, &checkRunError{kind: "inconclusive", err: terminationErr}
+	}
 	if check.Status == "failed" {
 		return check, &checkRunError{kind: "failed", err: fmt.Errorf("check %s exited %d", declared.ID, check.ExitCode)}
 	}
@@ -242,26 +248,55 @@ func checkSetupFailure(exitCode int, output string) bool {
 	return false
 }
 
-func waitForProcess(ctx context.Context, command *exec.Cmd) (error, bool) {
+func waitForProcess(ctx context.Context, command *exec.Cmd) (error, bool, error) {
 	done := make(chan error, 1)
 	go func() { done <- command.Wait() }()
 	select {
 	case err := <-done:
-		return err, false
+		return err, false, nil
 	case <-ctx.Done():
-		terminateProcessGroup(command.Process.Pid)
+		terminationErr := terminateProcessGroup(command.Process.Pid)
 		select {
 		case err := <-done:
-			return err, true
+			if terminationErr == nil {
+				terminationErr = waitForProcessGroupGone(command.Process.Pid)
+			}
+			return err, true, terminationErr
 		case <-time.After(250 * time.Millisecond):
-			_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
-			return <-done, true
+			if err := syscall.Kill(-command.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) && terminationErr == nil {
+				terminationErr = fmt.Errorf("%w: force terminate process group %d: %v", harness.ErrProcessTerminationUnconfirmed, command.Process.Pid, err)
+			}
+			err := <-done
+			if terminationErr == nil {
+				terminationErr = waitForProcessGroupGone(command.Process.Pid)
+			}
+			return err, true, terminationErr
 		}
 	}
 }
 
-func terminateProcessGroup(pid int) {
-	_ = syscall.Kill(-pid, syscall.SIGTERM)
+func terminateProcessGroup(pid int) error {
+	if err := syscall.Kill(-pid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return fmt.Errorf("%w: terminate process group %d: %v", harness.ErrProcessTerminationUnconfirmed, pid, err)
+	}
+	return nil
+}
+
+func waitForProcessGroupGone(pid int) error {
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		err := syscall.Kill(-pid, 0)
+		if errors.Is(err, syscall.ESRCH) {
+			return nil
+		}
+		if err != nil && !errors.Is(err, syscall.EPERM) {
+			return fmt.Errorf("%w: inspect process group %d: %v", harness.ErrProcessTerminationUnconfirmed, pid, err)
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("%w: process group %d", harness.ErrProcessTerminationUnconfirmed, pid)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func processExitCode(err error) int {
@@ -356,7 +391,7 @@ func (s *qualityService) runComparisons(ctx context.Context, task store.Task, ph
 		func() {
 			defer os.RemoveAll(comparisonRoot)
 			baselineRoot := filepath.Join(comparisonRoot, "baseline")
-			if materializeErr := s.snapshots.MaterializeScratch(ctx, task, baseline, baselineRoot); materializeErr != nil {
+			if materializeErr := s.workspace.MaterializeScratch(ctx, task, baseline, baselineRoot); materializeErr != nil {
 				comparison.Status, comparison.Reason = "inconclusive", materializeErr.Error()
 				return
 			}
@@ -369,7 +404,7 @@ func (s *qualityService) runComparisons(ctx context.Context, task store.Task, ph
 				return
 			}
 			overlayRoot := filepath.Join(comparisonRoot, "overlay")
-			if materializeErr := s.snapshots.MaterializeScratch(ctx, task, baseline, overlayRoot); materializeErr != nil {
+			if materializeErr := s.workspace.MaterializeScratch(ctx, task, baseline, overlayRoot); materializeErr != nil {
 				comparison.Status, comparison.Reason = "inconclusive", materializeErr.Error()
 				return
 			}

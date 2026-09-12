@@ -46,6 +46,47 @@ func TestCreateTaskAllowsIndependentActiveTasks(t *testing.T) {
 	}
 }
 
+func TestWorkspaceOperationRoundTripAndRestartRecovery(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "factory.db")
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	createdAt := time.Now().UTC().Format(time.RFC3339Nano)
+	if err = db.CreateTask(ctx, Task{ID: "task", Request: "request", WorkspacePath: t.TempDir(), State: "preparing", CreatedAt: createdAt}); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	operation := WorkspaceOperation{ID: "operation", TaskID: "task", Kind: "materialize", Status: "running", RequestJSON: `{"path":"repo"}`, CreatedAt: createdAt, UpdatedAt: createdAt}
+	if err = db.CreateWorkspaceOperation(ctx, operation); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err = db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	stored, err := db.WorkspaceOperation(ctx, operation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status != "interrupted" || stored.TaskID != operation.TaskID || stored.RequestJSON != operation.RequestJSON {
+		t.Fatalf("workspace operation = %#v", stored)
+	}
+	if err = db.UpdateWorkspaceOperation(ctx, operation.ID, "succeeded", ""); err != nil {
+		t.Fatal(err)
+	}
+	stored, err = db.WorkspaceOperation(ctx, operation.ID)
+	if err != nil || stored.Status != "succeeded" || stored.Error != "" {
+		t.Fatalf("updated workspace operation = %#v, err = %v", stored, err)
+	}
+}
+
 func TestReserveAgentSessionConcurrentCallersShareWinner(t *testing.T) {
 	db, err := Open(filepath.Join(t.TempDir(), "factory.db"))
 	if err != nil {

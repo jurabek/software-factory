@@ -303,7 +303,7 @@ func (s *Service) continueMessages(ctx context.Context, taskID, role string) err
 	}
 	var profiles map[string]Materialization
 	if role == "builder" {
-		profiles, err = readTaskProfiles(task)
+		profiles, err = s.workspace.InspectProfiles(ctx, task)
 		if err != nil {
 			return err
 		}
@@ -628,35 +628,8 @@ func (s *Service) retry(ctx context.Context, taskID, attemptID string, request R
 	if phase.InputSnapshot == "" {
 		return store.RetryResult{}, fmt.Errorf("attempt input snapshot is required")
 	}
-	inputs, err := s.db.PhaseRepositoryInputs(ctx, phase.ID)
+	retryInputs, err := s.workspace.Restore(ctx, task, phase, request.IdempotencyKey)
 	if err != nil {
-		return store.RetryResult{}, err
-	}
-	retryInputs := make([]store.PhaseRepositoryInput, 0, len(inputs))
-	for _, input := range inputs {
-		var repository store.TaskRepository
-		for _, candidate := range task.Repositories {
-			if candidate.ID == input.RepositoryID {
-				repository = candidate
-				break
-			}
-		}
-		if repository.ID == "" {
-			return store.RetryResult{}, fmt.Errorf("retry repository %s is missing", input.RepositoryID)
-		}
-		branch := "software-factory/retry/" + randomID()
-		if err = factorygit.RestoreForRetry(ctx, s.git, repository.SourceType, repository.CanonicalPath, repository.WorkingPath, input.HeadSHA, branch); err != nil {
-			return store.RetryResult{}, err
-		}
-		if err = s.db.SetRepositoryReviewBase(ctx, taskID, repository.ID, input.ReviewBaseSHA); err != nil {
-			return store.RetryResult{}, err
-		}
-		if err = s.db.SetRepositoryBranch(ctx, taskID, repository.ID, branch); err != nil {
-			return store.RetryResult{}, err
-		}
-		retryInputs = append(retryInputs, store.PhaseRepositoryInput{RepositoryID: repository.ID, ReviewBaseSHA: input.ReviewBaseSHA, HeadSHA: input.HeadSHA, BranchName: branch})
-	}
-	if err = s.MaterializeSnapshot(ctx, task, phase.InputSnapshot); err != nil {
 		return store.RetryResult{}, err
 	}
 	parentBranch := task.SelectedBranchID
@@ -764,7 +737,7 @@ func (s *Service) runRetryAgent(ctx context.Context, task store.Task, phase stor
 		data["Plan"] = plan
 	}
 	if phase.Owner == "builder" {
-		profiles, err = readTaskProfiles(task)
+		profiles, err = s.workspace.InspectProfiles(ctx, task)
 		if err != nil {
 			return err
 		}
@@ -845,7 +818,7 @@ func (s *Service) runRetryAgent(ctx context.Context, task store.Task, phase stor
 }
 
 func (s *Service) runRetryChecks(ctx context.Context, task store.Task, phase store.Phase) error {
-	profiles, err := readTaskProfiles(task)
+	profiles, err := s.workspace.InspectProfiles(ctx, task)
 	if err != nil {
 		return err
 	}
