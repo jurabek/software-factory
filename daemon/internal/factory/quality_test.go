@@ -30,19 +30,18 @@ func TestBuilderValidatorRequiresExactlyGitDerivedTestChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	task := qualityTask(t, db, root, store.TaskRepository{ID: "repo-1", TaskID: "task-1", Name: "app", WorkingPath: repositoryPath, BaseSHA: base, ReviewBaseSHA: base})
+	task := qualityTask(t, db, root, repositoryPath, base)
 	service := NewService(root, Dependencies{Store: db, Config: configForQuality(), Git: factorygit.OSRunner{}})
-	profiles := map[string]Materialization{"app": {Tests: []string{"**/*_test.go"}}}
-	validate := service.builderValidator(context.Background(), task, profiles)
-	valid := `{"status":"success","summary":"built","artifacts":[],"notes_for_next_agent":"","changed_files":["changed_test.go"],"commit_message":"test","test_changes":[{"repository_id":"repo-1","path":"changed_test.go","reason":"adds the regression assertion"}]}`
+	validate := service.builderValidator(context.Background(), task, Materialization{Tests: []string{"**/*_test.go"}})
+	valid := `{"status":"success","summary":"built","artifacts":[],"notes_for_next_agent":"","changed_files":["changed_test.go"],"commit_message":"test","test_changes":[{"path":"changed_test.go","reason":"adds the regression assertion"}]}`
 	if _, err = validate(valid); err != nil {
 		t.Fatal(err)
 	}
-	missing := strings.Replace(valid, `[{"repository_id":"repo-1","path":"changed_test.go","reason":"adds the regression assertion"}]`, `[]`, 1)
+	missing := strings.Replace(valid, `[{"path":"changed_test.go","reason":"adds the regression assertion"}]`, `[]`, 1)
 	if _, err = validate(missing); err == nil {
 		t.Fatal("missing Git-derived test change accepted")
 	}
-	unknown := strings.Replace(valid, `"repository_id":"repo-1"`, `"repository_id":"other"`, 1)
+	unknown := strings.Replace(valid, `{"path":"changed_test.go","reason":"adds the regression assertion"}`, `{"path":"other_test.go","reason":"adds the regression assertion"}`, 1)
 	if _, err = validate(unknown); err == nil {
 		t.Fatal("unknown repository test change accepted")
 	}
@@ -62,17 +61,13 @@ func TestPersistBuilderEvidenceRetainsChangeKindAndReason(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	task := qualityTask(t, db, root, store.TaskRepository{ID: "repo-1", TaskID: "task-1", Name: "app", WorkingPath: repositoryPath, BaseSHA: base, ReviewBaseSHA: base})
+	task := qualityTask(t, db, root, repositoryPath, base)
 	service := NewService(root, Dependencies{Store: db, Config: configForQuality(), Git: factorygit.OSRunner{}})
-	profileDir := filepath.Join(task.WorkspacePath, "repository-profiles")
-	if err = os.MkdirAll(profileDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
 	profileBody := `{"root":"","base_sha":"` + base + `","tests":["**/*_test.go"]}`
-	if err = os.WriteFile(filepath.Join(profileDir, "app.json"), []byte(profileBody), 0o600); err != nil {
+	if err = os.WriteFile(filepath.Join(task.WorkspacePath, "repository-profile.json"), []byte(profileBody), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	payload := `{"status":"success","summary":"built","artifacts":[],"notes_for_next_agent":"","changed_files":["example_test.go"],"commit_message":"test","test_changes":[{"repository_id":"repo-1","path":"example_test.go","reason":"covers the changed behavior"}]}`
+	payload := `{"status":"success","summary":"built","artifacts":[],"notes_for_next_agent":"","changed_files":["example_test.go"],"commit_message":"test","test_changes":[{"path":"example_test.go","reason":"covers the changed behavior"}]}`
 	if err = service.persistBuilderEvidence(context.Background(), task, store.Phase{ID: "build-attempt", Attempt: 1}, payload); err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +75,7 @@ func TestPersistBuilderEvidenceRetainsChangeKindAndReason(t *testing.T) {
 	if err != nil || len(changes) != 1 {
 		t.Fatalf("changes = %#v, err = %v", changes, err)
 	}
-	if changes[0].ChangeKind != "modified" || changes[0].Reason != "covers the changed behavior" || changes[0].RepositoryID != "repo-1" {
+	if changes[0].ChangeKind != "modified" || changes[0].Reason != "covers the changed behavior" {
 		t.Fatalf("stored evidence = %#v", changes[0])
 	}
 }
@@ -93,7 +88,7 @@ func TestMaterializeScratchPreservesModesSymlinksAndIsolation(t *testing.T) {
 	}
 	defer db.Close()
 	workspace := filepath.Join(root, "task")
-	repositoryPath := filepath.Join(workspace, "workspace", "repositories", "app")
+	repositoryPath := filepath.Join(workspace, "workspace", "repository")
 	qualityGit(t, repositoryPath, "init")
 	qualityWrite(t, filepath.Join(repositoryPath, "run.sh"), "#!/bin/sh\necho ok\n")
 	if err = os.Chmod(filepath.Join(repositoryPath, "run.sh"), 0o755); err != nil {
@@ -105,7 +100,7 @@ func TestMaterializeScratchPreservesModesSymlinksAndIsolation(t *testing.T) {
 	}
 	qualityGit(t, repositoryPath, "add", ".")
 	qualityGit(t, repositoryPath, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "base")
-	task := qualityTask(t, db, root, store.TaskRepository{ID: "repo-1", TaskID: "task-1", Name: "app", WorkingPath: repositoryPath})
+	task := qualityTask(t, db, root, repositoryPath, "")
 	service := NewService(root, Dependencies{Store: db, Config: configForQuality(), Git: factorygit.OSRunner{}})
 	snapshot, err := service.CaptureSnapshot(context.Background(), task)
 	if err != nil {
@@ -115,21 +110,21 @@ func TestMaterializeScratchPreservesModesSymlinksAndIsolation(t *testing.T) {
 	if err = service.MaterializeScratch(context.Background(), task, snapshot.Digest, baseline); err != nil {
 		t.Fatal(err)
 	}
-	if info, statErr := os.Stat(filepath.Join(baseline, "app", "run.sh")); statErr != nil || info.Mode().Perm() != 0o755 {
+	if info, statErr := os.Stat(filepath.Join(baseline, "run.sh")); statErr != nil || info.Mode().Perm() != 0o755 {
 		t.Fatalf("scratch executable = %v, err = %v", info, statErr)
 	}
-	if link, readErr := os.Readlink(filepath.Join(baseline, "app", "target-link")); readErr != nil || link != "target.txt" {
+	if link, readErr := os.Readlink(filepath.Join(baseline, "target-link")); readErr != nil || link != "target.txt" {
 		t.Fatalf("scratch symlink = %q, err = %v", link, readErr)
 	}
-	if info, statErr := os.Stat(filepath.Join(baseline, "app", ".git")); statErr != nil || !info.IsDir() {
+	if info, statErr := os.Stat(filepath.Join(baseline, ".git")); statErr != nil || !info.IsDir() {
 		t.Fatalf("scratch Git metadata = %v, err = %v", info, statErr)
 	}
-	qualityWrite(t, filepath.Join(baseline, "app", "baseline-side-effect"), "must not leak")
+	qualityWrite(t, filepath.Join(baseline, "baseline-side-effect"), "must not leak")
 	overlay := filepath.Join(root, "overlay")
 	if err = service.MaterializeScratch(context.Background(), task, snapshot.Digest, overlay); err != nil {
 		t.Fatal(err)
 	}
-	if _, statErr := os.Stat(filepath.Join(overlay, "app", "baseline-side-effect")); !os.IsNotExist(statErr) {
+	if _, statErr := os.Stat(filepath.Join(overlay, "baseline-side-effect")); !os.IsNotExist(statErr) {
 		t.Fatalf("baseline side effect leaked into overlay: %v", statErr)
 	}
 }
@@ -145,13 +140,13 @@ func TestCheckCancellationKillsProcessGroupAndPersistsCancelledRecord(t *testing
 	if err = os.MkdirAll(repositoryPath, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	task := qualityTask(t, db, root, store.TaskRepository{ID: "repo-1", TaskID: "task-1", Name: "app", WorkingPath: repositoryPath})
+	task := qualityTask(t, db, root, repositoryPath, "")
 	service := NewService(root, Dependencies{Store: db, Config: configForQuality(), Git: factorygit.OSRunner{}})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- service.runChecks(ctx, task, store.Phase{ID: "check-attempt", Name: "check", Attempt: 1}, task.Repositories[0], []Check{{ID: "sleep", Command: "sleep 30"}}, "primary", "")
+		done <- service.runChecks(ctx, task, store.Phase{ID: "check-attempt", Name: "check", Attempt: 1}, []Check{{ID: "sleep", Command: "sleep 30"}}, "primary", "")
 	}()
 	time.Sleep(100 * time.Millisecond)
 	cancel()
@@ -176,13 +171,13 @@ func TestComparisonFailureIsPersistedAsAdvisoryObservation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	repositoryPath := filepath.Join(root, "task", "workspace", "repositories", "app")
+	repositoryPath := filepath.Join(root, "task", "workspace", "repository")
 	qualityGit(t, repositoryPath, "init")
 	qualityWrite(t, filepath.Join(repositoryPath, "changed_test.go"), "base\n")
 	qualityGit(t, repositoryPath, "add", ".")
 	qualityGit(t, repositoryPath, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "base")
 	base := strings.TrimSpace(qualityGit(t, repositoryPath, "rev-parse", "HEAD"))
-	task := qualityTask(t, db, root, store.TaskRepository{ID: "repo-1", TaskID: "task-1", Name: "app", WorkingPath: repositoryPath, BaseSHA: base, ReviewBaseSHA: base})
+	task := qualityTask(t, db, root, repositoryPath, base)
 	service := NewService(root, Dependencies{Store: db, Config: configForQuality(), Git: factorygit.OSRunner{}})
 	snapshot, err := service.CaptureSnapshot(context.Background(), task)
 	if err != nil {
@@ -198,7 +193,7 @@ func TestComparisonFailureIsPersistedAsAdvisoryObservation(t *testing.T) {
 		Checks:                []Check{{ID: "behavior", Command: `test "$(cat changed_test.go)" = "base"`}},
 		PreChangeVerification: true,
 	}
-	if err = service.runComparisons(context.Background(), task, verify, map[string]Materialization{"app": profile}); err != nil {
+	if err = service.runComparisons(context.Background(), task, verify, profile); err != nil {
 		t.Fatal(err)
 	}
 	comparisons, err := db.Comparisons(context.Background(), task.ID)
@@ -217,9 +212,9 @@ func TestComparisonFailureIsPersistedAsAdvisoryObservation(t *testing.T) {
 	}
 }
 
-func qualityTask(t *testing.T, db *store.DB, root string, repository store.TaskRepository) store.Task {
+func qualityTask(t *testing.T, db *store.DB, root, repositoryPath, base string) store.Task {
 	t.Helper()
-	task := store.Task{ID: "task-1", Request: "quality", WorkspacePath: filepath.Join(root, "task"), State: string(Preparing), CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), Repositories: []store.TaskRepository{repository}}
+	task := store.Task{ID: "task-1", Request: "quality", WorkspacePath: filepath.Join(root, "task"), RepositoryType: "local", RepositorySource: repositoryPath, RepositoryPath: repositoryPath, BaseSHA: base, ReviewBaseSHA: base, State: string(Preparing), CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
 	if err := os.MkdirAll(task.WorkspacePath, 0o700); err != nil {
 		t.Fatal(err)
 	}

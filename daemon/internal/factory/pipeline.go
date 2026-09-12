@@ -193,11 +193,11 @@ func (s *Service) prepareOnly(ctx context.Context, task store.Task) error {
 	if err != nil {
 		return err
 	}
-	primaryPath, err := s.prepareRepositories(ctx, task, phase)
+	repositoryPath, err := s.prepareRepository(ctx, task)
 	if err != nil {
 		return err
 	}
-	if err = s.db.SetPrepared(ctx, task.ID, primaryPath, task.ConfigSnapshot); err != nil {
+	if err = s.db.SetPrepared(ctx, task.ID, repositoryPath, task.ConfigSnapshot); err != nil {
 		s.failPhase(ctx, phase, err)
 		return err
 	}
@@ -212,7 +212,7 @@ func (s *Service) progress(ctx context.Context, taskID string) error {
 	if err != nil {
 		return err
 	}
-	if task.PrimaryRepositoryPath == "" {
+	if task.RepositoryPath == "" {
 		if err = s.prepareOnly(ctx, task); err != nil {
 			return err
 		}
@@ -334,19 +334,19 @@ func (s *Service) executeStage(ctx context.Context, task store.Task, stage confi
 }
 
 func (s *Service) executeBuild(ctx context.Context, task store.Task, stage config.Stage, phase store.Phase) error {
-	profiles, err := readTaskProfiles(task)
+	profile, err := readTaskProfile(task)
 	if err != nil {
 		return err
 	}
 	data := s.stagePromptData(task)
 	data["Plan"] = s.plannerEnvelope(ctx, task)
-	payload, err := s.runRole(ctx, task, phase, stage.ID, data, s.builderValidator(ctx, task, profiles))
+	payload, err := s.runRole(ctx, task, phase, stage.ID, data, s.builderValidator(ctx, task, profile))
 	if err != nil {
 		s.failPhase(ctx, phase, err)
 		return err
 	}
 	_ = payload
-	if err = s.validateBuilderPaths(ctx, task, profiles); err != nil {
+	if err = s.validateBuilderPaths(ctx, task, profile); err != nil {
 		s.failPhase(ctx, phase, err)
 		return err
 	}
@@ -358,17 +358,15 @@ func (s *Service) executeBuild(ctx context.Context, task store.Task, stage confi
 }
 
 func (s *Service) executeVerify(ctx context.Context, task store.Task, phase store.Phase) error {
-	profiles, err := readTaskProfiles(task)
+	profile, err := readTaskProfile(task)
 	if err != nil {
 		return err
 	}
-	for _, repository := range task.Repositories {
-		if err = s.runChecks(ctx, task, phase, repository, profiles[repository.Name].Checks, "primary", ""); err != nil {
-			s.failPhase(ctx, phase, err)
-			return err
-		}
+	if err = s.runChecks(ctx, task, phase, profile.Checks, "primary", ""); err != nil {
+		s.failPhase(ctx, phase, err)
+		return err
 	}
-	if err = s.runComparisons(ctx, task, phase, profiles); err != nil {
+	if err = s.runComparisons(ctx, task, phase, profile); err != nil {
 		s.failPhase(ctx, phase, err)
 		return err
 	}
@@ -376,15 +374,15 @@ func (s *Service) executeVerify(ctx context.Context, task store.Task, phase stor
 }
 
 func (s *Service) executeReview(ctx context.Context, task store.Task, stage config.Stage, phase store.Phase) error {
-	before, err := repositoryFingerprints(ctx, s.git, task.Repositories)
+	before, err := repositoryFingerprint(ctx, s.git, task)
 	if err != nil {
 		return err
 	}
-	changed, err := taskChangedFiles(ctx, s.git, task.Repositories, true)
+	changed, err := taskChangedFiles(ctx, s.git, task, true)
 	if err != nil {
 		return err
 	}
-	changes, err := s.diffRepositories(ctx, task, true)
+	changes, err := s.diffRepository(ctx, task, true)
 	if err != nil {
 		return err
 	}
@@ -403,7 +401,7 @@ func (s *Service) executeReview(ctx context.Context, task store.Task, stage conf
 		return err
 	}
 	data["ChangedFiles"] = changed
-	data["Diff"] = changes.Repositories
+	data["Diff"] = changes
 	payload, err := s.runRole(ctx, task, phase, stage.ID, data, func(text string) (any, error) { return ValidateReview(text) })
 	if err != nil {
 		s.failPhase(ctx, phase, err)
@@ -417,8 +415,8 @@ func (s *Service) executeReview(ctx context.Context, task store.Task, stage conf
 		s.failPhase(ctx, phase, err)
 		return err
 	}
-	after, err := repositoryFingerprints(ctx, s.git, task.Repositories)
-	if err != nil || !sameFingerprints(before, after) {
+	after, err := repositoryFingerprint(ctx, s.git, task)
+	if err != nil || before != after {
 		if err == nil {
 			err = fmt.Errorf("%s modified repository", stage.ID)
 		}
@@ -429,7 +427,7 @@ func (s *Service) executeReview(ctx context.Context, task store.Task, stage conf
 }
 
 func (s *Service) stagePromptData(task store.Task) map[string]any {
-	return map[string]any{"TaskID": task.ID, "Request": task.Request, "Repository": task.PrimaryRepositoryPath, "Repositories": task.Repositories, "Workspace": task.WorkspacePath}
+	return map[string]any{"TaskID": task.ID, "Request": task.Request, "Repository": task.RepositoryPath, "Workspace": task.WorkspacePath}
 }
 
 func (s *Service) plannerEnvelope(ctx context.Context, task store.Task) string {

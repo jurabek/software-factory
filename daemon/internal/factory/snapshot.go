@@ -26,9 +26,9 @@ type fileEntry struct {
 	Hash string `json:"hash"`
 }
 
-// CaptureSnapshot copies workspace/repositories into workspace/snapshots/<digest>/.
+// CaptureSnapshot copies workspace/repository into workspace/snapshots/<digest>/.
 func (s *snapshotService) CaptureSnapshot(ctx context.Context, task store.Task) (store.WorkspaceSnapshot, error) {
-	source := filepath.Join(task.WorkspacePath, "workspace", "repositories")
+	source := filepath.Join(task.WorkspacePath, "workspace", "repository")
 	destinationRoot := filepath.Join(task.WorkspacePath, "workspace", "snapshots")
 	if err := os.MkdirAll(destinationRoot, 0o700); err != nil {
 		return store.WorkspaceSnapshot{}, err
@@ -110,7 +110,7 @@ func (s *snapshotService) CaptureSnapshot(ctx context.Context, task store.Task) 
 	return snapshot, nil
 }
 
-// MaterializeSnapshot restores a snapshot into workspace/repositories.
+// MaterializeSnapshot restores a snapshot into workspace/repository.
 func (s *snapshotService) MaterializeSnapshot(ctx context.Context, task store.Task, digest string) error {
 	if digest == "" {
 		return nil
@@ -119,7 +119,7 @@ func (s *snapshotService) MaterializeSnapshot(ctx context.Context, task store.Ta
 	if err != nil {
 		return err
 	}
-	destination := filepath.Join(task.WorkspacePath, "workspace", "repositories")
+	destination := filepath.Join(task.WorkspacePath, "workspace", "repository")
 	if err := os.MkdirAll(destination, 0o700); err != nil {
 		return err
 	}
@@ -152,20 +152,14 @@ func (s *snapshotService) MaterializeScratch(ctx context.Context, task store.Tas
 	if s.git == nil {
 		return fmt.Errorf("git runner is required")
 	}
-	for _, repository := range task.Repositories {
-		repositoryPath := filepath.Join(destination, repository.Name)
-		if err = os.MkdirAll(repositoryPath, 0o700); err != nil {
-			return err
-		}
-		if _, err = s.git.Run(ctx, "git", "-C", repositoryPath, "init"); err != nil {
-			return fmt.Errorf("initialize scratch repository %s: %w", repository.Name, err)
-		}
-		if _, err = s.git.Run(ctx, "git", "-C", repositoryPath, "add", "--all"); err != nil {
-			return fmt.Errorf("stage scratch repository %s: %w", repository.Name, err)
-		}
-		if _, err = s.git.Run(ctx, "git", "-C", repositoryPath, "-c", "user.name=Software Factory", "-c", "user.email=software-factory@localhost", "commit", "--allow-empty", "-m", "comparison snapshot"); err != nil {
-			return fmt.Errorf("commit scratch repository %s: %w", repository.Name, err)
-		}
+	if _, err = s.git.Run(ctx, "git", "-C", destination, "init"); err != nil {
+		return fmt.Errorf("initialize scratch repository: %w", err)
+	}
+	if _, err = s.git.Run(ctx, "git", "-C", destination, "add", "--all"); err != nil {
+		return fmt.Errorf("stage scratch repository: %w", err)
+	}
+	if _, err = s.git.Run(ctx, "git", "-C", destination, "-c", "user.name=Software Factory", "-c", "user.email=software-factory@localhost", "commit", "--allow-empty", "-m", "comparison snapshot"); err != nil {
+		return fmt.Errorf("commit scratch repository: %w", err)
 	}
 	return nil
 }
@@ -195,17 +189,11 @@ func clearRepositoryContents(root string) error {
 			}
 			continue
 		}
-		children, err := os.ReadDir(path)
-		if err != nil {
-			return err
+		if entry.Name() == ".git" {
+			continue
 		}
-		for _, child := range children {
-			if child.Name() == ".git" {
-				continue
-			}
-			if err := os.RemoveAll(filepath.Join(path, child.Name())); err != nil {
-				return err
-			}
+		if err := os.RemoveAll(path); err != nil {
+			return err
 		}
 	}
 	return nil

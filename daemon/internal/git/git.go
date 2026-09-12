@@ -82,6 +82,13 @@ func PrepareLocal(ctx context.Context, runner Runner, source, destination string
 	if err != nil {
 		return Profile{}, err
 	}
+	resolved, err := filepath.EvalSymlinks(source)
+	if err != nil {
+		return Profile{}, fmt.Errorf("resolve submitted repository path: %w", err)
+	}
+	if filepath.Clean(resolved) != filepath.Clean(root) {
+		return Profile{}, fmt.Errorf("local repository path must exactly match the git root")
+	}
 	branch := materializationBranch(destination)
 	if output, runErr := runner.Run(ctx, "git", "-C", root, "worktree", "add", "-b", branch, destination, sha); runErr != nil {
 		return Profile{}, fmt.Errorf("create worktree: %w: %s", runErr, strings.TrimSpace(string(output)))

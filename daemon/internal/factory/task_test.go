@@ -10,7 +10,7 @@ import (
 	"github.com/jurabek/software-factory/daemon/internal/store"
 )
 
-func TestCreateTaskAllocatesWorkspaceForMultipleRepositories(t *testing.T) {
+func TestCreateTaskAllocatesSingletonRepositoryWorkspace(t *testing.T) {
 	root := t.TempDir()
 	db, err := store.Open(filepath.Join(root, "factory.db"))
 	if err != nil {
@@ -18,18 +18,18 @@ func TestCreateTaskAllocatesWorkspaceForMultipleRepositories(t *testing.T) {
 	}
 	defer db.Close()
 	service := NewService(root, Dependencies{Store: db})
-	task, err := service.Create(context.Background(), CreateRequest{Request: "Coordinate API and UI", Repositories: []Repository{{Name: "api", Type: "local", Path: filepath.Join(root, "api"), Primary: true}, {Name: "web", Type: "github", Repo: "owner/web"}}})
+	task, err := service.Create(context.Background(), CreateRequest{Request: "Coordinate API and UI", Repository: Repository{Type: "github", Repo: "owner/api"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	service.Shutdown(context.Background())
-	if len(task.Repositories) != 2 {
-		t.Fatalf("repositories = %d, want 2", len(task.Repositories))
+	if task.RepositoryType != "github" || task.RepositorySource != "owner/api" {
+		t.Fatalf("repository = %#v", task)
 	}
 	if task.WorkspacePath != filepath.Join(root, "tasks", task.ID) {
 		t.Fatalf("workspace = %q", task.WorkspacePath)
 	}
-	for _, relative := range []string{"task.json", "workspace/repositories", "attempts", "snapshots", "artifacts", "sessions"} {
+	for _, relative := range []string{"task.json", "workspace/repository", "attempts", "snapshots", "artifacts", "sessions"} {
 		if _, err = os.Stat(filepath.Join(task.WorkspacePath, relative)); err != nil {
 			t.Fatalf("workspace item %s: %v", relative, err)
 		}
@@ -38,19 +38,19 @@ func TestCreateTaskAllocatesWorkspaceForMultipleRepositories(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(stored.Repositories) != 2 || !stored.Repositories[0].Primary {
-		t.Fatalf("stored repositories = %#v", stored.Repositories)
+	if stored.RepositoryType != "github" || stored.RepositorySource != "owner/api" {
+		t.Fatalf("stored task = %#v", stored)
 	}
 	listed, err := db.Tasks(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(listed) != 1 || len(listed[0].Repositories) != 2 {
+	if len(listed) != 1 || listed[0].RepositorySource != "owner/api" {
 		t.Fatalf("listed tasks = %#v", listed)
 	}
 }
 
-func TestCreateTaskRequiresOnePrimaryRepository(t *testing.T) {
+func TestCreateTaskRequiresRepository(t *testing.T) {
 	root := t.TempDir()
 	db, err := store.Open(filepath.Join(root, "factory.db"))
 	if err != nil {
@@ -58,9 +58,9 @@ func TestCreateTaskRequiresOnePrimaryRepository(t *testing.T) {
 	}
 	defer db.Close()
 	service := NewService(root, Dependencies{Store: db})
-	_, err = service.Create(context.Background(), CreateRequest{Request: "change", Repositories: []Repository{{Name: "one", Type: "github", Repo: "owner/one", Primary: true}, {Name: "two", Type: "github", Repo: "owner/two", Primary: true}}})
+	_, err = service.Create(context.Background(), CreateRequest{Request: "change"})
 	if err == nil {
-		t.Fatal("expected primary repository validation error")
+		t.Fatal("expected repository validation error")
 	}
 }
 
@@ -73,11 +73,11 @@ func TestCreateSessionInheritsTaskConfiguration(t *testing.T) {
 	defer db.Close()
 	service := NewService(root, Dependencies{Store: db})
 	task, err := service.Create(context.Background(), CreateRequest{
-		Request:      "Add task sessions",
-		Repositories: []Repository{{Name: "app", Type: "github", Repo: "owner/app", Primary: true}},
-		CodingAgent:  "pi",
-		Model:        "provider/model",
-		Thinking:     "high",
+		Request:     "Add task sessions",
+		Repository:  Repository{Type: "github", Repo: "owner/app"},
+		CodingAgent: "pi",
+		Model:       "provider/model",
+		Thinking:    "high",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -98,8 +98,8 @@ func TestCreateSessionInheritsTaskConfiguration(t *testing.T) {
 	if session.CodingAgent != task.CodingAgent || session.Model != task.Model || session.Thinking != task.Thinking {
 		t.Fatalf("session agent configuration = %#v, task = %#v", session, task)
 	}
-	if len(session.Repositories) != 1 || session.Repositories[0].SourceValue != "owner/app" || session.Repositories[0].TaskID != session.ID {
-		t.Fatalf("session repositories = %#v", session.Repositories)
+	if session.RepositorySource != "owner/app" || session.RepositoryType != "github" {
+		t.Fatalf("session repository = %#v", session)
 	}
 
 	sessions, err := db.TaskSessions(context.Background(), task.ID)
@@ -119,7 +119,7 @@ func TestCreateSessionUsesRootForNestedSessionRequest(t *testing.T) {
 	}
 	defer db.Close()
 	service := NewService(root, Dependencies{Store: db})
-	task, err := service.Create(context.Background(), CreateRequest{Request: "Task", Repositories: []Repository{{Type: "github", Repo: "owner/app"}}})
+	task, err := service.Create(context.Background(), CreateRequest{Request: "Task", Repository: Repository{Type: "github", Repo: "owner/app"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func TestDeleteRootTaskDeletesAllSessionWorkspaces(t *testing.T) {
 	}
 	defer db.Close()
 	service := NewService(root, Dependencies{Store: db})
-	task, err := service.Create(context.Background(), CreateRequest{Request: "Task", Repositories: []Repository{{Type: "github", Repo: "owner/app"}}})
+	task, err := service.Create(context.Background(), CreateRequest{Request: "Task", Repository: Repository{Type: "github", Repo: "owner/app"}})
 	if err != nil {
 		t.Fatal(err)
 	}

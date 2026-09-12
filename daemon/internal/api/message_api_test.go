@@ -52,7 +52,7 @@ func TestTaskReadsExposeAuthoritativeAvailableActions(t *testing.T) {
 	}
 	defer db.Close()
 	createdAt := time.Now().UTC().Format(time.RFC3339Nano)
-	task := store.Task{ID: "task-actions", Request: "request", WorkspacePath: t.TempDir(), State: "preparing", CreatedAt: createdAt, Repositories: []store.TaskRepository{{ID: "repo", TaskID: "task-actions", Name: "repo", SourceType: "github", SourceValue: "owner/repo", Primary: true, CreatedAt: createdAt}}}
+	task := store.Task{ID: "task-actions", Request: "request", WorkspacePath: t.TempDir(), RepositoryType: "github", RepositorySource: "owner/repo", State: "preparing", CreatedAt: createdAt}
 	if err = db.CreateTask(context.Background(), task); err != nil {
 		t.Fatal(err)
 	}

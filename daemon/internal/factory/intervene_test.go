@@ -24,7 +24,7 @@ func testService(t *testing.T) (*Service, *store.DB, string) {
 func createTaskWithAttempt(t *testing.T, service *Service, db *store.DB) (store.Task, store.Phase) {
 	t.Helper()
 	ctx := context.Background()
-	task, err := service.tasks.create(ctx, CreateRequest{Request: "fix", Repositories: []Repository{{Type: "github", Repo: "owner/repository"}}}, "")
+	task, err := service.tasks.create(ctx, CreateRequest{Request: "fix", Repository: Repository{Type: "github", Repo: "owner/repository"}}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,8 +40,8 @@ func createTaskWithAttempt(t *testing.T, service *Service, db *store.DB) (store.
 		t.Fatal(err)
 	}
 	// Seed snapshot rows so materialization is a no-op path.
-	_ = db.SaveSnapshot(ctx, store.WorkspaceSnapshot{Digest: "in-snap", TaskID: task.ID, Path: filepath.Join(task.WorkspacePath, "workspace", "repositories"), CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)})
-	_ = db.SaveSnapshot(ctx, store.WorkspaceSnapshot{Digest: "out-snap", TaskID: task.ID, Path: filepath.Join(task.WorkspacePath, "workspace", "repositories"), CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)})
+	_ = db.SaveSnapshot(ctx, store.WorkspaceSnapshot{Digest: "in-snap", TaskID: task.ID, Path: filepath.Join(task.WorkspacePath, "workspace", "repository"), CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)})
+	_ = db.SaveSnapshot(ctx, store.WorkspaceSnapshot{Digest: "out-snap", TaskID: task.ID, Path: filepath.Join(task.WorkspacePath, "workspace", "repository"), CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)})
 	return task, phase
 }
 

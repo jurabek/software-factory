@@ -21,7 +21,7 @@ func (f *fakeSandbox) Materialize(_ context.Context, request MaterializationRequ
 	if f.failAt > 0 && len(f.requests) == f.failAt {
 		return Materialization{}, errors.New("materialization failure")
 	}
-	return Materialization{Root: "/canonical/" + request.Name, BaseSHA: "base", BranchName: request.TaskID + "-" + request.RepositoryID, Checks: []Check{{ID: "check", Command: "true"}}}, nil
+	return Materialization{Root: "/canonical/repository", BaseSHA: "base", BranchName: request.TaskID, Checks: []Check{{ID: "check", Command: "true"}}}, nil
 }
 
 func (f *fakeSandbox) Cleanup(_ context.Context, request CleanupRequest) error {
@@ -29,7 +29,7 @@ func (f *fakeSandbox) Cleanup(_ context.Context, request CleanupRequest) error {
 	return f.cleanupErr
 }
 
-func TestPrepareRepositoriesPreservesSandboxOrderAndIdentity(t *testing.T) {
+func TestPrepareRepositoryUsesTaskIdentity(t *testing.T) {
 	root := t.TempDir()
 	db, err := store.Open(filepath.Join(root, "factory.db"))
 	if err != nil {
@@ -38,14 +38,14 @@ func TestPrepareRepositoriesPreservesSandboxOrderAndIdentity(t *testing.T) {
 	defer db.Close()
 	fake := &fakeSandbox{}
 	service := NewService(root, Dependencies{Store: db, Sandbox: fake})
-	task, err := service.tasks.create(context.Background(), CreateRequest{Request: "prepare", Repositories: []Repository{{Name: "one", Type: "local", Path: root, Primary: true}, {Name: "two", Type: "github", Repo: "owner/two"}}}, "")
+	task, err := service.tasks.create(context.Background(), CreateRequest{Request: "prepare", Repository: Repository{Type: "github", Repo: "owner/one"}}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = service.prepareRepositories(context.Background(), task, store.Phase{}); err != nil {
+	if _, err = service.prepareRepository(context.Background(), task); err != nil {
 		t.Fatal(err)
 	}
-	if len(fake.requests) != 2 || fake.requests[0].RepositoryID != task.Repositories[0].ID || fake.requests[1].RepositoryID != task.Repositories[1].ID {
+	if len(fake.requests) != 1 || fake.requests[0].TaskID != task.ID || fake.requests[0].Destination != filepath.Join(task.WorkspacePath, "workspace", "repository") {
 		t.Fatalf("requests = %#v", fake.requests)
 	}
 }
@@ -59,7 +59,7 @@ func TestDeleteDelegatesCleanupWithoutBlockingDeletion(t *testing.T) {
 	defer db.Close()
 	fake := &fakeSandbox{cleanupErr: errors.New("cleanup failed")}
 	service := NewService(root, Dependencies{Store: db, Sandbox: fake})
-	task, err := service.tasks.create(context.Background(), CreateRequest{Request: "delete", Repositories: []Repository{{Name: "app", Type: "github", Repo: "owner/app", Primary: true}}}, "")
+	task, err := service.tasks.create(context.Background(), CreateRequest{Request: "delete", Repository: Repository{Type: "github", Repo: "owner/app"}}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,23 +77,23 @@ func TestDeleteDelegatesCleanupWithoutBlockingDeletion(t *testing.T) {
 	}
 }
 
-func TestPrepareRepositoriesStopsOnSandboxFailure(t *testing.T) {
+func TestPrepareRepositoryReturnsSandboxFailure(t *testing.T) {
 	root := t.TempDir()
 	db, err := store.Open(filepath.Join(root, "factory.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	fake := &fakeSandbox{failAt: 2}
+	fake := &fakeSandbox{failAt: 1}
 	service := NewService(root, Dependencies{Store: db, Sandbox: fake})
-	task, err := service.tasks.create(context.Background(), CreateRequest{Request: "prepare", Repositories: []Repository{{Name: "one", Type: "local", Path: root, Primary: true}, {Name: "two", Type: "github", Repo: "owner/two"}}}, "")
+	task, err := service.tasks.create(context.Background(), CreateRequest{Request: "prepare", Repository: Repository{Type: "github", Repo: "owner/one"}}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = service.prepareRepositories(context.Background(), task, store.Phase{}); err == nil {
+	if _, err = service.prepareRepository(context.Background(), task); err == nil {
 		t.Fatal("expected sandbox failure")
 	}
-	if len(fake.requests) != 2 {
-		t.Fatalf("requests = %d, want 2", len(fake.requests))
+	if len(fake.requests) != 1 {
+		t.Fatalf("requests = %d, want 1", len(fake.requests))
 	}
 }
