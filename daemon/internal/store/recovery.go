@@ -18,7 +18,7 @@ func (db *DB) Recover(ctx context.Context) error {
 	if _, err = tx.ExecContext(ctx, `update branches set status='blocked',updated_at=? where task_id in (select id from tasks where state in ('preparing','planning','building','checking','reviewing')) and status='active'`, ended); err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, `update tasks set previous_state=state,state='blocked',error='server restarted during active phase: retry, revise, or repair explicitly',ended_at=? where state in ('preparing','planning','building','checking','reviewing')`, ended); err != nil {
+	if _, err = tx.ExecContext(ctx, `update tasks set previous_state=state,state='blocked',error='server restarted during active phase; explicit recovery is required',ended_at=? where state in ('preparing','planning','building','checking','reviewing')`, ended); err != nil {
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, `update workspace_operations set status='interrupted',error='server restarted during workspace operation',updated_at=? where status in ('planned','running')`, ended); err != nil {
