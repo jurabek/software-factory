@@ -2,12 +2,9 @@ package harness
 
 import (
 	"context"
-	"errors"
 
 	"github.com/jurabek/software-factory/daemon/internal/session"
 )
-
-var ErrProcessTerminationUnconfirmed = errors.New("process group termination was not confirmed")
 
 type Model struct {
 	Provider, ID  string

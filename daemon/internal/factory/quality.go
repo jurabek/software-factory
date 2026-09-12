@@ -12,22 +12,20 @@ import (
 	"time"
 
 	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
-	"github.com/jurabek/software-factory/daemon/internal/harness"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 )
 
 type expectedTestChange struct {
-	repository store.TaskRepository
-	change     factorygit.Change
+	change factorygit.Change
 }
 
-func (s *qualityService) builderValidator(ctx context.Context, task store.Task, profiles map[string]Materialization) validator {
+func (s *qualityService) builderValidator(ctx context.Context, task store.Task, profile Materialization) validator {
 	return func(text string) (any, error) {
 		build, err := ValidateBuild(text)
 		if err != nil {
 			return build, err
 		}
-		expected, err := s.changedTestSet(ctx, task, profiles)
+		expected, err := s.changedTestSet(ctx, task, profile)
 		if err != nil {
 			return build, err
 		}
@@ -38,21 +36,15 @@ func (s *qualityService) builderValidator(ctx context.Context, task store.Task, 
 	}
 }
 
-func (s *qualityService) changedTestSet(ctx context.Context, task store.Task, profiles map[string]Materialization) (map[string]expectedTestChange, error) {
+func (s *qualityService) changedTestSet(ctx context.Context, task store.Task, profile Materialization) (map[string]expectedTestChange, error) {
 	expected := make(map[string]expectedTestChange)
-	for _, repository := range task.Repositories {
-		profile, ok := profiles[repository.Name]
-		if !ok {
-			return nil, fmt.Errorf("repository profile %s is unavailable", repository.Name)
-		}
-		entries, err := factorygit.ChangedEntries(ctx, s.git, repository.WorkingPath, repositoryReviewBase(repository))
-		if err != nil {
-			return nil, fmt.Errorf("read changes for %s: %w", repository.Name, err)
-		}
-		for _, entry := range entries {
-			if factorygit.MatchesGlob(entry.Path, profile.Tests) {
-				expected[repository.ID+"\x00"+entry.Path] = expectedTestChange{repository: repository, change: entry}
-			}
+	entries, err := factorygit.ChangedEntries(ctx, s.git, task.RepositoryPath, reviewBase(task))
+	if err != nil {
+		return nil, fmt.Errorf("read changes: %w", err)
+	}
+	for _, entry := range entries {
+		if factorygit.MatchesGlob(entry.Path, profile.Tests) {
+			expected[entry.Path] = expectedTestChange{change: entry}
 		}
 	}
 	return expected, nil
@@ -62,9 +54,9 @@ func validateTestChangeSet(changes []TestChange, expected map[string]expectedTes
 	seen := make(map[string]struct{}, len(changes))
 	for _, change := range changes {
 		path := filepath.ToSlash(filepath.Clean(change.Path))
-		key := change.RepositoryID + "\x00" + path
+		key := path
 		if _, ok := expected[key]; !ok {
-			return fmt.Errorf("test_changes entry is not a Git-derived changed test: %s/%s", change.RepositoryID, change.Path)
+			return fmt.Errorf("test_changes entry is not a Git-derived changed test: %s", change.Path)
 		}
 		if path != change.Path {
 			return fmt.Errorf("test_changes path is not canonical: %q", change.Path)
@@ -78,7 +70,7 @@ func validateTestChangeSet(changes []TestChange, expected map[string]expectedTes
 		missing := make([]string, 0, len(expected)-len(seen))
 		for key, value := range expected {
 			if _, ok := seen[key]; !ok {
-				missing = append(missing, value.repository.Name+"/"+value.change.Path)
+				missing = append(missing, value.change.Path)
 			}
 		}
 		return fmt.Errorf("test_changes is missing Git-derived changed tests: %s", strings.Join(missing, ", "))
@@ -87,48 +79,38 @@ func validateTestChangeSet(changes []TestChange, expected map[string]expectedTes
 }
 
 func (s *qualityService) persistBuilderEvidence(ctx context.Context, task store.Task, phase store.Phase, payload string) error {
-	changes, err := s.builderEvidence(ctx, task, phase, payload)
+	build, err := ValidateBuild(payload)
 	if err != nil {
 		return err
 	}
-	return s.db.SaveTestChanges(ctx, changes)
-}
-
-func (s *qualityService) builderEvidence(ctx context.Context, task store.Task, phase store.Phase, payload string) ([]store.TestChange, error) {
-	build, err := ValidateBuild(payload)
+	profile, err := readTaskProfile(task)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	profiles, err := s.workspace.InspectProfiles(ctx, task)
+	expected, err := s.changedTestSet(ctx, task, profile)
 	if err != nil {
-		return nil, err
-	}
-	expected, err := s.changedTestSet(ctx, task, profiles)
-	if err != nil {
-		return nil, err
+		return err
 	}
 	if err = validateTestChangeSet(build.TestChanges, expected); err != nil {
-		return nil, err
+		return err
 	}
 	changes := make([]store.TestChange, 0, len(build.TestChanges))
 	for _, change := range build.TestChanges {
-		value := expected[change.RepositoryID+"\x00"+change.Path]
+		value := expected[change.Path]
 		changes = append(changes, store.TestChange{
-			ID:             randomID(),
-			TaskID:         task.ID,
-			PhaseID:        phase.ID,
-			Attempt:        phase.Attempt,
-			RepositoryID:   change.RepositoryID,
-			RepositoryName: value.repository.Name,
-			Path:           change.Path,
-			Reason:         change.Reason,
-			ChangeKind:     value.change.Kind,
-			RenameFrom:     value.change.RenameFrom,
-			RenameTo:       value.change.RenameTo,
-			CreatedAt:      nowString(),
+			ID:         randomID(),
+			TaskID:     task.ID,
+			PhaseID:    phase.ID,
+			Attempt:    phase.Attempt,
+			Path:       change.Path,
+			Reason:     change.Reason,
+			ChangeKind: value.change.Kind,
+			RenameFrom: value.change.RenameFrom,
+			RenameTo:   value.change.RenameTo,
+			CreatedAt:  nowString(),
 		})
 	}
-	return changes, nil
+	return s.db.SaveTestChanges(ctx, changes)
 }
 
 type checkRunError struct {
@@ -139,14 +121,14 @@ type checkRunError struct {
 func (e *checkRunError) Error() string { return e.err.Error() }
 func (e *checkRunError) Unwrap() error { return e.err }
 
-func (s *qualityService) runChecks(ctx context.Context, task store.Task, phase store.Phase, repository store.TaskRepository, checks []Check, checkPhase, baseline string) error {
-	return s.runChecksAt(ctx, task, phase, repository, repository.WorkingPath, checks, checkPhase, baseline)
+func (s *qualityService) runChecks(ctx context.Context, task store.Task, phase store.Phase, checks []Check, checkPhase, baseline string) error {
+	return s.runChecksAt(ctx, task, phase, task.RepositoryPath, checks, checkPhase, baseline)
 }
 
-func (s *qualityService) runChecksAt(ctx context.Context, task store.Task, phase store.Phase, repository store.TaskRepository, workingPath string, checks []Check, checkPhase, baseline string) error {
+func (s *qualityService) runChecksAt(ctx context.Context, task store.Task, phase store.Phase, workingPath string, checks []Check, checkPhase, baseline string) error {
 	var firstErr error
 	for index, declared := range checks {
-		check, err := s.runCheck(ctx, task, phase, repository, workingPath, declared, index, checkPhase, baseline)
+		check, err := s.runCheck(ctx, task, phase, workingPath, declared, index, checkPhase, baseline)
 		if err != nil && firstErr == nil {
 			firstErr = err
 		}
@@ -157,13 +139,12 @@ func (s *qualityService) runChecksAt(ctx context.Context, task store.Task, phase
 	return firstErr
 }
 
-func (s *qualityService) runCheck(ctx context.Context, task store.Task, phase store.Phase, repository store.TaskRepository, workingPath string, declared Check, index int, checkPhase, baseline string) (store.Check, error) {
+func (s *qualityService) runCheck(ctx context.Context, task store.Task, phase store.Phase, workingPath string, declared Check, index int, checkPhase, baseline string) (store.Check, error) {
 	started := time.Now().UTC()
 	check := store.Check{
 		ID:                 fmt.Sprintf("%s-%s-%s-%d", phase.ID, checkPhase, safeFileName(declared.ID), index),
 		TaskID:             task.ID,
 		PhaseID:            phase.ID,
-		RepositoryID:       repository.ID,
 		StageID:            phase.Name,
 		Phase:              checkPhase,
 		ComparisonBaseline: baseline,
@@ -173,7 +154,7 @@ func (s *qualityService) runCheck(ctx context.Context, task store.Task, phase st
 		ExitCode:           -1,
 		StartedAt:          started.Format(time.RFC3339Nano),
 	}
-	logPath := filepath.Join(task.WorkspacePath, "attempts", fmt.Sprintf("%d-%s", phase.Attempt, phase.ID), "checks", checkPhase, safeFileName(repository.Name), safeFileName(declared.ID)+".log")
+	logPath := filepath.Join(task.WorkspacePath, "attempts", fmt.Sprintf("%d-%s", phase.Attempt, phase.ID), "checks", checkPhase, safeFileName(declared.ID)+".log")
 	check.ArtifactPath = logPath
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
 		return check, err
@@ -200,12 +181,10 @@ func (s *qualityService) runCheck(ctx context.Context, task store.Task, phase st
 		_, _ = command.Wait(), s.db.EndProcess(context.WithoutCancel(ctx), task.ID, pid, -1)
 		return check, err
 	}
-	waitErr, cancelled, terminationErr := waitForProcess(ctx, command)
+	waitErr, cancelled := waitForProcess(ctx, command)
 	check.ExitCode = processExitCode(waitErr)
 	check.Output = capture.String()
-	if terminationErr != nil {
-		check.Status = "inconclusive"
-	} else if cancelled || errors.Is(ctx.Err(), context.Canceled) {
+	if cancelled || errors.Is(ctx.Err(), context.Canceled) {
 		check.Status = "cancelled"
 	} else if waitErr != nil {
 		check.Status = "failed"
@@ -231,9 +210,6 @@ func (s *qualityService) runCheck(ctx context.Context, task store.Task, phase st
 	if check.Status == "cancelled" {
 		return check, &checkRunError{kind: "cancelled", err: ctx.Err()}
 	}
-	if terminationErr != nil {
-		return check, &checkRunError{kind: "inconclusive", err: terminationErr}
-	}
 	if check.Status == "failed" {
 		return check, &checkRunError{kind: "failed", err: fmt.Errorf("check %s exited %d", declared.ID, check.ExitCode)}
 	}
@@ -256,55 +232,26 @@ func checkSetupFailure(exitCode int, output string) bool {
 	return false
 }
 
-func waitForProcess(ctx context.Context, command *exec.Cmd) (error, bool, error) {
+func waitForProcess(ctx context.Context, command *exec.Cmd) (error, bool) {
 	done := make(chan error, 1)
 	go func() { done <- command.Wait() }()
 	select {
 	case err := <-done:
-		return err, false, nil
+		return err, false
 	case <-ctx.Done():
-		terminationErr := terminateProcessGroup(command.Process.Pid)
+		terminateProcessGroup(command.Process.Pid)
 		select {
 		case err := <-done:
-			if terminationErr == nil {
-				terminationErr = waitForProcessGroupGone(command.Process.Pid)
-			}
-			return err, true, terminationErr
+			return err, true
 		case <-time.After(250 * time.Millisecond):
-			if err := syscall.Kill(-command.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) && terminationErr == nil {
-				terminationErr = fmt.Errorf("%w: force terminate process group %d: %v", harness.ErrProcessTerminationUnconfirmed, command.Process.Pid, err)
-			}
-			err := <-done
-			if terminationErr == nil {
-				terminationErr = waitForProcessGroupGone(command.Process.Pid)
-			}
-			return err, true, terminationErr
+			_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
+			return <-done, true
 		}
 	}
 }
 
-func terminateProcessGroup(pid int) error {
-	if err := syscall.Kill(-pid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
-		return fmt.Errorf("%w: terminate process group %d: %v", harness.ErrProcessTerminationUnconfirmed, pid, err)
-	}
-	return nil
-}
-
-func waitForProcessGroupGone(pid int) error {
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		err := syscall.Kill(-pid, 0)
-		if errors.Is(err, syscall.ESRCH) {
-			return nil
-		}
-		if err != nil && !errors.Is(err, syscall.EPERM) {
-			return fmt.Errorf("%w: inspect process group %d: %v", harness.ErrProcessTerminationUnconfirmed, pid, err)
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("%w: process group %d", harness.ErrProcessTerminationUnconfirmed, pid)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+func terminateProcessGroup(pid int) {
+	_ = syscall.Kill(-pid, syscall.SIGTERM)
 }
 
 func processExitCode(err error) int {
@@ -334,14 +281,239 @@ func safeFileName(value string) string {
 	return builder.String()
 }
 
-func (s *Service) builderValidator(ctx context.Context, task store.Task, profiles map[string]Materialization) validator {
-	return s.quality.builderValidator(ctx, task, profiles)
+func (s *qualityService) runComparisons(ctx context.Context, task store.Task, phase store.Phase, profile Materialization) error {
+	baseline, err := s.comparisonBaseline(ctx, task, phase)
+	if err != nil {
+		return err
+	}
+	started := time.Now()
+	comparison := store.Comparison{ID: randomID(), TaskID: task.ID, PhaseID: phase.ID, Attempt: phase.Attempt, BaselineSnapshot: baseline, OverlayPaths: []string{}, CreatedAt: nowString()}
+	if !profile.PreChangeVerification {
+		comparison.Status, comparison.Reason = "skipped", "pre-change verification disabled"
+		comparison.DurationMS = int(time.Since(started).Milliseconds())
+		if err = s.saveComparison(ctx, &comparison); err != nil {
+			return err
+		}
+		return nil
+	}
+	if len(profile.Checks) == 0 {
+		comparison.Status, comparison.Reason = "skipped", "repository has no declared checks"
+		comparison.DurationMS = int(time.Since(started).Milliseconds())
+		if err = s.saveComparison(ctx, &comparison); err != nil {
+			return err
+		}
+		return nil
+	}
+	entries, entriesErr := s.changedTestEntries(ctx, task, profile)
+	if entriesErr != nil {
+		comparison.Status, comparison.Reason = "inconclusive", entriesErr.Error()
+		comparison.DurationMS = int(time.Since(started).Milliseconds())
+		if err = s.saveComparison(ctx, &comparison); err != nil {
+			return err
+		}
+		return nil
+	}
+	comparison.OverlayPaths = comparisonPaths(entries)
+	if len(comparison.OverlayPaths) == 0 {
+		comparison.Status, comparison.Reason = "skipped", "no added or modified tests"
+		comparison.DurationMS = int(time.Since(started).Milliseconds())
+		if err = s.saveComparison(ctx, &comparison); err != nil {
+			return err
+		}
+		return nil
+	}
+	if baseline == "" {
+		comparison.Status, comparison.Reason = "inconclusive", "pre-implementation snapshot is unavailable"
+		comparison.DurationMS = int(time.Since(started).Milliseconds())
+		if err = s.saveComparison(ctx, &comparison); err != nil {
+			return err
+		}
+		return nil
+	}
+	if rootErr := os.MkdirAll(filepath.Join(task.WorkspacePath, "workspace"), 0o700); rootErr != nil {
+		return rootErr
+	}
+	comparisonRoot, rootErr := os.MkdirTemp(filepath.Join(task.WorkspacePath, "workspace"), "comparison-")
+	if rootErr != nil {
+		comparison.Status, comparison.Reason = "inconclusive", rootErr.Error()
+		if err = s.saveComparison(ctx, &comparison); err != nil {
+			return err
+		}
+		return rootErr
+	}
+	func() {
+		defer os.RemoveAll(comparisonRoot)
+		baselineRoot := filepath.Join(comparisonRoot, "baseline")
+		if materializeErr := s.snapshots.MaterializeScratch(ctx, task, baseline, baselineRoot); materializeErr != nil {
+			comparison.Status, comparison.Reason = "inconclusive", materializeErr.Error()
+			return
+		}
+		if checkErr := s.runChecksAt(ctx, task, phase, baselineRoot, profile.Checks, "baseline", baseline); checkErr != nil {
+			comparison.Status, comparison.Reason = "inconclusive", checkErr.Error()
+			if runErr, ok := checkErr.(*checkRunError); ok && runErr.kind == "cancelled" {
+				comparison.Status = "cancelled"
+			}
+			return
+		}
+		overlayRoot := filepath.Join(comparisonRoot, "overlay")
+		if materializeErr := s.snapshots.MaterializeScratch(ctx, task, baseline, overlayRoot); materializeErr != nil {
+			comparison.Status, comparison.Reason = "inconclusive", materializeErr.Error()
+			return
+		}
+		for _, path := range comparison.OverlayPaths {
+			if copyErr := copyOverlayPath(task.RepositoryPath, overlayRoot, path); copyErr != nil {
+				comparison.Status, comparison.Reason = "inconclusive", copyErr.Error()
+				return
+			}
+		}
+		checkErr := s.runChecksAt(ctx, task, phase, overlayRoot, profile.Checks, "test_overlay", baseline)
+		switch {
+		case checkErr == nil:
+			comparison.Status, comparison.Reason = "overlay_checks_passed", "all overlay checks passed"
+		case errors.Is(checkErr, context.Canceled):
+			comparison.Status, comparison.Reason = "cancelled", checkErr.Error()
+		case func() bool { value, ok := checkErr.(*checkRunError); return ok && value.kind == "failed" }():
+			comparison.Status, comparison.Reason = "overlay_checks_failed", checkErr.Error()
+		default:
+			comparison.Status, comparison.Reason = "inconclusive", checkErr.Error()
+		}
+	}()
+	if ctx.Err() != nil {
+		comparison.Status, comparison.Reason = "cancelled", ctx.Err().Error()
+	}
+	comparison.DurationMS = int(time.Since(started).Milliseconds())
+	if err = s.saveComparison(ctx, &comparison); err != nil {
+		return err
+	}
+	if comparison.Status == "cancelled" {
+		return context.Canceled
+	}
+	return nil
+}
+
+func (s *qualityService) saveComparison(ctx context.Context, comparison *store.Comparison) error {
+	if ctx.Err() != nil {
+		comparison.Status = "cancelled"
+		comparison.Reason = ctx.Err().Error()
+	}
+	return s.db.SaveComparison(context.WithoutCancel(ctx), *comparison)
+}
+
+func (s *qualityService) changedTestEntries(ctx context.Context, task store.Task, profile Materialization) ([]expectedTestChange, error) {
+	entries, err := factorygit.ChangedEntries(ctx, s.git, task.RepositoryPath, reviewBase(task))
+	if err != nil {
+		return nil, err
+	}
+	result := make([]expectedTestChange, 0)
+	for _, entry := range entries {
+		if factorygit.MatchesGlob(entry.Path, profile.Tests) {
+			result = append(result, expectedTestChange{change: entry})
+		}
+	}
+	return result, nil
+}
+
+func comparisonPaths(entries []expectedTestChange) []string {
+	paths := make([]string, 0, len(entries))
+	seen := map[string]bool{}
+	for _, entry := range entries {
+		change := entry.change
+		if change.Kind == "deleted" || change.Path == change.RenameFrom {
+			continue
+		}
+		if !seen[change.Path] {
+			seen[change.Path] = true
+			paths = append(paths, change.Path)
+		}
+	}
+	return paths
+}
+
+func (s *qualityService) comparisonBaseline(ctx context.Context, task store.Task, current store.Phase) (string, error) {
+	phases, err := s.db.Phases(ctx, task.ID)
+	if err != nil {
+		return "", err
+	}
+	for index := len(phases) - 1; index >= 0; index-- {
+		candidate := phases[index]
+		if candidate.Kind != "build" || candidate.InputSnapshot == "" || candidate.Superseded {
+			continue
+		}
+		if current.BranchID == "" || candidate.BranchID == current.BranchID {
+			return candidate.InputSnapshot, nil
+		}
+	}
+	for index := len(phases) - 1; index >= 0; index-- {
+		candidate := phases[index]
+		if candidate.Kind == "build" && candidate.InputSnapshot != "" && !candidate.Superseded {
+			return candidate.InputSnapshot, nil
+		}
+	}
+	return "", nil
+}
+
+func (s *Service) builderValidator(ctx context.Context, task store.Task, profile Materialization) validator {
+	return s.quality.builderValidator(ctx, task, profile)
 }
 
 func (s *Service) persistBuilderEvidence(ctx context.Context, task store.Task, phase store.Phase, payload string) error {
 	return s.quality.persistBuilderEvidence(ctx, task, phase, payload)
 }
 
-func (s *Service) runChecks(ctx context.Context, task store.Task, phase store.Phase, repository store.TaskRepository, checks []Check, checkPhase, baseline string) error {
-	return s.quality.runChecks(ctx, task, phase, repository, checks, checkPhase, baseline)
+func (s *Service) runChecks(ctx context.Context, task store.Task, phase store.Phase, checks []Check, checkPhase, baseline string) error {
+	return s.quality.runChecks(ctx, task, phase, checks, checkPhase, baseline)
+}
+
+func (s *Service) runComparisons(ctx context.Context, task store.Task, phase store.Phase, profile Materialization) error {
+	return s.quality.runComparisons(ctx, task, phase, profile)
+}
+
+func reviewBase(task store.Task) string {
+	if task.ReviewBaseSHA != "" {
+		return task.ReviewBaseSHA
+	}
+	return task.BaseSHA
+}
+
+func copyOverlayPath(sourceRoot, destinationRoot, relative string) error {
+	clean := filepath.Clean(relative)
+	if relative == "" || filepath.IsAbs(relative) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("overlay path escapes repository: %q", relative)
+	}
+	source := filepath.Join(sourceRoot, clean)
+	destination := filepath.Join(destinationRoot, clean)
+	info, err := os.Lstat(source)
+	if err != nil {
+		return fmt.Errorf("read overlay path %s: %w", relative, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		resolvedRoot, rootErr := filepath.EvalSymlinks(sourceRoot)
+		resolvedPath, pathErr := filepath.EvalSymlinks(source)
+		if rootErr != nil || pathErr != nil || !withinPath(resolvedRoot, resolvedPath) {
+			return fmt.Errorf("overlay symlink escapes repository: %s", relative)
+		}
+		link, readErr := os.Readlink(source)
+		if readErr != nil {
+			return readErr
+		}
+		if err = os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
+			return err
+		}
+		_ = os.Remove(destination)
+		return os.Symlink(link, destination)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("overlay path is a directory: %s", relative)
+	}
+	body, err := os.ReadFile(source)
+	if err != nil {
+		return err
+	}
+	if err = os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
+		return err
+	}
+	if err = os.WriteFile(destination, body, info.Mode().Perm()); err != nil {
+		return err
+	}
+	return os.Chmod(destination, info.Mode().Perm())
 }

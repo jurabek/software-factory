@@ -326,7 +326,7 @@ test("every operation reaches the daemon over the authenticated connection", asy
 	});
 	const validInput = {
 		request: "Build feature",
-		repositories: [{ type: "github" as const, repo: "owner/app" }],
+		repository: { type: "github" as const, repo: "owner/app" },
 	};
 	await registry.tasks("daemon-a");
 	await registry.creationOptions("daemon-a");
@@ -407,8 +407,33 @@ test("unsupported commands and invalid task input fail without daemon access", a
 			error instanceof DaemonRegistryError && error.code === "unknown_command",
 	);
 	await assert.rejects(
-		registry.createTask("daemon-a", { request: " ", repositories: [] }),
+		registry.createTask("daemon-a", {
+			request: " ",
+			repository: { type: "github", repo: "owner/app" },
+		}),
 		/Task request/,
+	);
+	await assert.rejects(
+		registry.createTask("daemon-a", {
+			request: "Build",
+			repository: {
+				type: "github",
+				repo: "owner/app",
+				name: "legacy",
+			} as never,
+		}),
+		/Repository must contain/,
+	);
+	await assert.rejects(
+		registry.createTask("daemon-a", {
+			request: "Build",
+			repository: {
+				type: "github",
+				repo: "owner/app",
+				primary: true,
+			} as never,
+		}),
+		/Repository must contain/,
 	);
 	await assert.rejects(
 		registry.events("daemon-a", "task-1", { tail: 5000 }),

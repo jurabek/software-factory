@@ -70,7 +70,7 @@ func testRoleService(t *testing.T, agent harness.Harness, fixAttempts int) (*Ser
 		Store: db, Config: cfg, ConfigPath: filepath.Join(root, "config.yaml"),
 		Harnesses: harness.Registry{"pi": agent},
 	})
-	task, err := service.tasks.create(context.Background(), CreateRequest{Request: "Build it", Repositories: []Repository{{Type: "github", Repo: "owner/repository"}}}, "")
+	task, err := service.tasks.create(context.Background(), CreateRequest{Request: "Build it", Repository: Repository{Type: "github", Repo: "owner/repository"}}, "")
 	if err != nil {
 		t.Fatal(err)
 	}

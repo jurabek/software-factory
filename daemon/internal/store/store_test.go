@@ -18,7 +18,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-func TestCreateTaskAllowsIndependentActiveTasks(t *testing.T) {
+func TestCreateActiveTaskClaimsOnlyExecutionSlot(t *testing.T) {
 	db, err := Open(filepath.Join(t.TempDir(), "factory.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -27,7 +27,7 @@ func TestCreateTaskAllowsIndependentActiveTasks(t *testing.T) {
 	ctx := context.Background()
 	startedAt := time.Now().UTC().Format(time.RFC3339Nano)
 	first := Task{ID: "task-1", Request: "first", WorkspacePath: t.TempDir(), State: "preparing", CreatedAt: startedAt, StartedAt: startedAt}
-	if err = db.CreateTask(ctx, first); err != nil {
+	if err = db.CreateActiveTask(ctx, first); err != nil {
 		t.Fatal(err)
 	}
 	stored, err := db.Task(ctx, first.ID)
@@ -38,52 +38,11 @@ func TestCreateTaskAllowsIndependentActiveTasks(t *testing.T) {
 		t.Fatalf("started at = %q, want %q", stored.StartedAt, startedAt)
 	}
 	second := Task{ID: "task-2", Request: "second", WorkspacePath: t.TempDir(), State: "preparing", CreatedAt: startedAt, StartedAt: startedAt}
-	if err = db.CreateTask(ctx, second); err != nil {
-		t.Fatalf("second active task error = %v", err)
+	if err = db.CreateActiveTask(ctx, second); !errors.Is(err, ErrConflict) {
+		t.Fatalf("second active task error = %v, want conflict", err)
 	}
-	if _, err = db.Task(ctx, second.ID); err != nil {
-		t.Fatalf("second task lookup error = %v", err)
-	}
-}
-
-func TestWorkspaceOperationRoundTripAndRestartRecovery(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "factory.db")
-	db, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx := context.Background()
-	createdAt := time.Now().UTC().Format(time.RFC3339Nano)
-	if err = db.CreateTask(ctx, Task{ID: "task", Request: "request", WorkspacePath: t.TempDir(), State: "preparing", CreatedAt: createdAt}); err != nil {
-		db.Close()
-		t.Fatal(err)
-	}
-	operation := WorkspaceOperation{ID: "operation", TaskID: "task", Kind: "materialize", Status: "running", RequestJSON: `{"path":"repo"}`, CreatedAt: createdAt, UpdatedAt: createdAt}
-	if err = db.CreateWorkspaceOperation(ctx, operation); err != nil {
-		db.Close()
-		t.Fatal(err)
-	}
-	if err = db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	db, err = Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	stored, err := db.WorkspaceOperation(ctx, operation.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stored.Status != "interrupted" || stored.TaskID != operation.TaskID || stored.RequestJSON != operation.RequestJSON {
-		t.Fatalf("workspace operation = %#v", stored)
-	}
-	if err = db.UpdateWorkspaceOperation(ctx, operation.ID, "succeeded", ""); err != nil {
-		t.Fatal(err)
-	}
-	stored, err = db.WorkspaceOperation(ctx, operation.ID)
-	if err != nil || stored.Status != "succeeded" || stored.Error != "" {
-		t.Fatalf("updated workspace operation = %#v, err = %v", stored, err)
+	if _, err = db.Task(ctx, second.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("second task lookup error = %v, want not found", err)
 	}
 }
 
@@ -120,44 +79,23 @@ func TestReserveAgentSessionConcurrentCallersShareWinner(t *testing.T) {
 	}
 }
 
-func TestRepositoryReviewBaseAndPhaseGitInputsRoundTrip(t *testing.T) {
+func TestRepositoryFieldsRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	db, err := Open(filepath.Join(t.TempDir(), "factory.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if err = db.CreateTask(ctx, Task{ID: "task", Request: "request", WorkspacePath: t.TempDir(), State: "preparing", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), Repositories: []TaskRepository{{ID: "repo", TaskID: "task", Name: "app", SourceType: "local", SourceValue: "/source", Primary: true, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}}}); err != nil {
+	task := Task{ID: "task", Request: "request", WorkspacePath: t.TempDir(), RepositoryType: "local", RepositorySource: "/source", State: "preparing", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err = db.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
-	repository := TaskRepository{ID: "repo", TaskID: "task", CanonicalPath: "/source", WorkingPath: "/work", BaseSHA: "base", ReviewBaseSHA: "base", BranchName: "software-factory/task", Primary: true}
-	if err = db.SetRepositoryPrepared(ctx, repository); err != nil {
+	if _, err = db.ExecContext(ctx, `update tasks set canonical_repository_path=?,repository_path=?,base_sha=?,review_base_sha=?,branch_name=? where id=?`, "/source", "/work", "base", "base", "software-factory/task", task.ID); err != nil {
 		t.Fatal(err)
 	}
-	stored, err := db.TaskRepositories(ctx, "task")
-	if err != nil || len(stored) != 1 || stored[0].ReviewBaseSHA != "base" || stored[0].BranchName != repository.BranchName {
-		t.Fatalf("repository = %#v, err = %v", stored, err)
-	}
-	if err = db.AddPhase(ctx, Phase{ID: "attempt", TaskID: "task", Sequence: 1, Name: "planning", Kind: "agent", Owner: "planner", Status: "running", Attempt: 1}); err != nil {
-		t.Fatal(err)
-	}
-	input := PhaseRepositoryInput{PhaseID: "attempt", RepositoryID: "repo", ReviewBaseSHA: "base", HeadSHA: "head", BranchName: repository.BranchName}
-	if err = db.SavePhaseRepositoryInputs(ctx, "attempt", []PhaseRepositoryInput{input}); err != nil {
-		t.Fatal(err)
-	}
-	inputs, err := db.PhaseRepositoryInputs(ctx, "attempt")
-	if err != nil || len(inputs) != 1 || inputs[0] != input {
-		t.Fatalf("phase inputs = %#v, err = %v", inputs, err)
-	}
-	if err = db.AdvanceReviewBase(ctx, "task", "repo", "wrong", "new"); !errors.Is(err, ErrConflict) {
-		t.Fatalf("unexpected review base mismatch error: %v", err)
-	}
-	if err = db.AdvanceReviewBase(ctx, "task", "repo", "base", "new"); err != nil {
-		t.Fatal(err)
-	}
-	stored, err = db.TaskRepositories(ctx, "task")
-	if err != nil || stored[0].ReviewBaseSHA != "new" {
-		t.Fatalf("advanced repository = %#v, err = %v", stored, err)
+	stored, err := db.Task(ctx, task.ID)
+	if err != nil || stored.ReviewBaseSHA != "base" || stored.BranchName != "software-factory/task" || stored.RepositoryPath != "/work" {
+		t.Fatalf("task = %#v, err = %v", stored, err)
 	}
 }
 

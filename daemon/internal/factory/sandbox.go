@@ -2,19 +2,17 @@ package factory
 
 import "context"
 
-// Sandbox materializes repositories into an isolated task workspace.
+// Sandbox materializes a repository into an isolated task workspace.
 type Sandbox interface {
 	Materialize(context.Context, MaterializationRequest) (Materialization, error)
 	Cleanup(context.Context, CleanupRequest) error
 }
 
 type MaterializationRequest struct {
-	TaskID       string
-	RepositoryID string
-	Name         string
-	SourceType   string
-	Source       string
-	Destination  string
+	TaskID      string
+	SourceType  string
+	Source      string
+	Destination string
 }
 
 type Materialization struct {
@@ -39,12 +37,6 @@ type Check struct {
 type CleanupRequest struct {
 	TaskID        string
 	WorkspaceRoot string
-	Repositories  []CleanupRepository
-}
-
-type CleanupRepository struct {
-	RepositoryID  string
-	Name          string
 	SourceType    string
 	CanonicalPath string
 	WorkingPath   string

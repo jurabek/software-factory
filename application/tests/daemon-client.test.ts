@@ -57,6 +57,8 @@ test("daemon task and health responses project only known safe fields", async ()
 						created_at: "2026-09-06T12:00:00Z",
 						pipeline: "standard",
 						active_stage: "verify",
+						repository_type: "github",
+						repository_source: "owner/app",
 						stages: [
 							{ id: "build", kind: "build", status: "completed" },
 							{ id: "verify", kind: "verify", status: "running" },
@@ -77,6 +79,8 @@ test("daemon task and health responses project only known safe fields", async ()
 			created_at: "2026-09-06T12:00:00Z",
 			pipeline: "standard",
 			active_stage: "verify",
+			repository_type: "github",
+			repository_source: "owner/app",
 			stages: [
 				{ id: "build", kind: "build", status: "completed" },
 				{ id: "verify", kind: "verify", status: "running" },
@@ -230,28 +234,28 @@ test("creation posts JSON bodies with the expected identity", async () => {
 	const task = await client.createTask(
 		"http://127.0.0.1:8080",
 		"credential",
-		{ request: "Build", repositories: [{ type: "github", repo: "owner/app" }] },
+		{ request: "Build", repository: { type: "github", repo: "owner/app" } },
 		{},
 	);
 	assert.equal(task.id, "task-1");
 	assert.equal(requests[0].init?.method, "POST");
 	assert.deepEqual(JSON.parse(String(requests[0].init?.body)), {
 		request: "Build",
-		repositories: [{ type: "github", repo: "owner/app" }],
+		repository: { type: "github", repo: "owner/app" },
 	});
 	await client.createTask(
 		"http://127.0.0.1:8080",
 		"credential",
 		{
 			request: "Build",
-			repositories: [{ type: "github", repo: "owner/app" }],
+			repository: { type: "github", repo: "owner/app" },
 			pipeline: "thorough",
 		},
 		{},
 	);
 	assert.deepEqual(JSON.parse(String(requests[1].init?.body)), {
 		request: "Build",
-		repositories: [{ type: "github", repo: "owner/app" }],
+		repository: { type: "github", repo: "owner/app" },
 		pipeline: "thorough",
 	});
 });

@@ -66,7 +66,7 @@ func TestRunRoleProvidesReviewerEnvelopeContract(t *testing.T) {
 		Store: db, Config: cfg, ConfigPath: filepath.Join(root, "config.yaml"),
 		Harnesses: harness.Registry{"pi": agent},
 	})
-	task, err := service.tasks.create(context.Background(), CreateRequest{Request: "Review change", Repositories: []Repository{{Type: "github", Repo: "owner/repository"}}}, "")
+	task, err := service.tasks.create(context.Background(), CreateRequest{Request: "Review change", Repository: Repository{Type: "github", Repo: "owner/repository"}}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,5 +88,36 @@ func TestRunRoleProvidesReviewerEnvelopeContract(t *testing.T) {
 	}
 	if !strings.Contains(agent.requests[1].Prompt, `missing envelope field "artifacts"`) {
 		t.Fatalf("correction prompt missing validation error: %q", agent.requests[1].Prompt)
+	}
+}
+
+func TestReadOnlyPhaseReusesUnchangedSnapshot(t *testing.T) {
+	service, db, _ := testService(t)
+	ctx := context.Background()
+	task, err := service.tasks.create(ctx, CreateRequest{Request: "Review change", Repository: Repository{Type: "github", Repo: "owner/repository"}}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := store.Phase{ID: "checks-phase", TaskID: task.ID, Sequence: 1, Name: "checks", Kind: "check", Owner: "factory", Status: "success", Attempt: 1, OutputSnapshot: "checked-snapshot"}
+	if err = db.AddPhase(ctx, previous); err != nil {
+		t.Fatal(err)
+	}
+
+	review, err := service.beginPhase(ctx, task.ID, "reviewing", "agent", "reviewer", "Review implementation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if review.InputSnapshot != previous.OutputSnapshot {
+		t.Fatalf("review input snapshot = %q, want %q", review.InputSnapshot, previous.OutputSnapshot)
+	}
+	if err = service.endPhase(ctx, review, "success", nil); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := db.PhaseByID(ctx, task.ID, review.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.OutputSnapshot != review.InputSnapshot {
+		t.Fatalf("review output snapshot = %q, want unchanged input %q", stored.OutputSnapshot, review.InputSnapshot)
 	}
 }

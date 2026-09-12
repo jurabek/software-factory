@@ -35,7 +35,7 @@ This is a correctness prerequisite for trustworthy review. Its standalone user v
 == Goals
 
 * Make change detection independent of `HEAD` movement.
-* Give each materialized repository a named branch so commits are reachable.
+* Give the Task repository a named branch so commits are reachable.
 * Provide a commit operation that stages an explicit path set.
 * Separate the base used for user-facing diff from the base used for enforcement.
 * Preserve review bases and Git history across exact retry.
@@ -50,13 +50,13 @@ This is a correctness prerequisite for trustworthy review. Its standalone user v
 
 === Base SHA
 
-`base_sha` is the commit a repository was materialized at. It is already captured and persisted (`daemon/internal/factory/service.go:586`, column `task_repositories.base_sha`). It never changes for the lifetime of the Task.
+`base_sha` is the commit the Task repository was materialized at. It is captured and persisted with the Task. It never changes for the lifetime of the Task.
 
 === Review base SHA
 
 `review_base_sha` is the commit from which agent-authored change is measured on the selected execution branch. It starts equal to `base_sha` and MUST NOT advance past agent-authored commits.
 
-Each Attempt's input records the per-repository review base and Git HEAD alongside its filesystem snapshot. The repository-level value represents the selected execution branch, not a monotonically increasing Task-wide value.
+Each Attempt's input records the repository review base and Git HEAD alongside its filesystem snapshot. The value represents the selected execution branch, not a monotonically increasing Task-wide value.
 
 The distinction exists so factory-authored commits are visible to the user but invisible to enforcement:
 
@@ -85,7 +85,7 @@ The distinction exists so factory-authored commits are visible to the user but i
 
 === Branch creation
 
-`PrepareLocal` (`daemon/internal/git/git.go:70-84`) MUST create a named branch instead of a detached worktree. Its name MUST be derived from Task and repository identity, so two materializations of the same source cannot collide.
+`PrepareLocal` (`daemon/internal/git/git.go:70-84`) MUST create a named branch instead of a detached worktree. Its name MUST be derived from the Task identity, so materializations of the same source cannot collide.
 
 `PrepareGitHub` (`daemon/internal/git/git.go:88-100`) MUST use the same naming rule after cloning.
 
@@ -107,7 +107,7 @@ A mismatch MUST fail the Stage before any subsequent pipeline operation. Compari
 
 === Review base persistence
 
-`review_base_sha` MUST be persisted per repository and initialized to `base_sha` at preparation. It MUST remain the stable comparison base for planner and reviewer read-only enforcement and for build/review diffs.
+`review_base_sha` MUST be persisted with the Task repository and initialized to `base_sha` at preparation. It MUST remain the stable comparison base for planner and reviewer read-only enforcement and for build/review diffs.
 
 === Exact retry and history
 

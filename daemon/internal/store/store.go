@@ -42,10 +42,6 @@ func Open(path string) (*DB, error) {
 		db.Close()
 		return nil, err
 	}
-	if err = wrapped.RecoverWorkspaceOperations(context.Background()); err != nil {
-		db.Close()
-		return nil, err
-	}
 	if err := os.Chmod(path, 0o600); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("secure database: %w", err)

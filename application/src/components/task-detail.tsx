@@ -106,24 +106,6 @@ type DisplayArtifact = {
 	content: string;
 };
 
-type TaskRepository = {
-	id: string;
-	name: string;
-	source_type: string;
-	primary: boolean;
-};
-
-function isTaskRepository(value: unknown): value is TaskRepository {
-	if (!value || typeof value !== "object") return false;
-	const repository = value as Partial<TaskRepository>;
-	return (
-		typeof repository.id === "string" &&
-		typeof repository.name === "string" &&
-		typeof repository.source_type === "string" &&
-		typeof repository.primary === "boolean"
-	);
-}
-
 function renderedArtifactContent(artifact: DisplayArtifact): string {
 	if (artifact.kind !== "result") return artifact.content;
 	try {
@@ -343,7 +325,7 @@ export function TaskDetail({
 	const [branches, setBranches] = useState<TaskBranch[]>([]);
 	const [checks, setChecks] = useState<TaskCheck[]>([]);
 	const [results, setResults] = useState<TaskResult[]>([]);
-	const [diff, setDiff] = useState<TaskDiff>({ repositories: [] });
+	const [diff, setDiff] = useState<TaskDiff>({ files: [], patch: "" });
 	const [sessions, setSessions] = useState<TaskDetails[]>([]);
 	const [messages, setMessages] = useState<TaskMessage[]>([]);
 	const [interventions, setInterventions] = useState<TaskIntervention[]>([]);
@@ -376,9 +358,6 @@ export function TaskDetail({
 
 	const currentTask = details ?? task;
 	const rootTaskId = currentTask.parent_task_id ?? currentTask.id;
-	const repositories = (currentTask.repositories ?? []).filter(
-		isTaskRepository,
-	);
 	const selectedBranch =
 		branches.find((branch) => branch.id === selectedBranchId) ??
 		branches.find((branch) => branch.id === currentTask.selected_branch_id) ??
@@ -398,13 +377,17 @@ export function TaskDetail({
 			subtitle: check.status,
 			content: check.output || check.command,
 		})),
-		...diff.repositories.map((repository) => ({
-			id: `diff-${repository.repository_id}`,
-			kind: "diff" as const,
-			title: `${repository.name} diff`,
-			subtitle: `${repository.files.length} files`,
-			content: repository.patch || "No changes",
-		})),
+		...(diff.files.length || diff.patch
+			? [
+					{
+						id: "diff",
+						kind: "diff" as const,
+						title: "Repository diff",
+						subtitle: `${diff.files.length} files`,
+						content: diff.patch || "No changes",
+					},
+				]
+			: []),
 	];
 	const selectedArtifactValue =
 		artifactViews.find((artifact) => artifact.id === selectedArtifact) ?? null;
@@ -427,11 +410,9 @@ export function TaskDetail({
 		visibleEvents,
 	);
 	const timelineBlocks = groupTimeline(timeline);
-	const editCount = diff.repositories.reduce(
-		(sum, repository) => sum + repository.files.length,
-		0,
-	);
-	const otherCount = results.length + checks.length + diff.repositories.length;
+	const editCount = diff.files.length;
+	const otherCount =
+		results.length + checks.length + (diff.files.length ? 1 : 0);
 	const workspacePath = currentTask.workspace_path ?? "Daemon sandbox";
 	const controls = availableActions.filter((action): action is Command =>
 		commands.includes(action as Command),
@@ -488,7 +469,7 @@ export function TaskDetail({
 			setBranches(branchResult.branches ?? []);
 			setChecks(checksResult.checks ?? []);
 			setResults(resultsResult.results ?? []);
-			setDiff(diffResult.diff ?? { repositories: [] });
+			setDiff(diffResult.diff ?? { files: [], patch: "" });
 			setSessions(sessionsResult.sessions ?? []);
 			setMessages(messagesResult.messages ?? []);
 			setInterventions(interventionsResult.interventions ?? []);
@@ -513,7 +494,7 @@ export function TaskDetail({
 		setBranches([]);
 		setChecks([]);
 		setResults([]);
-		setDiff({ repositories: [] });
+		setDiff({ files: [], patch: "" });
 		setSessions([]);
 		setMessages([]);
 		setInterventions([]);
@@ -1428,10 +1409,7 @@ export function TaskDetail({
 						<p className="text-muted-foreground mb-3 text-[0.74rem]">
 							<strong className="text-subtle font-semibold">0</strong> src ·{" "}
 							<strong className="text-subtle font-semibold">{editCount}</strong>{" "}
-							edit ·{" "}
-							<strong className="text-subtle font-semibold">
-								0
-							</strong>{" "}
+							edit · <strong className="text-subtle font-semibold">0</strong>{" "}
 							new ·{" "}
 							<strong className="text-subtle font-semibold">
 								{otherCount}
@@ -1591,21 +1569,14 @@ export function TaskDetail({
 								</Select>
 							</div>
 						) : null}
-						{repositories.length ? (
-							<div className="mt-4 flex flex-wrap gap-2">
-								{repositories.map((repository) => (
-									<span
-										key={repository.id}
-										className="grid gap-0.5 rounded-md border px-2 py-1.5"
-									>
-										<strong className="text-[0.75rem] font-medium">
-											{repository.primary ? "◆" : "◇"} {repository.name}
-										</strong>
-										<small className="text-muted-foreground text-[0.7rem]">
-											{repository.source_type}
-										</small>
-									</span>
-								))}
+						{currentTask.repository_type && currentTask.repository_source ? (
+							<div className="mt-4 grid gap-0.5 rounded-md border px-2 py-1.5">
+								<strong className="text-[0.75rem] font-medium">
+									{currentTask.repository_source}
+								</strong>
+								<small className="text-muted-foreground text-[0.7rem]">
+									{currentTask.repository_type}
+								</small>
 							</div>
 						) : null}
 					</TabsContent>
