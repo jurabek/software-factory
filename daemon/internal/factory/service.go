@@ -244,7 +244,7 @@ func (s *taskService) create(ctx context.Context, request CreateRequest, parentT
 		return store.Task{}, err
 	}
 	if request.CodingAgent != "" && !config.IsValidHarness(request.CodingAgent) {
-		return store.Task{}, fmt.Errorf("coding_agent must be pi, codex, or claude")
+		return store.Task{}, fmt.Errorf("coding_agent must be pi or codex")
 	}
 	if request.Thinking != "" {
 		harnessForThinking := request.CodingAgent
@@ -1121,7 +1121,7 @@ func taskConfig(current config.Config, configPath string, task store.Task) (conf
 func validateTaskConfig(configured config.Config, harnesses harness.Registry) []string {
 	var problems []string
 	if !config.IsValidHarness(configured.Defaults.CodingAgent) {
-		problems = append(problems, "defaults.coding_agent must be pi, codex, or claude")
+		problems = append(problems, "defaults.coding_agent must be pi or codex")
 	} else if harnesses != nil {
 		if _, ok := harnesses.Get(configured.Defaults.CodingAgent); !ok {
 			problems = append(problems, "harness "+configured.Defaults.CodingAgent+" unavailable")
@@ -1148,8 +1148,6 @@ func validateTaskConfig(configured config.Config, harnesses harness.Registry) []
 				}
 				if a.Model == "" {
 					problems = append(problems, role+" model is required")
-				} else if configured.Defaults.CodingAgent == "claude" && !isClaudeModel(a.Model) {
-					problems = append(problems, role+" model "+a.Model+" unsupported for claude")
 				}
 			}
 		}
@@ -1158,18 +1156,6 @@ func validateTaskConfig(configured config.Config, harnesses harness.Registry) []
 		}
 	}
 	return problems
-}
-
-func isClaudeModel(model string) bool {
-	if model == "anthropic/sonnet" || model == "anthropic/opus" || model == "sonnet" || model == "opus" {
-		return true
-	}
-	// Explicitly configured full IDs are validated at runtime by the adapter;
-	// reject other provider prefixes here so a Pi model never reaches Claude.
-	if strings.Contains(model, "/") && !strings.HasPrefix(model, "anthropic/") {
-		return false
-	}
-	return true
 }
 
 func agentForRole(configured config.Config, role string) (config.Agent, bool) {
