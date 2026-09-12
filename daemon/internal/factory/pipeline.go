@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 
 	"github.com/jurabek/software-factory/daemon/internal/config"
-	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 	"gopkg.in/yaml.v3"
 )
@@ -194,47 +193,12 @@ func (s *Service) prepareOnly(ctx context.Context, task store.Task) error {
 	if err != nil {
 		return err
 	}
-	primaryPath := ""
-	for _, repository := range task.Repositories {
-		workingPath := filepath.Join(task.WorkspacePath, "workspace", "repositories", repository.Name)
-		profile, prepareErr := s.prepareRepository(ctx, repository, workingPath)
-		if prepareErr != nil {
-			s.failPhase(ctx, phase, prepareErr)
-			return prepareErr
-		}
-		if repository.Primary && len(profile.Checks) == 0 {
-			prepareErr = fmt.Errorf("primary repository has no deterministic checks declared or detected")
-			s.failPhase(ctx, phase, prepareErr)
-			return prepareErr
-		}
-		canonical := profile.Root
-		if repository.SourceType == "local" {
-			canonical, _, prepareErr = factorygit.ResolveRoot(ctx, s.git, repository.SourceValue)
-		}
-		if prepareErr != nil {
-			s.failPhase(ctx, phase, prepareErr)
-			return prepareErr
-		}
-		repository.CanonicalPath, repository.WorkingPath, repository.BaseSHA = canonical, workingPath, profile.BaseSHA
-		repository.ReviewBaseSHA, repository.BranchName = profile.BaseSHA, profile.BranchName
-		if err = s.db.SetRepositoryPrepared(ctx, repository); err != nil {
-			s.failPhase(ctx, phase, err)
-			return err
-		}
-		if err = writeRepositoryProfile(task.WorkspacePath, repository.Name, profile); err != nil {
-			s.failPhase(ctx, phase, err)
-			return err
-		}
-		if repository.Primary {
-			primaryPath = workingPath
-		}
-	}
-	if primaryPath == "" {
-		err = fmt.Errorf("primary repository is missing")
-		s.failPhase(ctx, phase, err)
+	primaryPath, err := s.prepareRepositories(ctx, task, phase)
+	if err != nil {
 		return err
 	}
 	if err = s.db.SetPrepared(ctx, task.ID, primaryPath, task.ConfigSnapshot); err != nil {
+		s.failPhase(ctx, phase, err)
 		return err
 	}
 	if err = s.endPhase(ctx, phase, "success", nil); err != nil {

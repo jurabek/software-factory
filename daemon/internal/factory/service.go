@@ -38,6 +38,7 @@ type Dependencies struct {
 	ConfigPath string
 	Harnesses  harness.Registry
 	Git        factorygit.Runner
+	Sandbox    Sandbox
 }
 
 type runtime struct {
@@ -47,6 +48,7 @@ type runtime struct {
 	configPath string
 	harnesses  harness.Registry
 	git        factorygit.Runner
+	sandbox    Sandbox
 	mu         sync.Mutex
 	cancel     map[string]*execution
 	taskLocks  sync.Map
@@ -65,6 +67,7 @@ type taskService struct {
 	config    config.Config
 	harnesses harness.Registry
 	git       factorygit.Runner
+	sandbox   Sandbox
 	pipelines *pipelineService
 }
 
@@ -151,6 +154,7 @@ func NewService(root string, dependencies Dependencies) *Service {
 		configPath: dependencies.ConfigPath,
 		harnesses:  dependencies.Harnesses,
 		git:        dependencies.Git,
+		sandbox:    dependencies.Sandbox,
 		cancel:     map[string]*execution{},
 	}
 	pipelines := &pipelineService{db: dependencies.Store, config: dependencies.Config, configPath: dependencies.ConfigPath}
@@ -159,7 +163,7 @@ func NewService(root string, dependencies Dependencies) *Service {
 		runtime: runtime,
 		tasks: &taskService{
 			root: root, db: dependencies.Store, config: dependencies.Config,
-			harnesses: dependencies.Harnesses, git: dependencies.Git, pipelines: pipelines,
+			harnesses: dependencies.Harnesses, git: dependencies.Git, sandbox: dependencies.Sandbox, pipelines: pipelines,
 		},
 		pipelines: pipelines,
 		snapshots: snapshots,
@@ -467,10 +471,12 @@ func (s *taskService) Delete(ctx context.Context, id string) error {
 		}
 	}
 	for _, session := range tasks {
-		for _, repository := range session.Repositories {
-			if repository.SourceType == "local" && repository.WorkingPath != "" {
-				_, _ = s.git.Run(ctx, "git", "-C", repository.CanonicalPath, "worktree", "remove", "--force", repository.WorkingPath)
+		if s.sandbox != nil {
+			cleanup := make([]CleanupRepository, 0, len(session.Repositories))
+			for _, repository := range session.Repositories {
+				cleanup = append(cleanup, CleanupRepository{RepositoryID: repository.ID, Name: repository.Name, SourceType: repository.SourceType, CanonicalPath: repository.CanonicalPath, WorkingPath: repository.WorkingPath})
 			}
+			_ = s.sandbox.Cleanup(ctx, CleanupRequest{TaskID: session.ID, WorkspaceRoot: session.WorkspacePath, Repositories: cleanup})
 		}
 		if err := os.RemoveAll(s.taskDir(session.ID)); err != nil {
 			return fmt.Errorf("remove task files: %w", err)
@@ -607,52 +613,16 @@ func (s *Service) prepareAndPlan(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	primaryPath := ""
-	for _, repository := range task.Repositories {
-		workingPath := filepath.Join(task.WorkspacePath, "workspace", "repositories", repository.Name)
-		profile, prepareErr := s.prepareRepository(ctx, repository, workingPath)
-		if prepareErr != nil {
-			s.failPhase(ctx, phase, prepareErr)
-			return prepareErr
-		}
-		if repository.Primary && len(profile.Checks) == 0 {
-			prepareErr = fmt.Errorf("primary repository has no deterministic checks declared or detected")
-			s.failPhase(ctx, phase, prepareErr)
-			return prepareErr
-		}
-		canonical := profile.Root
-		if repository.SourceType == "local" {
-			canonical, _, prepareErr = factorygit.ResolveRoot(ctx, s.git, repository.SourceValue)
-		}
-		if prepareErr != nil {
-			s.failPhase(ctx, phase, prepareErr)
-			return prepareErr
-		}
-		repository.CanonicalPath, repository.WorkingPath, repository.BaseSHA = canonical, workingPath, profile.BaseSHA
-		repository.ReviewBaseSHA, repository.BranchName = profile.BaseSHA, profile.BranchName
-		if err = s.db.SetRepositoryPrepared(ctx, repository); err != nil {
-			s.failPhase(ctx, phase, err)
-			return err
-		}
-		if err = writeRepositoryProfile(task.WorkspacePath, repository.Name, profile); err != nil {
-			s.failPhase(ctx, phase, err)
-			return err
-		}
-		if repository.Primary {
-			primaryPath = workingPath
-			encoded, encodeErr := json.MarshalIndent(profile, "", "  ")
-			if encodeErr != nil {
-				s.failPhase(ctx, phase, encodeErr)
-				return encodeErr
-			}
-			if err = os.WriteFile(filepath.Join(task.WorkspacePath, "repository-profile.json"), encoded, 0o600); err != nil {
-				s.failPhase(ctx, phase, err)
-				return err
-			}
-		}
+	primaryPath, err := s.prepareRepositories(ctx, task, phase)
+	if err != nil {
+		return err
 	}
-	if primaryPath == "" {
-		err = fmt.Errorf("primary repository is missing")
+	profile, profileErr := os.ReadFile(filepath.Join(task.WorkspacePath, "repository-profiles", primaryRepositoryName(task)+".json"))
+	if profileErr != nil {
+		s.failPhase(ctx, phase, profileErr)
+		return profileErr
+	}
+	if err = os.WriteFile(filepath.Join(task.WorkspacePath, "repository-profile.json"), profile, 0o600); err != nil {
 		s.failPhase(ctx, phase, err)
 		return err
 	}
@@ -661,6 +631,7 @@ func (s *Service) prepareAndPlan(ctx context.Context, id string) error {
 		return err
 	}
 	if err = s.db.SetPrepared(ctx, id, primaryPath, string(snapshot)); err != nil {
+		s.failPhase(ctx, phase, err)
 		return err
 	}
 	if err = s.endPhase(ctx, phase, "success", nil); err != nil {
@@ -961,7 +932,10 @@ func (s *Service) renderPrompt(content, path string, data map[string]any) (strin
 			return "", err
 		}
 		var output strings.Builder
-		return output.String(), parsed.Execute(&output, data)
+		if err = parsed.Execute(&output, data); err != nil {
+			return "", err
+		}
+		return output.String(), nil
 	}
 	base := filepath.Dir(s.configPath)
 	body, err := os.ReadFile(filepath.Join(base, path))
@@ -1289,14 +1263,14 @@ func randomID() string {
 	return hex.EncodeToString(bytes[:])
 }
 
-func readTaskProfiles(task store.Task) (map[string]factorygit.Profile, error) {
-	profiles := make(map[string]factorygit.Profile, len(task.Repositories))
+func readTaskProfiles(task store.Task) (map[string]Materialization, error) {
+	profiles := make(map[string]Materialization, len(task.Repositories))
 	for _, repository := range task.Repositories {
 		body, err := os.ReadFile(filepath.Join(task.WorkspacePath, "repository-profiles", repository.Name+".json"))
 		if err != nil {
 			return nil, fmt.Errorf("read repository profile %s: %w", repository.Name, err)
 		}
-		var profile factorygit.Profile
+		var profile Materialization
 		if err = json.Unmarshal(body, &profile); err != nil {
 			return nil, fmt.Errorf("decode repository profile %s: %w", repository.Name, err)
 		}
@@ -1305,17 +1279,59 @@ func readTaskProfiles(task store.Task) (map[string]factorygit.Profile, error) {
 	return profiles, nil
 }
 
-func (s *Service) prepareRepository(ctx context.Context, repository store.TaskRepository, destination string) (factorygit.Profile, error) {
-	if s.git == nil {
-		return factorygit.Profile{}, fmt.Errorf("git runner unavailable")
+func (s *Service) prepareRepositories(ctx context.Context, task store.Task, phase store.Phase) (string, error) {
+	primaryPath := ""
+	for _, repository := range task.Repositories {
+		workingPath := filepath.Join(task.WorkspacePath, "workspace", "repositories", repository.Name)
+		profile, err := s.prepareRepository(ctx, task.ID, repository, workingPath)
+		if err != nil {
+			s.failPhase(ctx, phase, err)
+			return "", err
+		}
+		if repository.Primary && len(profile.Checks) == 0 {
+			err = fmt.Errorf("primary repository has no deterministic checks declared or detected")
+			s.failPhase(ctx, phase, err)
+			return "", err
+		}
+		repository.CanonicalPath, repository.WorkingPath, repository.BaseSHA = profile.Root, workingPath, profile.BaseSHA
+		repository.ReviewBaseSHA, repository.BranchName = profile.BaseSHA, profile.BranchName
+		if err = s.db.SetRepositoryPrepared(ctx, repository); err != nil {
+			s.failPhase(ctx, phase, err)
+			return "", err
+		}
+		if err = writeRepositoryProfile(task.WorkspacePath, repository.Name, profile); err != nil {
+			s.failPhase(ctx, phase, err)
+			return "", err
+		}
+		if repository.Primary {
+			primaryPath = workingPath
+		}
 	}
-	if repository.SourceType == "local" {
-		return factorygit.PrepareLocal(ctx, s.git, repository.SourceValue, destination)
+	if primaryPath == "" {
+		err := fmt.Errorf("primary repository is missing")
+		s.failPhase(ctx, phase, err)
+		return "", err
 	}
-	return factorygit.PrepareGitHub(ctx, s.git, repository.SourceValue, destination)
+	return primaryPath, nil
 }
 
-func writeRepositoryProfile(taskWorkspace, name string, profile factorygit.Profile) error {
+func primaryRepositoryName(task store.Task) string {
+	for _, repository := range task.Repositories {
+		if repository.Primary {
+			return repository.Name
+		}
+	}
+	return ""
+}
+
+func (s *Service) prepareRepository(ctx context.Context, taskID string, repository store.TaskRepository, destination string) (Materialization, error) {
+	if s.sandbox == nil {
+		return Materialization{}, fmt.Errorf("sandbox unavailable")
+	}
+	return s.sandbox.Materialize(ctx, MaterializationRequest{TaskID: taskID, RepositoryID: repository.ID, Name: repository.Name, SourceType: repository.SourceType, Source: repository.SourceValue, Destination: destination})
+}
+
+func writeRepositoryProfile(taskWorkspace, name string, profile Materialization) error {
 	encoded, err := json.MarshalIndent(profile, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode repository profile: %w", err)
