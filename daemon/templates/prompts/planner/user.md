@@ -2,12 +2,9 @@ Task request:
 {{.Request}}
 
 Task workspace: {{.Workspace}}
-Primary repository: {{.Repository}}
-Repositories:
-{{range .Repositories}}- {{.Name}}: {{.WorkingPath}} ({{if .Primary}}primary{{else}}supporting{{end}})
-{{end}}
+Task repository: {{.Repository}}
 
-Inspect all relevant repositories and produce concrete steps with repository-qualified expected_files and acceptance_criteria.
+Inspect the Task repository and produce concrete steps with expected_files and acceptance_criteria relative to it.
 
 {{if .CurrentPlan}}Revise the current plan below using the user's feedback. Preserve correct steps and resolve the listed questions.
 Current plan:

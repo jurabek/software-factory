@@ -34,31 +34,16 @@ type Event struct {
 }
 
 func (db *DB) AppendEvent(ctx context.Context, taskDir string, event Event) (int64, error) {
-	sequence, line, err := insertEvent(ctx, db, event)
-	if err != nil {
-		return 0, err
-	}
-	if err := exportEvent(taskDir, line); err != nil {
-		return 0, err
-	}
-	return sequence, nil
-}
-
-type eventExecutor interface {
-	ExecContext(context.Context, string, ...any) (sql.Result, error)
-}
-
-func insertEvent(ctx context.Context, executor eventExecutor, event Event) (int64, []byte, error) {
 	if event.FormatVersion == 0 {
 		event.FormatVersion = session.FormatVersion
 	}
 	payload, err := json.Marshal(event.Payload)
 	if err != nil {
-		return 0, nil, fmt.Errorf("marshal event payload: %w", err)
+		return 0, fmt.Errorf("marshal event payload: %w", err)
 	}
 	display, err := json.Marshal(event.Display)
 	if err != nil {
-		return 0, nil, fmt.Errorf("marshal event display: %w", err)
+		return 0, fmt.Errorf("marshal event display: %w", err)
 	}
 	started := event.StartedAt.UTC().Format(time.RFC3339Nano)
 	var ended any
@@ -69,32 +54,28 @@ func insertEvent(ctx context.Context, executor eventExecutor, event Event) (int6
 	if string(actions) == "null" {
 		actions = []byte("[]")
 	}
-	result, err := executor.ExecContext(ctx, `insert into events (id,task_id,phase_id,parent_event_id,kind,format_version,name,payload_json,display_json,token_count,started_at,ended_at,attempt_id,artifact_id,branch_id,actions_json) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, event.ID, event.TaskID, nullIfEmpty(event.PhaseID), nullIfEmpty(event.ParentEventID), event.Kind, event.FormatVersion, nullIfEmpty(event.Name), string(payload), string(display), event.TokenCount, started, ended, nullIfEmpty(event.AttemptID), nullIfEmpty(event.ArtifactID), nullIfEmpty(event.BranchID), string(actions))
+	result, err := db.ExecContext(ctx, `insert into events (id,task_id,phase_id,parent_event_id,kind,format_version,name,payload_json,display_json,token_count,started_at,ended_at,attempt_id,artifact_id,branch_id,actions_json) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, event.ID, event.TaskID, nullIfEmpty(event.PhaseID), nullIfEmpty(event.ParentEventID), event.Kind, event.FormatVersion, nullIfEmpty(event.Name), string(payload), string(display), event.TokenCount, started, ended, nullIfEmpty(event.AttemptID), nullIfEmpty(event.ArtifactID), nullIfEmpty(event.BranchID), string(actions))
 	if err != nil {
-		return 0, nil, fmt.Errorf("insert event: %w", err)
+		return 0, fmt.Errorf("insert event: %w", err)
 	}
 	sequence, _ := result.LastInsertId()
 	event.Sequence = sequence
 	line, err := json.Marshal(event)
 	if err != nil {
-		return 0, nil, err
+		return 0, err
 	}
-	return sequence, line, nil
-}
-
-func exportEvent(taskDir string, line []byte) error {
 	if err := os.MkdirAll(taskDir, 0o700); err != nil {
-		return err
+		return 0, err
 	}
 	file, err := os.OpenFile(filepath.Join(taskDir, "events.jsonl"), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
 	if err != nil {
-		return fmt.Errorf("open event trace: %w", err)
+		return 0, fmt.Errorf("open event trace: %w", err)
 	}
 	defer file.Close()
 	if _, err = file.Write(append(line, '\n')); err != nil {
-		return err
+		return 0, err
 	}
-	return file.Sync()
+	return sequence, file.Sync()
 }
 func (db *DB) Events(ctx context.Context, taskID string, after int64, limit int) ([]Event, error) {
 	limit = eventLimit(limit)

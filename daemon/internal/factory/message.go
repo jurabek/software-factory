@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -34,24 +35,11 @@ type RetryRequest struct {
 	IdempotencyKey string `json:"idempotency_key"`
 }
 
-type RetryResult struct {
-	SourceAttemptID string `json:"source_attempt_id"`
-	BranchID        string `json:"branch_id"`
-	AttemptID       string `json:"attempt_id"`
-	CreatedAt       string `json:"created_at"`
-}
-
 func (s *Service) SendMessage(ctx context.Context, taskID, actor string, request SendMessageRequest) (store.Message, error) {
-	var message store.Message
-	err := s.executions.withTask(taskID, func() error {
-		var err error
-		message, err = s.sendMessage(ctx, taskID, actor, request)
-		return err
-	})
-	return message, err
-}
+	lock := s.taskLock(taskID)
+	lock.Lock()
+	defer lock.Unlock()
 
-func (s *Service) sendMessage(ctx context.Context, taskID, actor string, request SendMessageRequest) (store.Message, error) {
 	request.Text = strings.TrimSpace(request.Text)
 	request.IdempotencyKey = strings.TrimSpace(request.IdempotencyKey)
 	if request.Text == "" {
@@ -72,7 +60,7 @@ func (s *Service) sendMessage(ctx context.Context, taskID, actor string, request
 	if task.State == string(Aborted) {
 		return store.Message{}, store.ErrConflict
 	}
-	target := request.Target
+	target := InterventionTarget(request.Target)
 	targetType, targetID, targetPhase, err := s.resolveTarget(ctx, taskID, target)
 	if err != nil {
 		return store.Message{}, err
@@ -108,29 +96,21 @@ func (s *Service) sendMessage(ctx context.Context, taskID, actor string, request
 		Anchor: anchor, StageID: role, RecipientRole: agentSession.AgentName, AgentSessionID: agentSession.HarnessSessionID,
 		DeliveryStatus: "queued", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
 	}
-	toState := scheduledMessageState(task.State, role)
-	eventState := task.State
-	if toState != "" {
-		eventState = toState
-	}
-	entry := session.NewTaskMessage(session.TaskMessagePayload{
-		MessageID: value.ID, TaskID: value.TaskID, Text: value.Text, RecipientRole: value.RecipientRole,
-		AgentSessionID: value.AgentSessionID, TargetType: value.TargetType, TargetID: value.TargetID,
-		Anchor: value.Anchor, DeliveryStatus: value.DeliveryStatus,
-	})
-	stored, created, err := s.db.CommitMessageAcceptance(ctx, value, task.State, toState, role == "planner", store.Event{
-		ID: randomID(), TaskID: taskID, PhaseID: phaseID(phase), AttemptID: phaseID(phase), BranchID: branchID(phase),
-		Kind: entry.Kind, Name: entry.Name, Payload: entry.Payload, Display: entry.Display,
-		AvailableActions: AvailableActions(phase, eventState), StartedAt: time.Now().UTC(),
-	}, s.taskDir(taskID))
+	stored, created, err := s.db.SaveMessage(ctx, value)
 	if err != nil {
 		return store.Message{}, err
 	}
 	if !created {
 		return stored, nil
 	}
-	if toState != "" {
-		s.launchMessageContinuation(taskID, role)
+	if role == "planner" {
+		if err = s.db.InvalidateApproval(ctx, taskID); err != nil {
+			return store.Message{}, err
+		}
+	}
+	_ = s.traceMessage(ctx, stored, phase)
+	if err = s.scheduleMessage(ctx, task, role); err != nil {
+		return store.Message{}, err
 	}
 	return stored, nil
 }
@@ -269,35 +249,23 @@ func (s *Service) scheduleMessage(ctx context.Context, task store.Task, role str
 	return nil
 }
 
-func scheduledMessageState(current, role string) string {
-	switch State(current) {
-	case AwaitingApproval, Blocked, Completed:
-		return string(stateForRole(role))
-	default:
-		return ""
-	}
-}
-
-func (s *Service) launchMessageContinuation(taskID, role string) {
-	s.launch(taskID, func(ctx context.Context, id string) error { return s.continueMessages(ctx, id, role) })
-}
-
 func (s *Service) kickQueuedMessage(taskID string) {
 	ctx := context.Background()
-	_ = s.executions.withTask(taskID, func() error {
-		task, err := s.db.Task(ctx, taskID)
-		if err != nil {
-			return nil
-		}
-		if task.State != string(AwaitingApproval) && task.State != string(Blocked) && task.State != string(Completed) {
-			return nil
-		}
-		message, err := s.db.NextQueuedTaskMessage(ctx, taskID)
-		if err != nil {
-			return nil
-		}
-		return s.scheduleMessage(ctx, task, message.RecipientRole)
-	})
+	lock := s.taskLock(taskID)
+	lock.Lock()
+	defer lock.Unlock()
+	task, err := s.db.Task(ctx, taskID)
+	if err != nil {
+		return
+	}
+	if task.State != string(AwaitingApproval) && task.State != string(Blocked) && task.State != string(Completed) {
+		return
+	}
+	message, err := s.db.NextQueuedTaskMessage(ctx, taskID)
+	if err != nil {
+		return
+	}
+	_ = s.scheduleMessage(ctx, task, message.RecipientRole)
 }
 
 func stateForRole(role string) State {
@@ -321,20 +289,20 @@ func (s *Service) continueMessages(ctx context.Context, taskID, role string) err
 		return err
 	}
 	validate := validatorForRole(role)
-	var baseline map[string]string
+	var baseline string
 	if isReadOnlyOwner(role) {
-		baseline, err = repositoryFingerprints(ctx, s.git, task.Repositories)
+		baseline, err = repositoryFingerprint(ctx, s.git, task)
 		if err != nil {
 			return err
 		}
 	}
-	var profiles map[string]Materialization
+	var profile Materialization
 	if role == "builder" {
-		profiles, err = s.workspace.InspectProfiles(ctx, task)
+		profile, err = readTaskProfile(task)
 		if err != nil {
 			return err
 		}
-		validate = s.builderValidator(ctx, task, profiles)
+		validate = s.builderValidator(ctx, task, profile)
 	}
 	next := stateAfterRole(role)
 	payload, err := s.completeAgentPhase(ctx, task, phase, role, validate, "", func(payload string) error {
@@ -342,7 +310,7 @@ func (s *Service) continueMessages(ctx context.Context, taskID, role string) err
 			return fmt.Errorf("queued message not found for %s", role)
 		}
 		if role == "builder" {
-			return s.validateBuilderPaths(ctx, task, profiles)
+			return s.validateBuilderPaths(ctx, task, profile)
 		}
 		if role == "reviewer" {
 			review, validateErr := ValidateReview(payload)
@@ -354,11 +322,11 @@ func (s *Service) continueMessages(ctx context.Context, taskID, role string) err
 			}
 		}
 		if isReadOnlyOwner(role) {
-			after, changedErr := repositoryFingerprints(ctx, s.git, task.Repositories)
+			after, changedErr := repositoryFingerprint(ctx, s.git, task)
 			if changedErr != nil {
 				return changedErr
 			}
-			if !sameFingerprints(baseline, after) {
+			if baseline != after {
 				return fmt.Errorf("%s modified repository", role)
 			}
 		}
@@ -386,10 +354,6 @@ func stateAfterRole(role string) State {
 }
 
 func (s *Service) completeAgentPhase(ctx context.Context, task store.Task, phase store.Phase, role string, validate validator, payload string, verify func(string) error, next State) (string, error) {
-	return s.completeAgentPhaseWithEnvelope(ctx, task, phase, role, validate, payload, verify, next, nil)
-}
-
-func (s *Service) completeAgentPhaseWithEnvelope(ctx context.Context, task store.Task, phase store.Phase, role string, validate validator, payload string, verify func(string) error, next State, envelope *store.Envelope) (string, error) {
 	for {
 		continued, err := s.drainMessages(ctx, task, phase, role, validate)
 		if err != nil {
@@ -398,50 +362,40 @@ func (s *Service) completeAgentPhaseWithEnvelope(ctx context.Context, task store
 		}
 		if continued != "" {
 			payload = continued
-			envelope = nil
 		}
-		var completed bool
-		err = s.executions.withTask(task.ID, func() error {
-			if err = s.executionGuard(ctx, task.ID); err != nil {
-				return err
-			}
-			_, err = s.db.NextQueuedMessage(ctx, task.ID, role)
-			if err == nil {
-				return nil
-			}
-			if !errors.Is(err, store.ErrNotFound) {
-				s.failPhase(ctx, phase, err)
-				return err
-			}
-			if err = verify(payload); err != nil {
-				s.failPhase(ctx, phase, err)
-				return err
-			}
-			if envelope != nil {
-				err = s.endPhaseToState(ctx, phase, "success", nil, string(stateForRole(role)), string(next), *envelope)
-			} else {
-				err = s.endPhaseToState(ctx, phase, "success", nil, string(stateForRole(role)), string(next))
-			}
-			completed = err == nil
-			return err
-		})
-		if !completed && err == nil {
+		lock := s.taskLock(task.ID)
+		lock.Lock()
+		_, err = s.db.NextQueuedMessage(ctx, task.ID, role)
+		if err == nil {
+			lock.Unlock()
 			continue
 		}
+		if !errors.Is(err, store.ErrNotFound) {
+			lock.Unlock()
+			s.failPhase(ctx, phase, err)
+			return "", err
+		}
+		if err = verify(payload); err != nil {
+			s.failPhase(ctx, phase, err)
+			lock.Unlock()
+			return "", err
+		}
+		if err = s.endPhase(ctx, phase, "success", nil); err == nil {
+			err = s.db.Transition(ctx, task.ID, string(stateForRole(role)), string(next), "", "")
+		}
+		lock.Unlock()
 		return payload, err
 	}
 }
 
-func (s *Service) validateBuilderPaths(ctx context.Context, task store.Task, profiles map[string]Materialization) error {
-	for _, repository := range task.Repositories {
-		files, err := factorygit.ChangedFiles(ctx, s.git, repository.WorkingPath, repositoryReviewBase(repository))
-		if err != nil {
-			return err
-		}
-		for _, file := range files {
-			if factorygit.MatchesPath(file, profiles[repository.Name].Protected) {
-				return fmt.Errorf("builder changed protected path %s/%s", repository.Name, file)
-			}
+func (s *Service) validateBuilderPaths(ctx context.Context, task store.Task, profile Materialization) error {
+	files, err := factorygit.ChangedFiles(ctx, s.git, task.RepositoryPath, reviewBase(task))
+	if err != nil {
+		return err
+	}
+	for _, file := range files {
+		if factorygit.MatchesPath(file, profile.Protected) {
+			return fmt.Errorf("builder changed protected path %s", file)
 		}
 	}
 	return nil
@@ -495,15 +449,10 @@ func (s *Service) drainMessages(ctx context.Context, task store.Task, phase stor
 			return "", promptErr
 		}
 		request := harness.Request{
-			CWD: task.PrimaryRepositoryPath, Prompt: message.Text, SystemPrompt: systemPrompt,
+			CWD: task.RepositoryPath, Prompt: message.Text, SystemPrompt: systemPrompt,
 			Model: agent.Model, Thinking: agent.Thinking, SessionID: storedSession.HarnessSessionID,
 			SessionDirectory: storedSession.SessionDirectory, RawOutputPath: filepath.Join(storedSession.SessionDirectory, "raw-output.jsonl"),
 			DeadlineMS: configured.Runtime.AgentDeadlineMS, Resume: true,
-		}
-		for _, repository := range task.Repositories {
-			if !repository.Primary && repository.WorkingPath != "" {
-				request.AdditionalDirectories = append(request.AdditionalDirectories, repository.WorkingPath)
-			}
 		}
 		for correction := 0; correction <= configured.Runtime.JSONFixAttempts; correction++ {
 			invocationID := uuid.New().String()
@@ -517,19 +466,19 @@ func (s *Service) drainMessages(ctx context.Context, task store.Task, phase stor
 			} else if err = s.db.BeginAgentInvocation(ctx, task.ID, role, invocationID); err != nil {
 				return "", err
 			}
-			var before map[string]string
+			var before string
 			if isReadOnlyOwner(role) {
-				before, err = repositoryFingerprints(ctx, s.git, task.Repositories)
+				before, err = repositoryFingerprint(ctx, s.git, task)
 				if err != nil {
 					return "", err
 				}
 			}
 			result, runErr := adapter.Run(ctx, request, s.eventSink(task.ID, phase.ID, storedSession.Harness))
 			if isReadOnlyOwner(role) {
-				after, fingerprintErr := repositoryFingerprints(ctx, s.git, task.Repositories)
+				after, fingerprintErr := repositoryFingerprint(ctx, s.git, task)
 				if fingerprintErr != nil {
 					runErr = errors.Join(runErr, fingerprintErr)
-				} else if !sameFingerprints(before, after) {
+				} else if before != after {
 					runErr = errors.Join(runErr, fmt.Errorf("%s modified repository", role))
 				}
 			}
@@ -624,9 +573,259 @@ func (s *Service) failMessage(ctx context.Context, message store.Message, phase 
 	}
 }
 
-// Retry remains a public API shape while the retry implementation is deferred.
-func (s *Service) Retry(context.Context, string, string, RetryRequest) (RetryResult, error) {
-	return RetryResult{}, fmt.Errorf("retry is not implemented")
+func (s *Service) Retry(ctx context.Context, taskID, attemptID string, request RetryRequest) (store.RetryResult, error) {
+	lock := s.taskLock(taskID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	request.IdempotencyKey = strings.TrimSpace(request.IdempotencyKey)
+	if request.IdempotencyKey == "" {
+		return store.RetryResult{}, fmt.Errorf("idempotency_key is required")
+	}
+	if existing, err := s.db.RetryByIdempotencyKey(ctx, taskID, request.IdempotencyKey); err == nil {
+		return existing, nil
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return store.RetryResult{}, err
+	}
+	task, err := s.db.Task(ctx, taskID)
+	if err != nil {
+		return store.RetryResult{}, err
+	}
+	switch State(task.State) {
+	case Preparing, Planning, Building, Checking, Reviewing:
+		return store.RetryResult{}, store.ErrConflict
+	}
+	phase, err := s.db.PhaseByID(ctx, taskID, attemptID)
+	if err != nil {
+		return store.RetryResult{}, err
+	}
+	if phase.Status == "running" || phase.Status == "queued" {
+		return store.RetryResult{}, store.ErrConflict
+	}
+	if phase.InputSnapshot == "" {
+		return store.RetryResult{}, fmt.Errorf("attempt input snapshot is required")
+	}
+	if task.RepositoryPath != "" {
+		branchName := "software-factory/retry/" + randomID()
+		if err = factorygit.RestoreForRetry(ctx, s.git, task.RepositoryType, task.CanonicalRepositoryPath, task.RepositoryPath, task.BaseSHA, branchName); err != nil {
+			return store.RetryResult{}, err
+		}
+		if _, err = s.db.ExecContext(ctx, `update tasks set review_base_sha=?,branch_name=? where id=?`, task.ReviewBaseSHA, branchName, taskID); err != nil {
+			return store.RetryResult{}, err
+		}
+	}
+	if err = s.MaterializeSnapshot(ctx, task, phase.InputSnapshot); err != nil {
+		return store.RetryResult{}, err
+	}
+	parentBranch := task.SelectedBranchID
+	if phase.BranchID != "" {
+		parentBranch = phase.BranchID
+	}
+	branch := store.Branch{ID: randomID(), TaskID: taskID, ParentBranchID: parentBranch, ForkAttemptID: phase.ID, Status: "active", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	phases, err := s.db.Phases(ctx, taskID)
+	if err != nil {
+		return store.RetryResult{}, err
+	}
+	retry := store.Phase{
+		ID: randomID(), TaskID: taskID, Sequence: len(phases) + 1, Name: phase.Name, Kind: phase.Kind, Owner: phase.Owner,
+		Description: phase.Description, Status: "queued", Attempt: phase.Attempt + 1, BranchID: branch.ID,
+		DefinitionID: phase.DefinitionID, InputSnapshot: phase.InputSnapshot,
+	}
+	result, created, err := s.db.ApplyRetry(ctx, request.IdempotencyKey, branch, retry, string(stateForPhase(phase)))
+	if err != nil {
+		return store.RetryResult{}, err
+	}
+	if created {
+		s.launch(taskID, func(ctx context.Context, id string) error { return s.runRetryAttempt(ctx, id, result.AttemptID) })
+	}
+	return result, nil
+}
+
+func (s *Service) runRetryAttempt(ctx context.Context, taskID, attemptID string) error {
+	phase, err := s.db.PhaseByID(ctx, taskID, attemptID)
+	if err != nil {
+		return err
+	}
+	if err = s.db.StartQueuedPhase(ctx, taskID, attemptID); err != nil {
+		return err
+	}
+	task, err := s.db.Task(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	_ = s.traceBranch(ctx, taskID, phase, session.NewPhaseStart(session.PhasePayload{Phase: phase.ID, Name: phase.Name, Owner: phase.Owner, Kind: phase.Kind, InputSnapshot: phase.InputSnapshot}))
+	switch phase.Kind {
+	case "agent", "build", "review":
+		return s.runRetryAgent(ctx, task, phase)
+	case "check", "verify":
+		if err = s.executeVerify(ctx, task, phase); err != nil {
+			return err
+		}
+		return s.progress(ctx, taskID)
+	case "git":
+		return s.runRetryPrepare(ctx, task, phase)
+	default:
+		err = fmt.Errorf("retry executor %q is unsupported", phase.Kind)
+		s.failPhase(ctx, phase, err)
+		return err
+	}
+}
+
+func (s *Service) runRetryPrepare(ctx context.Context, task store.Task, phase store.Phase) error {
+	if task.RepositoryPath == "" {
+		err := fmt.Errorf("prepared repository path is unavailable")
+		s.failPhase(ctx, phase, err)
+		return err
+	}
+	if _, err := os.Stat(task.RepositoryPath); err != nil {
+		s.failPhase(ctx, phase, err)
+		return err
+	}
+	lock := s.taskLock(task.ID)
+	lock.Lock()
+	err := s.endPhase(ctx, phase, "success", nil)
+	if err == nil {
+		err = s.db.Transition(ctx, task.ID, string(Preparing), string(Planning), "", "")
+	}
+	lock.Unlock()
+	if err != nil {
+		return err
+	}
+	task, err = s.db.Task(ctx, task.ID)
+	if err != nil {
+		return err
+	}
+	return s.plan(ctx, task, nil)
+}
+
+func (s *Service) runRetryAgent(ctx context.Context, task store.Task, phase store.Phase) error {
+	validate := validatorForRole(phase.Owner)
+	data := map[string]any{"TaskID": task.ID, "Request": task.Request, "Repository": task.RepositoryPath, "Workspace": task.WorkspacePath}
+	var profile Materialization
+	var baseline string
+	var err error
+	if phase.Owner == "builder" || phase.Owner == "reviewer" {
+		plan, planErr := s.db.ValidEnvelope(ctx, task.ID, "planner")
+		if planErr != nil {
+			return planErr
+		}
+		data["Plan"] = plan
+	}
+	if phase.Owner == "builder" {
+		profile, err = readTaskProfile(task)
+		if err != nil {
+			return err
+		}
+		validate = s.builderValidator(ctx, task, profile)
+	}
+	if phase.Owner == "reviewer" {
+		baseline, err = repositoryFingerprint(ctx, s.git, task)
+		if err != nil {
+			return err
+		}
+		changedFiles, changedErr := taskChangedFiles(ctx, s.git, task, true)
+		if changedErr != nil {
+			return changedErr
+		}
+		data["ChangedFiles"] = changedFiles
+		data["Checks"], err = s.db.Checks(ctx, task.ID)
+		if err != nil {
+			return err
+		}
+		data["TestChanges"], err = s.db.TestChanges(ctx, task.ID)
+		if err != nil {
+			return err
+		}
+		data["Comparisons"], err = s.db.Comparisons(ctx, task.ID)
+		if err != nil {
+			return err
+		}
+		changes, diffErr := s.diffRepository(ctx, task, true)
+		if diffErr != nil {
+			return diffErr
+		}
+		data["Diff"] = changes
+	}
+	if phase.Owner == "planner" {
+		baseline, err = repositoryFingerprint(ctx, s.git, task)
+		if err != nil {
+			return err
+		}
+	}
+	payload, err := s.runRole(ctx, task, phase, phase.Owner, data, validate)
+	if err != nil {
+		s.failPhase(ctx, phase, err)
+		return err
+	}
+	_, err = s.completeAgentPhase(ctx, task, phase, phase.Owner, validate, payload, func(payload string) error {
+		switch phase.Owner {
+		case "builder":
+			return s.validateBuilderPaths(ctx, task, profile)
+		case "reviewer":
+			review, validateErr := ValidateReview(payload)
+			if validateErr != nil {
+				return validateErr
+			}
+			if !review.Approved {
+				return fmt.Errorf("reviewer rejected implementation")
+			}
+		}
+		if phase.Owner == "planner" || phase.Owner == "reviewer" {
+			if isReadOnlyOwner(phase.Owner) {
+				after, changedErr := repositoryFingerprint(ctx, s.git, task)
+				if changedErr != nil {
+					return changedErr
+				}
+				if baseline != after {
+					return fmt.Errorf("%s modified repository", phase.Owner)
+				}
+			}
+		}
+		return nil
+	}, stateAfterRole(phase.Owner))
+	if err != nil {
+		return err
+	}
+	if phase.Owner == "builder" {
+		return s.continueAfterBuilder(ctx, task.ID)
+	}
+	return nil
+}
+
+func (s *Service) runRetryChecks(ctx context.Context, task store.Task, phase store.Phase) error {
+	profile, err := readTaskProfile(task)
+	if err != nil {
+		return err
+	}
+	if err = s.runChecks(ctx, task, phase, profile.Checks, "primary", ""); err != nil {
+		s.failPhase(ctx, phase, err)
+		return err
+	}
+	lock := s.taskLock(task.ID)
+	lock.Lock()
+	if err = s.endPhase(ctx, phase, "success", nil); err == nil {
+		err = s.db.Transition(ctx, task.ID, string(Checking), string(Reviewing), "", "")
+	}
+	lock.Unlock()
+	if err != nil {
+		return err
+	}
+	return s.continueAfterBuilder(ctx, task.ID)
+}
+
+func stateForPhase(phase store.Phase) State {
+	switch phase.Name {
+	case "planning":
+		return Planning
+	case "checks":
+		return Checking
+	case "reviewing":
+		return Reviewing
+	case "building":
+		return Building
+	default:
+		return stateForRole(phase.Owner)
+	}
 }
 
 func (s *Service) traceMessage(ctx context.Context, message store.Message, phase *store.Phase) error {

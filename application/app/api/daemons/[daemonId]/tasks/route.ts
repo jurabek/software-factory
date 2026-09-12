@@ -7,7 +7,7 @@ import { getRequestSession } from "@/server/session.ts";
 export const runtime = "nodejs";
 const taskCreateFields = [
 	"request",
-	"repositories",
+	"repository",
 	"pipeline",
 	"coding_agent",
 	"model",
@@ -75,7 +75,7 @@ export async function POST(
 			);
 		const input = body as {
 			request?: unknown;
-			repositories?: unknown;
+			repository?: unknown;
 			pipeline?: unknown;
 			coding_agent?: unknown;
 			model?: unknown;
@@ -85,9 +85,7 @@ export async function POST(
 			daemonId,
 			{
 				request: typeof input.request === "string" ? input.request : "",
-				repositories: Array.isArray(input.repositories)
-					? (input.repositories as never)
-					: [],
+				repository: input.repository as never,
 				...(typeof input.pipeline === "string"
 					? { pipeline: input.pipeline }
 					: {}),

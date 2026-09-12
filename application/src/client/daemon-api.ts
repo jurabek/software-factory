@@ -129,13 +129,11 @@ export function daemonCreateTask(
 	daemonId: string,
 	input: {
 		request: string;
-		repositories: {
-			name?: string;
+		repository: {
 			type: "local" | "github";
 			path?: string;
 			repo?: string;
-			primary?: boolean;
-		}[];
+		};
 		pipeline?: string;
 		coding_agent?: string;
 		model?: string;
@@ -219,12 +217,8 @@ export type TaskResult = {
 	created_at: string;
 };
 export type TaskDiff = {
-	repositories: {
-		repository_id: string;
-		name: string;
-		files: string[];
-		patch: string;
-	}[];
+	files: string[];
+	patch: string;
 };
 export type TaskArtifact = {
 	id: string;
@@ -308,12 +302,8 @@ export type MessageInput = {
 export type TaskDetails = QualifiedTask & {
 	workspace_path?: string;
 	selected_branch_id?: string;
-	repositories?: {
-		id: string;
-		name: string;
-		source_type: string;
-		primary: boolean;
-	}[];
+	repository_type?: string;
+	repository_source?: string;
 	plan_digest?: string;
 	available_actions?: string[];
 	agent_sessions?: AgentSession[];

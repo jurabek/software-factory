@@ -189,18 +189,15 @@ func stageDefinition(pipeline config.Pipeline, id string) (config.Stage, int, bo
 }
 
 func (s *Service) prepareOnly(ctx context.Context, task store.Task) error {
-	if err := s.executionGuard(ctx, task.ID); err != nil {
-		return err
-	}
 	phase, err := s.beginPhase(ctx, task.ID, "prepare", "git", "factory", "Prepare repository")
 	if err != nil {
 		return err
 	}
-	primaryPath, err := s.prepareRepositories(ctx, task, phase)
+	repositoryPath, err := s.prepareRepository(ctx, task)
 	if err != nil {
 		return err
 	}
-	if err = s.db.SetPrepared(ctx, task.ID, primaryPath, task.ConfigSnapshot); err != nil {
+	if err = s.db.SetPrepared(ctx, task.ID, repositoryPath, task.ConfigSnapshot); err != nil {
 		s.failPhase(ctx, phase, err)
 		return err
 	}
@@ -211,14 +208,11 @@ func (s *Service) prepareOnly(ctx context.Context, task store.Task) error {
 }
 
 func (s *Service) progress(ctx context.Context, taskID string) error {
-	if err := s.executionGuard(ctx, taskID); err != nil {
-		return err
-	}
 	task, err := s.db.Task(ctx, taskID)
 	if err != nil {
 		return err
 	}
-	if task.PrimaryRepositoryPath == "" {
+	if task.RepositoryPath == "" {
 		if err = s.prepareOnly(ctx, task); err != nil {
 			return err
 		}
@@ -232,9 +226,6 @@ func (s *Service) progress(ctx context.Context, taskID string) error {
 		return err
 	}
 	for {
-		if err = s.executionGuard(ctx, taskID); err != nil {
-			return err
-		}
 		task, err = s.db.Task(ctx, taskID)
 		if err != nil {
 			return err
@@ -245,9 +236,6 @@ func (s *Service) progress(ctx context.Context, taskID string) error {
 		stageID := task.ActiveStage
 		if stageID == "" {
 			if task.State == string(Preparing) {
-				if err = s.executionGuard(ctx, taskID); err != nil {
-					return err
-				}
 				if err = s.db.Transition(ctx, taskID, task.State, string(Planning), "", ""); err != nil {
 					return err
 				}
@@ -309,9 +297,6 @@ func (s *Service) continueAfterBuilder(ctx context.Context, taskID string) error
 }
 
 func (s *Service) transition(ctx context.Context, task store.Task, to State, message string) error {
-	if err := s.executionGuard(ctx, task.ID); err != nil {
-		return err
-	}
 	if task.State == string(to) {
 		return nil
 	}
@@ -332,9 +317,6 @@ func (s *Service) latestStageAttempt(ctx context.Context, taskID, stageID string
 }
 
 func (s *Service) executeStage(ctx context.Context, task store.Task, stage config.Stage) error {
-	if err := s.executionGuard(ctx, task.ID); err != nil {
-		return err
-	}
 	phase, err := s.beginPhase(ctx, task.ID, stage.ID, stage.Kind, stage.Agent, "Execute "+stage.ID)
 	if err != nil {
 		return err
@@ -352,67 +334,55 @@ func (s *Service) executeStage(ctx context.Context, task store.Task, stage confi
 }
 
 func (s *Service) executeBuild(ctx context.Context, task store.Task, stage config.Stage, phase store.Phase) error {
-	profiles, err := s.workspace.InspectProfiles(ctx, task)
+	profile, err := readTaskProfile(task)
 	if err != nil {
 		return err
 	}
 	data := s.stagePromptData(task)
 	data["Plan"] = s.plannerEnvelope(ctx, task)
-	payload, envelope, err := s.runRoleDeferredEnvelope(ctx, task, phase, stage.ID, data, s.builderValidator(ctx, task, profiles))
+	payload, err := s.runRole(ctx, task, phase, stage.ID, data, s.builderValidator(ctx, task, profile))
 	if err != nil {
 		s.failPhase(ctx, phase, err)
 		return err
 	}
 	_ = payload
-	err = s.executions.withTask(task.ID, func() error {
-		if err := s.executionGuard(ctx, task.ID); err != nil {
-			return err
-		}
-		if err := s.validateBuilderPaths(ctx, task, profiles); err != nil {
-			return err
-		}
-		changes, err := s.quality.builderEvidence(ctx, task, phase, payload)
-		if err != nil {
-			return err
-		}
-		return s.endPhasePublication(ctx, phase, "success", nil, string(Building), string(Checking), &envelope, changes)
-	})
-	if err != nil {
+	if err = s.validateBuilderPaths(ctx, task, profile); err != nil {
 		s.failPhase(ctx, phase, err)
 		return err
 	}
-	return nil
+	if err = s.persistBuilderEvidence(ctx, task, phase, payload); err != nil {
+		s.failPhase(ctx, phase, err)
+		return err
+	}
+	return s.endPhase(ctx, phase, "success", nil)
 }
 
 func (s *Service) executeVerify(ctx context.Context, task store.Task, phase store.Phase) error {
-	profiles, err := s.workspace.InspectProfiles(ctx, task)
+	profile, err := readTaskProfile(task)
 	if err != nil {
 		return err
 	}
-	for _, repository := range task.Repositories {
-		if err = s.runChecks(ctx, task, phase, repository, profiles[repository.Name].Checks, "primary", ""); err != nil {
-			s.failPhase(ctx, phase, err)
-			return err
-		}
+	if err = s.runChecks(ctx, task, phase, profile.Checks, "primary", ""); err != nil {
+		s.failPhase(ctx, phase, err)
+		return err
 	}
-	return s.executions.withTask(task.ID, func() error {
-		if err := s.executionGuard(ctx, task.ID); err != nil {
-			return err
-		}
-		return s.endPhase(ctx, phase, "success", nil)
-	})
+	if err = s.runComparisons(ctx, task, phase, profile); err != nil {
+		s.failPhase(ctx, phase, err)
+		return err
+	}
+	return s.endPhase(ctx, phase, "success", nil)
 }
 
 func (s *Service) executeReview(ctx context.Context, task store.Task, stage config.Stage, phase store.Phase) error {
-	before, err := repositoryFingerprints(ctx, s.git, task.Repositories)
+	before, err := repositoryFingerprint(ctx, s.git, task)
 	if err != nil {
 		return err
 	}
-	changed, err := taskChangedFiles(ctx, s.git, task.Repositories, true)
+	changed, err := taskChangedFiles(ctx, s.git, task, true)
 	if err != nil {
 		return err
 	}
-	changes, err := s.diffRepositories(ctx, task, true)
+	changes, err := s.diffRepository(ctx, task, true)
 	if err != nil {
 		return err
 	}
@@ -431,7 +401,7 @@ func (s *Service) executeReview(ctx context.Context, task store.Task, stage conf
 		return err
 	}
 	data["ChangedFiles"] = changed
-	data["Diff"] = changes.Repositories
+	data["Diff"] = changes
 	payload, err := s.runRole(ctx, task, phase, stage.ID, data, func(text string) (any, error) { return ValidateReview(text) })
 	if err != nil {
 		s.failPhase(ctx, phase, err)
@@ -445,24 +415,19 @@ func (s *Service) executeReview(ctx context.Context, task store.Task, stage conf
 		s.failPhase(ctx, phase, err)
 		return err
 	}
-	after, err := repositoryFingerprints(ctx, s.git, task.Repositories)
-	if err != nil || !sameFingerprints(before, after) {
+	after, err := repositoryFingerprint(ctx, s.git, task)
+	if err != nil || before != after {
 		if err == nil {
 			err = fmt.Errorf("%s modified repository", stage.ID)
 		}
 		s.failPhase(ctx, phase, err)
 		return err
 	}
-	return s.executions.withTask(task.ID, func() error {
-		if err := s.executionGuard(ctx, task.ID); err != nil {
-			return err
-		}
-		return s.endPhase(ctx, phase, "success", nil)
-	})
+	return s.endPhase(ctx, phase, "success", nil)
 }
 
 func (s *Service) stagePromptData(task store.Task) map[string]any {
-	return map[string]any{"TaskID": task.ID, "Request": task.Request, "Repository": task.PrimaryRepositoryPath, "Repositories": task.Repositories, "Workspace": task.WorkspacePath}
+	return map[string]any{"TaskID": task.ID, "Request": task.Request, "Repository": task.RepositoryPath, "Workspace": task.WorkspacePath}
 }
 
 func (s *Service) plannerEnvelope(ctx context.Context, task store.Task) string {
