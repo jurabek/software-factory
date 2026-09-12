@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -33,6 +32,13 @@ type SendMessageRequest struct {
 
 type RetryRequest struct {
 	IdempotencyKey string `json:"idempotency_key"`
+}
+
+type RetryResult struct {
+	SourceAttemptID string `json:"source_attempt_id"`
+	BranchID        string `json:"branch_id"`
+	AttemptID       string `json:"attempt_id"`
+	CreatedAt       string `json:"created_at"`
 }
 
 func (s *Service) SendMessage(ctx context.Context, taskID, actor string, request SendMessageRequest) (store.Message, error) {
@@ -66,7 +72,7 @@ func (s *Service) sendMessage(ctx context.Context, taskID, actor string, request
 	if task.State == string(Aborted) {
 		return store.Message{}, store.ErrConflict
 	}
-	target := InterventionTarget(request.Target)
+	target := request.Target
 	targetType, targetID, targetPhase, err := s.resolveTarget(ctx, taskID, target)
 	if err != nil {
 		return store.Message{}, err
@@ -618,267 +624,9 @@ func (s *Service) failMessage(ctx context.Context, message store.Message, phase 
 	}
 }
 
-func (s *Service) Retry(ctx context.Context, taskID, attemptID string, request RetryRequest) (store.RetryResult, error) {
-	var result store.RetryResult
-	err := s.executions.withTask(taskID, func() error {
-		var err error
-		result, err = s.retry(ctx, taskID, attemptID, request)
-		return err
-	})
-	return result, err
-}
-
-func (s *Service) retry(ctx context.Context, taskID, attemptID string, request RetryRequest) (store.RetryResult, error) {
-	request.IdempotencyKey = strings.TrimSpace(request.IdempotencyKey)
-	if request.IdempotencyKey == "" {
-		return store.RetryResult{}, fmt.Errorf("idempotency_key is required")
-	}
-	if existing, err := s.db.RetryByIdempotencyKey(ctx, taskID, request.IdempotencyKey); err == nil {
-		return existing, nil
-	} else if !errors.Is(err, store.ErrNotFound) {
-		return store.RetryResult{}, err
-	}
-	task, err := s.db.Task(ctx, taskID)
-	if err != nil {
-		return store.RetryResult{}, err
-	}
-	switch State(task.State) {
-	case Preparing, Planning, Building, Checking, Reviewing:
-		return store.RetryResult{}, store.ErrConflict
-	}
-	phase, err := s.db.PhaseByID(ctx, taskID, attemptID)
-	if err != nil {
-		return store.RetryResult{}, err
-	}
-	if phase.Status == "running" || phase.Status == "queued" {
-		return store.RetryResult{}, store.ErrConflict
-	}
-	if phase.InputSnapshot == "" {
-		return store.RetryResult{}, fmt.Errorf("attempt input snapshot is required")
-	}
-	retryInputs, err := s.workspace.Restore(ctx, task, phase, request.IdempotencyKey)
-	if err != nil {
-		return store.RetryResult{}, err
-	}
-	parentBranch := task.SelectedBranchID
-	if phase.BranchID != "" {
-		parentBranch = phase.BranchID
-	}
-	branch := store.Branch{ID: randomID(), TaskID: taskID, ParentBranchID: parentBranch, ForkAttemptID: phase.ID, Status: "active", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
-	phases, err := s.db.Phases(ctx, taskID)
-	if err != nil {
-		return store.RetryResult{}, err
-	}
-	retry := store.Phase{
-		ID: randomID(), TaskID: taskID, Sequence: len(phases) + 1, Name: phase.Name, Kind: phase.Kind, Owner: phase.Owner,
-		Description: phase.Description, Status: "queued", Attempt: phase.Attempt + 1, BranchID: branch.ID,
-		DefinitionID: phase.DefinitionID, InputSnapshot: phase.InputSnapshot,
-	}
-	result, created, err := s.db.ApplyRetryWithInputs(ctx, request.IdempotencyKey, branch, retry, string(stateForPhase(phase)), retryInputs)
-	if err != nil {
-		return store.RetryResult{}, err
-	}
-	if created {
-		s.launch(taskID, func(ctx context.Context, id string) error { return s.runRetryAttempt(ctx, id, result.AttemptID) })
-	}
-	return result, nil
-}
-
-func (s *Service) runRetryAttempt(ctx context.Context, taskID, attemptID string) error {
-	if err := s.executionGuard(ctx, taskID); err != nil {
-		return err
-	}
-	phase, err := s.db.PhaseByID(ctx, taskID, attemptID)
-	if err != nil {
-		return err
-	}
-	task, err := s.db.Task(ctx, taskID)
-	if err != nil {
-		return err
-	}
-	entry := session.NewPhaseStart(session.PhasePayload{Phase: phase.ID, Name: phase.Name, Owner: phase.Owner, Kind: phase.Kind, InputSnapshot: phase.InputSnapshot})
-	if err = s.db.StartQueuedPhaseWithEvent(ctx, taskID, attemptID, store.Event{
-		ID: randomID(), TaskID: taskID, PhaseID: phase.ID, AttemptID: phase.ID, BranchID: phase.BranchID,
-		Kind: entry.Kind, Name: entry.Name, Payload: entry.Payload, Display: entry.Display,
-		AvailableActions: AvailableActions(&phase, task.State), StartedAt: time.Now().UTC(),
-	}, s.taskDir(taskID)); err != nil {
-		return err
-	}
-	switch phase.Kind {
-	case "agent", "build", "review":
-		return s.runRetryAgent(ctx, task, phase)
-	case "check", "verify":
-		if err = s.executeVerify(ctx, task, phase); err != nil {
-			return err
-		}
-		return s.progress(ctx, taskID)
-	case "git":
-		return s.runRetryPrepare(ctx, task, phase)
-	default:
-		err = fmt.Errorf("retry executor %q is unsupported", phase.Kind)
-		s.failPhase(ctx, phase, err)
-		return err
-	}
-}
-
-func (s *Service) runRetryPrepare(ctx context.Context, task store.Task, phase store.Phase) error {
-	for _, repository := range task.Repositories {
-		if repository.WorkingPath == "" {
-			err := fmt.Errorf("prepared repository path is unavailable")
-			s.failPhase(ctx, phase, err)
-			return err
-		}
-		if _, err := os.Stat(repository.WorkingPath); err != nil {
-			s.failPhase(ctx, phase, err)
-			return err
-		}
-	}
-	err := s.executions.withTask(task.ID, func() error {
-		if err := s.executionGuard(ctx, task.ID); err != nil {
-			return err
-		}
-		return s.endPhaseToState(ctx, phase, "success", nil, string(Preparing), string(Planning))
-	})
-	if err != nil {
-		return err
-	}
-	task, err = s.db.Task(ctx, task.ID)
-	if err != nil {
-		return err
-	}
-	return s.plan(ctx, task, nil)
-}
-
-func (s *Service) runRetryAgent(ctx context.Context, task store.Task, phase store.Phase) error {
-	validate := validatorForRole(phase.Owner)
-	data := map[string]any{"TaskID": task.ID, "Request": task.Request, "Repository": task.PrimaryRepositoryPath, "Repositories": task.Repositories, "Workspace": task.WorkspacePath}
-	var profiles map[string]Materialization
-	var baseline map[string]string
-	var err error
-	if phase.Owner == "builder" || phase.Owner == "reviewer" {
-		plan, planErr := s.db.ValidEnvelope(ctx, task.ID, "planner")
-		if planErr != nil {
-			return planErr
-		}
-		data["Plan"] = plan
-	}
-	if phase.Owner == "builder" {
-		profiles, err = s.workspace.InspectProfiles(ctx, task)
-		if err != nil {
-			return err
-		}
-		validate = s.builderValidator(ctx, task, profiles)
-	}
-	if phase.Owner == "reviewer" {
-		baseline, err = repositoryFingerprints(ctx, s.git, task.Repositories)
-		if err != nil {
-			return err
-		}
-		changedFiles, changedErr := taskChangedFiles(ctx, s.git, task.Repositories, true)
-		if changedErr != nil {
-			return changedErr
-		}
-		data["ChangedFiles"] = changedFiles
-		data["Checks"], err = s.db.Checks(ctx, task.ID)
-		if err != nil {
-			return err
-		}
-		data["TestChanges"], err = s.db.TestChanges(ctx, task.ID)
-		if err != nil {
-			return err
-		}
-		data["Comparisons"], err = s.db.Comparisons(ctx, task.ID)
-		if err != nil {
-			return err
-		}
-		changes, diffErr := s.diffRepositories(ctx, task, true)
-		if diffErr != nil {
-			return diffErr
-		}
-		data["Diff"] = changes.Repositories
-	}
-	if phase.Owner == "planner" {
-		baseline, err = repositoryFingerprints(ctx, s.git, task.Repositories)
-		if err != nil {
-			return err
-		}
-	}
-	payload, err := s.runRole(ctx, task, phase, phase.Owner, data, validate)
-	if err != nil {
-		s.failPhase(ctx, phase, err)
-		return err
-	}
-	_, err = s.completeAgentPhase(ctx, task, phase, phase.Owner, validate, payload, func(payload string) error {
-		switch phase.Owner {
-		case "builder":
-			return s.validateBuilderPaths(ctx, task, profiles)
-		case "reviewer":
-			review, validateErr := ValidateReview(payload)
-			if validateErr != nil {
-				return validateErr
-			}
-			if !review.Approved {
-				return fmt.Errorf("reviewer rejected implementation")
-			}
-		}
-		if phase.Owner == "planner" || phase.Owner == "reviewer" {
-			if isReadOnlyOwner(phase.Owner) {
-				after, changedErr := repositoryFingerprints(ctx, s.git, task.Repositories)
-				if changedErr != nil {
-					return changedErr
-				}
-				if !sameFingerprints(baseline, after) {
-					return fmt.Errorf("%s modified repository", phase.Owner)
-				}
-			}
-		}
-		return nil
-	}, stateAfterRole(phase.Owner))
-	if err != nil {
-		return err
-	}
-	if phase.Owner == "builder" {
-		return s.continueAfterBuilder(ctx, task.ID)
-	}
-	return nil
-}
-
-func (s *Service) runRetryChecks(ctx context.Context, task store.Task, phase store.Phase) error {
-	profiles, err := s.workspace.InspectProfiles(ctx, task)
-	if err != nil {
-		return err
-	}
-	for _, repository := range task.Repositories {
-		if err = s.runChecks(ctx, task, phase, repository, profiles[repository.Name].Checks, "primary", ""); err != nil {
-			s.failPhase(ctx, phase, err)
-			return err
-		}
-	}
-	err = s.executions.withTask(task.ID, func() error {
-		if err := s.executionGuard(ctx, task.ID); err != nil {
-			return err
-		}
-		return s.endPhaseToState(ctx, phase, "success", nil, string(Checking), string(Reviewing))
-	})
-	if err != nil {
-		return err
-	}
-	return s.continueAfterBuilder(ctx, task.ID)
-}
-
-func stateForPhase(phase store.Phase) State {
-	switch phase.Name {
-	case "planning":
-		return Planning
-	case "checks":
-		return Checking
-	case "reviewing":
-		return Reviewing
-	case "building":
-		return Building
-	default:
-		return stateForRole(phase.Owner)
-	}
+// Retry remains a public API shape while the retry implementation is deferred.
+func (s *Service) Retry(context.Context, string, string, RetryRequest) (RetryResult, error) {
+	return RetryResult{}, fmt.Errorf("retry is not implemented")
 }
 
 func (s *Service) traceMessage(ctx context.Context, message store.Message, phase *store.Phase) error {

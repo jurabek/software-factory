@@ -85,55 +85,6 @@ func TestPersistBuilderEvidenceRetainsChangeKindAndReason(t *testing.T) {
 	}
 }
 
-func TestMaterializeScratchPreservesModesSymlinksAndIsolation(t *testing.T) {
-	root := t.TempDir()
-	db, err := store.Open(filepath.Join(root, "factory.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	workspace := filepath.Join(root, "task")
-	repositoryPath := filepath.Join(workspace, "workspace", "repositories", "app")
-	qualityGit(t, repositoryPath, "init")
-	qualityWrite(t, filepath.Join(repositoryPath, "run.sh"), "#!/bin/sh\necho ok\n")
-	if err = os.Chmod(filepath.Join(repositoryPath, "run.sh"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	qualityWrite(t, filepath.Join(repositoryPath, "target.txt"), "target\n")
-	if err = os.Symlink("target.txt", filepath.Join(repositoryPath, "target-link")); err != nil {
-		t.Fatal(err)
-	}
-	qualityGit(t, repositoryPath, "add", ".")
-	qualityGit(t, repositoryPath, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "base")
-	task := qualityTask(t, db, root, store.TaskRepository{ID: "repo-1", TaskID: "task-1", Name: "app", WorkingPath: repositoryPath})
-	service := NewService(root, Dependencies{Store: db, Config: configForQuality(), Git: factorygit.OSRunner{}})
-	snapshot, err := service.CaptureSnapshot(context.Background(), task)
-	if err != nil {
-		t.Fatal(err)
-	}
-	baseline := filepath.Join(root, "baseline")
-	if err = service.MaterializeScratch(context.Background(), task, snapshot.Digest, baseline); err != nil {
-		t.Fatal(err)
-	}
-	if info, statErr := os.Stat(filepath.Join(baseline, "app", "run.sh")); statErr != nil || info.Mode().Perm() != 0o755 {
-		t.Fatalf("scratch executable = %v, err = %v", info, statErr)
-	}
-	if link, readErr := os.Readlink(filepath.Join(baseline, "app", "target-link")); readErr != nil || link != "target.txt" {
-		t.Fatalf("scratch symlink = %q, err = %v", link, readErr)
-	}
-	if info, statErr := os.Stat(filepath.Join(baseline, "app", ".git")); statErr != nil || !info.IsDir() {
-		t.Fatalf("scratch Git metadata = %v, err = %v", info, statErr)
-	}
-	qualityWrite(t, filepath.Join(baseline, "app", "baseline-side-effect"), "must not leak")
-	overlay := filepath.Join(root, "overlay")
-	if err = service.MaterializeScratch(context.Background(), task, snapshot.Digest, overlay); err != nil {
-		t.Fatal(err)
-	}
-	if _, statErr := os.Stat(filepath.Join(overlay, "app", "baseline-side-effect")); !os.IsNotExist(statErr) {
-		t.Fatalf("baseline side effect leaked into overlay: %v", statErr)
-	}
-}
-
 func TestCheckCancellationKillsProcessGroupAndPersistsCancelledRecord(t *testing.T) {
 	root := t.TempDir()
 	db, err := store.Open(filepath.Join(root, "factory.db"))
@@ -166,54 +117,6 @@ func TestCheckCancellationKillsProcessGroupAndPersistsCancelledRecord(t *testing
 	checks, err := db.Checks(context.Background(), task.ID)
 	if err != nil || len(checks) != 1 || checks[0].Status != "cancelled" {
 		t.Fatalf("checks = %#v, err = %v", checks, err)
-	}
-}
-
-func TestComparisonFailureIsPersistedAsAdvisoryObservation(t *testing.T) {
-	root := t.TempDir()
-	db, err := store.Open(filepath.Join(root, "factory.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	repositoryPath := filepath.Join(root, "task", "workspace", "repositories", "app")
-	qualityGit(t, repositoryPath, "init")
-	qualityWrite(t, filepath.Join(repositoryPath, "changed_test.go"), "base\n")
-	qualityGit(t, repositoryPath, "add", ".")
-	qualityGit(t, repositoryPath, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "base")
-	base := strings.TrimSpace(qualityGit(t, repositoryPath, "rev-parse", "HEAD"))
-	task := qualityTask(t, db, root, store.TaskRepository{ID: "repo-1", TaskID: "task-1", Name: "app", WorkingPath: repositoryPath, BaseSHA: base, ReviewBaseSHA: base})
-	service := NewService(root, Dependencies{Store: db, Config: configForQuality(), Git: factorygit.OSRunner{}})
-	snapshot, err := service.CaptureSnapshot(context.Background(), task)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = db.AddPhase(context.Background(), store.Phase{ID: "build-attempt", TaskID: task.ID, Sequence: 1, Name: "build", Kind: "build", Status: "success", Attempt: 1, BranchID: "branch", InputSnapshot: snapshot.Digest}); err != nil {
-		t.Fatal(err)
-	}
-	qualityWrite(t, filepath.Join(repositoryPath, "changed_test.go"), "changed\n")
-	verify := store.Phase{ID: "verify-attempt", TaskID: task.ID, Sequence: 2, Name: "check", Kind: "verify", Status: "running", Attempt: 1, BranchID: "branch"}
-	profile := Materialization{
-		Tests:                 []string{"**/*_test.go"},
-		Checks:                []Check{{ID: "behavior", Command: `test "$(cat changed_test.go)" = "base"`}},
-		PreChangeVerification: true,
-	}
-	if err = service.runComparisons(context.Background(), task, verify, map[string]Materialization{"app": profile}); err != nil {
-		t.Fatal(err)
-	}
-	comparisons, err := db.Comparisons(context.Background(), task.ID)
-	if err != nil || len(comparisons) != 1 {
-		t.Fatalf("comparisons = %#v, err = %v", comparisons, err)
-	}
-	if comparisons[0].Status != "overlay_checks_failed" || comparisons[0].BaselineSnapshot != snapshot.Digest || len(comparisons[0].OverlayPaths) != 1 {
-		t.Fatalf("comparison = %#v", comparisons[0])
-	}
-	checks, err := db.Checks(context.Background(), task.ID)
-	if err != nil || len(checks) != 2 {
-		t.Fatalf("checks = %#v, err = %v", checks, err)
-	}
-	if checks[0].Phase != "baseline" || checks[1].Phase != "test_overlay" || checks[0].Status != "passed" || checks[1].Status != "failed" {
-		t.Fatalf("comparison check phases = %#v", checks)
 	}
 }
 

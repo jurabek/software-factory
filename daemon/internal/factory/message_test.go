@@ -225,58 +225,6 @@ func TestAgentCompletionSerializesFinalQueueCheckAndTransition(t *testing.T) {
 	t.Fatal("boundary message was not delivered before workflow settled")
 }
 
-func TestExactRetryIsIdempotentAndUsesOriginalInput(t *testing.T) {
-	adapter := &scriptedHarness{results: []harness.Result{{Text: `{"status":"success","summary":"planned","artifacts":[],"notes_for_next_agent":"","steps":[{"id":"one","description":"change","expected_files":[],"acceptance_criteria":[]}],"questions":[]}`, SessionReady: true, AccountingComplete: true}}}
-	service, db, task := messageTestService(t, adapter)
-	ctx := context.Background()
-	if err := service.ensureBranch(ctx, task.ID, ""); err != nil {
-		t.Fatal(err)
-	}
-	task, _ = db.Task(ctx, task.ID)
-	definitionID := service.ensureDefinition(ctx, task.ID, "planning", "agent", "planner")
-	phase := store.Phase{ID: randomID(), TaskID: task.ID, Sequence: 1, Name: "planning", Kind: "agent", Owner: "planner", Description: "Plan", Status: "failed", Attempt: 1, BranchID: task.SelectedBranchID, DefinitionID: definitionID, InputSnapshot: "input-snapshot"}
-	if err := db.AddPhase(ctx, phase); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.SaveSnapshot(ctx, store.WorkspaceSnapshot{Digest: phase.InputSnapshot, TaskID: task.ID, Path: filepath.Join(task.WorkspacePath, "workspace", "repositories"), CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.ExecContext(ctx, `update tasks set state='blocked' where id=?`, task.ID); err != nil {
-		t.Fatal(err)
-	}
-	first, err := service.Retry(ctx, task.ID, phase.ID, RetryRequest{IdempotencyKey: "retry-one"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := service.Retry(ctx, task.ID, phase.ID, RetryRequest{IdempotencyKey: "retry-one"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if first != second {
-		t.Fatalf("retry results differ: %+v %+v", first, second)
-	}
-	var retried store.Phase
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		retried, err = db.PhaseByID(ctx, task.ID, first.AttemptID)
-		current, taskErr := db.Task(ctx, task.ID)
-		if err == nil && taskErr == nil && retried.Status == "success" && current.State == string(AwaitingApproval) {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if retried.InputSnapshot != phase.InputSnapshot || retried.DefinitionID != phase.DefinitionID || retried.Status != "success" {
-		t.Fatalf("retry attempt = %+v", retried)
-	}
-	branches, err := db.Branches(ctx, task.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(branches) != 2 {
-		t.Fatalf("branches = %d, want initial plus one child", len(branches))
-	}
-}
-
 func TestAvailableActionsContainControlsOnly(t *testing.T) {
 	for _, actions := range [][]string{
 		AvailableActions(nil, string(Preparing)),
