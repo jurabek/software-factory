@@ -32,9 +32,8 @@ type Build struct {
 	TestChanges   []TestChange `json:"test_changes"`
 }
 type TestChange struct {
-	RepositoryID string `json:"repository_id"`
-	Path         string `json:"path"`
-	Reason       string `json:"reason"`
+	Path   string `json:"path"`
+	Reason string `json:"reason"`
 }
 type Finding struct {
 	Requirement string `json:"requirement"`
@@ -54,7 +53,7 @@ func envelopeInstructions(role string) string {
 	case "planner":
 		return `Return exactly one JSON object with no Markdown: {` + common + `,"steps":[{"id":"...","description":"...","expected_files":[],"acceptance_criteria":[]}],"questions":[]}`
 	case "builder", "build":
-		return `Return exactly one JSON object with no Markdown: {` + common + `,"changed_files":[],"commit_message":"...","test_changes":[{"repository_id":"...","path":"...","reason":"..."}]}`
+		return `Return exactly one JSON object with no Markdown: {` + common + `,"changed_files":[],"commit_message":"...","test_changes":[{"path":"...","reason":"..."}]}`
 	case "reviewer", "review":
 		return `Return exactly one JSON object with no Markdown: {` + common + `,"approved":true,"findings":[],"blocking":[]}. Finding objects require "requirement", "met", and "evidence". A rejected review requires approved=false and a non-empty blocking array.`
 	default:
@@ -179,8 +178,8 @@ func ValidateBuild(text string) (Build, error) {
 	}
 	seen := make(map[string]struct{}, len(value.TestChanges))
 	for _, change := range value.TestChanges {
-		if strings.TrimSpace(change.RepositoryID) == "" || strings.TrimSpace(change.Path) == "" || strings.TrimSpace(change.Reason) == "" {
-			return value, fmt.Errorf("builder test_changes entries require repository_id, path, and reason")
+		if strings.TrimSpace(change.Path) == "" || strings.TrimSpace(change.Reason) == "" {
+			return value, fmt.Errorf("builder test_changes entries require path and reason")
 		}
 		if filepath.IsAbs(change.Path) || strings.HasPrefix(change.Path, ":") {
 			return value, fmt.Errorf("builder test change path must be relative: %q", change.Path)
@@ -192,7 +191,7 @@ func ValidateBuild(text string) (Build, error) {
 		if filepath.ToSlash(clean) != change.Path {
 			return value, fmt.Errorf("builder test change path must be canonical: %q", change.Path)
 		}
-		key := change.RepositoryID + "\x00" + filepath.ToSlash(clean)
+		key := filepath.ToSlash(clean)
 		if _, exists := seen[key]; exists {
 			return value, fmt.Errorf("duplicate builder test change %q", key)
 		}

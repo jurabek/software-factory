@@ -37,14 +37,6 @@ const thinkingLevels = [
 	"xhigh",
 	"max",
 ] as const;
-type RepositoryDraft = {
-	id: string;
-	type: "local" | "github";
-	value: string;
-	name: string;
-	primary: boolean;
-};
-
 function recentKey(daemonId: string): string {
 	return `software-factory.recent-directories.${daemonId}`;
 }
@@ -82,15 +74,10 @@ export function TaskCreation({
 	onCreated: (task: QualifiedTask) => void;
 }) {
 	const [request, setRequest] = useState("");
-	const [repositories, setRepositories] = useState<RepositoryDraft[]>([
-		{
-			id: crypto.randomUUID(),
-			type: "github",
-			value: "",
-			name: "",
-			primary: true,
-		},
-	]);
+	const [repositoryType, setRepositoryType] = useState<"local" | "github">(
+		"github",
+	);
+	const [repositoryValue, setRepositoryValue] = useState("");
 	const [harness, setHarness] = useState("");
 	const [model, setModel] = useState("");
 	const [thinking, setThinking] = useState("");
@@ -175,14 +162,10 @@ export function TaskCreation({
 					(entry): entry is string => typeof entry === "string",
 				);
 				setRecentDirectories(paths);
-				if (paths[0])
-					setRepositories((previous) =>
-						previous.map((repository, index) =>
-							index === 0 && !repository.value
-								? { ...repository, type: "local", value: paths[0] }
-								: repository,
-						),
-					);
+				if (paths[0]) {
+					setRepositoryType("local");
+					setRepositoryValue((previous) => previous || paths[0]);
+				}
 			}
 		} catch {
 			// Ignore corrupt local preferences; they are only a convenience.
@@ -192,49 +175,6 @@ export function TaskCreation({
 			mutationController.current?.abort();
 		};
 	}, [daemon.id]);
-
-	function updateRepository(index: number, update: Partial<RepositoryDraft>) {
-		setRepositories((current) =>
-			current.map((repository, repositoryIndex) =>
-				repositoryIndex === index ? { ...repository, ...update } : repository,
-			),
-		);
-	}
-
-	function addRepository() {
-		setRepositories((current) => [
-			...current,
-			{
-				id: crypto.randomUUID(),
-				type: "local",
-				value: "",
-				name: "",
-				primary: false,
-			},
-		]);
-	}
-
-	function removeRepository(index: number) {
-		setRepositories((current) =>
-			current.length === 1
-				? current
-				: current
-						.filter((_, repositoryIndex) => repositoryIndex !== index)
-						.map((repository, repositoryIndex) => ({
-							...repository,
-							primary: repository.primary || repositoryIndex === 0,
-						})),
-		);
-	}
-
-	function selectPrimary(index: number) {
-		setRepositories((current) =>
-			current.map((repository, repositoryIndex) => ({
-				...repository,
-				primary: repositoryIndex === index,
-			})),
-		);
-	}
 
 	useEffect(() => {
 		if (!harness) return;
@@ -318,47 +258,22 @@ export function TaskCreation({
 		try {
 			const trimmed = request.trim();
 			if (!trimmed) throw new Error("Describe the task first.");
-			if (repositories.some((repository) => !repository.value.trim()))
-				throw new Error("Complete every repository before creating the task.");
-			if (
-				repositories.some(
-					(repository) =>
-						repository.type === "local" &&
-						!repository.value.trim().startsWith("/"),
-				)
-			)
+			if (!repositoryValue.trim()) throw new Error("Select a repository.");
+			if (repositoryType === "local" && !repositoryValue.trim().startsWith("/"))
 				throw new Error("Local repositories need an absolute daemon path.");
 			if (
-				repositories.some(
-					(repository) =>
-						repository.type === "github" &&
-						!/^[^/\s]+\/[^/\s]+$/.test(repository.value.trim()),
-				)
+				repositoryType === "github" &&
+				!/^[^/\s]+\/[^/\s]+$/.test(repositoryValue.trim())
 			)
 				throw new Error("GitHub repositories need owner/name.");
 			const result = await daemonCreateTask(
 				daemon.id,
 				{
 					request: trimmed,
-					repositories: repositories.map((repository) =>
-						repository.type === "local"
-							? {
-									type: "local",
-									path: repository.value.trim(),
-									...(repository.name.trim()
-										? { name: repository.name.trim() }
-										: {}),
-									primary: repository.primary,
-								}
-							: {
-									type: "github",
-									repo: repository.value.trim(),
-									...(repository.name.trim()
-										? { name: repository.name.trim() }
-										: {}),
-									primary: repository.primary,
-								},
-					),
+					repository:
+						repositoryType === "local"
+							? { type: "local", path: repositoryValue.trim() }
+							: { type: "github", repo: repositoryValue.trim() },
 					...(pipeline &&
 					pipeline !== pipelines.find((entry) => entry.default)?.name
 						? { pipeline }
@@ -369,15 +284,13 @@ export function TaskCreation({
 				},
 				controller.signal,
 			);
-			if (repositories.some((repository) => repository.type === "local")) {
+			if (repositoryType === "local") {
 				try {
 					const recent = JSON.parse(
 						localStorage.getItem(recentKey(daemon.id)) ?? "[]",
 					) as unknown;
 					const values = [
-						...repositories
-							.filter((repository) => repository.type === "local")
-							.map((repository) => repository.value.trim()),
+						repositoryValue.trim(),
 						...(Array.isArray(recent)
 							? recent.filter(
 									(entry): entry is string => typeof entry === "string",
@@ -449,104 +362,48 @@ export function TaskCreation({
 				/>
 			</Label>
 
-			<Section title="Repository sources" defaultOpen>
+			<Section title="Repository source" defaultOpen>
 				<div className="grid gap-3 border-t pt-3">
-					{repositories.map((repository, index) => (
-						<div
-							className="grid items-end gap-3 md:grid-cols-[auto_minmax(7rem,.5fr)_minmax(8rem,.6fr)_minmax(0,1fr)_auto]"
-							key={repository.id}
-						>
-							<Button
-								type="button"
-								variant="outline"
-								size="sm"
-								aria-label={`Make repository ${index + 1} primary`}
-								aria-pressed={repository.primary}
-								className={
-									repository.primary ? "border-primary text-primary" : ""
+					<div className="grid items-end gap-3 md:grid-cols-[minmax(8rem,.6fr)_minmax(0,1fr)]">
+						<div className="grid gap-1.5">
+							<Label htmlFor="repository-type">Type</Label>
+							<Select
+								value={repositoryType}
+								onValueChange={(value) =>
+									setRepositoryType(value as "local" | "github")
 								}
-								onClick={() => selectPrimary(index)}
 							>
-								{repository.primary ? "Primary" : "Secondary"}
-							</Button>
-							<div className="grid gap-1.5">
-								<Label htmlFor={`repository-name-${index}`}>Name</Label>
-								<Input
-									id={`repository-name-${index}`}
-									value={repository.name}
-									onChange={(event) =>
-										updateRepository(index, { name: event.target.value })
-									}
-									placeholder="optional"
-								/>
-							</div>
-							<div className="grid gap-1.5">
-								<Label htmlFor={`repository-type-${index}`}>Type</Label>
-								<Select
-									value={repository.type}
-									onValueChange={(value) =>
-										updateRepository(index, {
-											type: value as RepositoryDraft["type"],
-										})
-									}
-								>
-									<SelectTrigger
-										id={`repository-type-${index}`}
-										className="w-full"
-									>
-										<SelectValue />
-									</SelectTrigger>
-									<SelectContent>
-										<SelectItem value="github">GitHub</SelectItem>
-										<SelectItem value="local">Local daemon path</SelectItem>
-									</SelectContent>
-								</Select>
-							</div>
-							<div className="grid gap-1.5">
-								<Label htmlFor={`repository-value-${index}`}>
-									{repository.type === "local"
-										? "Absolute daemon path"
-										: "owner/repository"}
-								</Label>
-								<Input
-									id={`repository-value-${index}`}
-									value={repository.value}
-									onChange={(event) =>
-										updateRepository(index, { value: event.target.value })
-									}
-									list={
-										repository.type === "local"
-											? `recent-directories-${daemon.id}`
-											: undefined
-									}
-									required
-									placeholder={
-										repository.type === "local"
-											? "/srv/sandbox/repo"
-											: "owner/app"
-									}
-								/>
-							</div>
-							<Button
-								type="button"
-								variant="outline"
-								size="sm"
-								disabled={repositories.length === 1}
-								onClick={() => removeRepository(index)}
-							>
-								Remove
-							</Button>
+								<SelectTrigger id="repository-type" className="w-full">
+									<SelectValue />
+								</SelectTrigger>
+								<SelectContent>
+									<SelectItem value="github">GitHub</SelectItem>
+									<SelectItem value="local">Local daemon path</SelectItem>
+								</SelectContent>
+							</Select>
 						</div>
-					))}
-					<Button
-						type="button"
-						variant="outline"
-						size="sm"
-						className="justify-self-start"
-						onClick={addRepository}
-					>
-						Add repository
-					</Button>
+						<div className="grid gap-1.5">
+							<Label htmlFor="repository-value">
+								{repositoryType === "local"
+									? "Absolute daemon path"
+									: "owner/repository"}
+							</Label>
+							<Input
+								id="repository-value"
+								value={repositoryValue}
+								onChange={(event) => setRepositoryValue(event.target.value)}
+								list={
+									repositoryType === "local"
+										? `recent-directories-${daemon.id}`
+										: undefined
+								}
+								required
+								placeholder={
+									repositoryType === "local" ? "/srv/sandbox/repo" : "owner/app"
+								}
+							/>
+						</div>
+					</div>
 				</div>
 			</Section>
 
