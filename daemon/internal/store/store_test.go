@@ -18,7 +18,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-func TestCreateActiveTaskClaimsOnlyExecutionSlot(t *testing.T) {
+func TestCreateTaskAllowsIndependentActiveTasks(t *testing.T) {
 	db, err := Open(filepath.Join(t.TempDir(), "factory.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -27,7 +27,7 @@ func TestCreateActiveTaskClaimsOnlyExecutionSlot(t *testing.T) {
 	ctx := context.Background()
 	startedAt := time.Now().UTC().Format(time.RFC3339Nano)
 	first := Task{ID: "task-1", Request: "first", WorkspacePath: t.TempDir(), State: "preparing", CreatedAt: startedAt, StartedAt: startedAt}
-	if err = db.CreateActiveTask(ctx, first); err != nil {
+	if err = db.CreateTask(ctx, first); err != nil {
 		t.Fatal(err)
 	}
 	stored, err := db.Task(ctx, first.ID)
@@ -38,11 +38,11 @@ func TestCreateActiveTaskClaimsOnlyExecutionSlot(t *testing.T) {
 		t.Fatalf("started at = %q, want %q", stored.StartedAt, startedAt)
 	}
 	second := Task{ID: "task-2", Request: "second", WorkspacePath: t.TempDir(), State: "preparing", CreatedAt: startedAt, StartedAt: startedAt}
-	if err = db.CreateActiveTask(ctx, second); !errors.Is(err, ErrConflict) {
-		t.Fatalf("second active task error = %v, want conflict", err)
+	if err = db.CreateTask(ctx, second); err != nil {
+		t.Fatalf("second active task error = %v", err)
 	}
-	if _, err = db.Task(ctx, second.ID); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("second task lookup error = %v, want not found", err)
+	if _, err = db.Task(ctx, second.ID); err != nil {
+		t.Fatalf("second task lookup error = %v", err)
 	}
 }
 

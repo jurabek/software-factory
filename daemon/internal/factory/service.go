@@ -49,13 +49,11 @@ type runtime struct {
 	harnesses  harness.Registry
 	git        factorygit.Runner
 	sandbox    Sandbox
-	mu         sync.Mutex
-	cancel     map[string]*execution
-	taskLocks  sync.Map
+	executions *executionOwner
 }
 
 type taskStore interface {
-	CreateActiveTask(context.Context, store.Task) error
+	CreateTask(context.Context, store.Task) error
 	DeleteTask(context.Context, string) error
 	Task(context.Context, string) (store.Task, error)
 	TaskSessions(context.Context, string) ([]store.Task, error)
@@ -114,10 +112,6 @@ type Service struct {
 	quality   *qualityService
 }
 
-type execution struct {
-	cancel context.CancelFunc
-}
-
 type Repository struct {
 	Name    string `json:"name,omitempty"`
 	Type    string `json:"type"`
@@ -155,7 +149,7 @@ func NewService(root string, dependencies Dependencies) *Service {
 		harnesses:  dependencies.Harnesses,
 		git:        dependencies.Git,
 		sandbox:    dependencies.Sandbox,
-		cancel:     map[string]*execution{},
+		executions: newExecutionOwner(),
 	}
 	pipelines := &pipelineService{db: dependencies.Store, config: dependencies.Config, configPath: dependencies.ConfigPath}
 	snapshots := &snapshotService{db: dependencies.Store, git: dependencies.Git}
@@ -298,7 +292,7 @@ func (s *taskService) create(ctx context.Context, request CreateRequest, parentT
 		_ = os.RemoveAll(workspace)
 		return store.Task{}, fmt.Errorf("write task metadata: %w", err)
 	}
-	if err := s.db.CreateActiveTask(ctx, task); err != nil {
+	if err := s.db.CreateTask(ctx, task); err != nil {
 		_ = os.RemoveAll(workspace)
 		return store.Task{}, err
 	}
@@ -328,13 +322,16 @@ func (s *Service) ensureBranch(ctx context.Context, taskID, parent string) error
 }
 
 func (s *Service) Approve(ctx context.Context, id, actor, expectedDigest string) error {
-	lock := s.taskLock(id)
-	lock.Lock()
-	defer lock.Unlock()
 	expectedDigest = strings.TrimSpace(expectedDigest)
 	if expectedDigest == "" {
 		return fmt.Errorf("plan_digest is required")
 	}
+	return s.executions.withTask(id, func() error {
+		return s.approve(ctx, id, actor, expectedDigest)
+	})
+}
+
+func (s *Service) approve(ctx context.Context, id, actor, expectedDigest string) error {
 	task, err := s.db.Task(ctx, id)
 	if err != nil {
 		return err
@@ -366,9 +363,13 @@ func (s *Service) Approve(ctx context.Context, id, actor, expectedDigest string)
 }
 
 func (s *Service) Pause(ctx context.Context, id string) error {
-	lock := s.taskLock(id)
-	lock.Lock()
-	defer lock.Unlock()
+	if err := s.executions.stopAndWait(ctx, id); err != nil {
+		return err
+	}
+	return s.executions.withTask(id, func() error { return s.pause(ctx, id) })
+}
+
+func (s *Service) pause(ctx context.Context, id string) error {
 	task, err := s.db.Task(ctx, id)
 	if err != nil {
 		return err
@@ -377,14 +378,17 @@ func (s *Service) Pause(ctx context.Context, id string) error {
 	if !CanTransition(state, Paused) {
 		return store.ErrConflict
 	}
-	s.stop(id)
 	return s.db.Transition(ctx, id, task.State, string(Paused), task.ActivePhase, "")
 }
 
 func (s *Service) Abort(ctx context.Context, id string) error {
-	lock := s.taskLock(id)
-	lock.Lock()
-	defer lock.Unlock()
+	if err := s.executions.stopAndWait(ctx, id); err != nil {
+		return err
+	}
+	return s.executions.withTask(id, func() error { return s.abort(ctx, id) })
+}
+
+func (s *Service) abort(ctx context.Context, id string) error {
 	task, err := s.db.Task(ctx, id)
 	if err != nil {
 		return err
@@ -396,7 +400,6 @@ func (s *Service) Abort(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	s.stop(id)
 	for _, message := range messages {
 		_ = s.traceMessage(ctx, message, nil)
 	}
@@ -404,9 +407,10 @@ func (s *Service) Abort(ctx context.Context, id string) error {
 }
 
 func (s *Service) Resume(ctx context.Context, id string) error {
-	lock := s.taskLock(id)
-	lock.Lock()
-	defer lock.Unlock()
+	return s.executions.withTask(id, func() error { return s.resume(ctx, id) })
+}
+
+func (s *Service) resume(ctx context.Context, id string) error {
 	task, err := s.db.Task(ctx, id)
 	if err != nil {
 		return err
@@ -527,55 +531,37 @@ func (s *Service) diffRepositories(ctx context.Context, task store.Task, reviewB
 }
 
 func (s *Service) launch(id string, run func(context.Context, string) error) {
-	ctx, cancel := context.WithCancel(context.Background())
-	active := &execution{cancel: cancel}
-	s.mu.Lock()
-	s.cancel[id] = active
-	s.mu.Unlock()
-	go func() {
-		var runErr error
-		defer func() {
-			s.mu.Lock()
-			if s.cancel[id] == active {
-				delete(s.cancel, id)
-			}
-			s.mu.Unlock()
-			if !errors.Is(runErr, context.Canceled) {
-				s.kickQueuedMessage(id)
-			}
-		}()
-		runErr = run(ctx, id)
-		if runErr != nil && !errors.Is(runErr, context.Canceled) {
+	executionID := randomID()
+	s.executions.start(id, executionID, func(ctx context.Context) error {
+		runErr := run(ctx, id)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return runErr
+	}, func(ctx context.Context, runErr error) {
+		if ctx.Err() != nil || errors.Is(runErr, context.Canceled) {
+			return
+		}
+		if runErr != nil {
 			task, getErr := s.db.Task(context.Background(), id)
 			if getErr == nil && task.State != string(Paused) && task.State != string(Aborted) && task.State != string(Blocked) {
 				_ = s.db.Transition(context.Background(), id, task.State, string(Blocked), task.ActivePhase, runErr.Error())
 			}
 		}
-	}()
+		s.kickQueuedMessage(id)
+	})
 }
 
 func (s *Service) Shutdown(ctx context.Context) {
-	s.mu.Lock()
-	ids := make([]string, 0, len(s.cancel))
-	for id, active := range s.cancel {
-		active.cancel()
-		ids = append(ids, id)
-	}
-	s.mu.Unlock()
+	ids := s.executions.stopAll()
 	for _, id := range ids {
-		task, err := s.db.Task(ctx, id)
+		task, err := s.db.Task(context.Background(), id)
 		if err == nil && isActive(State(task.State)) {
-			_ = s.db.Transition(ctx, id, task.State, string(Blocked), task.ActivePhase, "server shutting down")
+			_ = s.db.Transition(context.Background(), id, task.State, string(Blocked), task.ActivePhase, "server shutting down")
 		}
 	}
-}
-
-func (s *Service) stop(id string) {
-	s.mu.Lock()
-	active := s.cancel[id]
-	s.mu.Unlock()
-	if active != nil {
-		active.cancel()
+	if s.executions.wait(ctx) == nil {
+		s.executions.resume()
 	}
 }
 
@@ -966,6 +952,9 @@ func phaseReadOnly(phase store.Phase, role string) bool {
 func dataTask(data map[string]any) string { return fmt.Sprint(data["TaskID"]) }
 
 func (s *Service) beginPhase(ctx context.Context, taskID, name, kind, owner, description string) (store.Phase, error) {
+	if err := s.executionGuard(ctx, taskID); err != nil {
+		return store.Phase{}, err
+	}
 	phases, err := s.db.Phases(ctx, taskID)
 	if err != nil {
 		return store.Phase{}, err
@@ -1027,6 +1016,11 @@ func (s *Service) ensureDefinition(ctx context.Context, taskID, key, executor, o
 }
 
 func (s *Service) endPhase(ctx context.Context, phase store.Phase, status string, cause error) error {
+	if status == "success" {
+		if err := s.executionGuard(ctx, phase.TaskID); err != nil {
+			return err
+		}
+	}
 	message := ""
 	if cause != nil {
 		message = cause.Error()
@@ -1064,6 +1058,20 @@ func (s *Service) traceBranch(ctx context.Context, taskID string, phase store.Ph
 
 func (s *Service) failPhase(ctx context.Context, phase store.Phase, cause error) {
 	_ = s.endPhase(context.Background(), phase, "failed", cause)
+}
+
+func (s *Service) executionGuard(ctx context.Context, taskID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	executionID, ok := executionID(ctx)
+	if !ok {
+		return nil
+	}
+	if !s.executions.current(taskID, executionID) {
+		return ErrStaleExecution
+	}
+	return nil
 }
 
 func (s *Service) eventSink(taskID, phaseID, harnessName string) harness.EventSink {
@@ -1167,11 +1175,6 @@ func agentForRole(configured config.Config, role string) (config.Agent, bool) {
 	return config.Agent{}, false
 }
 func (r *runtime) taskDir(id string) string { return filepath.Join(r.root, "tasks", id) }
-
-func (s *Service) taskLock(id string) *sync.Mutex {
-	value, _ := s.taskLocks.LoadOrStore(id, &sync.Mutex{})
-	return value.(*sync.Mutex)
-}
 
 func taskRepositories(taskID string, inputs []Repository, createdAt string) ([]store.TaskRepository, error) {
 	values := make([]store.TaskRepository, 0, len(inputs))
