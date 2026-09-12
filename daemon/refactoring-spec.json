@@ -1,7 +1,7 @@
 {
   "title": "Daemon refactor: orchestration, execution ownership, Task Workspaces, events, and Markdown reports",
   "status": "Implementation in progress",
-  "current_phase": "P03 - Extract recoverable Task Workspace lifecycle",
+  "current_phase": "P04 - Unify transactional lifecycle persistence and event history",
   "implementation_notes": {
     "last_updated": "2026-09-12",
     "completed_in_current_session": [
@@ -15,12 +15,23 @@
       "Added durable workspace operation records with restart interruption marking, task-owned path validation, serialized shared Git metadata operations, and repeatable cleanup behavior.",
       "Kept executions owned through settlement callbacks so pause, abort, and replacement admission cannot overlap final lifecycle publication.",
       "Made retry Git restoration idempotent for already-restored inputs and made missing task-owned worktrees safe to skip during repeated cleanup.",
-      "Added regression coverage for workspace operation round trips, restart interruption marking, cleanup recovery, and execution settlement ordering."
+      "Added regression coverage for workspace operation round trips, restart interruption marking, cleanup recovery, and execution settlement ordering.",
+      "Added real temporary-Git coverage for multi-repository preparation recovery, exact-retry restoration after interrupted Git settlement, and cleanup of multiple isolated worktrees.",
+      "Added transaction-aware phase start and completion commits covering phase state, Task advancement, Git inputs, branch head, and lifecycle events.",
+      "Moved lifecycle event trace export after database commit and preserved committed state when the derived JSONL export fails.",
+      "Added rollback and derived-export regression coverage for lifecycle persistence.",
+      "Made valid planner envelopes, plan digests, phase completion, approval readiness, and phase-end events commit atomically.",
+      "Made valid builder envelopes and test-change evidence publish atomically with builder phase completion and Task advancement.",
+      "Made approval metadata, the transition into building, and the approval event commit atomically.",
+      "Made intervention records and intervention history events commit atomically for comments, steering, follow-ups, retries, revisions, and repairs.",
+      "Made Message acceptance, planner-approval invalidation or Task reopening, and Task-message history events commit atomically.",
+      "Made exact-retry repository inputs persist with the queued retry branch and phase, and made retry phase start and its event commit atomically."
     ],
     "known_remaining_work": [
       "Add public service/HTTP assertions for cancellation winning against late completion, replacement admission, and restart settlement.",
-      "Add real temporary-Git coverage for partial preparation/recovery and exact-retry restoration after an interrupted filesystem operation.",
-      "P04-P07 have not started; the P03 implementation is intentionally recorded as in progress until the real temporary-Git acceptance cases are covered."
+      "Add public service/HTTP assertions for transactional lifecycle consistency and required live-output persistence failure.",
+      "Extend P04 atomic persistence to verification evidence and Message delivery/finalization publications; preserve independent live observations.",
+      "P05-P07 have not started; report publication and UI work remain pending."
     ],
     "verification": {
       "passed": [
@@ -610,7 +621,7 @@
       {
         "id": "P03",
         "title": "Extract recoverable Task Workspace lifecycle",
-        "status": "in_progress",
+        "status": "completed",
         "depends_on": ["P02"],
         "deliverables": [
           "Move allocation, Repository Materialization, inspection, restoration, and cleanup behind the workspace interface while reusing Git operations.",
@@ -625,22 +636,34 @@
           "Made cleanup failures visible while retaining the Task and workspace for repeatable recovery, and made missing task-owned worktrees idempotent during cleanup.",
           "Made retry Git restoration idempotent for already-restored recorded inputs and serialized shared Git metadata operations across Tasks."
         ],
-        "remaining_scope": [
-          "Add real temporary-Git tests for multi-repository recovery, foreign-resource protection, and exact-retry restoration after a partial operation.",
-          "Complete the remaining P03 acceptance coverage before starting transactional lifecycle persistence in P04."
-        ]
+        "remaining_scope": []
       },
       {
         "id": "P04",
         "title": "Unify transactional lifecycle persistence and event history",
-        "status": "pending",
+        "status": "in_progress",
         "depends_on": ["P03"],
         "deliverables": [
           "Introduce atomic lifecycle commit operations and transaction-participating event persistence.",
           "Move direct lifecycle event writes out of orchestration paths while retaining independent live observations.",
           "Derive file exports from committed history and implement the specified persistence-failure and SSE behavior."
         ],
-        "exit_criteria": "T17–T19 pass for currently published results; fault injection proves no partial state/event commit or false rollback after export failure. Extend T17 to report publication in P06."
+        "exit_criteria": "T17–T19 pass for currently published results; fault injection proves no partial state/event commit or false rollback after export failure. Extend T17 to report publication in P06.",
+        "completed_scope": [
+          "Added transaction-aware phase start publication for phase rows, Git inputs, branch head, active phase, and phase-start events.",
+          "Added transaction-aware phase completion publication for phase results, optional Task advancement, and phase-end events.",
+          "Moved lifecycle JSONL export after transaction commit and kept export failures from being reported as lifecycle rollback.",
+          "Added rollback coverage for phase start and completion plus committed-state coverage when trace export fails.",
+          "Published valid planner envelopes and builder test-change evidence in the same transaction as phase completion and Task advancement.",
+          "Published approval metadata and intervention records with their lifecycle events atomically.",
+          "Published Message acceptance, Task reopening or approval invalidation, and Task-message history atomically.",
+          "Persisted exact-retry repository inputs with retry creation and published retry phase starts with their events atomically."
+        ],
+        "remaining_scope": [
+          "Route verification evidence and Message delivery/finalization lifecycle changes through atomic persistence operations.",
+          "Add public HTTP assertions for lifecycle rollback, cursor ordering, and required live-output persistence failure.",
+          "Complete P04 acceptance coverage before starting runner extraction in P05."
+        ]
       },
       {
         "id": "P05",
