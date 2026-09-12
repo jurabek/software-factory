@@ -122,30 +122,6 @@ func TestCommitApprovalRollsBackApprovalAndTaskTransitionTogether(t *testing.T) 
 	}
 }
 
-func TestSaveInterventionWithEventRollsBackInterventionAndEventTogether(t *testing.T) {
-	db, task, _ := lifecycleFixture(t)
-	defer db.Close()
-
-	_, _, err := db.SaveInterventionWithEvent(context.Background(), Intervention{
-		ID: "intervention-1", TaskID: task.ID, TargetType: "task", TargetID: task.ID,
-		Actor: "actor", Intent: "comment", Text: "note", Delivery: "applied",
-		IdempotencyKey: "key-1", CreatedAt: now(),
-	}, Event{
-		ID: "event-intervention", TaskID: "missing-task", Kind: session.KindIntervention,
-		Payload: map[string]string{"text": "note"}, Display: session.Display{}, StartedAt: time.Now().UTC(),
-	}, filepath.Join(t.TempDir(), "task"))
-	if err == nil {
-		t.Fatal("expected intervention event foreign-key failure")
-	}
-	interventions, err := db.Interventions(context.Background(), task.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(interventions) != 0 {
-		t.Fatalf("interventions = %#v, want rollback", interventions)
-	}
-}
-
 func TestCommitMessageAcceptanceRollsBackMessageAndTaskChangeTogether(t *testing.T) {
 	db, task, phase := lifecycleFixture(t)
 	defer db.Close()

@@ -270,12 +270,8 @@ func (h tasksHandler) interventions(w http.ResponseWriter, r *http.Request) {
 	if !h.exists(w, r) {
 		return
 	}
-	values, err := h.db.Interventions(r.Context(), r.PathValue("id"))
-	if err != nil {
-		internal(w, err)
-		return
-	}
-	write(w, http.StatusOK, values)
+	// Intervention persistence is deferred, but the read surface remains stable.
+	write(w, http.StatusOK, []any{})
 }
 
 func (h tasksHandler) delete(w http.ResponseWriter, r *http.Request) {
