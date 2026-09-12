@@ -296,7 +296,7 @@ func (s *Service) continueMessages(ctx context.Context, taskID, role string) err
 			return err
 		}
 	}
-	var profiles map[string]factorygit.Profile
+	var profiles map[string]Materialization
 	if role == "builder" {
 		profiles, err = readTaskProfiles(task)
 		if err != nil {
@@ -388,7 +388,7 @@ func (s *Service) completeAgentPhase(ctx context.Context, task store.Task, phase
 	}
 }
 
-func (s *Service) validateBuilderPaths(ctx context.Context, task store.Task, profiles map[string]factorygit.Profile) error {
+func (s *Service) validateBuilderPaths(ctx context.Context, task store.Task, profiles map[string]Materialization) error {
 	for _, repository := range task.Repositories {
 		files, err := factorygit.ChangedFiles(ctx, s.git, repository.WorkingPath, repositoryReviewBase(repository))
 		if err != nil {
@@ -733,7 +733,7 @@ func (s *Service) runRetryPrepare(ctx context.Context, task store.Task, phase st
 func (s *Service) runRetryAgent(ctx context.Context, task store.Task, phase store.Phase) error {
 	validate := validatorForRole(phase.Owner)
 	data := map[string]any{"TaskID": task.ID, "Request": task.Request, "Repository": task.PrimaryRepositoryPath, "Repositories": task.Repositories, "Workspace": task.WorkspacePath}
-	var profiles map[string]factorygit.Profile
+	var profiles map[string]Materialization
 	var baseline map[string]string
 	var err error
 	if phase.Owner == "builder" || phase.Owner == "reviewer" {
