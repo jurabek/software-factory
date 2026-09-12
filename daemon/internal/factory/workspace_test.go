@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
@@ -122,115 +121,6 @@ func TestWorkspacePreparationRecoversAfterSecondRepositoryFails(t *testing.T) {
 	}
 }
 
-func TestWorkspaceRestoreRepeatsAfterInterruptedGitOperation(t *testing.T) {
-	root := t.TempDir()
-	source := newLocalRepository(t, filepath.Join(root, "source"), "README", "initial")
-	databasePath := filepath.Join(root, "factory.db")
-	db, err := store.Open(databasePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sandbox := localWorkspaceSandbox{runner: factorygit.OSRunner{}}
-	service := NewService(root, Dependencies{Store: db, Sandbox: sandbox, Git: factorygit.OSRunner{}})
-	task, err := service.tasks.create(context.Background(), CreateRequest{Request: "retry repository", Repositories: []Repository{{Name: "app", Type: "local", Path: source, Primary: true}}}, "")
-	if err != nil {
-		db.Close()
-		t.Fatal(err)
-	}
-	if _, err = service.workspace.Prepare(context.Background(), task); err != nil {
-		db.Close()
-		t.Fatal(err)
-	}
-	task, err = db.Task(context.Background(), task.ID)
-	if err != nil {
-		db.Close()
-		t.Fatal(err)
-	}
-	snapshot, err := service.workspace.CaptureSnapshot(context.Background(), task)
-	if err != nil {
-		db.Close()
-		t.Fatal(err)
-	}
-	phase := store.Phase{ID: "attempt-1", TaskID: task.ID, Sequence: 1, Name: "building", Kind: "agent", Owner: "builder", Status: "failed", Attempt: 1, InputSnapshot: snapshot.Digest}
-	if err = db.AddPhase(context.Background(), phase); err != nil {
-		db.Close()
-		t.Fatal(err)
-	}
-	repository := task.Repositories[0]
-	if err = db.SavePhaseRepositoryInputs(context.Background(), phase.ID, []store.PhaseRepositoryInput{{PhaseID: phase.ID, RepositoryID: repository.ID, ReviewBaseSHA: repository.BaseSHA, HeadSHA: repository.BaseSHA, BranchName: repository.BranchName}}); err != nil {
-		db.Close()
-		t.Fatal(err)
-	}
-
-	failingStore := &failWorkspaceCompletionStore{DB: db}
-	interruptedWorkspace := &workspaceService{root: root, db: failingStore, sandbox: sandbox, snapshots: &snapshotService{db: db, git: factorygit.OSRunner{}}, git: factorygit.OSRunner{}}
-	if _, err = interruptedWorkspace.Restore(context.Background(), task, phase, "retry-once"); err == nil {
-		db.Close()
-		t.Fatal("expected interruption while settling restore operation")
-	}
-	interruptedPath := task.Repositories[0].WorkingPath
-	if branch := gitBranch(t, interruptedPath); !strings.HasPrefix(branch, "software-factory/retry/") {
-		db.Close()
-		t.Fatalf("partial restore branch = %q", branch)
-	}
-	if err = db.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	recoveredDB, err := store.Open(databasePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer recoveredDB.Close()
-	recoveredTask, err := recoveredDB.Task(context.Background(), task.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	recoveredPhase, err := recoveredDB.PhaseByID(context.Background(), task.ID, phase.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	recoveredWorkspace := &workspaceService{root: root, db: recoveredDB, sandbox: sandbox, snapshots: &snapshotService{db: recoveredDB, git: factorygit.OSRunner{}}, git: factorygit.OSRunner{}}
-	if _, err = recoveredWorkspace.Restore(context.Background(), recoveredTask, recoveredPhase, "retry-once"); err != nil {
-		t.Fatal(err)
-	}
-	if head := gitHead(t, interruptedPath); head != repository.BaseSHA {
-		t.Fatalf("restored head = %q, want %q", head, repository.BaseSHA)
-	}
-	if body, readErr := os.ReadFile(filepath.Join(interruptedPath, "README")); readErr != nil || string(body) != "initial" {
-		t.Fatalf("restored content = %q, err = %v", body, readErr)
-	}
-	operations, err := recoveredDB.WorkspaceOperations(context.Background(), task.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	interrupted, succeeded := false, false
-	for _, operation := range operations {
-		if operation.Kind == "restore" && operation.Status == "interrupted" {
-			interrupted = true
-		}
-		if operation.Kind == "restore_snapshot" && operation.Status == "succeeded" {
-			succeeded = true
-		}
-	}
-	if !interrupted || !succeeded {
-		t.Fatalf("restart recovery operations = %#v", operations)
-	}
-}
-
-type failWorkspaceCompletionStore struct {
-	*store.DB
-	failed bool
-}
-
-func (db *failWorkspaceCompletionStore) UpdateWorkspaceOperation(ctx context.Context, id, status, operationError string) error {
-	if status == "succeeded" && !db.failed {
-		db.failed = true
-		return errors.New("injected workspace completion failure")
-	}
-	return db.DB.UpdateWorkspaceOperation(ctx, id, status, operationError)
-}
-
 func newLocalRepository(t *testing.T, root, name, content string) string {
 	t.Helper()
 	if err := os.MkdirAll(root, 0o700); err != nil {
@@ -253,12 +143,4 @@ func runGitCommand(t *testing.T, root string, args ...string) string {
 		t.Fatalf("git %v: %v\n%s", args, err, output)
 	}
 	return string(output)
-}
-
-func gitHead(t *testing.T, root string) string {
-	return strings.TrimSpace(runGitCommand(t, root, "rev-parse", "HEAD"))
-}
-
-func gitBranch(t *testing.T, root string) string {
-	return strings.TrimSpace(runGitCommand(t, root, "symbolic-ref", "--short", "HEAD"))
 }

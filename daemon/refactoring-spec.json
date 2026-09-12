@@ -27,6 +27,19 @@
       "Made Message acceptance, planner-approval invalidation or Task reopening, and Task-message history events commit atomically.",
       "Made exact-retry repository inputs persist with the queued retry branch and phase, and made retry phase start and its event commit atomically."
     ],
+    "deferred_feature_removal": {
+      "status": "completed",
+      "scope": [
+        "Remove retry execution, retry restoration, snapshot capture/materialization, and intervention persistence/orchestration from the daemon implementation.",
+        "Retain existing UI and HTTP/API route and type surfaces for these capabilities so clients do not require an unrelated contract rewrite; deferred operations must fail clearly or return an empty read result.",
+        "Retain repository profile and materialization logic, including profile inspection, quality checks, protected paths, and test-change evidence. Snapshot-backed advisory comparisons are deferred with snapshot storage.",
+        "Remove implementation-specific persistence methods, schema objects, workspace operations, orchestration paths, and tests that exist only for the removed features."
+      ],
+      "non_goals": [
+        "Do not remove durable Messages, deterministic Controls, approval, pause/resume/abort, task history reads, repository materialization, or quality profile behavior.",
+        "Do not add replacement retry, snapshot, or intervention behavior as part of this removal."
+      ]
+    },
     "known_remaining_work": [
       "Add public service/HTTP assertions for cancellation winning against late completion, replacement admission, and restart settlement.",
       "Add public service/HTTP assertions for transactional lifecycle consistency and required live-output persistence failure.",
@@ -40,7 +53,17 @@
         "npm run typecheck",
         "npm run build"
       ],
-      "baseline_failure_preserved": "go -C daemon test ./... and go -C daemon test -race ./... fail only at the existing sandbox-dependent TestTaskFlowSuite/TestCreateApproveBuildAndCheck with sandbox unavailable."
+      "baseline_failure_preserved": "go -C daemon test ./... and go -C daemon test -race ./... fail only at the existing sandbox-dependent TestTaskFlowSuite/TestCreateApproveBuildAndCheck with sandbox unavailable.",
+      "after_deferred_feature_removal": {
+        "passed": [
+          "go -C daemon test ./internal/factory ./internal/store ./internal/sandbox ./internal/git",
+          "go -C daemon test -race ./internal/factory ./internal/store ./internal/sandbox ./internal/git",
+          "npm run application:test",
+          "npm run typecheck",
+          "npm run build"
+        ],
+        "known_failure": "The complete Go and race suites retain the existing sandbox-dependent TestTaskFlowSuite/TestCreateApproveBuildAndCheck failure with sandbox unavailable."
+      }
     }
   },
   "decision_basis": "The user accepted all recommendations in conversation questions Q1–Q23 and requested a local specification for another agent. This specification does not authorize issue publication or implementation by the authoring agent.",
@@ -61,8 +84,8 @@
     "12. As a user, I want interrupted work blocked for explicit recovery after restart, so that non-idempotent agent work is not silently repeated.",
     "13. As a user, I want local repositories materialized as isolated worktrees and GitHub repositories as isolated clones, so that current repository workflows continue to work.",
     "14. As a user, I want multi-repository Tasks to retain repository identities, primary-repository selection, and stable Git inputs, so that coordinated changes remain reproducible.",
-    "15. As a user, I want exact retry to restore the selected Attempt's recorded inputs, so that historical work can be repeated without silently using newer state.",
-    "16. As a user, I want prior Attempts, results, and Git history retained across retry, so that recovery does not erase the evidence I am investigating.",
+    "15. As a user, I want prior Attempts, results, and Git history retained as readable history, without requiring retry execution.",
+    "16. As a maintainer, I want retry implementation deferred behind the existing client-visible surface, so that its later redesign does not constrain this refactor.",
     "17. As an operator, I want partial workspace preparation and cleanup recorded and repeatable, so that failures can be recovered without touching unrelated resources.",
     "18. As a user, I want failed cleanup reported as failed deletion, so that a success response does not hide leftover Task resources.",
     "19. As a user, I want Task Workspaces retained until explicit deletion, so that I can inspect completed and blocked work.",
@@ -77,7 +100,7 @@
     "28. As a user, I want stage-specific Agent Session identity and recorded lineage, so that stages sharing an agent configuration do not accidentally share conversational state.",
     "29. As a user, I want durable Messages delivered in order through the responsible stage, so that messaging continues to work after the runner extraction.",
     "30. As a user, I want Messages kept separate from deterministic Controls, so that prose containing approve or abort never executes those Controls.",
-    "31. As a user, I want duplicate Messages and exact-retry requests to remain idempotent, so that retries of a client request do not duplicate delivery or execution.",
+    "31. As a user, I want duplicate Messages to remain idempotent, so that retries of a client request do not duplicate delivery or execution.",
     "32. As a user, I want Task transitions, Attempt results, and their lifecycle events committed together, so that the displayed history agrees with durable state.",
     "33. As a user, I want event sequence identifiers and cursor replay preserved, so that reconnecting the browser does not lose or reorder persisted history.",
     "34. As a user, I want browser disconnection independent of Task execution, so that closing a tab does not cancel my work.",
@@ -109,7 +132,7 @@
       "source": "Q2",
       "title": "Preserve supported behavior and identify deliberate exceptions",
       "requirements": [
-        "Preserve approval, pause, resume, abort, exact retry, durable Messages, task-session relationships, verification, session accounting, recovery, and supported history reads.",
+        "Preserve approval, pause, resume, abort, durable Messages, task-session relationships, verification, session accounting, recovery, and supported history reads. Retry execution and snapshot/intervention persistence are explicit deferred features recorded in this specification.",
         "Destructive schema changes are permitted; historical-data migration is not required. This does not authorize deleting a running operator installation or user data while implementing or testing the refactor.",
         "Do not remove a supported feature merely to reduce code size. Obsolete duplicate implementations may be deleted after the replacement preserves their supported behavior.",
         "The approved exceptions are cross-Task concurrency, bounded configurable stage ordering, failure-visible cleanup, strengthened cancellation and event atomicity, immutable Markdown reports, and approval binding to report digests.",
@@ -166,7 +189,7 @@
         "Shared agent invocation machinery owns prompt rendering, envelope correction, Agent Session interaction, and invocation accounting. The harness remains the agent-specific adapter and is not responsible for Task transition policy.",
         "Runners expose synchronous context-aware execution to the execution owner and return structured results. They may emit live observations through an injected event sink, but may not select or start the next stage.",
         "Only the orchestrator applies Task transition policy and requests the atomic commit of a lifecycle change and its events.",
-        "Creation, approval, resume, Message continuation, and exact retry use the same runner implementations and progression policy. No separate legacy role-based pipeline remains authoritative.",
+        "Creation, approval, resume, and Message continuation use the same runner implementations and progression policy. Retry execution is deferred and has no daemon implementation in this scope.",
         "Preserve deterministic check behavior, protected-path enforcement, per-turn read-only validation, and advisory-versus-blocking quality semantics."
       ]
     },
@@ -188,10 +211,10 @@
       "source": "Q9",
       "title": "Extract Task Workspace lifecycle as a cohesive module",
       "requirements": [
-        "The workspace module owns allocation, Repository Materialization, inspection, snapshot and Git input restoration for exact retry, and cleanup.",
+        "The workspace module owns allocation, Repository Materialization, profile inspection, and cleanup. Snapshot capture/materialization and exact-retry Git restoration are deferred.",
         "It does not own Task transitions or agent execution. Its callers use task-owned resource identities and structured workspace results instead of constructing internal directory layouts or issuing Git lifecycle commands.",
         "Reuse the existing Git operations beneath this module. Preserve multi-repository layout, primary-repository identity, base SHAs, review bases, repository profiles, and isolation.",
-        "Keep snapshots and recorded Git state distinct. Exact retry must not replace live Git metadata with copied snapshot pointers or discard refs retaining prior work.",
+        "Do not introduce snapshot restoration or retry-specific Git state in this scope. Existing repository profile and materialization metadata remains authoritative for normal execution.",
         "Preserve the separation between the user-facing diff base, review comparison base, and per-turn read-only content fingerprint. Host execution is not represented as a security sandbox."
       ]
     },
@@ -244,7 +267,7 @@
         "Keep clients consuming server-provided available Controls and approval digests rather than recomputing policy locally.",
         "No historical-data migration or compatibility with an incompatible on-disk schema is required. Fail clearly on unsupported storage rather than silently executing against it.",
         "On restart, interrupted active execution becomes blocked for explicit recovery. Do not automatically rerun agent work, repeat a completed stage, bypass approval, or reinterpret paused and aborted Tasks as runnable.",
-        "Update affected daemon and application contracts together, without exposing formerly removed Intervention write modes."
+        "Update affected daemon and application contracts together. Retain existing UI/API surfaces for deferred retry, snapshot, and intervention capabilities without implementing their daemon behavior."
       ]
     },
     {
@@ -262,10 +285,10 @@
       "source": "Q15",
       "title": "Use explicit typed handoffs",
       "requirements": [
-        "A stage input identifies the Task request, approved plan, relevant prior Attempt results, workspace input reference, frozen configuration revision, and applicable evidence.",
+        "A stage input identifies the Task request, approved plan, relevant prior Attempt results, frozen configuration revision, and applicable evidence.",
         "The orchestrator resolves lineage and prerequisites before invoking the runner. The runner prepares its role-specific prompts and checks from that explicit input.",
-        "Persist the exact input references used by an Attempt. Do not select an arbitrary latest envelope, check, or snapshot across all execution branches.",
-        "Terminal Attempt results and their input identities are immutable history. Retrying or continuing work creates a new Attempt rather than replacing a prior result."
+        "Persist the exact input references used by an Attempt. Do not select an arbitrary latest envelope or check across all execution history.",
+        "Terminal Attempt results and their input identities are immutable history. No retry-created Attempt or snapshot restoration is implemented in this scope."
       ]
     },
     {
@@ -285,7 +308,7 @@
       "requirements": [
         "A winning cancellation invalidates the execution immediately for publication and progression.",
         "Cancel and wait for the owned child-process group, allowing bounded graceful termination before force termination.",
-        "Do not start a replacement Attempt, restore snapshots, or clean up its Task Workspace until termination is confirmed.",
+        "Do not start a replacement Attempt or clean up its Task Workspace until termination is confirmed.",
         "If termination cannot be confirmed, block reuse and cleanup with an actionable failure. A stale completion guard alone is not sufficient protection against filesystem writes.",
         "Apply these rules to agents, deterministic checks, advisory comparisons, pause, abort, and daemon shutdown. Preserve cancellation as a cancellation outcome, not successful verification."
       ]
@@ -305,12 +328,12 @@
     {
       "id": "D19",
       "source": "Q19",
-      "title": "Freeze configuration and preserve explicit retry/session lineage",
+      "title": "Freeze configuration and preserve session lineage",
       "requirements": [
         "Freeze resolved configuration, selected pipeline, agent settings, and prompt contents at Task creation. Neither preparation nor later turns may reread mutable operator files as authoritative Task configuration.",
-        "Record each Attempt's configuration or definition revision, workspace input, Git input, comparison baseline, and Agent Session lineage.",
+        "Record each Attempt's configuration or definition revision, Git input, and Agent Session lineage.",
         "Key agent execution and session selection by stage identity, not only planner, builder, or reviewer role. Shared agent configuration does not imply shared session identity.",
-        "Preserve exact-retry semantics: restore the selected Attempt's definition and input, create a child execution branch and a new Attempt idempotently, retain prior history, and invalidate downstream results on the new branch.",
+        "Keep retry request and read surfaces available for clients, but defer retry execution, snapshot restoration, intervention writes, and replacement Attempt creation to a later scope.",
         "Preserve supported Message semantics: normal continuations use the selected branch's current Task Workspace without rewinding; paused Messages stay queued; abort prevents further delivery; queued Messages are ordered and persisted before delivery.",
         "Preserve session readiness, identity validation, usage and cost accounting, and idempotent finalization even when the harness returns an error.",
         "References to revise or repair in the discussion describe existing recovery behavior where still supported, not permission to reintroduce user-facing intent fields removed by the Controls and Messages contract."
@@ -375,7 +398,7 @@
     ],
     "primary_seam": {
       "interface": "Existing daemon HTTP Task operations and read interfaces",
-      "exercise": "Create, approve, pause, resume, abort, Message, exact retry, delete, and read Task state, Attempts, evidence, events, and report content through the real application flow.",
+      "exercise": "Create, approve, pause, resume, abort, Message, delete, and read Task state, Attempts, evidence, events, and report content through the real application flow. Verify deferred retry/intervention surfaces remain contract-compatible without executing removed behavior.",
       "dependencies": "Real temporary SQLite and local Git; scripted context-aware harness adapters; isolated process fixtures where cancellation behavior is under test.",
       "prior_art": "TestTaskFlowSuite already drives Task creation, approval, build, deterministic checks, and result reads through an HTTP test server. Extend that style rather than introducing another orchestration test harness.",
       "confirmation_basis": "Selected from the existing seams under the accepted behavior-test strategy. The user requested synthesis without another interview."
@@ -384,7 +407,7 @@
       {
         "interface": "Existing public factory operations",
         "purpose": "Deterministically exercise Message acceptance versus completion, cancellation, idempotency, session lineage, and stale execution guards.",
-        "prior_art": "Existing Message FIFO/abort, final queue-check serialization, exact-retry original-input, task-session inheritance, and session-accounting tests. Preserve their externally meaningful assertions while replacing tests coupled to removed private helpers."
+        "prior_art": "Existing Message FIFO/abort, final queue-check serialization, task-session inheritance, and session-accounting tests. Preserve their externally meaningful assertions while replacing tests coupled to removed private helpers."
       },
       {
         "interface": "Persistence operation and event read interfaces",
@@ -456,7 +479,7 @@
       {
         "id": "T11",
         "decisions": ["D09", "D15", "D19"],
-        "expectation": "Exact retry restores the selected Attempt's snapshot, Git input, review base, definition, and comparison baseline, creates one new Attempt and child execution branch idempotently, retains earlier Git history, and ignores later results from other branches."
+        "expectation": "Retry, snapshot, and intervention implementations are absent from the daemon while their existing UI/API surfaces remain available for later implementation. Repository profile inspection and normal materialization continue to support quality checks and protected-path validation."
       },
       {
         "id": "T12",
@@ -534,7 +557,7 @@
     "Docker implementation, shared-checkout branch execution, distributed scheduling, multi-daemon shared-root execution, database leases, and speculative execution-environment frameworks.",
     "Event sourcing, message brokers, and file exports as a second source of truth.",
     "Historical-data migration, silently upgrading incompatible storage, or deleting operator data as part of implementing this specification.",
-    "Removal of supported approval, Controls, Messages, exact retry, quality checks, session accounting, recovery, or history features solely to reduce code size.",
+    "Removal of supported approval, Controls, Messages, quality checks, repository profile logic, session accounting, recovery, or history features solely to reduce code size. Retry, snapshot, and intervention implementations are an explicit exception in deferred_feature_removal; their UI/API surfaces remain.",
     "Resurrecting removed public Intervention intent selectors, legacy write endpoints, or natural-language control execution.",
     "Automatic replay of interrupted agent work and claims of exactly-once filesystem or Git side effects across a database transaction.",
     "Automatic Task Workspace retention cleanup or a general garbage collector.",
@@ -547,15 +570,15 @@
   "Further Notes": {
     "domain_vocabulary": {
       "Task": "The durable requested outcome, execution history, repository inputs, checks, and risk constraints.",
-      "Task Workspace": "The private filesystem root owned by one Task, containing Repository Materializations, Attempts, snapshots, sessions, and Artifacts.",
+      "Task Workspace": "The private filesystem root owned by one Task, containing Repository Materializations, Attempts, sessions, and Artifacts. Snapshot storage is deferred.",
       "Repository Materialization": "An isolated clone or worktree of one repository inside a Task Workspace.",
       "Attempt": "One execution of a Task phase against recorded inputs, with immutable input identity and terminal history; not a synonym for an Agent Session.",
-      "Task transition policy": "Deterministic rules selecting Task progression or branching after an observed outcome or Intervention.",
-      "Intervention": "The existing domain concept for persisted human input anchored to history. Supported new user writes follow the more specific Controls and Messages contract, not legacy intent selection.",
+      "Task transition policy": "Deterministic rules selecting Task progression after an observed outcome or Message/Control operation.",
+      "Intervention": "A retained client-visible historical/API concept whose daemon persistence and orchestration are deferred in this scope.",
       "Control": "An explicit deterministic Task or Attempt operation, distinct from natural-language Messages.",
       "Message": "Durable human text delivered to an Agent Session, optionally carrying Event, Artifact, or Attempt context.",
       "Stage": "An identified element of the frozen linear pipeline; agent configuration names are not stage execution identities.",
-      "Execution Branch": "Attempt lineage used for historical selection and exact retry; distinct from a Git branch retained by a Repository Materialization.",
+      "Execution Branch": "A deferred retry lineage concept; it is not created by the daemon in this scope and remains distinct from a Git branch retained by a Repository Materialization.",
       "Artifact": "An immutable published result document or other existing supported artifact record; Markdown reports add attempt-scoped content and provenance.",
       "Module": "Behavior behind an interface. A deep module hides meaningful complexity behind a small interface; an adapter supplies an implementation at a seam."
     },
@@ -582,7 +605,7 @@
         "depends_on": [],
         "deliverables": [
           "Record current verification results and identify baseline failures.",
-          "Extend the existing HTTP Task-flow fixtures and public factory tests around approval, Messages, exact retry, evidence, and restart behavior.",
+          "Extend the existing HTTP Task-flow fixtures and public factory tests around approval, Messages, evidence, deferred retry/intervention surfaces, and restart behavior.",
           "Add targeted regression cases alongside each subsequent replacement rather than creating a second test-only orchestration system."
         ],
         "exit_criteria": "Preserved contracts have executable coverage, and approved contract changes are explicitly distinguished from regressions.",
@@ -674,7 +697,7 @@
           "Share prompt, harness, correction, session, and accounting machinery across role-specific runners.",
           "Make verification deterministic and preserve all existing quality gates and advisory evidence rules.",
           "Introduce explicit Attempt input/result lineage, frozen configuration use, and validated linear stage prerequisites.",
-          "Route normal execution, Messages, resume, and exact retry through the same runners and remove replaced parallel drivers."
+          "Route normal execution, Messages, and resume through the same runners and remove replaced parallel drivers; retry remains deferred."
         ],
         "exit_criteria": "T01–T04 and T11–T16 pass with explicit stage lineage; design review confirms only the orchestrator chooses progression. Report-specific assertions remain for P06."
       },

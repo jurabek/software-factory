@@ -29,7 +29,7 @@ func TestCreateTaskAllocatesWorkspaceForMultipleRepositories(t *testing.T) {
 	if task.WorkspacePath != filepath.Join(root, "tasks", task.ID) {
 		t.Fatalf("workspace = %q", task.WorkspacePath)
 	}
-	for _, relative := range []string{"task.json", "workspace/repositories", "attempts", "snapshots", "artifacts", "sessions"} {
+	for _, relative := range []string{"task.json", "workspace/repositories", "attempts", "artifacts", "sessions"} {
 		if _, err = os.Stat(filepath.Join(task.WorkspacePath, relative)); err != nil {
 			t.Fatalf("workspace item %s: %v", relative, err)
 		}

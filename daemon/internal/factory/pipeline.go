@@ -395,10 +395,6 @@ func (s *Service) executeVerify(ctx context.Context, task store.Task, phase stor
 			return err
 		}
 	}
-	if err = s.runComparisons(ctx, task, phase, profiles); err != nil {
-		s.failPhase(ctx, phase, err)
-		return err
-	}
 	return s.executions.withTask(task.ID, func() error {
 		if err := s.executionGuard(ctx, task.ID); err != nil {
 			return err

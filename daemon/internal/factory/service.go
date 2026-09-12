@@ -78,21 +78,10 @@ type pipelineService struct {
 	configPath string
 }
 
-type snapshotStore interface {
-	SaveSnapshot(context.Context, store.WorkspaceSnapshot) error
-	Snapshot(context.Context, string) (store.WorkspaceSnapshot, error)
-}
-
-type snapshotService struct {
-	db  snapshotStore
-	git factorygit.Runner
-}
-
 type qualityStore interface {
 	EndProcess(context.Context, string, int, int) error
 	Phases(context.Context, string) ([]store.Phase, error)
 	SaveCheck(context.Context, store.Check) error
-	SaveComparison(context.Context, store.Comparison) error
 	SaveTestChanges(context.Context, []store.TestChange) error
 	StartProcess(context.Context, string, string, string, string, int, string) (int64, error)
 }
@@ -150,8 +139,7 @@ func NewService(root string, dependencies Dependencies) *Service {
 		executions: newExecutionOwner(),
 	}
 	pipelines := &pipelineService{db: dependencies.Store, config: dependencies.Config, configPath: dependencies.ConfigPath}
-	snapshots := &snapshotService{db: dependencies.Store, git: dependencies.Git}
-	workspace := &workspaceService{root: root, db: dependencies.Store, sandbox: dependencies.Sandbox, snapshots: snapshots, git: dependencies.Git}
+	workspace := &workspaceService{root: root, db: dependencies.Store, sandbox: dependencies.Sandbox, git: dependencies.Git}
 	return &Service{
 		runtime: runtime,
 		tasks: &taskService{
@@ -958,16 +946,7 @@ func (s *Service) beginPhase(ctx context.Context, taskID, name, kind, owner, des
 		return store.Phase{}, err
 	}
 	definitionID := s.ensureDefinition(ctx, taskID, name, kind, owner)
-	inputSnapshot := ""
-	if isReadOnlyOwner(owner) && len(phases) > 0 {
-		inputSnapshot = phases[len(phases)-1].OutputSnapshot
-	}
-	if inputSnapshot == "" {
-		if snapshot, captureErr := s.CaptureSnapshot(ctx, store.Task{ID: taskID, WorkspacePath: s.taskDir(taskID)}); captureErr == nil {
-			inputSnapshot = snapshot.Digest
-		}
-	}
-	phase := store.Phase{ID: randomID(), TaskID: taskID, Sequence: len(phases) + 1, Name: name, Kind: kind, Owner: owner, Description: description, Status: "running", Attempt: 1, BranchID: task.SelectedBranchID, DefinitionID: definitionID, InputSnapshot: inputSnapshot}
+	phase := store.Phase{ID: randomID(), TaskID: taskID, Sequence: len(phases) + 1, Name: name, Kind: kind, Owner: owner, Description: description, Status: "running", Attempt: 1, BranchID: task.SelectedBranchID, DefinitionID: definitionID}
 	inputs := make([]store.PhaseRepositoryInput, 0, len(task.Repositories))
 	for _, repository := range task.Repositories {
 		if repository.WorkingPath == "" {
@@ -983,7 +962,7 @@ func (s *Service) beginPhase(ctx context.Context, taskID, name, kind, owner, des
 		}
 		inputs = append(inputs, store.PhaseRepositoryInput{PhaseID: phase.ID, RepositoryID: repository.ID, ReviewBaseSHA: repositoryReviewBase(repository), HeadSHA: head, BranchName: branch})
 	}
-	entry := session.NewPhaseStart(session.PhasePayload{Phase: phase.ID, Name: name, Owner: owner, Kind: kind, InputSnapshot: inputSnapshot})
+	entry := session.NewPhaseStart(session.PhasePayload{Phase: phase.ID, Name: name, Owner: owner, Kind: kind})
 	event := store.Event{ID: randomID(), TaskID: taskID, PhaseID: phase.ID, AttemptID: phase.ID, BranchID: phase.BranchID, Kind: entry.Kind, Name: entry.Name, Payload: entry.Payload, Display: entry.Display, AvailableActions: AvailableActions(&phase, ""), StartedAt: time.Now().UTC()}
 	if err = s.db.CommitPhaseStart(ctx, phase, inputs, event, s.taskDir(taskID)); err != nil {
 		return store.Phase{}, err
@@ -1027,32 +1006,16 @@ func (s *Service) endPhasePublication(ctx context.Context, phase store.Phase, st
 	if cause != nil {
 		message = cause.Error()
 	}
-	outputSnapshot := phase.InputSnapshot
-	if status != "success" || !isReadOnlyOwner(phase.Owner) {
-		if task, taskErr := s.db.Task(ctx, phase.TaskID); taskErr == nil {
-			if snapshot, captureErr := s.CaptureSnapshot(ctx, task); captureErr == nil {
-				if status == "success" && (phase.Kind == "agent" || phase.Kind == "build" || phase.Kind == "review" || phase.Kind == "check" || phase.Kind == "git") {
-					outputSnapshot = snapshot.Digest
-				} else if status != "success" {
-					outputSnapshot = snapshot.Digest
-				}
-			}
-		}
-	}
-	if outputSnapshot == "" {
-		outputSnapshot = phase.InputSnapshot
-	}
-	phase.OutputSnapshot = outputSnapshot
-	entry := session.NewPhaseEnd(session.PhasePayload{Phase: phase.ID, Name: phase.Name, Owner: phase.Owner, Kind: phase.Kind, Status: status, Error: message, InputSnapshot: phase.InputSnapshot, OutputSnapshot: phase.OutputSnapshot})
+	entry := session.NewPhaseEnd(session.PhasePayload{Phase: phase.ID, Name: phase.Name, Owner: phase.Owner, Kind: phase.Kind, Status: status, Error: message})
 	event := store.Event{ID: randomID(), TaskID: phase.TaskID, PhaseID: phase.ID, AttemptID: phase.ID, BranchID: phase.BranchID, Kind: entry.Kind, Name: entry.Name, Payload: entry.Payload, Display: entry.Display, AvailableActions: AvailableActions(&phase, ""), StartedAt: time.Now().UTC()}
 	var transition *store.TaskTransition
 	if fromState != "" || toState != "" {
 		transition = &store.TaskTransition{TaskID: phase.TaskID, FromState: fromState, ToState: toState}
 	}
 	if envelope != nil {
-		return s.db.CommitAgentPhaseLifecycleWithEvidence(ctx, phase, status, message, outputSnapshot, transition, *envelope, changes, event, s.taskDir(phase.TaskID))
+		return s.db.CommitAgentPhaseLifecycleWithEvidence(ctx, phase, status, message, "", transition, *envelope, changes, event, s.taskDir(phase.TaskID))
 	}
-	return s.db.CommitPhaseLifecycle(ctx, phase, status, message, outputSnapshot, transition, event, s.taskDir(phase.TaskID))
+	return s.db.CommitPhaseLifecycle(ctx, phase, status, message, "", transition, event, s.taskDir(phase.TaskID))
 }
 
 func (s *Service) failPhase(ctx context.Context, phase store.Phase, cause error) {

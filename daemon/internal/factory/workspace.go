@@ -2,8 +2,6 @@ package factory
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,20 +26,15 @@ type workspaceLifecycle interface {
 	Allocate(context.Context, store.Task) error
 	Prepare(context.Context, store.Task) ([]workspacePreparation, error)
 	InspectProfiles(context.Context, store.Task) (map[string]Materialization, error)
-	CaptureSnapshot(context.Context, store.Task) (store.WorkspaceSnapshot, error)
-	MaterializeSnapshot(context.Context, store.Task, string) error
-	MaterializeScratch(context.Context, store.Task, string, string) error
-	Restore(context.Context, store.Task, store.Phase, string) ([]store.PhaseRepositoryInput, error)
 	Cleanup(context.Context, store.Task) error
 }
 
 type workspaceService struct {
-	root      string
-	db        workspaceStore
-	sandbox   Sandbox
-	snapshots *snapshotService
-	git       factorygit.Runner
-	gitMu     sync.Mutex
+	root    string
+	db      workspaceStore
+	sandbox Sandbox
+	git     factorygit.Runner
+	gitMu   sync.Mutex
 }
 
 type workspacePreparation struct {
@@ -148,75 +141,6 @@ func (w *workspaceService) InspectProfiles(_ context.Context, task store.Task) (
 	return profiles, nil
 }
 
-func (w *workspaceService) CaptureSnapshot(ctx context.Context, task store.Task) (store.WorkspaceSnapshot, error) {
-	return w.snapshots.CaptureSnapshot(ctx, task)
-}
-
-func (w *workspaceService) MaterializeSnapshot(ctx context.Context, task store.Task, digest string) error {
-	return w.snapshots.MaterializeSnapshot(ctx, task, digest)
-}
-
-func (w *workspaceService) MaterializeScratch(ctx context.Context, task store.Task, digest, destination string) error {
-	return w.snapshots.MaterializeScratch(ctx, task, digest, destination)
-}
-
-func (w *workspaceService) Restore(ctx context.Context, task store.Task, phase store.Phase, key string) ([]store.PhaseRepositoryInput, error) {
-	if err := w.validateTaskWorkspace(task); err != nil {
-		return nil, err
-	}
-	inputs, err := w.phaseInputs(ctx, phase.ID)
-	if err != nil {
-		return nil, err
-	}
-	restored := make([]store.PhaseRepositoryInput, 0, len(inputs))
-	for _, input := range inputs {
-		repository, ok := repositoryByID(task.Repositories, input.RepositoryID)
-		if !ok {
-			return nil, fmt.Errorf("retry repository %s is missing", input.RepositoryID)
-		}
-		branch := retryBranch(task.ID, key, repository.ID)
-		request := struct {
-			RepositoryID string `json:"repository_id"`
-			HeadSHA      string `json:"head_sha"`
-			Branch       string `json:"branch"`
-		}{RepositoryID: repository.ID, HeadSHA: input.HeadSHA, Branch: branch}
-		operation, operationErr := w.beginOperation(ctx, task.ID, repository.ID, phase.ID, "restore", request)
-		if operationErr != nil {
-			return nil, operationErr
-		}
-		w.gitMu.Lock()
-		err = factorygit.RestoreForRetry(ctx, w.git, repository.SourceType, repository.CanonicalPath, repository.WorkingPath, input.HeadSHA, branch)
-		w.gitMu.Unlock()
-		if err != nil {
-			return nil, w.failOperation(ctx, operation.ID, err)
-		}
-		if err = w.db.SetRepositoryReviewBase(ctx, task.ID, repository.ID, input.ReviewBaseSHA); err != nil {
-			return nil, w.failOperation(ctx, operation.ID, err)
-		}
-		if err = w.db.SetRepositoryBranch(ctx, task.ID, repository.ID, branch); err != nil {
-			return nil, w.failOperation(ctx, operation.ID, err)
-		}
-		if err = w.completeOperation(ctx, operation.ID); err != nil {
-			return nil, err
-		}
-		restored = append(restored, store.PhaseRepositoryInput{RepositoryID: repository.ID, ReviewBaseSHA: input.ReviewBaseSHA, HeadSHA: input.HeadSHA, BranchName: branch})
-	}
-	if phase.InputSnapshot == "" {
-		return nil, fmt.Errorf("attempt input snapshot is required")
-	}
-	operation, err := w.beginOperation(ctx, task.ID, "", phase.ID, "restore_snapshot", phase.InputSnapshot)
-	if err != nil {
-		return nil, err
-	}
-	if err = w.MaterializeSnapshot(ctx, task, phase.InputSnapshot); err != nil {
-		return nil, w.failOperation(ctx, operation.ID, err)
-	}
-	if err = w.completeOperation(ctx, operation.ID); err != nil {
-		return nil, err
-	}
-	return restored, nil
-}
-
 func (w *workspaceService) Cleanup(ctx context.Context, task store.Task) error {
 	if err := w.validateTaskWorkspace(task); err != nil {
 		return err
@@ -285,18 +209,8 @@ func (w *workspaceService) validateTaskWorkspace(task store.Task) error {
 	return nil
 }
 
-func (w *workspaceService) phaseInputs(ctx context.Context, phaseID string) ([]store.PhaseRepositoryInput, error) {
-	reader, ok := w.db.(interface {
-		PhaseRepositoryInputs(context.Context, string) ([]store.PhaseRepositoryInput, error)
-	})
-	if !ok {
-		return nil, fmt.Errorf("workspace store cannot read phase inputs")
-	}
-	return reader.PhaseRepositoryInputs(ctx, phaseID)
-}
-
 func workspaceDirectories(root string) []string {
-	return []string{root, filepath.Join(root, "workspace", "repositories"), filepath.Join(root, "attempts"), filepath.Join(root, "snapshots"), filepath.Join(root, "artifacts"), filepath.Join(root, "sessions"), filepath.Join(root, "workspace", "snapshots"), filepath.Join(root, "workspace", "branches"), filepath.Join(root, "workspace", "attempts"), filepath.Join(root, "repository-profiles"), filepath.Join(root, "prompts")}
+	return []string{root, filepath.Join(root, "workspace", "repositories"), filepath.Join(root, "attempts"), filepath.Join(root, "artifacts"), filepath.Join(root, "sessions"), filepath.Join(root, "workspace", "branches"), filepath.Join(root, "workspace", "attempts"), filepath.Join(root, "repository-profiles"), filepath.Join(root, "prompts")}
 }
 
 func readMaterialization(path string) (Materialization, error) {
@@ -324,18 +238,4 @@ func writeRepositoryProfile(taskWorkspace, name string, profile Materialization)
 		return fmt.Errorf("write repository profile: %w", err)
 	}
 	return nil
-}
-
-func repositoryByID(repositories []store.TaskRepository, id string) (store.TaskRepository, bool) {
-	for _, repository := range repositories {
-		if repository.ID == id {
-			return repository, true
-		}
-	}
-	return store.TaskRepository{}, false
-}
-
-func retryBranch(taskID, key, repositoryID string) string {
-	digest := sha256.Sum256([]byte(taskID + "\x00" + key + "\x00" + repositoryID))
-	return "software-factory/retry/" + hex.EncodeToString(digest[:8])
 }

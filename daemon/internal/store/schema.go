@@ -27,14 +27,6 @@ create table if not exists envelopes (id text primary key, task_id text not null
 create table if not exists checks (id text not null, task_id text not null references tasks(id) on delete cascade, phase_id text, repository_id text, stage_id text, check_phase text not null default 'primary', comparison_baseline text, name text not null, command text not null, attempt integer not null, status text not null, exit_code integer, output text, artifact_path text, duration_ms integer, started_at text, ended_at text, primary key (task_id, id, attempt));
 create table if not exists processes (id integer primary key autoincrement, task_id text not null references tasks(id) on delete cascade, phase_id text, kind text not null, name text not null, pid integer not null, display_command text not null, status text not null, exit_code integer, started_at text not null, ended_at text);
 create table if not exists agent_sessions (task_id text not null, stage_id text not null, agent_name text not null, role text not null default '', harness text not null, provider text, model text, thinking text, color text, harness_session_id text not null, session_directory text not null, session_ready integer not null default 0, native_transcript_path text, pending_invocation_id text, context_tokens integer, context_window integer, usage_json text, cost real not null default 0, accounting_complete integer not null default 1, created_at text not null, last_used_at text not null, primary key(task_id, stage_id));
-create table if not exists interventions (
- id text primary key, task_id text not null references tasks(id) on delete cascade,
- target_type text not null, target_id text not null, actor text not null, intent text not null,
- text text not null, delivery text not null, idempotency_key text not null, created_at text not null,
- anchor_json text, expected_branch_head text,
- branch_id text, attempt_id text,
- unique(task_id, idempotency_key)
-);
 create table if not exists messages (
  sequence integer primary key autoincrement,
  id text not null unique, task_id text not null references tasks(id) on delete cascade,
@@ -44,12 +36,6 @@ create table if not exists messages (
  delivery_status text not null, failure_reason text,
  created_at text not null, delivered_at text, failed_at text,
  unique(task_id, idempotency_key)
-);
-create table if not exists retry_requests (
- task_id text not null references tasks(id) on delete cascade,
- idempotency_key text not null, source_attempt_id text not null,
- branch_id text not null, attempt_id text not null, created_at text not null,
- primary key(task_id, idempotency_key)
 );
 create table if not exists branches (
  id text primary key, task_id text not null references tasks(id) on delete cascade,
@@ -74,11 +60,6 @@ create table if not exists workspace_operations (
  repository_id text, attempt_id text, kind text not null, status text not null,
  request_json text not null default '{}', error text, created_at text not null, updated_at text not null
 );
-create table if not exists workspace_snapshots (
- digest text primary key, task_id text not null references tasks(id) on delete cascade,
- path text not null default '', size_bytes integer not null default 0,
- manifest_json text not null default '{}', created_at text not null
-);
 create table if not exists phase_repository_inputs (
 	phase_id text not null references phases(id) on delete cascade,
 	repository_id text not null references task_repositories(id) on delete cascade,
@@ -86,11 +67,9 @@ create table if not exists phase_repository_inputs (
  primary key (phase_id, repository_id)
 );
 create table if not exists test_changes (id text primary key, task_id text not null references tasks(id) on delete cascade, phase_id text not null, attempt integer not null, repository_id text not null, repository_name text not null, path text not null, reason text not null, change_kind text not null, rename_from text, rename_to text, created_at text not null, unique(task_id, phase_id, repository_id, path));
-create table if not exists comparisons (id text primary key, task_id text not null references tasks(id) on delete cascade, phase_id text not null, attempt integer not null, repository_id text not null, repository_name text not null, status text not null, reason text not null, baseline_snapshot text, overlay_paths_json text not null default '[]', created_at text not null, duration_ms integer not null default 0);
 create index if not exists events_task_cursor on events(task_id, sequence);
 create index if not exists phases_task_sequence on phases(task_id, sequence);
 create index if not exists task_repositories_task on task_repositories(task_id, is_primary desc, name);
-create index if not exists interventions_task on interventions(task_id, created_at);
 create index if not exists messages_task_fifo on messages(task_id, sequence);
 create index if not exists messages_session_fifo on messages(task_id, recipient_role, delivery_status, sequence);
 `
@@ -104,7 +83,7 @@ func incompatibleSchema(ctx context.Context, db *sql.DB) (bool, error) {
 	if err != nil || !tasks {
 		return false, err
 	}
-	for _, table := range []string{"task_repositories", "branches", "phase_definitions", "workspace_snapshots"} {
+	for _, table := range []string{"task_repositories", "branches", "phase_definitions"} {
 		exists, tableErr := tableExists(ctx, db, table)
 		if tableErr != nil || !exists {
 			return true, tableErr
@@ -131,7 +110,6 @@ func ensureRetriableColumns(ctx context.Context, db *sql.DB) error {
 		{"tasks", "coding_agent text not null default ''"}, {"tasks", "model text not null default ''"}, {"tasks", "thinking text not null default ''"},
 		{"phases", "branch_id text"}, {"phases", "definition_id text"}, {"phases", "input_snapshot text"}, {"phases", "output_snapshot text"}, {"phases", "superseded integer not null default 0"},
 		{"events", "attempt_id text"}, {"events", "artifact_id text"}, {"events", "branch_id text"}, {"events", "actions_json text"},
-		{"interventions", "anchor_json text"}, {"interventions", "expected_branch_head text"}, {"interventions", "branch_id text"}, {"interventions", "attempt_id text"},
 		{"phases", "stage_id text"}, {"envelopes", "stage_id text"}, {"messages", "stage_id text"}, {"task_repositories", "review_base_sha text"}, {"task_repositories", "branch_name text"},
 		{"checks", "repository_id text"}, {"checks", "stage_id text"}, {"checks", "check_phase text not null default 'primary'"}, {"checks", "comparison_baseline text"},
 	}

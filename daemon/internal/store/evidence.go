@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"encoding/json"
 )
 
 type TestChange struct {
@@ -63,31 +62,6 @@ func (db *DB) TestChanges(ctx context.Context, taskID string) ([]TestChange, err
 	}
 	return values, rows.Err()
 }
-func (db *DB) SaveComparison(ctx context.Context, value Comparison) error {
-	overlay, err := json.Marshal(value.OverlayPaths)
-	if err != nil {
-		return wrap("encode comparison overlay paths", err)
-	}
-	_, err = db.ExecContext(ctx, `insert or replace into comparisons(id,task_id,phase_id,attempt,repository_id,repository_name,status,reason,baseline_snapshot,overlay_paths_json,created_at,duration_ms) values(?,?,?,?,?,?,?,?,?,?,?,?)`, value.ID, value.TaskID, value.PhaseID, value.Attempt, value.RepositoryID, value.RepositoryName, value.Status, value.Reason, nullIfEmpty(value.BaselineSnapshot), string(overlay), value.CreatedAt, value.DurationMS)
-	return wrap("save comparison", err)
-}
 func (db *DB) Comparisons(ctx context.Context, taskID string) ([]Comparison, error) {
-	rows, err := db.QueryContext(ctx, `select id,task_id,phase_id,attempt,repository_id,repository_name,status,reason,coalesce(baseline_snapshot,''),overlay_paths_json,created_at,duration_ms from comparisons where task_id=? order by created_at,rowid`, taskID)
-	if err != nil {
-		return nil, wrap("read comparisons", err)
-	}
-	defer rows.Close()
-	values := make([]Comparison, 0)
-	for rows.Next() {
-		var value Comparison
-		var overlay string
-		if err := rows.Scan(&value.ID, &value.TaskID, &value.PhaseID, &value.Attempt, &value.RepositoryID, &value.RepositoryName, &value.Status, &value.Reason, &value.BaselineSnapshot, &overlay, &value.CreatedAt, &value.DurationMS); err != nil {
-			return nil, err
-		}
-		if err := json.Unmarshal([]byte(overlay), &value.OverlayPaths); err != nil {
-			return nil, wrap("decode comparison overlay paths", err)
-		}
-		values = append(values, value)
-	}
-	return values, rows.Err()
+	return []Comparison{}, nil
 }
