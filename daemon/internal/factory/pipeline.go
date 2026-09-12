@@ -352,7 +352,7 @@ func (s *Service) executeStage(ctx context.Context, task store.Task, stage confi
 }
 
 func (s *Service) executeBuild(ctx context.Context, task store.Task, stage config.Stage, phase store.Phase) error {
-	profiles, err := readTaskProfiles(task)
+	profiles, err := s.workspace.InspectProfiles(ctx, task)
 	if err != nil {
 		return err
 	}
@@ -384,7 +384,7 @@ func (s *Service) executeBuild(ctx context.Context, task store.Task, stage confi
 }
 
 func (s *Service) executeVerify(ctx context.Context, task store.Task, phase store.Phase) error {
-	profiles, err := readTaskProfiles(task)
+	profiles, err := s.workspace.InspectProfiles(ctx, task)
 	if err != nil {
 		return err
 	}

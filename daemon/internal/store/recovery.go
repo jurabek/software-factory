@@ -21,5 +21,8 @@ func (db *DB) Recover(ctx context.Context) error {
 	if _, err = tx.ExecContext(ctx, `update tasks set previous_state=state,state='blocked',error='server restarted during active phase: retry, revise, or repair explicitly',ended_at=? where state in ('preparing','planning','building','checking','reviewing')`, ended); err != nil {
 		return err
 	}
+	if _, err = tx.ExecContext(ctx, `update workspace_operations set status='interrupted',error='server restarted during workspace operation',updated_at=? where status in ('planned','running')`, ended); err != nil {
+		return err
+	}
 	return tx.Commit()
 }

@@ -18,14 +18,14 @@ func TestExecutionOwnerRejectsDuplicateTaskExecution(t *testing.T) {
 		close(started)
 		<-release
 		return nil
-	}, nil) {
+	}, nil, nil) {
 		t.Fatal("first execution was not admitted")
 	}
 	<-started
 	if owner.start("task", "second", func(context.Context) error {
 		runs.Add(1)
 		return nil
-	}, nil) {
+	}, nil, nil) {
 		t.Fatal("duplicate execution was admitted")
 	}
 	close(release)
@@ -48,7 +48,7 @@ func TestExecutionOwnerShutdownCancelsAndJoinsWorkers(t *testing.T) {
 		<-ctx.Done()
 		close(settled)
 		return ctx.Err()
-	}, nil) {
+	}, nil, nil) {
 		t.Fatal("execution was not admitted")
 	}
 	<-started
@@ -65,5 +65,37 @@ func TestExecutionOwnerShutdownCancelsAndJoinsWorkers(t *testing.T) {
 	case <-settled:
 	default:
 		t.Fatal("shutdown returned before worker settled")
+	}
+}
+
+func TestExecutionOwnerKeepsTaskOwnedUntilSettlementCompletes(t *testing.T) {
+	owner := newExecutionOwner()
+	started := make(chan struct{})
+	releaseRun := make(chan struct{})
+	settling := make(chan struct{})
+	releaseSettlement := make(chan struct{})
+	if !owner.start("task", "execution", func(context.Context) error {
+		close(started)
+		<-releaseRun
+		return nil
+	}, func(context.Context, error) {
+		close(settling)
+		<-releaseSettlement
+	}, nil) {
+		t.Fatal("execution was not admitted")
+	}
+	<-started
+	close(releaseRun)
+	<-settling
+	stopped := make(chan error, 1)
+	go func() { stopped <- owner.stopAndWait(context.Background(), "task") }()
+	select {
+	case err := <-stopped:
+		t.Fatalf("control returned before settlement: %v", err)
+	case <-time.After(30 * time.Millisecond):
+	}
+	close(releaseSettlement)
+	if err := <-stopped; err != nil {
+		t.Fatal(err)
 	}
 }
