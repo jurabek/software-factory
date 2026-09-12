@@ -50,35 +50,18 @@ type StageProjection struct {
 }
 
 func (db *DB) CreateTask(ctx context.Context, task Task) error {
-	return db.createTask(ctx, task, false)
+	return db.createTask(ctx, task)
 }
 
-func (db *DB) CreateActiveTask(ctx context.Context, task Task) error {
-	return db.createTask(ctx, task, true)
-}
-
-func (db *DB) createTask(ctx context.Context, task Task, requireAvailableSlot bool) error {
+func (db *DB) createTask(ctx context.Context, task Task) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin create task: %w", err)
 	}
 	defer tx.Rollback()
-	query := `insert into tasks(id,parent_task_id,request,workspace_path,state,pipeline,active_stage,config_snapshot,created_at,started_at,coding_agent,model,thinking) values(?,?,?,?,?,?,?,?,?,?,?,?,?)`
-	if requireAvailableSlot {
-		query = `insert into tasks(id,parent_task_id,request,workspace_path,state,pipeline,active_stage,config_snapshot,created_at,started_at,coding_agent,model,thinking) select ?,?,?,?,?,?,?,?,?,?,?,?,? where not exists(select 1 from tasks where state in ('preparing','planning','awaiting_plan_approval','building','checking','reviewing'))`
-	}
-	result, err := tx.ExecContext(ctx, query, task.ID, nullIfEmpty(task.ParentTaskID), task.Request, task.WorkspacePath, task.State, nullIfEmpty(task.Pipeline), nullIfEmpty(task.ActiveStage), nullIfEmpty(task.ConfigSnapshot), task.CreatedAt, nullIfEmpty(task.StartedAt), task.CodingAgent, task.Model, task.Thinking)
+	_, err = tx.ExecContext(ctx, `insert into tasks(id,parent_task_id,request,workspace_path,state,pipeline,active_stage,config_snapshot,created_at,started_at,coding_agent,model,thinking) values(?,?,?,?,?,?,?,?,?,?,?,?,?)`, task.ID, nullIfEmpty(task.ParentTaskID), task.Request, task.WorkspacePath, task.State, nullIfEmpty(task.Pipeline), nullIfEmpty(task.ActiveStage), nullIfEmpty(task.ConfigSnapshot), task.CreatedAt, nullIfEmpty(task.StartedAt), task.CodingAgent, task.Model, task.Thinking)
 	if err != nil {
 		return wrap("create task", err)
-	}
-	if requireAvailableSlot {
-		count, rowsErr := result.RowsAffected()
-		if rowsErr != nil {
-			return wrap("check task creation", rowsErr)
-		}
-		if count != 1 {
-			return ErrConflict
-		}
 	}
 	for _, repository := range task.Repositories {
 		if _, err = tx.ExecContext(ctx, `insert into task_repositories(id,task_id,name,source_type,source_value,submitted_path,is_primary,created_at) values(?,?,?,?,?,?,?,?)`, repository.ID, task.ID, repository.Name, repository.SourceType, repository.SourceValue, nullIfEmpty(repository.SubmittedPath), repository.Primary, repository.CreatedAt); err != nil {

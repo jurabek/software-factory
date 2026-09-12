@@ -45,6 +45,16 @@ type InterveneRequest struct {
 // Intervene persists the intervention and, for state-changing intents,
 // creates a child branch plus queued attempt atomically.
 func (s *Service) Intervene(ctx context.Context, taskID, actor string, request InterveneRequest) (store.InterventionResult, error) {
+	var result store.InterventionResult
+	err := s.executions.withTask(taskID, func() error {
+		var err error
+		result, err = s.interveneLocked(ctx, taskID, actor, request)
+		return err
+	})
+	return result, err
+}
+
+func (s *Service) interveneLocked(ctx context.Context, taskID, actor string, request InterveneRequest) (store.InterventionResult, error) {
 	request.Intent = strings.TrimSpace(strings.ToLower(request.Intent))
 	request.Message = strings.TrimSpace(request.Message)
 	request.IdempotencyKey = strings.TrimSpace(request.IdempotencyKey)
@@ -118,13 +128,6 @@ func (s *Service) Intervene(ctx context.Context, taskID, actor string, request I
 	}
 
 	// State-changing intents: retry, revise, repair.
-	if task.State == string(Completed) || task.State == string(Aborted) {
-		if active, activeErr := s.hasActiveTask(ctx, taskID); activeErr != nil {
-			return store.InterventionResult{}, activeErr
-		} else if active {
-			return store.InterventionResult{}, store.ErrConflict
-		}
-	}
 	if phase == nil {
 		return store.InterventionResult{}, store.ErrConflict
 	}
@@ -316,23 +319,6 @@ func (s *Service) validateAnchor(ctx context.Context, taskID string, target Inte
 		return fmt.Errorf("unknown anchor kind %q", anchor.Kind)
 	}
 	return nil
-}
-
-func (s *Service) hasActiveTask(ctx context.Context, exclude string) (bool, error) {
-	tasks, err := s.db.Tasks(ctx)
-	if err != nil {
-		return false, err
-	}
-	for _, task := range tasks {
-		if task.ID == exclude {
-			continue
-		}
-		switch task.State {
-		case string(Preparing), string(Planning), string(AwaitingApproval), string(Building), string(Checking), string(Reviewing):
-			return true, nil
-		}
-	}
-	return false, nil
 }
 
 func (s *Service) traceAttempt(ctx context.Context, taskID string, phase *store.Phase, interventionID string, entry session.Entry, actions []string) error {

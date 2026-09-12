@@ -36,10 +36,16 @@ type RetryRequest struct {
 }
 
 func (s *Service) SendMessage(ctx context.Context, taskID, actor string, request SendMessageRequest) (store.Message, error) {
-	lock := s.taskLock(taskID)
-	lock.Lock()
-	defer lock.Unlock()
+	var message store.Message
+	err := s.executions.withTask(taskID, func() error {
+		var err error
+		message, err = s.sendMessage(ctx, taskID, actor, request)
+		return err
+	})
+	return message, err
+}
 
+func (s *Service) sendMessage(ctx context.Context, taskID, actor string, request SendMessageRequest) (store.Message, error) {
 	request.Text = strings.TrimSpace(request.Text)
 	request.IdempotencyKey = strings.TrimSpace(request.IdempotencyKey)
 	if request.Text == "" {
@@ -251,21 +257,20 @@ func (s *Service) scheduleMessage(ctx context.Context, task store.Task, role str
 
 func (s *Service) kickQueuedMessage(taskID string) {
 	ctx := context.Background()
-	lock := s.taskLock(taskID)
-	lock.Lock()
-	defer lock.Unlock()
-	task, err := s.db.Task(ctx, taskID)
-	if err != nil {
-		return
-	}
-	if task.State != string(AwaitingApproval) && task.State != string(Blocked) && task.State != string(Completed) {
-		return
-	}
-	message, err := s.db.NextQueuedTaskMessage(ctx, taskID)
-	if err != nil {
-		return
-	}
-	_ = s.scheduleMessage(ctx, task, message.RecipientRole)
+	_ = s.executions.withTask(taskID, func() error {
+		task, err := s.db.Task(ctx, taskID)
+		if err != nil {
+			return nil
+		}
+		if task.State != string(AwaitingApproval) && task.State != string(Blocked) && task.State != string(Completed) {
+			return nil
+		}
+		message, err := s.db.NextQueuedTaskMessage(ctx, taskID)
+		if err != nil {
+			return nil
+		}
+		return s.scheduleMessage(ctx, task, message.RecipientRole)
+	})
 }
 
 func stateForRole(role string) State {
@@ -363,27 +368,32 @@ func (s *Service) completeAgentPhase(ctx context.Context, task store.Task, phase
 		if continued != "" {
 			payload = continued
 		}
-		lock := s.taskLock(task.ID)
-		lock.Lock()
-		_, err = s.db.NextQueuedMessage(ctx, task.ID, role)
-		if err == nil {
-			lock.Unlock()
+		var completed bool
+		err = s.executions.withTask(task.ID, func() error {
+			if err = s.executionGuard(ctx, task.ID); err != nil {
+				return err
+			}
+			_, err = s.db.NextQueuedMessage(ctx, task.ID, role)
+			if err == nil {
+				return nil
+			}
+			if !errors.Is(err, store.ErrNotFound) {
+				s.failPhase(ctx, phase, err)
+				return err
+			}
+			if err = verify(payload); err != nil {
+				s.failPhase(ctx, phase, err)
+				return err
+			}
+			if err = s.endPhase(ctx, phase, "success", nil); err == nil {
+				err = s.db.Transition(ctx, task.ID, string(stateForRole(role)), string(next), "", "")
+			}
+			completed = err == nil
+			return err
+		})
+		if !completed && err == nil {
 			continue
 		}
-		if !errors.Is(err, store.ErrNotFound) {
-			lock.Unlock()
-			s.failPhase(ctx, phase, err)
-			return "", err
-		}
-		if err = verify(payload); err != nil {
-			s.failPhase(ctx, phase, err)
-			lock.Unlock()
-			return "", err
-		}
-		if err = s.endPhase(ctx, phase, "success", nil); err == nil {
-			err = s.db.Transition(ctx, task.ID, string(stateForRole(role)), string(next), "", "")
-		}
-		lock.Unlock()
 		return payload, err
 	}
 }
@@ -581,10 +591,16 @@ func (s *Service) failMessage(ctx context.Context, message store.Message, phase 
 }
 
 func (s *Service) Retry(ctx context.Context, taskID, attemptID string, request RetryRequest) (store.RetryResult, error) {
-	lock := s.taskLock(taskID)
-	lock.Lock()
-	defer lock.Unlock()
+	var result store.RetryResult
+	err := s.executions.withTask(taskID, func() error {
+		var err error
+		result, err = s.retry(ctx, taskID, attemptID, request)
+		return err
+	})
+	return result, err
+}
 
+func (s *Service) retry(ctx context.Context, taskID, attemptID string, request RetryRequest) (store.RetryResult, error) {
 	request.IdempotencyKey = strings.TrimSpace(request.IdempotencyKey)
 	if request.IdempotencyKey == "" {
 		return store.RetryResult{}, fmt.Errorf("idempotency_key is required")
@@ -671,6 +687,9 @@ func (s *Service) Retry(ctx context.Context, taskID, attemptID string, request R
 }
 
 func (s *Service) runRetryAttempt(ctx context.Context, taskID, attemptID string) error {
+	if err := s.executionGuard(ctx, taskID); err != nil {
+		return err
+	}
 	phase, err := s.db.PhaseByID(ctx, taskID, attemptID)
 	if err != nil {
 		return err
@@ -712,13 +731,15 @@ func (s *Service) runRetryPrepare(ctx context.Context, task store.Task, phase st
 			return err
 		}
 	}
-	lock := s.taskLock(task.ID)
-	lock.Lock()
-	err := s.endPhase(ctx, phase, "success", nil)
-	if err == nil {
-		err = s.db.Transition(ctx, task.ID, string(Preparing), string(Planning), "", "")
-	}
-	lock.Unlock()
+	err := s.executions.withTask(task.ID, func() error {
+		if err := s.executionGuard(ctx, task.ID); err != nil {
+			return err
+		}
+		if err := s.endPhase(ctx, phase, "success", nil); err != nil {
+			return err
+		}
+		return s.db.Transition(ctx, task.ID, string(Preparing), string(Planning), "", "")
+	})
 	if err != nil {
 		return err
 	}
@@ -834,12 +855,15 @@ func (s *Service) runRetryChecks(ctx context.Context, task store.Task, phase sto
 			return err
 		}
 	}
-	lock := s.taskLock(task.ID)
-	lock.Lock()
-	if err = s.endPhase(ctx, phase, "success", nil); err == nil {
-		err = s.db.Transition(ctx, task.ID, string(Checking), string(Reviewing), "", "")
-	}
-	lock.Unlock()
+	err = s.executions.withTask(task.ID, func() error {
+		if err := s.executionGuard(ctx, task.ID); err != nil {
+			return err
+		}
+		if err := s.endPhase(ctx, phase, "success", nil); err != nil {
+			return err
+		}
+		return s.db.Transition(ctx, task.ID, string(Checking), string(Reviewing), "", "")
+	})
 	if err != nil {
 		return err
 	}
