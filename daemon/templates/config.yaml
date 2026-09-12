@@ -1,6 +1,6 @@
 defaults:
   coding_agent: pi
-  model: github-copilot/gpt-5.6-luna
+  model: openai-codex/gpt-5.6-luna
   thinking: medium
 observability:
   poll_ms: 500
