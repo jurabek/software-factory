@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net"
@@ -27,12 +28,66 @@ import (
 	"github.com/jurabek/software-factory/daemon/internal/harness"
 	claudeharness "github.com/jurabek/software-factory/daemon/internal/harness/claude"
 	piharness "github.com/jurabek/software-factory/daemon/internal/harness/pi"
+	sandboxgit "github.com/jurabek/software-factory/daemon/internal/sandbox"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 	"github.com/jurabek/software-factory/daemon/internal/token"
 )
 
 //go:embed templates
 var defaultTemplates embed.FS
+
+//go:embed swagger.yaml
+var swaggerSpec []byte
+
+const swaggerUI = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Software Factory API</title>
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5.32.15/swagger-ui.css">
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://unpkg.com/swagger-ui-dist@5.32.15/swagger-ui-bundle.js"></script>
+  <script>
+    window.onload = function () {
+      SwaggerUIBundle({
+        url: "/swagger.yaml",
+        dom_id: "#swagger-ui",
+        deepLinking: true,
+        displayRequestDuration: true,
+        persistAuthorization: true,
+        tryItOutEnabled: true
+      });
+    };
+  </script>
+</body>
+</html>`
+
+type swaggerHandler struct {
+	spec []byte
+}
+
+func newSwaggerHandler() swaggerHandler {
+	return swaggerHandler{spec: swaggerSpec}
+}
+
+func (h swaggerHandler) registerRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /swagger.yaml", h.serveSpec)
+	mux.HandleFunc("GET /docs", h.serveUI)
+	mux.HandleFunc("GET /docs/", h.serveUI)
+}
+
+func (h swaggerHandler) serveSpec(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/yaml")
+	_, _ = w.Write(h.spec)
+}
+
+func (swaggerHandler) serveUI(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = io.WriteString(w, swaggerUI)
+}
 
 const (
 	defaultPort = "8080"
@@ -157,7 +212,7 @@ func run() error {
 	}
 	service := factory.NewService(root, factory.Dependencies{
 		Store: db, Config: configured, ConfigPath: configPath,
-		Harnesses: registry, Git: factorygit.OSRunner{},
+		Harnesses: registry, Git: factorygit.OSRunner{}, Sandbox: sandboxgit.Git{Runner: factorygit.OSRunner{}},
 	})
 	apiHandler, err := api.New(db, service, configured, problems, loadErr, harnessNames, catalog, api.Access{DaemonID: daemonID, Token: daemonToken})
 	if err != nil {
