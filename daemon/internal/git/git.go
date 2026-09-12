@@ -437,9 +437,18 @@ func RestoreForRetry(ctx context.Context, runner Runner, sourceType, canonical, 
 	if head == "" || branch == "" {
 		return fmt.Errorf("retry Git state requires head and branch")
 	}
+	if currentHead, headErr := Head(ctx, runner, working); headErr == nil {
+		if currentBranch, branchErr := Branch(ctx, runner, working); branchErr == nil && currentHead == head && currentBranch == branch {
+			return nil
+		}
+	}
 	if sourceType == "local" {
-		if output, err := runner.Run(ctx, "git", "-C", canonical, "worktree", "remove", "--force", working); err != nil {
-			return fmt.Errorf("remove retry worktree: %w: %s", err, strings.TrimSpace(string(output)))
+		if _, statErr := os.Stat(working); statErr == nil {
+			if output, err := runner.Run(ctx, "git", "-C", canonical, "worktree", "remove", "--force", working); err != nil {
+				return fmt.Errorf("remove retry worktree: %w: %s", err, strings.TrimSpace(string(output)))
+			}
+		} else if !os.IsNotExist(statErr) {
+			return fmt.Errorf("inspect retry worktree: %w", statErr)
 		}
 		if output, err := runner.Run(ctx, "git", "-C", canonical, "worktree", "add", "-b", branch, working, head); err != nil {
 			return fmt.Errorf("create retry worktree: %w: %s", err, strings.TrimSpace(string(output)))

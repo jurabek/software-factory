@@ -103,10 +103,11 @@ func (h Harness) Run(parent context.Context, request harness.Request, sink harne
 	}
 
 	terminated := make(chan struct{})
+	termination := make(chan error, 1)
 	go func() {
 		select {
 		case <-ctx.Done():
-			terminateGroup(cmd.Process.Pid)
+			termination <- terminateGroup(cmd.Process.Pid)
 		case <-terminated:
 		}
 	}()
@@ -120,6 +121,14 @@ func (h Harness) Run(parent context.Context, request harness.Request, sink harne
 	result = consumed
 	waitErr := cmd.Wait()
 	close(terminated)
+	var terminationErr error
+	if ctx.Err() != nil {
+		select {
+		case terminationErr = <-termination:
+		default:
+			terminationErr = terminateGroup(cmd.Process.Pid)
+		}
+	}
 	result.ExitCode = exitCode(waitErr)
 	if err := emit(parent, sink, session.NewProcessEnd(session.ProcessEndPayload{PID: cmd.Process.Pid, ExitCode: result.ExitCode, DurationMS: time.Since(started).Milliseconds()})); err != nil && scanErr == nil {
 		scanErr = fmt.Errorf("emit process end: %w", err)
@@ -130,6 +139,9 @@ func (h Harness) Run(parent context.Context, request harness.Request, sink harne
 	}
 	if ctx.Err() != nil {
 		result.AccountingComplete = false
+		if terminationErr != nil {
+			return result, fmt.Errorf("pi interruption: %w; %v", ctx.Err(), terminationErr)
+		}
 		return result, fmt.Errorf("pi interrupted: %w", ctx.Err())
 	}
 	if waitErr != nil && strings.TrimSpace(result.Text) == "" {
@@ -340,10 +352,28 @@ func openRaw(path string) (*os.File, error) {
 	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 }
 
-func terminateGroup(pid int) {
-	_ = syscall.Kill(-pid, syscall.SIGTERM)
-	time.Sleep(500 * time.Millisecond)
-	_ = syscall.Kill(-pid, syscall.SIGKILL)
+func terminateGroup(pid int) error {
+	if err := syscall.Kill(-pid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return fmt.Errorf("%w: terminate process group %d: %v", harness.ErrProcessTerminationUnconfirmed, pid, err)
+	}
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(-pid, 0); errors.Is(err, syscall.ESRCH) {
+			return nil
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := syscall.Kill(-pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return fmt.Errorf("%w: force terminate process group %d: %v", harness.ErrProcessTerminationUnconfirmed, pid, err)
+	}
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := syscall.Kill(-pid, 0); errors.Is(err, syscall.ESRCH) {
+			return nil
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return fmt.Errorf("%w: process group %d", harness.ErrProcessTerminationUnconfirmed, pid)
 }
 
 func exitCode(err error) int {
