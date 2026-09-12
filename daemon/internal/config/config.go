@@ -11,10 +11,10 @@ import (
 
 var validThinking = map[string]bool{"off": true, "minimal": true, "low": true, "medium": true, "high": true, "xhigh": true, "max": true}
 
-// validHarnesses lists registered coding agents. Pi and Claude are
-// implemented; codex is reserved so task creation can offer it once its
+// validHarnesses lists registered coding agents. Pi is implemented;
+// codex is reserved so task creation can offer it once its
 // adapter lands.
-var validHarnesses = map[string]bool{"pi": true, "codex": true, "claude": true}
+var validHarnesses = map[string]bool{"pi": true, "codex": true}
 
 // IsValidThinking reports whether level is an accepted thinking level.
 func IsValidThinking(level string) bool { return validThinking[level] }
@@ -28,16 +28,10 @@ func ThinkingLevels() []string {
 func IsValidHarness(name string) bool { return validHarnesses[name] }
 
 // HarnessNames returns known coding agents in UI order.
-func HarnessNames() []string { return []string{"pi", "codex", "claude"} }
+func HarnessNames() []string { return []string{"pi", "codex"} }
 
 // ThinkingLevelsFor returns the validated thinking levels a harness supports.
-// Claude v1 supports a conservative low/medium/high effort subset; off and
-// minimal are rejected rather than silently mapped, and xhigh/max are only
-// exposed for explicitly verified model/version combinations (none yet).
 func ThinkingLevelsFor(harness string) []string {
-	if harness == "claude" {
-		return []string{"low", "medium", "high"}
-	}
 	return ThinkingLevels()
 }
 
@@ -74,13 +68,6 @@ func ApplyTaskOverrides(c Config, codingAgent, model, thinking string) Config {
 	return c
 }
 
-// ClaudeConfig is the operator-configured Claude tool policy. Allowed tools
-// are additive to inherited Claude permissions, not an exclusive allowlist.
-type ClaudeConfig struct {
-	AllowedTools []string `yaml:"allowed_tools" json:"allowed_tools"`
-	Models       []string `yaml:"models" json:"models"`
-}
-
 // Config is the resolved factory configuration.
 type Config struct {
 	Defaults      Defaults      `yaml:"defaults" json:"defaults"`
@@ -88,7 +75,6 @@ type Config struct {
 	Runtime       Runtime       `yaml:"runtime" json:"runtime"`
 	Agents        []Agent       `yaml:"agents" json:"agents"`
 	Pipelines     []Pipeline    `yaml:"pipelines" json:"pipelines"`
-	Claude        ClaudeConfig  `yaml:"claude" json:"claude"`
 }
 type Defaults struct {
 	CodingAgent string `yaml:"coding_agent" json:"coding_agent"`
@@ -165,7 +151,7 @@ func resolve(c Config) Config {
 func validate(c Config, base string) []string {
 	var problems []string
 	if !validHarnesses[c.Defaults.CodingAgent] {
-		problems = append(problems, "defaults.coding_agent must be pi, codex, or claude")
+		problems = append(problems, "defaults.coding_agent must be pi or codex")
 	}
 	if !validThinking[c.Defaults.Thinking] {
 		problems = append(problems, "defaults.thinking is invalid")

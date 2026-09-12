@@ -8,8 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"uuid"
-
 	"github.com/jurabek/software-factory/daemon/internal/config"
 	"github.com/jurabek/software-factory/daemon/internal/harness"
 	"github.com/jurabek/software-factory/daemon/internal/store"
@@ -187,35 +185,4 @@ func TestRunRoleSessionMismatchErrorsEvenWithRunError(t *testing.T) {
 	if !stored.SessionReady {
 		t.Fatal("ready metadata not persisted alongside combined error")
 	}
-}
-
-func TestRetryRotatesClaudeSessionPreservingCost(t *testing.T) {
-	service, db, _ := testService(t)
-	ctx := context.Background()
-	task, phase := createTaskWithAttempt(t, service, db)
-	claudeDir := filepath.Join(task.WorkspacePath, "sessions", "builder", "claude")
-	original, err := db.ReserveAgentSession(ctx, task.ID, store.AgentSession{Role: "builder", Harness: "claude", Model: "anthropic/sonnet", Thinking: "medium", HarnessSessionID: uuid.New().String(), SessionDirectory: claudeDir, AccountingComplete: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	piDir := filepath.Join(task.WorkspacePath, "sessions", "builder", "pi")
-	_ = piDir
-	result, err := service.Intervene(ctx, task.ID, "tester", InterveneRequest{Target: InterventionTarget{AttemptID: phase.ID}, Intent: "retry", IdempotencyKey: "rotate-1"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.AttemptID == "" {
-		t.Fatal("expected new attempt")
-	}
-	rotated, err := db.AgentSession(ctx, task.ID, "builder")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rotated.HarnessSessionID == original.HarnessSessionID {
-		t.Fatal("claude session was not rotated on rewind")
-	}
-	if rotated.SessionReady {
-		t.Fatal("rotated session must start unready")
-	}
-	_ = original
 }
