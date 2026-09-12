@@ -26,7 +26,6 @@ import (
 	"github.com/jurabek/software-factory/daemon/internal/factory"
 	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
 	"github.com/jurabek/software-factory/daemon/internal/harness"
-	claudeharness "github.com/jurabek/software-factory/daemon/internal/harness/claude"
 	piharness "github.com/jurabek/software-factory/daemon/internal/harness/pi"
 	sandboxgit "github.com/jurabek/software-factory/daemon/internal/sandbox"
 	"github.com/jurabek/software-factory/daemon/internal/store"
@@ -153,10 +152,8 @@ func run() error {
 	configPath := filepath.Join(root, "config.yaml")
 	configured, problems, loadErr := config.Load(configPath)
 	piPath := envOrDefault("PI_PATH", "pi")
-	claudePath := envOrDefault("CLAUDE_PATH", "claude")
 	registry := harness.Registry{
-		"pi":     piharness.Harness{Path: piPath},
-		"claude": claudeharness.Harness{Config: claudeharness.Config{Path: claudePath, AllowedTools: configured.Claude.AllowedTools, Models: configured.Claude.Models}},
+		"pi": piharness.Harness{Path: piPath},
 	}
 	harnessNames := make([]string, 0, len(registry))
 	for name := range registry {

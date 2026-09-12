@@ -169,7 +169,7 @@ For a turn-based harness:
 . Mark the Message `delivered` once the harness accepts the resumed invocation.
 . Process later Messages in FIFO order, with at most one invocation active per Agent Session.
 
-Pi and Claude MUST initially use turn-based continuation unless their adapters implement and advertise live input.
+Pi MUST initially use turn-based continuation unless its adapter implements and advertises live input.
 
 === Workflow outcomes
 
@@ -305,7 +305,7 @@ Daemon OpenAPI, application proxy routes, client contracts, event display contra
 == Acceptance criteria
 
 . The composer sends arbitrary text without asking the user to classify it.
-. A Message sent during a running Pi or Claude invocation is persisted immediately, then delivered through the same harness session after the current invocation settles.
+. A Message sent during a running Pi invocation is persisted immediately, then delivered through the same harness session after the current invocation settles.
 . Multiple Messages sent during one invocation are delivered once each in FIFO order.
 . A Message accepted at the invocation-completion boundary is delivered before the Task advances.
 . A Message sent while paused remains queued until explicit resume.

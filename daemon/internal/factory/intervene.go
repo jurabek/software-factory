@@ -6,11 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
-
-	"uuid"
 
 	"github.com/jurabek/software-factory/daemon/internal/session"
 	"github.com/jurabek/software-factory/daemon/internal/store"
@@ -148,10 +145,6 @@ func (s *Service) Intervene(ctx context.Context, taskID, actor string, request I
 		if err = s.MaterializeSnapshot(ctx, task, snapshotDigest); err != nil {
 			return store.InterventionResult{}, err
 		}
-		// Repository rewind: allocate a fresh Claude conversation per role so
-		// abandoned history is never resumed against rewound files. Pi retains
-		// continuation behavior. Prior UUIDs are retained in audit metadata.
-		s.resetClaudeSessions(ctx, taskID)
 	}
 
 	parentBranch := selected
@@ -203,35 +196,6 @@ func (s *Service) Intervene(ctx context.Context, taskID, actor string, request I
 		_ = s.traceAttempt(ctx, taskID, newPhase, applied.Intervention.ID, session.NewIntervention(session.InterventionPayload{Actor: applied.Intervention.Actor, Intent: applied.Intervention.Intent, Text: applied.Intervention.Text, Delivery: applied.Intervention.Delivery, InterventionID: applied.Intervention.ID, TargetType: applied.Intervention.TargetType, TargetID: applied.Intervention.TargetID}), actions)
 	}
 	return store.InterventionResult{Intervention: applied.Intervention, BranchID: applied.BranchID, AttemptID: applied.AttemptID, Action: request.Intent}, nil
-}
-
-// resetClaudeSessions rotates native Claude identity after a rewind. Cost and
-// completeness history are preserved by ReplaceAgentSession; the reset itself
-// is recorded as a bounded custom audit event retaining prior UUIDs.
-func (s *Service) resetClaudeSessions(ctx context.Context, taskID string) {
-	sessions, err := s.db.AgentSessions(ctx, taskID)
-	if err != nil {
-		return
-	}
-	var resets []string
-	for _, existing := range sessions {
-		if existing.Harness != "claude" {
-			continue
-		}
-		newID := uuid.New().String()
-		newDir := filepath.Join(s.taskDir(taskID), "sessions", existing.Role, existing.Harness)
-		prior, err := s.db.ReplaceAgentSession(ctx, taskID, existing.Role, newID, newDir)
-		if err != nil {
-			continue
-		}
-		resets = append(resets, existing.Role+" "+prior+" -> "+newID)
-	}
-	if len(resets) > 0 {
-		_ = s.trace(ctx, taskID, "", session.NewCustom(session.CustomPayload{
-			CustomType: "claude.session_reset",
-			Data:       session.BoundedJSON(map[string]any{"resets": resets}),
-		}))
-	}
 }
 
 func (s *Service) resolveTarget(ctx context.Context, taskID string, target InterventionTarget) (string, string, *store.Phase, error) {
