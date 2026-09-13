@@ -8,13 +8,15 @@ import (
 	"strings"
 
 	"github.com/jurabek/software-factory/daemon/internal/config"
-	"github.com/jurabek/software-factory/daemon/internal/factory"
+	"github.com/jurabek/software-factory/daemon/internal/intervention"
+	"github.com/jurabek/software-factory/daemon/internal/messaging"
 	"github.com/jurabek/software-factory/daemon/internal/store"
+	"github.com/jurabek/software-factory/daemon/internal/task"
 )
 
 type server struct {
 	db               *store.DB
-	factory          *factory.Service
+	orchestrator     taskFactory
 	config           config.Config
 	validationErrors []string
 	loadError        error
@@ -24,12 +26,26 @@ type server struct {
 	daemonID         string
 }
 
+type taskFactory interface {
+	Create(context.Context, task.CreateRequest) (store.Task, error)
+	CreateSession(context.Context, string, task.CreateSessionRequest) (store.Task, error)
+	StageProjection(context.Context, store.Task) ([]store.StageProjection, error)
+	Approve(context.Context, string, string, string) error
+	SendMessage(context.Context, string, string, messaging.Request) (store.Message, error)
+	Retry(context.Context, string, string, intervention.RetryRequest) (store.RetryResult, error)
+	Pause(context.Context, string) error
+	Resume(context.Context, string) error
+	Abort(context.Context, string) error
+	Delete(context.Context, string) error
+	Diff(context.Context, string) (task.Diff, error)
+}
+
 type Access struct {
 	DaemonID string
 	Token    string
 }
 
-func New(db *store.DB, service *factory.Service, cfg config.Config, problems []string, loadErr error, harnesses []string, models func(context.Context, string) ([]config.Model, error), access Access) (http.Handler, error) {
+func New(db *store.DB, service taskFactory, cfg config.Config, problems []string, loadErr error, harnesses []string, models func(context.Context, string) ([]config.Model, error), access Access) (http.Handler, error) {
 	if access.Token == "" {
 		return nil, errors.New("daemon token is required")
 	}
@@ -39,7 +55,7 @@ func New(db *store.DB, service *factory.Service, cfg config.Config, problems []s
 	if models == nil {
 		models = func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil }
 	}
-	s := &server{db: db, factory: service, config: cfg, validationErrors: problems, loadError: loadErr, harnesses: harnesses, models: models, token: access.Token, daemonID: access.DaemonID}
+	s := &server{db: db, orchestrator: service, config: cfg, validationErrors: problems, loadError: loadErr, harnesses: harnesses, models: models, token: access.Token, daemonID: access.DaemonID}
 	return noStore(s.routes()), nil
 }
 

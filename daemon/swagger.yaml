@@ -210,6 +210,46 @@ paths:
           $ref: "#/responses/Conflict"
         "422":
           $ref: "#/responses/UnprocessableEntity"
+  /tasks/{id}/artifacts:
+    parameters:
+      - $ref: "#/parameters/TaskID"
+    get:
+      tags: [Tasks]
+      operationId: listTaskArtifacts
+      summary: List immutable task artifacts
+      responses:
+        "200":
+          description: Artifact metadata ordered oldest first; content is omitted
+          schema:
+            type: array
+            items:
+              $ref: "#/definitions/Artifact"
+        "404":
+          $ref: "#/responses/NotFound"
+        "500":
+          $ref: "#/responses/InternalError"
+  /tasks/{id}/artifacts/{artifactID}:
+    parameters:
+      - $ref: "#/parameters/TaskID"
+      - in: path
+        name: artifactID
+        type: string
+        required: true
+    get:
+      tags: [Tasks]
+      operationId: getTaskArtifactContent
+      summary: Get immutable artifact content
+      produces:
+        - text/markdown
+      responses:
+        "200":
+          description: Artifact source content
+          schema:
+            type: string
+        "404":
+          $ref: "#/responses/NotFound"
+        "500":
+          $ref: "#/responses/InternalError"
   /tasks/{id}/approve:
     parameters:
       - $ref: "#/parameters/TaskID"
@@ -743,6 +783,36 @@ definitions:
       request:
         type: string
         minLength: 1
+  Artifact:
+    type: object
+    required: [id, task_id, type, digest, created_at]
+    properties:
+      id:
+        type: string
+      task_id:
+        type: string
+      attempt_id:
+        type: string
+      type:
+        type: string
+      digest:
+        type: string
+      path:
+        type: string
+      metadata_json:
+        type: string
+      content:
+        type: string
+        description: Present on content reads; omitted from list responses
+      media_type:
+        type: string
+      producer:
+        type: string
+      provenance_json:
+        type: string
+      created_at:
+        type: string
+        format: date-time
   Task:
     type: object
     required: [id, request, workspace_path, repository_type, repository_source, state, total_cost, created_at, available_actions]

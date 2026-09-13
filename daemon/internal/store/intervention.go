@@ -128,7 +128,7 @@ func (db *DB) ApplyIntervention(ctx context.Context, intervention Intervention, 
 					return AppliedIntervention{}, wrap("queue task state", err)
 				}
 			} else if current == "blocked" {
-				if _, err = tx.ExecContext(ctx, `update tasks set error=? where id=?`, nullIfEmpty("intervention queued"), intervention.TaskID); err != nil {
+				if _, err = tx.ExecContext(ctx, `update tasks set previous_state=state,state=?,error=? where id=?`, newState, nullIfEmpty("intervention queued"), intervention.TaskID); err != nil {
 					return AppliedIntervention{}, wrap("queue task state", err)
 				}
 			}
