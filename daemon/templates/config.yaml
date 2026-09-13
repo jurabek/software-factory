@@ -27,11 +27,13 @@ pipelines:
   - name: standard
     default: true
     stages:
+      - {id: plan, kind: plan, agent: planner}
       - {id: build, kind: build, agent: builder}
       - {id: check, kind: verify}
       - {id: review, kind: review, agent: reviewer}
   - name: quick
     stages:
+      - {id: plan, kind: plan, agent: planner}
       - {id: build, kind: build, agent: builder}
       - {id: check, kind: verify}
       - {id: review, kind: review, agent: reviewer}
