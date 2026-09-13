@@ -3,7 +3,6 @@ package orchestrator
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	"github.com/jurabek/software-factory/daemon/internal/stagekit"
 	"github.com/jurabek/software-factory/daemon/internal/store"
@@ -17,7 +16,7 @@ type execution struct {
 
 func (s *Service) progress(ctx context.Context, taskID string) error {
 	if s.workflow == nil {
-		return fmt.Errorf("pipeline is not configured")
+		return nil
 	}
 	_, err := s.workflow.Run(ctx, taskID)
 	return err
@@ -100,6 +99,7 @@ func (s *Service) Shutdown(ctx context.Context) {
 			_ = s.db.Transition(ctx, id, task.State, string(stagekit.Blocked), task.ActivePhase, "server shutting down")
 		}
 	}
+	s.eventCancel()
 }
 
 func (s *Service) stopAndWait(ctx context.Context, id string) error {
@@ -126,7 +126,7 @@ func (s *Service) scheduleMessage(ctx context.Context, task store.Task, role str
 	_ = role
 	switch stagekit.State(task.State) {
 	case stagekit.AwaitingApproval, stagekit.Blocked, stagekit.Completed:
-		s.launch(task.ID, s.progress)
+		return s.events.Publish(ctx, task.ID, store.TaskMessaged)
 	}
 	return nil
 }

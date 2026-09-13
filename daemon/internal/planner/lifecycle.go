@@ -42,14 +42,10 @@ func (s service) savedPlan(ctx context.Context, taskID string) (stage.PlanResult
 	return stage.PlanResult{Payload: payload, AttemptID: phase.ID, SnapshotID: phase.OutputSnapshot, Approved: task.ApprovalActor != ""}, true, nil
 }
 
-// beginPlan prepares the repository when needed and starts or reuses the
-// planning attempt under the Planning state.
+// beginPlan starts or reuses the planning attempt after the creation stage has
+// prepared the repository.
 func (s service) beginPlan(ctx context.Context, taskID string) (store.Task, store.Phase, error) {
 	task, err := s.kit.Task(ctx, taskID)
-	if err != nil {
-		return store.Task{}, store.Phase{}, err
-	}
-	task, err = s.kit.EnsurePrepared(ctx, task)
 	if err != nil {
 		return store.Task{}, store.Phase{}, err
 	}

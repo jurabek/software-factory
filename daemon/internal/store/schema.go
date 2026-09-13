@@ -19,6 +19,11 @@ create table if not exists tasks (
 );
 create table if not exists phases (id text primary key, task_id text not null references tasks(id) on delete cascade, sequence integer not null, name text not null, kind text not null, owner text not null, description text, status text not null, attempt integer not null default 1, retries integer not null default 0, error text, started_at text, ended_at text);
 create table if not exists events (sequence integer primary key autoincrement, id text not null unique, task_id text not null references tasks(id) on delete cascade, phase_id text, parent_event_id text, kind text not null, format_version integer not null default 1, name text, payload_json text not null, display_json text not null default '{}', token_count integer not null default 0, started_at text not null, ended_at text);
+create table if not exists orchestration_events (
+ id text primary key, task_id text not null references tasks(id) on delete cascade,
+ type text not null, status text not null default 'pending', error text,
+ created_at text not null, handled_at text
+);
 create table if not exists envelopes (id text primary key, task_id text not null references tasks(id) on delete cascade, phase_id text, stage_id text, agent_role text not null, output_type text not null, payload_json text not null, valid integer not null, attempt integer not null, created_at text not null);
 create table if not exists checks (id text not null, task_id text not null references tasks(id) on delete cascade, phase_id text, stage_id text, check_phase text not null default 'primary', comparison_baseline text, name text not null, command text not null, attempt integer not null, status text not null, exit_code integer, output text, artifact_path text, duration_ms integer, started_at text, ended_at text, primary key (task_id, id, attempt));
 create table if not exists processes (id integer primary key autoincrement, task_id text not null references tasks(id) on delete cascade, phase_id text, kind text not null, name text not null, pid integer not null, display_command text not null, status text not null, exit_code integer, started_at text not null, ended_at text);
@@ -74,6 +79,7 @@ create table if not exists workspace_snapshots (
 create table if not exists test_changes (id text primary key, task_id text not null references tasks(id) on delete cascade, phase_id text not null, attempt integer not null, path text not null, reason text not null, change_kind text not null, rename_from text, rename_to text, created_at text not null, unique(task_id, phase_id, path));
 create table if not exists comparisons (id text primary key, task_id text not null references tasks(id) on delete cascade, phase_id text not null, attempt integer not null, status text not null, reason text not null, baseline_snapshot text, overlay_paths_json text not null default '[]', created_at text not null, duration_ms integer not null default 0);
 create index if not exists events_task_cursor on events(task_id, sequence);
+create index if not exists orchestration_events_pending on orchestration_events(status, created_at);
 create index if not exists phases_task_sequence on phases(task_id, sequence);
 create index if not exists interventions_task on interventions(task_id, created_at);
 create index if not exists messages_task_fifo on messages(task_id, sequence);

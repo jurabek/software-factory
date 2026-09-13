@@ -72,5 +72,10 @@ func (s *Service) Retry(ctx context.Context, taskID, attemptID string, request R
 	if err != nil {
 		return store.RetryResult{}, false, err
 	}
+	if created && s.deps.Events != nil {
+		if err = s.deps.Events.Publish(ctx, taskID, store.TaskRetried); err != nil {
+			return store.RetryResult{}, false, err
+		}
+	}
 	return result, created, nil
 }
