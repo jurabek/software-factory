@@ -12,17 +12,16 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"text/template"
 	"time"
 
-	"uuid"
-
+	"github.com/jurabek/software-factory/daemon/internal/agentexec"
 	"github.com/jurabek/software-factory/daemon/internal/config"
 	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
 	"github.com/jurabek/software-factory/daemon/internal/harness"
+	"github.com/jurabek/software-factory/daemon/internal/pipeline"
 	"github.com/jurabek/software-factory/daemon/internal/session"
 	"github.com/jurabek/software-factory/daemon/internal/store"
-	"gopkg.in/yaml.v3"
+	"github.com/jurabek/software-factory/daemon/internal/workspace"
 )
 
 const maxCapturedOutput = 64 << 10
@@ -33,15 +32,24 @@ var (
 )
 
 type Dependencies struct {
-	Store      *store.DB
-	Config     config.Config
-	ConfigPath string
-	Harnesses  harness.Registry
-	Git        factorygit.Runner
-	Sandbox    Sandbox
+	Store       *store.DB
+	Config      config.Config
+	ConfigPath  string
+	Harnesses   harness.Registry
+	Git         factorygit.Runner
+	Sandbox     Sandbox
+	NewPipeline func(*Service) Pipeliner
 }
 
-type runtime struct {
+// Pipeliner is the synchronous workflow capability consumed by Factory.
+// Pipeline owns stage order, the approval checkpoint, resume/retry position,
+// and explicit result handoffs; Factory owns task creation, controls, worker
+// ownership, cancellation, and shutdown.
+type Pipeliner interface {
+	Run(context.Context, string) (pipeline.Result, error)
+}
+
+type Service struct {
 	root       string
 	db         *store.DB
 	config     config.Config
@@ -52,6 +60,11 @@ type runtime struct {
 	mu         sync.Mutex
 	cancel     map[string]*execution
 	taskLocks  sync.Map
+	tasks      *taskService
+	pipelines  *pipelineService
+	snapshots  *workspace.Service
+	quality    *qualityService
+	pipeliner  Pipeliner
 }
 
 type taskStore interface {
@@ -81,17 +94,9 @@ type pipelineService struct {
 	configPath string
 }
 
-type snapshotStore interface {
-	SaveSnapshot(context.Context, store.WorkspaceSnapshot) error
-	Snapshot(context.Context, string) (store.WorkspaceSnapshot, error)
-}
-
-type snapshotService struct {
-	db  snapshotStore
-	git factorygit.Runner
-}
-
 type qualityStore interface {
+	Checks(context.Context, string) ([]store.Check, error)
+	Comparisons(context.Context, string) ([]store.Comparison, error)
 	EndProcess(context.Context, string, int, int) error
 	Phases(context.Context, string) ([]store.Phase, error)
 	SaveCheck(context.Context, store.Check) error
@@ -103,15 +108,7 @@ type qualityStore interface {
 type qualityService struct {
 	db        qualityStore
 	git       factorygit.Runner
-	snapshots *snapshotService
-}
-
-type Service struct {
-	*runtime
-	tasks     *taskService
-	pipelines *pipelineService
-	snapshots *snapshotService
-	quality   *qualityService
+	snapshots *workspace.Service
 }
 
 type execution struct {
@@ -142,7 +139,9 @@ type Diff struct {
 }
 
 func NewService(root string, dependencies Dependencies) *Service {
-	runtime := &runtime{
+	pipelines := &pipelineService{db: dependencies.Store, config: dependencies.Config, configPath: dependencies.ConfigPath}
+	snapshots := workspace.New(dependencies.Store, dependencies.Git)
+	service := &Service{
 		root:       root,
 		db:         dependencies.Store,
 		config:     dependencies.Config,
@@ -151,11 +150,6 @@ func NewService(root string, dependencies Dependencies) *Service {
 		git:        dependencies.Git,
 		sandbox:    dependencies.Sandbox,
 		cancel:     map[string]*execution{},
-	}
-	pipelines := &pipelineService{db: dependencies.Store, config: dependencies.Config, configPath: dependencies.ConfigPath}
-	snapshots := &snapshotService{db: dependencies.Store, git: dependencies.Git}
-	return &Service{
-		runtime: runtime,
 		tasks: &taskService{
 			root: root, db: dependencies.Store, config: dependencies.Config,
 			harnesses: dependencies.Harnesses, git: dependencies.Git, sandbox: dependencies.Sandbox, pipelines: pipelines,
@@ -164,6 +158,10 @@ func NewService(root string, dependencies Dependencies) *Service {
 		snapshots: snapshots,
 		quality:   &qualityService{db: dependencies.Store, git: dependencies.Git, snapshots: snapshots},
 	}
+	if dependencies.NewPipeline != nil {
+		service.pipeliner = dependencies.NewPipeline(service)
+	}
+	return service
 }
 
 func (s *Service) Create(ctx context.Context, request CreateRequest) (store.Task, error) {
@@ -451,7 +449,7 @@ func (s *Service) Resume(ctx context.Context, id string) error {
 	if task.State == string(Blocked) && task.Error == "unresolved_questions" {
 		return store.ErrConflict
 	}
-	_, pipeline, pipelineErr := s.taskPipeline(task)
+	_, pipeline, pipelineErr := s.pipelines.taskPipeline(task)
 	if pipelineErr != nil {
 		return pipelineErr
 	}
@@ -531,10 +529,6 @@ func (s *taskService) diffRepository(ctx context.Context, task store.Task, revie
 }
 
 func (s *taskService) taskDir(id string) string { return filepath.Join(s.root, "tasks", id) }
-
-func (s *Service) diffRepository(ctx context.Context, task store.Task, reviewBase bool) (Diff, error) {
-	return s.tasks.diffRepository(ctx, task, reviewBase)
-}
 
 func (s *Service) launch(id string, run func(context.Context, string) error) {
 	s.mu.Lock()
@@ -634,70 +628,6 @@ func (s *Service) stopAndWait(ctx context.Context, id string) error {
 	}
 }
 
-func (s *Service) prepareAndPlan(ctx context.Context, id string) error {
-	task, err := s.db.Task(ctx, id)
-	if err != nil {
-		return err
-	}
-	if task.State == string(Planning) && task.RepositoryPath != "" {
-		return s.plan(ctx, task, nil)
-	}
-	snapshot, err := os.ReadFile(s.configPath)
-	if err != nil {
-		return err
-	}
-	configured, problems, parseErr := config.Parse(snapshot, filepath.Dir(s.configPath))
-	if parseErr != nil {
-		return parseErr
-	}
-	if len(problems) > 0 {
-		return fmt.Errorf("invalid config: %s", strings.Join(problems, "; "))
-	}
-	configured = config.ApplyTaskOverrides(configured, task.CodingAgent, task.Model, task.Thinking)
-	if problems := validateTaskConfig(configured, s.harnesses); len(problems) > 0 {
-		return fmt.Errorf("invalid task config: %s", strings.Join(problems, "; "))
-	}
-	if task.CodingAgent != "" || task.Model != "" || task.Thinking != "" {
-		overridden, marshalErr := yaml.Marshal(configured)
-		if marshalErr != nil {
-			return fmt.Errorf("encode task config: %w", marshalErr)
-		}
-		snapshot = overridden
-	}
-	phase, err := s.beginPhase(ctx, id, "prepare", "git", "factory", "Prepare repository")
-	if err != nil {
-		return err
-	}
-	repositoryPath, err := s.prepareRepository(ctx, task)
-	if err != nil {
-		return err
-	}
-	_, profileErr := os.ReadFile(filepath.Join(task.WorkspacePath, "repository-profile.json"))
-	if profileErr != nil {
-		s.failPhase(ctx, phase, profileErr)
-		return profileErr
-	}
-	if err = os.WriteFile(filepath.Join(s.taskDir(id), "config-snapshot.yaml"), snapshot, 0o600); err != nil {
-		s.failPhase(ctx, phase, err)
-		return err
-	}
-	if err = s.db.SetPrepared(ctx, id, repositoryPath, string(snapshot)); err != nil {
-		s.failPhase(ctx, phase, err)
-		return err
-	}
-	if err = s.endPhase(ctx, phase, "success", nil); err != nil {
-		return err
-	}
-	if err = s.db.Transition(ctx, id, string(Preparing), string(Planning), "", ""); err != nil {
-		return err
-	}
-	task, err = s.db.Task(ctx, id)
-	if err != nil {
-		return err
-	}
-	return s.plan(ctx, task, nil)
-}
-
 func (s *Service) plan(ctx context.Context, task store.Task, revision map[string]any) error {
 	before, err := repositoryFingerprint(ctx, s.git, task)
 	if err != nil {
@@ -747,126 +677,25 @@ func (s *Service) runRole(ctx context.Context, task store.Task, phase store.Phas
 	if !ok {
 		return "", fmt.Errorf("agent %s not configured", agentName)
 	}
-	adapter, ok := s.harnesses.Get(taskConfig.Defaults.CodingAgent)
-	if !ok {
-		return "", fmt.Errorf("harness %s unavailable", taskConfig.Defaults.CodingAgent)
-	}
 	systemPrompt, userPrompt, err := s.renderPrompts(agent, data)
 	if err != nil {
 		return "", err
 	}
 	harnessName := taskConfig.Defaults.CodingAgent
-	sessionDir := filepath.Join(s.taskDir(task.ID), "sessions", stageID, harnessName)
-	storedSession, sessionErr := s.db.AgentSession(ctx, task.ID, stageID)
-	if errors.Is(sessionErr, store.ErrNotFound) {
-		storedSession, sessionErr = s.db.ReserveAgentSession(ctx, task.ID, store.AgentSession{StageID: stageID, AgentName: agentName, Role: agentName, Harness: harnessName, Model: agent.Model, Thinking: agent.Thinking, Color: agent.Color, HarnessSessionID: uuid.New().String(), SessionDirectory: sessionDir, AccountingComplete: true})
-	}
-	if sessionErr != nil {
-		return "", sessionErr
-	}
-	if storedSession.Harness != harnessName {
-		return "", fmt.Errorf("role %s session belongs to harness %s", role, storedSession.Harness)
-	}
-	request := harness.Request{CWD: task.RepositoryPath, Prompt: userPrompt, SystemPrompt: systemPrompt, Model: agent.Model, Thinking: agent.Thinking, SessionID: storedSession.HarnessSessionID, SessionDirectory: storedSession.SessionDirectory, RawOutputPath: filepath.Join(storedSession.SessionDirectory, "raw-output.jsonl"), DeadlineMS: taskConfig.Runtime.AgentDeadlineMS, Resume: storedSession.SessionReady}
-	sessionReady := storedSession.SessionReady
-	for attempt := 0; attempt <= taskConfig.Runtime.JSONFixAttempts; attempt++ {
-		if attempt > 0 {
-			request.Prompt = "Your previous final response was invalid: " + err.Error() + "\n" + envelopeInstructions(phaseEnvelopeKind(phase, role))
-		}
-		invocationID := uuid.New().String()
-		if err := s.db.BeginAgentInvocation(ctx, task.ID, stageID, invocationID); err != nil {
-			return "", err
-		}
-		var before string
-		if phaseReadOnly(phase, role) {
-			before, err = repositoryFingerprint(ctx, s.git, task)
-			if err != nil {
-				return "", err
-			}
-		}
-		result, runErr := invokeHarness(ctx, adapter, request, s.eventSink(task.ID, phase.ID, harnessName))
-		if phaseReadOnly(phase, role) {
-			after, fingerprintErr := repositoryFingerprint(ctx, s.git, task)
-			if fingerprintErr != nil {
-				runErr = errors.Join(runErr, fingerprintErr)
-			} else if before != after {
-				runErr = errors.Join(runErr, fmt.Errorf("%s modified repository", role))
-			}
-		}
-		if result.SessionID == "" {
-			result.SessionID = storedSession.HarnessSessionID
-		}
-		if result.SessionID != storedSession.HarnessSessionID {
-			identityErr := fmt.Errorf("harness session identity changed from %s to %s", storedSession.HarnessSessionID, result.SessionID)
-			if runErr != nil {
-				runErr = errors.Join(runErr, identityErr)
-			} else {
-				runErr = identityErr
-			}
-		}
-		sessionReady = sessionReady || result.SessionReady
-		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		finalizeErr := s.db.FinalizeAgentInvocation(cleanupCtx, task.ID, stageID, invocationID, store.AgentSession{StageID: stageID, AgentName: agentName, Role: agentName, Harness: harnessName, Provider: result.Provider, Model: result.Model, Thinking: agent.Thinking, Color: agent.Color, HarnessSessionID: storedSession.HarnessSessionID, SessionDirectory: storedSession.SessionDirectory, SessionReady: sessionReady, NativeTranscriptPath: result.NativeTranscriptPath, ContextTokens: result.ContextTokens, ContextWindow: result.ContextWindow, Usage: persistedUsage(result.Usage), Cost: result.Usage.Cost, AccountingComplete: result.AccountingComplete})
-		cancel()
-		if finalizeErr != nil {
-			return "", finalizeErr
-		}
-		request.Resume = sessionReady
-		if runErr != nil {
-			return "", runErr
-		}
-		_, validationErr := validate(result.Text)
-		valid := validationErr == nil
-		tail := result.Text
-		if len(tail) > maxCapturedOutput {
-			tail = tail[len(tail)-maxCapturedOutput:]
-		}
-		stored := tail
-		if valid {
-			stored = result.Text
-		}
-		if err := s.db.SaveEnvelope(ctx, randomID(), task.ID, phase.ID, stageID, phaseEnvelopeKind(phase, role), stored, valid, attempt+1); err != nil {
-			return "", err
-		}
-		if valid {
-			return result.Text, nil
-		}
-		err = validationErr
-	}
-	return "", fmt.Errorf("%s envelope invalid after corrections: %w", role, err)
-}
-
-func invokeHarness(ctx context.Context, adapter harness.Harness, request harness.Request, sink harness.EventSink) (harness.Result, error) {
-	invocationCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	var sinkMu sync.Mutex
-	var sinkErr error
-	requiredSink := func(eventCtx context.Context, event harness.Event) error {
-		err := sink(eventCtx, event)
-		if err == nil {
-			return nil
-		}
-		sinkMu.Lock()
-		if sinkErr == nil {
-			sinkErr = err
-		}
-		sinkMu.Unlock()
-		cancel()
-		return err
-	}
-
-	result, runErr := adapter.Run(invocationCtx, request, requiredSink)
-	sinkMu.Lock()
-	persistenceErr := sinkErr
-	sinkMu.Unlock()
-	if persistenceErr != nil {
-		return result, errors.Join(persistenceErr, runErr)
-	}
-	if runErr == nil {
-		runErr = invocationCtx.Err()
-	}
-	return result, runErr
+	return agentexec.RunTurn(ctx, agentexec.Deps{
+		DB: s.db, Harnesses: s.harnesses, Git: s.git,
+		AgentDeadlineMS: taskConfig.Runtime.AgentDeadlineMS,
+		JSONFixAttempts: taskConfig.Runtime.JSONFixAttempts,
+	}, agentexec.TurnInput{
+		TaskID: task.ID, Phase: phase, Role: role,
+		HarnessName: harnessName, Model: agent.Model, Thinking: agent.Thinking, Color: agent.Color,
+		RepoPath: task.RepositoryPath, SessionDir: filepath.Join(s.taskDir(task.ID), "sessions", stageID, harnessName),
+		SystemPrompt: systemPrompt, UserPrompt: userPrompt,
+		ReadOnly: phaseReadOnly(phase, role), EnvelopeKind: phaseEnvelopeKind(phase, role),
+		CorrectionSuffix: envelopeInstructions(phaseEnvelopeKind(phase, role)),
+		Validate:         agentexec.Validate(validate),
+		Sink:             s.eventSink(task.ID, phase.ID, harnessName),
+	})
 }
 
 func reportMarkdown(value any) (string, error) {
@@ -922,54 +751,14 @@ func persistedUsage(value harness.Usage) session.Usage {
 }
 
 func (s *Service) renderPrompts(agent config.Agent, data map[string]any) (string, string, error) {
-	system, err := s.renderPrompt(agent.PromptEngineering.SystemContent, agent.PromptEngineering.System, data)
-	if err != nil {
-		return "", "", err
-	}
-	system = strings.TrimSpace(system) + "\n\n" + envelopeInstructions(agent.Name)
-	user, err := s.renderPrompt(agent.PromptEngineering.UserContent, agent.PromptEngineering.User, data)
-	if err != nil {
-		return "", "", err
-	}
-	audit := filepath.Join(s.taskDir(dataTask(data)), "prompts", agent.Name)
-	if err = os.MkdirAll(audit, 0o700); err != nil {
-		return "", "", err
-	}
-	if err = os.WriteFile(filepath.Join(audit, "system.md"), []byte(system), 0o600); err != nil {
-		return "", "", err
-	}
-	if err = os.WriteFile(filepath.Join(audit, "user.md"), []byte(user), 0o600); err != nil {
-		return "", "", err
-	}
-	return system, user, nil
-}
-
-func (s *Service) renderPrompt(content, path string, data map[string]any) (string, error) {
-	if content != "" {
-		parsed, err := template.New("frozen-prompt").Option("missingkey=zero").Parse(content)
-		if err != nil {
-			return "", err
-		}
-		var output strings.Builder
-		if err = parsed.Execute(&output, data); err != nil {
-			return "", err
-		}
-		return output.String(), nil
-	}
-	base := filepath.Dir(s.configPath)
-	body, err := os.ReadFile(filepath.Join(base, path))
-	if err != nil {
-		return "", err
-	}
-	parsed, err := template.New(filepath.Base(path)).Option("missingkey=zero").Parse(string(body))
-	if err != nil {
-		return "", err
-	}
-	var output strings.Builder
-	if err = parsed.Execute(&output, data); err != nil {
-		return "", err
-	}
-	return output.String(), nil
+	return agentexec.RenderPrompts(
+		agent.Name,
+		agent.PromptEngineering.SystemContent, agent.PromptEngineering.System,
+		agent.PromptEngineering.UserContent, agent.PromptEngineering.User,
+		data, filepath.Dir(s.configPath),
+		filepath.Join(s.taskDir(dataTask(data)), "prompts", agent.Name),
+		envelopeInstructions(agent.Name),
+	)
 }
 
 func phaseEnvelopeKind(phase store.Phase, role string) string {
@@ -1219,7 +1008,7 @@ func agentForRole(configured config.Config, role string) (config.Agent, bool) {
 	}
 	return config.Agent{}, false
 }
-func (r *runtime) taskDir(id string) string { return filepath.Join(r.root, "tasks", id) }
+func (s *Service) taskDir(id string) string { return filepath.Join(s.root, "tasks", id) }
 
 func (s *Service) taskLock(id string) *sync.Mutex {
 	value, _ := s.taskLocks.LoadOrStore(id, &sync.Mutex{})
@@ -1259,15 +1048,7 @@ func randomID() string {
 }
 
 func readTaskProfile(task store.Task) (Materialization, error) {
-	body, err := os.ReadFile(filepath.Join(task.WorkspacePath, "repository-profile.json"))
-	if err != nil {
-		return Materialization{}, fmt.Errorf("read repository profile: %w", err)
-	}
-	var profile Materialization
-	if err = json.Unmarshal(body, &profile); err != nil {
-		return Materialization{}, fmt.Errorf("decode repository profile: %w", err)
-	}
-	return profile, nil
+	return workspace.ReadProfile(task)
 }
 
 func (s *Service) prepareRepository(ctx context.Context, task store.Task) (string, error) {
@@ -1297,18 +1078,11 @@ func (s *Service) prepareRepository(ctx context.Context, task store.Task) (strin
 }
 
 func taskChangedFiles(ctx context.Context, runner factorygit.Runner, task store.Task, reviewBase bool) ([]string, error) {
-	base := task.BaseSHA
-	if reviewBase && task.ReviewBaseSHA != "" {
-		base = task.ReviewBaseSHA
-	}
-	return factorygit.ChangedFiles(ctx, runner, task.RepositoryPath, base)
+	return workspace.ChangedFiles(ctx, runner, task, reviewBase)
 }
 
 func repositoryFingerprint(ctx context.Context, runner factorygit.Runner, task store.Task) (string, error) {
-	if task.RepositoryPath == "" {
-		return "", nil
-	}
-	return factorygit.Fingerprint(ctx, runner, task.RepositoryPath)
+	return workspace.Fingerprint(ctx, runner, task)
 }
 
 func isReadOnlyOwner(owner string) bool {

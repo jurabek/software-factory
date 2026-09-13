@@ -116,6 +116,8 @@ type Stage struct {
 	Agent string `yaml:"agent,omitempty" json:"agent,omitempty"`
 }
 
+var fixedStageKinds = []string{"plan", "build", "verify", "review"}
+
 // Load reads and validates config.yaml. Prompt contents are intentionally not loaded.
 func Load(path string) (Config, []string, error) {
 	data, err := os.ReadFile(path)
@@ -211,56 +213,28 @@ func validate(c Config, base string) []string {
 
 func validatePipeline(pipeline Pipeline, agents map[string]bool) []string {
 	var problems []string
+	if len(pipeline.Stages) != len(fixedStageKinds) {
+		return append(problems, "pipeline "+pipeline.Name+" must contain plan, build, verify, and review exactly once in that order")
+	}
 	seenIDs := map[string]bool{}
-	builds, verifies := 0, 0
-	seenBuild, seenVerify := false, false
-	for _, stage := range pipeline.Stages {
+	for index, stage := range pipeline.Stages {
 		if stage.ID == "" || seenIDs[stage.ID] {
 			problems = append(problems, "pipeline "+pipeline.Name+" stage ids must be non-empty and unique")
 		}
 		seenIDs[stage.ID] = true
-		switch stage.Kind {
-		case "build":
-			builds++
-			seenBuild = true
-			if !agents[stage.Agent] {
-				problems = append(problems, "pipeline "+pipeline.Name+" stage "+stage.ID+" references undefined agent "+stage.Agent)
-			}
-		case "verify":
-			verifies++
-			seenVerify = true
+		if stage.Kind != fixedStageKinds[index] {
+			problems = append(problems, "pipeline "+pipeline.Name+" must contain plan, build, verify, and review exactly once in that order")
+			break
+		}
+		if stage.Kind == "verify" {
 			if stage.Agent != "" {
 				problems = append(problems, "pipeline "+pipeline.Name+" verify stage "+stage.ID+" cannot name an agent")
 			}
-		case "review":
-			if !agents[stage.Agent] {
-				problems = append(problems, "pipeline "+pipeline.Name+" stage "+stage.ID+" references undefined agent "+stage.Agent)
-			}
-		default:
-			problems = append(problems, "pipeline "+pipeline.Name+" stage "+stage.ID+" has invalid kind "+stage.Kind)
+			continue
 		}
-		if stage.Kind == "verify" && !seenBuild {
-			problems = append(problems, "pipeline "+pipeline.Name+" verify stage "+stage.ID+" requires a preceding build")
+		if !agents[stage.Agent] {
+			problems = append(problems, "pipeline "+pipeline.Name+" stage "+stage.ID+" references undefined agent "+stage.Agent)
 		}
-		if stage.Kind == "review" && (!seenBuild || !seenVerify) {
-			problems = append(problems, "pipeline "+pipeline.Name+" review stage "+stage.ID+" requires preceding build and verify stages")
-		}
-	}
-	if builds == 0 || verifies == 0 {
-		problems = append(problems, "pipeline "+pipeline.Name+" must contain build and verify stages")
-	}
-	lastBuild := -1
-	lastVerify := -1
-	for index, stage := range pipeline.Stages {
-		if stage.Kind == "build" {
-			lastBuild = index
-		}
-		if stage.Kind == "verify" {
-			lastVerify = index
-		}
-	}
-	if lastBuild >= 0 && lastVerify >= 0 && lastVerify < lastBuild {
-		problems = append(problems, "pipeline "+pipeline.Name+" must verify after its final build")
 	}
 	return problems
 }
@@ -281,4 +255,14 @@ func (c Config) Pipeline(name string) (Pipeline, bool) {
 		}
 	}
 	return Pipeline{}, false
+}
+
+// Agent resolves a role agent by name for stage prompt rendering.
+func (c Config) Agent(name string) (Agent, bool) {
+	for _, agent := range c.Agents {
+		if agent.Name == name {
+			return agent, true
+		}
+	}
+	return Agent{}, false
 }

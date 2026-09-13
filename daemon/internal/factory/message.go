@@ -12,6 +12,8 @@ import (
 
 	"uuid"
 
+	"github.com/jurabek/software-factory/daemon/internal/agentexec"
+	"github.com/jurabek/software-factory/daemon/internal/builder"
 	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
 	"github.com/jurabek/software-factory/daemon/internal/harness"
 	"github.com/jurabek/software-factory/daemon/internal/session"
@@ -146,7 +148,7 @@ func (s *Service) messageRecipient(ctx context.Context, task store.Task, target 
 	if state == Preparing || state == Planning || state == AwaitingApproval {
 		return "planner", latest, nil
 	}
-	if _, pipeline, pipelineErr := s.taskPipeline(task); pipelineErr == nil {
+	if _, pipeline, pipelineErr := s.pipelines.taskPipeline(task); pipelineErr == nil {
 		if task.ActiveStage != "" {
 			if stage, _, ok := stageDefinition(pipeline, task.ActiveStage); ok && stage.Agent != "" {
 				return stage.ID, latest, nil
@@ -197,7 +199,7 @@ func (s *Service) ensureAgentSession(ctx context.Context, task store.Task, role 
 		return store.AgentSession{}, err
 	}
 	agentName := role
-	if _, pipeline, pipelineErr := s.taskPipeline(task); pipelineErr == nil {
+	if _, pipeline, pipelineErr := s.pipelines.taskPipeline(task); pipelineErr == nil {
 		if stage, _, ok := stageDefinition(pipeline, role); ok && stage.Agent != "" {
 			agentName = stage.Agent
 		}
@@ -279,7 +281,7 @@ func (s *Service) continueMessages(ctx context.Context, taskID, stageID string) 
 	}
 	agentName := storedSession.AgentName
 	phaseName, phaseKind := string(stateForRole(agentName)), "agent"
-	if _, pipeline, pipelineErr := s.taskPipeline(task); pipelineErr == nil {
+	if _, pipeline, pipelineErr := s.pipelines.taskPipeline(task); pipelineErr == nil {
 		if stage, _, ok := stageDefinition(pipeline, stageID); ok {
 			phaseName, phaseKind = stage.ID, stage.Kind
 		}
@@ -302,7 +304,7 @@ func (s *Service) continueMessages(ctx context.Context, taskID, stageID string) 
 		if err != nil {
 			return err
 		}
-		validate = s.builderValidator(ctx, task, profile)
+		validate = s.quality.builderValidator(ctx, task, profile)
 	}
 	next := stateAfterRole(phaseEnvelopeKind(phase, agentName))
 	payload, err := s.completeAgentPhase(ctx, task, phase, stageID, agentName, validate, "", func(payload string) error {
@@ -421,16 +423,7 @@ func (s *Service) agentReportArtifact(task store.Task, phase store.Phase, role, 
 }
 
 func (s *Service) validateBuilderPaths(ctx context.Context, task store.Task, profile Materialization) error {
-	files, err := factorygit.ChangedFiles(ctx, s.git, task.RepositoryPath, reviewBase(task))
-	if err != nil {
-		return err
-	}
-	for _, file := range files {
-		if factorygit.MatchesPath(file, profile.Protected) {
-			return fmt.Errorf("builder changed protected path %s", file)
-		}
-	}
-	return nil
+	return builder.CheckProtectedPaths(ctx, s.git, task.RepositoryPath, reviewBase(task), profile.Protected)
 }
 
 func validatorForRole(role string) validator {
@@ -510,7 +503,7 @@ func (s *Service) drainMessages(ctx context.Context, task store.Task, phase stor
 					return "", err
 				}
 			}
-			result, runErr := invokeHarness(ctx, adapter, request, s.eventSink(task.ID, phase.ID, storedSession.Harness))
+			result, runErr := agentexec.Invoke(ctx, adapter, request, s.eventSink(task.ID, phase.ID, storedSession.Harness))
 			if phaseReadOnly(phase, agentName) {
 				after, fingerprintErr := repositoryFingerprint(ctx, s.git, task)
 				if fingerprintErr != nil {
@@ -557,7 +550,7 @@ func (s *Service) drainMessages(ctx context.Context, task store.Task, phase stor
 			}
 			if validationErr == nil {
 				if phase.Kind == "build" || agentName == "builder" {
-					if evidenceErr := s.persistBuilderEvidence(ctx, task, phase, result.Text); evidenceErr != nil {
+					if evidenceErr := s.quality.persistBuilderEvidence(ctx, task, phase, result.Text); evidenceErr != nil {
 						s.failMessage(ctx, message, phase, "evidence_persistence_failed")
 						return "", evidenceErr
 					}
@@ -757,7 +750,7 @@ func (s *Service) runRetryAgent(ctx context.Context, task store.Task, phase stor
 		if err != nil {
 			return err
 		}
-		validate = s.builderValidator(ctx, task, profile)
+		validate = s.quality.builderValidator(ctx, task, profile)
 	}
 	if phase.Owner == "reviewer" {
 		baseline, err = repositoryFingerprint(ctx, s.git, task)
@@ -781,7 +774,7 @@ func (s *Service) runRetryAgent(ctx context.Context, task store.Task, phase stor
 		if err != nil {
 			return err
 		}
-		changes, diffErr := s.diffRepository(ctx, task, true)
+		changes, diffErr := s.tasks.diffRepository(ctx, task, true)
 		if diffErr != nil {
 			return diffErr
 		}
@@ -842,7 +835,7 @@ func (s *Service) runRetryChecks(ctx context.Context, task store.Task, phase sto
 	if err != nil {
 		return err
 	}
-	if err = s.runChecks(ctx, task, phase, profile.Checks, "primary", ""); err != nil {
+	if err = s.quality.runChecks(ctx, task, phase, profile.Checks, "primary", ""); err != nil {
 		s.failPhase(ctx, phase, err)
 		return err
 	}
