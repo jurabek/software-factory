@@ -47,7 +47,7 @@ func TestRunRoleProvidesReviewerEnvelopeContract(t *testing.T) {
 
 	agent := &scriptedHarness{results: []harness.Result{
 		{Text: `{"status":"approved","summary":"Looks good","findings":[]}`},
-		{Text: `{"status":"success","summary":"Looks good","artifacts":[],"notes_for_next_agent":"","approved":true,"findings":[],"blocking":[]}`},
+		{Text: `{"status":"success","summary":"Looks good","artifacts":[],"notes_for_next_agent":"","report_markdown":"# Review\n\nLooks good.","approved":true,"findings":[],"blocking":[]}`},
 	}}
 	cfg := config.Config{
 		Defaults: config.Defaults{CodingAgent: "pi", Model: "provider/model", Thinking: "low"},

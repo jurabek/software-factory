@@ -53,6 +53,7 @@ func (h tasksHandler) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/tasks/{id}/attempts/{attemptID}", h.attempt)
 	mux.HandleFunc("GET /api/v1/tasks/{id}/branches", h.branches)
 	mux.HandleFunc("GET /api/v1/tasks/{id}/artifacts", h.artifacts)
+	mux.HandleFunc("GET /api/v1/tasks/{id}/artifacts/{artifactID}", h.artifact)
 	mux.HandleFunc("GET /api/v1/tasks/{id}/events", h.events)
 	mux.HandleFunc("GET /api/v1/tasks/{id}/events/stream", h.stream)
 	mux.HandleFunc("GET /api/v1/tasks/{id}/results", h.results)
@@ -325,6 +326,19 @@ func (h tasksHandler) artifacts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	write(w, http.StatusOK, values)
+}
+
+func (h tasksHandler) artifact(w http.ResponseWriter, r *http.Request) {
+	artifact, err := h.db.Artifact(r.Context(), r.PathValue("id"), r.PathValue("artifactID"))
+	if err != nil {
+		storeError(w, err)
+		return
+	}
+	if artifact.MediaType == "" {
+		artifact.MediaType = "text/markdown; charset=utf-8"
+	}
+	w.Header().Set("Content-Type", artifact.MediaType)
+	_, _ = w.Write([]byte(artifact.Content))
 }
 
 func (h tasksHandler) checks(w http.ResponseWriter, r *http.Request) {

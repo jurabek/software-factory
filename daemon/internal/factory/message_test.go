@@ -10,9 +10,27 @@ import (
 	"time"
 
 	"github.com/jurabek/software-factory/daemon/internal/config"
+	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
 	"github.com/jurabek/software-factory/daemon/internal/harness"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 )
+
+type lateSuccessHarness struct {
+	started chan struct{}
+}
+
+func (h *lateSuccessHarness) Models(context.Context) ([]harness.Model, error) { return nil, nil }
+
+func (h *lateSuccessHarness) Run(ctx context.Context, request harness.Request, _ harness.EventSink) (harness.Result, error) {
+	close(h.started)
+	<-ctx.Done()
+	return harness.Result{
+		Text:               `{"status":"success","summary":"late plan","artifacts":[],"notes_for_next_agent":"","report_markdown":"# Plan\n\nLate.","steps":[{"id":"one","description":"change","expected_files":[],"acceptance_criteria":[]}],"questions":[]}`,
+		SessionID:          request.SessionID,
+		SessionReady:       true,
+		AccountingComplete: true,
+	}, nil
+}
 
 func messageTestService(t *testing.T, adapter harness.Harness) (*Service, *store.DB, store.Task) {
 	t.Helper()
@@ -96,7 +114,7 @@ func TestMessagesAreIdempotentFIFOAndAbortFailsQueue(t *testing.T) {
 
 func TestDrainMessagesResumesSameSessionWithExactText(t *testing.T) {
 	adapter := &scriptedHarness{results: []harness.Result{{
-		Text:         `{"status":"success","summary":"planned","artifacts":[],"notes_for_next_agent":"","steps":[{"id":"one","description":"change","expected_files":[],"acceptance_criteria":[]}],"questions":[]}`,
+		Text:         `{"status":"success","summary":"planned","artifacts":[],"notes_for_next_agent":"","report_markdown":"# Plan\n\nPlanned.","steps":[{"id":"one","description":"change","expected_files":[],"acceptance_criteria":[]}],"questions":[]}`,
 		SessionReady: true, AccountingComplete: true,
 	}}}
 	service, db, task := messageTestService(t, adapter)
@@ -113,7 +131,7 @@ func TestDrainMessagesResumesSameSessionWithExactText(t *testing.T) {
 		t.Fatal(err)
 	}
 	phase := store.Phase{ID: "planning-message", TaskID: task.ID, Name: "planning", Kind: "agent", Owner: "planner"}
-	if _, err = service.drainMessages(ctx, task, phase, "planner", validatorForRole("planner")); err != nil {
+	if _, err = service.drainMessages(ctx, task, phase, "planner", "planner", validatorForRole("planner")); err != nil {
 		t.Fatal(err)
 	}
 	if len(adapter.requests) != 1 || !adapter.requests[0].Resume || adapter.requests[0].Prompt != message.Text || adapter.requests[0].SessionID != message.AgentSessionID {
@@ -139,7 +157,7 @@ func TestTerminalHarnessFailureFailsMessageAndEmitsEvent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = service.drainMessages(ctx, task, store.Phase{ID: "phase", TaskID: task.ID, Name: "planning", Kind: "agent", Owner: "planner"}, "planner", validatorForRole("planner"))
+	_, err = service.drainMessages(ctx, task, store.Phase{ID: "phase", TaskID: task.ID, Name: "planning", Kind: "agent", Owner: "planner"}, "planner", "planner", validatorForRole("planner"))
 	if err == nil {
 		t.Fatal("expected harness failure")
 	}
@@ -166,7 +184,7 @@ func TestTerminalHarnessFailureFailsMessageAndEmitsEvent(t *testing.T) {
 }
 
 func TestAgentCompletionSerializesFinalQueueCheckAndTransition(t *testing.T) {
-	adapter := &scriptedHarness{results: []harness.Result{{Text: `{"status":"success","summary":"replanned","artifacts":[],"notes_for_next_agent":"","steps":[{"id":"one","description":"change","expected_files":[],"acceptance_criteria":[]}],"questions":[]}`, SessionReady: true, AccountingComplete: true}}}
+	adapter := &scriptedHarness{results: []harness.Result{{Text: `{"status":"success","summary":"replanned","artifacts":[],"notes_for_next_agent":"","report_markdown":"# Plan\n\nReplanned.","steps":[{"id":"one","description":"change","expected_files":[],"acceptance_criteria":[]}],"questions":[]}`, SessionReady: true, AccountingComplete: true}}}
 	service, db, task := messageTestService(t, adapter)
 	ctx := context.Background()
 	if err := service.ensureBranch(ctx, task.ID, ""); err != nil {
@@ -188,7 +206,7 @@ func TestAgentCompletionSerializesFinalQueueCheckAndTransition(t *testing.T) {
 	release := make(chan struct{})
 	completed := make(chan error, 1)
 	go func() {
-		_, completeErr := service.completeAgentPhase(ctx, task, phase, "planner", validatorForRole("planner"), `{"status":"success"}`, func(string) error {
+		_, completeErr := service.completeAgentPhase(ctx, task, phase, "planner", "planner", validatorForRole("planner"), `{"status":"success"}`, func(string) error {
 			close(entered)
 			<-release
 			return nil
@@ -225,8 +243,147 @@ func TestAgentCompletionSerializesFinalQueueCheckAndTransition(t *testing.T) {
 	t.Fatal("boundary message was not delivered before workflow settled")
 }
 
+func TestConfiguredBuildStageDrainsItsMessagesBeforeProgression(t *testing.T) {
+	continued := `{"status":"success","summary":"continued","artifacts":[],"notes_for_next_agent":"","report_markdown":"# Build\n\nContinued.","changed_files":[],"commit_message":"continue","test_changes":[]}`
+	adapter := &scriptedHarness{results: []harness.Result{{Text: continued, SessionReady: true, AccountingComplete: true}}}
+	service, db, task := messageTestService(t, adapter)
+	service.git = factorygit.OSRunner{}
+	service.quality.git = service.git
+	ctx := context.Background()
+	repositoryPath := filepath.Join(task.WorkspacePath, "workspace", "repository")
+	qualityGit(t, repositoryPath, "init")
+	qualityWrite(t, filepath.Join(repositoryPath, "README.md"), "base\n")
+	qualityGit(t, repositoryPath, "add", ".")
+	qualityGit(t, repositoryPath, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "base")
+	base := strings.TrimSpace(qualityGit(t, repositoryPath, "rev-parse", "HEAD"))
+	if _, err := db.ExecContext(ctx, `update tasks set state='building',active_stage='build',repository_path=?,base_sha=?,review_base_sha=? where id=?`, repositoryPath, base, base, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(task.WorkspacePath, "repository-profile.json"), []byte(`{"root":"","base_sha":"`+base+`","tests":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	task, _ = db.Task(ctx, task.ID)
+	phase := store.Phase{ID: "build-attempt", TaskID: task.ID, Sequence: 1, Name: "build", Kind: "build", Owner: "builder", Status: "running", Attempt: 1, BranchID: task.SelectedBranchID}
+	if err := db.AddPhase(ctx, phase); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `update tasks set active_phase=? where id=?`, phase.ID, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	message, err := service.SendMessage(ctx, task.ID, "tester", SendMessageRequest{Text: "Keep the API stable.", IdempotencyKey: "configured-build"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message.StageID != "build" || message.RecipientRole != "builder" {
+		t.Fatalf("message routing = %+v, want build stage and builder agent", message)
+	}
+	initial := `{"status":"success","summary":"initial","artifacts":[],"notes_for_next_agent":"","report_markdown":"# Build\n\nInitial.","changed_files":[],"commit_message":"initial","test_changes":[]}`
+	if _, err = service.completeAgentPhase(ctx, task, phase, "build", "builder", validatorForRole("builder"), initial, func(string) error { return nil }, Checking); err != nil {
+		t.Fatal(err)
+	}
+	if len(adapter.requests) != 1 || adapter.requests[0].Prompt != message.Text || !adapter.requests[0].Resume {
+		t.Fatalf("continuation request = %+v", adapter.requests)
+	}
+	stored, err := db.MessageByIdempotencyKey(ctx, task.ID, message.IdempotencyKey)
+	if err != nil || stored.DeliveryStatus != "delivered" {
+		t.Fatalf("stored message = %+v, err = %v", stored, err)
+	}
+	current, err := db.Task(ctx, task.ID)
+	if err != nil || current.State != string(Checking) {
+		t.Fatalf("task = %+v, err = %v, want checking", current, err)
+	}
+	artifacts, err := db.Artifacts(ctx, task.ID)
+	if err != nil || len(artifacts) != 1 {
+		t.Fatalf("artifacts = %+v, err = %v", artifacts, err)
+	}
+	report, err := db.Artifact(ctx, task.ID, artifacts[0].ID)
+	if err != nil || report.Content != "# Build\n\nContinued." {
+		t.Fatalf("report = %+v, err = %v", report, err)
+	}
+}
+
+func TestPauseRejectsSuccessfulOutputReturnedAfterCancellation(t *testing.T) {
+	adapter := &lateSuccessHarness{started: make(chan struct{})}
+	service, db, task := messageTestService(t, adapter)
+	ctx := context.Background()
+	phase := store.Phase{ID: "planning-attempt", TaskID: task.ID, Sequence: 1, Name: "planning", Kind: "agent", Owner: "planner", Status: "running", Attempt: 1, BranchID: task.SelectedBranchID}
+	if err := db.AddPhase(ctx, phase); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `update tasks set state='planning',active_phase=? where id=?`, phase.ID, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	task, _ = db.Task(ctx, task.ID)
+	service.launch(task.ID, func(runCtx context.Context, _ string) error {
+		payload, err := service.runRole(runCtx, task, phase, "planner", map[string]any{"TaskID": task.ID}, validatorForRole("planner"))
+		if err != nil {
+			service.failPhase(runCtx, phase, err)
+			return err
+		}
+		_, err = service.completeAgentPhase(runCtx, task, phase, "planner", "planner", validatorForRole("planner"), payload, func(string) error { return nil }, AwaitingApproval)
+		return err
+	})
+	select {
+	case <-adapter.started:
+	case <-time.After(time.Second):
+		t.Fatal("planner did not start")
+	}
+	pauseCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	if err := service.Pause(pauseCtx, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	current, err := db.Task(ctx, task.ID)
+	if err != nil || current.State != string(Paused) {
+		t.Fatalf("task = %+v, err = %v, want paused", current, err)
+	}
+	envelopes, err := db.Envelopes(ctx, task.ID)
+	if err != nil || len(envelopes) != 0 {
+		t.Fatalf("envelopes = %+v, err = %v, want no late result", envelopes, err)
+	}
+	artifacts, err := db.Artifacts(ctx, task.ID)
+	if err != nil || len(artifacts) != 0 {
+		t.Fatalf("artifacts = %+v, err = %v, want no late report", artifacts, err)
+	}
+	storedPhase, err := db.PhaseByID(ctx, task.ID, phase.ID)
+	if err != nil || storedPhase.Status != "failed" {
+		t.Fatalf("phase = %+v, err = %v, want failed", storedPhase, err)
+	}
+}
+
+func TestExecutionOwnerAdmitsOneSuccessorAfterCurrentSettlement(t *testing.T) {
+	service, _, task := messageTestService(t, &scriptedHarness{})
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	secondStarted := make(chan struct{})
+	service.launch(task.ID, func(context.Context, string) error {
+		close(firstStarted)
+		<-releaseFirst
+		return nil
+	})
+	<-firstStarted
+	service.launch(task.ID, func(context.Context, string) error {
+		close(secondStarted)
+		return nil
+	})
+	select {
+	case <-secondStarted:
+		t.Fatal("successor started before current execution settled")
+	default:
+	}
+	close(releaseFirst)
+	select {
+	case <-secondStarted:
+	case <-time.After(time.Second):
+		t.Fatal("successor was not admitted after current execution settled")
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	service.Shutdown(shutdownCtx)
+}
+
 func TestExactRetryIsIdempotentAndUsesOriginalInput(t *testing.T) {
-	adapter := &scriptedHarness{results: []harness.Result{{Text: `{"status":"success","summary":"planned","artifacts":[],"notes_for_next_agent":"","steps":[{"id":"one","description":"change","expected_files":[],"acceptance_criteria":[]}],"questions":[]}`, SessionReady: true, AccountingComplete: true}}}
+	adapter := &scriptedHarness{results: []harness.Result{{Text: `{"status":"success","summary":"planned","artifacts":[],"notes_for_next_agent":"","report_markdown":"# Plan\n\nPlanned.","steps":[{"id":"one","description":"change","expected_files":[],"acceptance_criteria":[]}],"questions":[]}`, SessionReady: true, AccountingComplete: true}}}
 	service, db, task := messageTestService(t, adapter)
 	ctx := context.Background()
 	if err := service.ensureBranch(ctx, task.ID, ""); err != nil {

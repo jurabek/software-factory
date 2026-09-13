@@ -274,6 +274,30 @@ async function requestJSON(
 	}
 }
 
+async function requestText(
+	fetcher: typeof fetch,
+	endpoint: string,
+	credential: string,
+	path: string,
+	options: DaemonRequestOptions & { download?: boolean } = {},
+): Promise<string> {
+	const response = await fetcher(`${endpoint}${path}`, {
+		method: "GET",
+		headers: requestHeaders(credential, options, {
+			Accept: "text/markdown",
+			...(options.download ? { "X-Download": "1" } : {}),
+		}),
+		cache: "no-store",
+		redirect: "error",
+		signal: combinedSignal(options.signal, true),
+	});
+	if (!response.ok) {
+		const code = await safeCode(response.status, response);
+		throw new DaemonRequestError(response.status, code, safeMessage(code, response.status));
+	}
+	return response.text();
+}
+
 function assertTaskShape(task: unknown): asserts task is DaemonTask {
 	if (!task || typeof task !== "object")
 		throw new DaemonRequestError(
@@ -848,6 +872,21 @@ export function createDaemonClient(fetcher: typeof fetch = fetch) {
 				endpoint,
 				credential,
 				`/api/v1/tasks/${encodeURIComponent(taskId)}/artifacts`,
+				options,
+			);
+		},
+		async artifactContent(
+			endpoint: string,
+			credential: string,
+			taskId: string,
+			artifactId: string,
+			options: DaemonRequestOptions = {},
+		): Promise<string> {
+			return requestText(
+				fetcher,
+				endpoint,
+				credential,
+				`/api/v1/tasks/${encodeURIComponent(taskId)}/artifacts/${encodeURIComponent(artifactId)}`,
 				options,
 			);
 		},

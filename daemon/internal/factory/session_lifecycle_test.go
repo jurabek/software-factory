@@ -7,9 +7,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jurabek/software-factory/daemon/internal/config"
 	"github.com/jurabek/software-factory/daemon/internal/harness"
+	"github.com/jurabek/software-factory/daemon/internal/session"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 )
 
@@ -17,6 +19,27 @@ type errorScriptedHarness struct {
 	requests []harness.Request
 	results  []harness.Result
 	errs     []error
+}
+
+type liveEventFailureHarness struct {
+	cancelled chan struct{}
+}
+
+func (h *liveEventFailureHarness) Models(context.Context) ([]harness.Model, error) {
+	return nil, nil
+}
+
+func (h *liveEventFailureHarness) Run(ctx context.Context, request harness.Request, sink harness.EventSink) (harness.Result, error) {
+	if err := sink(ctx, session.NewMessage(session.MessagePayload{Role: "assistant", Text: "required output"})); err == nil {
+		return harness.Result{}, errors.New("live event persistence unexpectedly succeeded")
+	}
+	select {
+	case <-ctx.Done():
+		close(h.cancelled)
+	case <-time.After(time.Second):
+		return harness.Result{}, errors.New("invocation context was not cancelled after live event failure")
+	}
+	return harness.Result{SessionID: request.SessionID, SessionReady: true, AccountingComplete: true}, nil
 }
 
 func (h *errorScriptedHarness) Models(context.Context) ([]harness.Model, error) {
@@ -112,6 +135,43 @@ func TestRunRolePersistsMetadataOnRunError(t *testing.T) {
 	}
 	if stored.AccountingComplete {
 		t.Fatal("accounting_complete = true, want false")
+	}
+}
+
+func TestRunRoleCancelsInvocationWhenRequiredLiveEventCannotPersist(t *testing.T) {
+	agent := &liveEventFailureHarness{cancelled: make(chan struct{})}
+	service, task := testRoleService(t, agent, 0)
+	ctx := context.Background()
+	phase := store.Phase{ID: "phase-1", TaskID: task.ID, Sequence: 1, Name: "building", Kind: "agent", Owner: "builder", Status: "running", Attempt: 1}
+	if err := service.db.AddPhase(ctx, phase); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.db.ExecContext(ctx, `create trigger reject_required_live_event before insert on events when new.kind = 'message' begin select raise(abort, 'required live event failure'); end`); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := service.runRole(ctx, task, phase, "builder", map[string]any{"TaskID": task.ID}, validBuild)
+	if err == nil || !strings.Contains(err.Error(), "required live event failure") {
+		t.Fatalf("err = %v, want required live event failure", err)
+	}
+	select {
+	case <-agent.cancelled:
+	default:
+		t.Fatal("harness did not observe invocation cancellation")
+	}
+	envelopes, err := service.db.Envelopes(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(envelopes) != 0 {
+		t.Fatalf("envelopes = %+v, want none after required live event failure", envelopes)
+	}
+	stored, err := service.db.AgentSession(ctx, task.ID, "builder")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.PendingInvocationID != "" || !stored.AccountingComplete {
+		t.Fatalf("agent session = %+v, want settled invocation accounting", stored)
 	}
 }
 
