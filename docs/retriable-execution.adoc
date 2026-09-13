@@ -450,7 +450,7 @@ The Artifact experience follows the second reference:
 * Top-level `Artifacts` and `Summary` modes occupy the contextual rail/viewer area. Auto-advance is a toggle, not a separate data model.
 * The Artifact picker groups immutable versions by type, Phase Definition, attempt, and branch.
 * The viewer offers `Rendered` and `Raw` modes for renderable text Artifacts.
-* The header exposes copy, comment, and fullscreen controls.
+* The header identifies the selected Artifact and provides a close control.
 * Rendered Markdown, AsciiDoc, JSON, diffs, logs, and diagrams use safe type-specific renderers. Raw content remains available as the source of truth.
 * Switching version or branch never mutates the Artifact or silently moves an existing anchor.
 * Auto-advance follows newly selected-branch Artifacts only while enabled. Manual historical selection disables following until explicitly resumed.

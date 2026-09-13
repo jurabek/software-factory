@@ -1,11 +1,13 @@
 package intervention
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/jurabek/software-factory/daemon/internal/store"
@@ -95,37 +97,42 @@ func (s *Service) ValidateAnchor(ctx context.Context, taskID string, target Targ
 	if err != nil {
 		return err
 	}
-	body, err := os.ReadFile(artifact.Path)
-	if err != nil {
-		return store.ErrStaleAnchor
+	body := []byte(artifact.Content)
+	if artifact.Path != "" {
+		body, err = os.ReadFile(artifact.Path)
+		if err != nil {
+			return store.ErrStaleAnchor
+		}
 	}
-	actual := fmt.Sprintf("%x", sha256.Sum256(body))
+	actual := fmt.Sprintf("sha256:%x", sha256.Sum256(body))
 	if artifact.Digest != "" && actual != artifact.Digest {
 		return store.ErrStaleAnchor
 	}
 	anchor := target.Anchor
 	switch anchor.Kind {
 	case "text_range", "line_range", "block":
-		if anchor.Quote != "" && !strings.Contains(string(body), anchor.Quote) {
-			return store.ErrStaleAnchor
-		}
 		if anchor.Start != nil && anchor.End != nil {
 			if *anchor.Start < 0 || *anchor.End > len(body) || *anchor.Start > *anchor.End {
 				return store.ErrStaleAnchor
 			}
 			if anchor.Quote != "" && string(body[*anchor.Start:*anchor.End]) != anchor.Quote {
-				if !strings.Contains(string(body), anchor.Quote) {
-					return store.ErrStaleAnchor
-				}
-			}
-		}
-	case "json_pointer":
-		if anchor.ValueHash != "" {
-			// Value digest mismatch means the artifact changed under the anchor.
-			var payload any
-			if json.Unmarshal(body, &payload) != nil {
 				return store.ErrStaleAnchor
 			}
+		} else if anchor.Quote != "" && !strings.Contains(string(body), anchor.Quote) {
+			return store.ErrStaleAnchor
+		}
+	case "json_pointer":
+		value, pointerErr := resolveJSONPointer(body, anchor.Pointer)
+		if pointerErr != nil {
+			return store.ErrStaleAnchor
+		}
+		encoded, marshalErr := json.Marshal(value)
+		if marshalErr != nil {
+			return store.ErrStaleAnchor
+		}
+		valueDigest := fmt.Sprintf("sha256:%x", sha256.Sum256(encoded))
+		if anchor.ValueHash != "" && anchor.ValueHash != valueDigest {
+			return store.ErrStaleAnchor
 		}
 	default:
 		if anchor.Kind == "" {
@@ -134,4 +141,63 @@ func (s *Service) ValidateAnchor(ctx context.Context, taskID string, target Targ
 		return fmt.Errorf("unknown anchor kind %q", anchor.Kind)
 	}
 	return nil
+}
+
+func resolveJSONPointer(body []byte, pointer string) (any, error) {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, err
+	}
+	if pointer == "" {
+		return value, nil
+	}
+	if !strings.HasPrefix(pointer, "/") {
+		return nil, fmt.Errorf("invalid JSON pointer")
+	}
+	for _, token := range strings.Split(pointer[1:], "/") {
+		decoded, err := decodeJSONPointerToken(token)
+		if err != nil {
+			return nil, err
+		}
+		token = decoded
+		switch current := value.(type) {
+		case map[string]any:
+			var ok bool
+			value, ok = current[token]
+			if !ok {
+				return nil, fmt.Errorf("JSON pointer member not found")
+			}
+		case []any:
+			index, err := strconv.Atoi(token)
+			if err != nil || index < 0 || index >= len(current) || (len(token) > 1 && token[0] == '0') {
+				return nil, fmt.Errorf("JSON pointer index not found")
+			}
+			value = current[index]
+		default:
+			return nil, fmt.Errorf("JSON pointer cannot descend into value")
+		}
+	}
+	return value, nil
+}
+
+func decodeJSONPointerToken(token string) (string, error) {
+	var decoded strings.Builder
+	for index := 0; index < len(token); index++ {
+		if token[index] != '~' {
+			decoded.WriteByte(token[index])
+			continue
+		}
+		if index+1 >= len(token) || (token[index+1] != '0' && token[index+1] != '1') {
+			return "", fmt.Errorf("invalid JSON pointer escape")
+		}
+		index++
+		if token[index] == '0' {
+			decoded.WriteByte('~')
+		} else {
+			decoded.WriteByte('/')
+		}
+	}
+	return decoded.String(), nil
 }
