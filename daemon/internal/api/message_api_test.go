@@ -19,7 +19,7 @@ func TestLegacyWritesAreRemovedAndNewWritesRejectOrchestrationFields(t *testing.
 		t.Fatal(err)
 	}
 	defer db.Close()
-	server, err := New(db, nil, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil }, newTestAccess())
+	server, err := New(db, Communicators{}, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil }, newTestAccess())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestTaskReadsExposeAuthoritativeAvailableActions(t *testing.T) {
 	if err = db.CreateTask(context.Background(), task); err != nil {
 		t.Fatal(err)
 	}
-	server, err := New(db, nil, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil }, newTestAccess())
+	server, err := New(db, Communicators{}, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil }, newTestAccess())
 	if err != nil {
 		t.Fatal(err)
 	}
