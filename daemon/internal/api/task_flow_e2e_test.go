@@ -22,6 +22,7 @@ import (
 	"github.com/jurabek/software-factory/daemon/internal/factory"
 	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
 	"github.com/jurabek/software-factory/daemon/internal/harness"
+	"github.com/jurabek/software-factory/daemon/internal/pipeline"
 	"github.com/jurabek/software-factory/daemon/internal/sandbox"
 	"github.com/jurabek/software-factory/daemon/internal/session"
 	"github.com/jurabek/software-factory/daemon/internal/store"
@@ -32,6 +33,7 @@ const (
 	flowTaskRequest = "Create the build artifact"
 	flowPlan        = `{"status":"success","summary":"Create the requested artifact","artifacts":[],"notes_for_next_agent":"","report_markdown":"# Plan\n\nCreate built.txt.","steps":[{"id":"build-artifact","description":"Create built.txt","expected_files":["built.txt"],"acceptance_criteria":["deterministic check passes"]}],"questions":[]}`
 	flowBuild       = `{"status":"success","summary":"Created the build artifact","artifacts":[],"notes_for_next_agent":"","report_markdown":"# Build\n\nCreated built.txt.","changed_files":["built.txt"],"commit_message":"Create build artifact","test_changes":[]}`
+	flowReview      = `{"status":"success","summary":"Implementation satisfies the plan","artifacts":[],"notes_for_next_agent":"","report_markdown":"# Review\n\nApproved.","approved":true,"findings":[],"blocking":[]}`
 	flowMessage     = "Keep the public API stable."
 )
 
@@ -78,6 +80,11 @@ func (h *taskFlowHarness) Run(_ context.Context, request harness.Request, _ harn
 			return result, fmt.Errorf("message continuation = %+v", request)
 		}
 		result.Text = flowBuild
+	case 4:
+		if !strings.Contains(request.SystemPrompt, "Review the implementation") || !strings.Contains(request.Prompt, "Create the requested artifact") {
+			return result, fmt.Errorf("reviewer prompt missing evidence handoff: system=%q user=%q", request.SystemPrompt, request.Prompt)
+		}
+		result.Text = flowReview
 	default:
 		return result, fmt.Errorf("unexpected harness invocation %d", invocation)
 	}
@@ -119,6 +126,8 @@ func (s *taskFlowSuite) SetupSuite() {
 	s.writePrompt(configRoot, "planner", "user.md", "Task {{.TaskID}}: {{.Request}} in {{.Repository}}")
 	s.writePrompt(configRoot, "builder", "system.md", "Build the approved plan.")
 	s.writePrompt(configRoot, "builder", "user.md", "Task {{.TaskID}}: {{.Request}}\nPlan: {{.Plan}}")
+	s.writePrompt(configRoot, "reviewer", "system.md", "Review the implementation without editing files.")
+	s.writePrompt(configRoot, "reviewer", "user.md", "Task {{.TaskID}}: {{.Request}}\nPlan: {{.Plan}}\nChecks: {{.Checks}}")
 
 	cfg := config.Config{
 		Defaults: config.Defaults{CodingAgent: "pi", Model: "test/model", Thinking: "low"},
@@ -126,8 +135,9 @@ func (s *taskFlowSuite) SetupSuite() {
 		Agents: []config.Agent{
 			{Name: "planner", Model: "test/model", Thinking: "low", PromptEngineering: config.PromptEngineering{System: "prompts/planner/system.md", User: "prompts/planner/user.md"}},
 			{Name: "builder", Model: "test/model", Thinking: "low", PromptEngineering: config.PromptEngineering{System: "prompts/builder/system.md", User: "prompts/builder/user.md"}},
+			{Name: "reviewer", Model: "test/model", Thinking: "low", PromptEngineering: config.PromptEngineering{System: "prompts/reviewer/system.md", User: "prompts/reviewer/user.md"}},
 		},
-		Pipelines: []config.Pipeline{{Name: "standard", Default: true, Stages: []config.Stage{{ID: "build", Kind: "build", Agent: "builder"}, {ID: "checks", Kind: "verify"}}}},
+		Pipelines: []config.Pipeline{{Name: "standard", Default: true, Stages: []config.Stage{{ID: "plan", Kind: "plan", Agent: "planner"}, {ID: "build", Kind: "build", Agent: "builder"}, {ID: "checks", Kind: "verify"}, {ID: "review", Kind: "review", Agent: "reviewer"}}}},
 	}
 	var err error
 	s.db, err = store.Open(filepath.Join(root, "factory.db"))
@@ -137,6 +147,12 @@ func (s *taskFlowSuite) SetupSuite() {
 		Store: s.db, Config: cfg, ConfigPath: filepath.Join(configRoot, "config.yaml"),
 		Harnesses: harness.Registry{"pi": s.harness}, Git: factorygit.OSRunner{}, Sandbox: sandbox.Git{Runner: factorygit.OSRunner{}},
 	})
+	s.service.SetPipeliner(pipeline.New(
+		s.service.Planner(),
+		s.service.Builder(),
+		s.service.Verifier(),
+		s.service.Reviewer(),
+	))
 	handler, err := New(s.db, s.service, cfg, nil, nil, []string{"pi"}, nil, newTestAccess())
 	s.Require().NoError(err)
 	s.server = httptest.NewServer(handler)
@@ -218,7 +234,7 @@ func (s *taskFlowSuite) TestCreateApproveBuildAndCheck() {
 
 	var attempts []store.Phase
 	s.request(http.MethodGet, "/api/v1/tasks/"+created.ID+"/attempts", nil, http.StatusOK, &attempts)
-	s.Equal([]string{"prepare", "planning", "build", "checks"}, phaseNames(attempts))
+	s.Equal([]string{"prepare", "planning", "build", "checks", "review"}, phaseNames(attempts))
 	for _, attempt := range attempts {
 		s.Equal("success", attempt.Status)
 	}
@@ -233,11 +249,13 @@ func (s *taskFlowSuite) TestCreateApproveBuildAndCheck() {
 
 	var results []store.Envelope
 	s.request(http.MethodGet, "/api/v1/tasks/"+created.ID+"/results", nil, http.StatusOK, &results)
-	s.Require().Len(results, 3)
-	for _, result := range results[1:] {
+	s.Require().Len(results, 4)
+	for _, result := range results[1:3] {
 		s.Equal("build", result.OutputType)
 		s.JSONEq(flowBuild, result.Payload)
 	}
+	s.Equal("review", results[3].OutputType)
+	s.JSONEq(flowReview, results[3].Payload)
 
 	var history struct {
 		Events []store.Event `json:"events"`
@@ -268,13 +286,13 @@ func (s *taskFlowSuite) TestCreateApproveBuildAndCheck() {
 	s.Equal(history.Events[len(history.Events)-1].Sequence, replay.Cursor)
 	var artifacts []store.Artifact
 	s.request(http.MethodGet, "/api/v1/tasks/"+created.ID+"/artifacts", nil, http.StatusOK, &artifacts)
-	s.Require().Len(artifacts, 3)
+	s.Require().Len(artifacts, 4)
 	for _, artifact := range artifacts {
 		body := s.requestText("/api/v1/tasks/"+created.ID+"/artifacts/"+artifact.ID, http.StatusOK)
 		s.NotEmpty(body)
 		s.Contains(body, "#")
 	}
-	s.Len(s.harness.Requests(), 3)
+	s.Len(s.harness.Requests(), 4)
 }
 
 type taskEventStream struct {

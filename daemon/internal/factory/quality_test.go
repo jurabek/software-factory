@@ -32,7 +32,7 @@ func TestBuilderValidatorRequiresExactlyGitDerivedTestChanges(t *testing.T) {
 	defer db.Close()
 	task := qualityTask(t, db, root, repositoryPath, base)
 	service := NewService(root, Dependencies{Store: db, Config: configForQuality(), Git: factorygit.OSRunner{}})
-	validate := service.builderValidator(context.Background(), task, Materialization{Tests: []string{"**/*_test.go"}})
+	validate := service.quality.builderValidator(context.Background(), task, Materialization{Tests: []string{"**/*_test.go"}})
 	valid := `{"status":"success","summary":"built","artifacts":[],"notes_for_next_agent":"","report_markdown":"# Build\n\nDone.","changed_files":["changed_test.go"],"commit_message":"test","test_changes":[{"path":"changed_test.go","reason":"adds the regression assertion"}]}`
 	if _, err = validate(valid); err != nil {
 		t.Fatal(err)
@@ -68,7 +68,7 @@ func TestPersistBuilderEvidenceRetainsChangeKindAndReason(t *testing.T) {
 		t.Fatal(err)
 	}
 	payload := `{"status":"success","summary":"built","artifacts":[],"notes_for_next_agent":"","report_markdown":"# Build\n\nDone.","changed_files":["example_test.go"],"commit_message":"test","test_changes":[{"path":"example_test.go","reason":"covers the changed behavior"}]}`
-	if err = service.persistBuilderEvidence(context.Background(), task, store.Phase{ID: "build-attempt", Attempt: 1}, payload); err != nil {
+	if err = service.quality.persistBuilderEvidence(context.Background(), task, store.Phase{ID: "build-attempt", Attempt: 1}, payload); err != nil {
 		t.Fatal(err)
 	}
 	changes, err := db.TestChanges(context.Background(), task.ID)
@@ -146,7 +146,7 @@ func TestCheckCancellationKillsProcessGroupAndPersistsCancelledRecord(t *testing
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- service.runChecks(ctx, task, store.Phase{ID: "check-attempt", Name: "check", Attempt: 1}, []Check{{ID: "sleep", Command: "sleep 30"}}, "primary", "")
+		done <- service.quality.runChecks(ctx, task, store.Phase{ID: "check-attempt", Name: "check", Attempt: 1}, []Check{{ID: "sleep", Command: "sleep 30"}}, "primary", "")
 	}()
 	time.Sleep(100 * time.Millisecond)
 	cancel()
@@ -193,7 +193,7 @@ func TestComparisonFailureIsPersistedAsAdvisoryObservation(t *testing.T) {
 		Checks:                []Check{{ID: "behavior", Command: `test "$(cat changed_test.go)" = "base"`}},
 		PreChangeVerification: true,
 	}
-	if err = service.runComparisons(context.Background(), task, verify, profile); err != nil {
+	if err = service.quality.runComparisons(context.Background(), task, verify, profile); err != nil {
 		t.Fatal(err)
 	}
 	comparisons, err := db.Comparisons(context.Background(), task.ID)

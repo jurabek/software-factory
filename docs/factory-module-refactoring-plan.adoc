@@ -1,0 +1,208 @@
+= Factory Module Refactoring Plan
+
+== Target architecture
+
+Factory owns task orchestration. Pipeline owns the fixed workflow. Each stage owns its full implementation.
+
+[source,text]
+----
+Factory
+  └── Pipeliner.Run(...)
+        └── Pipeline
+              ├── Planner.Plan(...)
+              ├── Builder.Build(plan)
+              ├── Verifier.Verify(plan, build)
+              └── Reviewer.Review(plan, build, verification)
+----
+
+These become separate Go packages, with dependencies supplied at startup. Stage modules never import Factory or call back into it.
+
+=== Ownership
+
+[cols="1,4",options="header"]
+|===
+|Module |Owns
+
+|`factory`
+|Task creation, controls, worker ownership, cancellation, shutdown; invokes Pipeline.
+
+|`pipeline`
+|Stage order, approval checkpoint, resume/retry position, explicit result handoffs, task progression.
+
+|`planner`
+|Planning prompts, plan validation, questions, read-only enforcement, plan report.
+
+|`builder`
+|Implementation prompts, build validation, changed-file/test evidence, protected-path enforcement, build report.
+
+|`verifier`
+|Check execution, process cancellation, baseline/test-overlay comparisons, verification report.
+
+|`reviewer`
+|Review prompts, evidence interpretation, verdict validation, read-only enforcement, review report.
+|===
+
+Two supporting modules hold genuinely shared implementation:
+
+* *Agent execution:* harness invocation, persistent sessions, message turns, JSON correction, usage accounting, live events.
+* *Workspace:* preparation, snapshots, restoration, diffs, fingerprints. Consolidate with the existing sandbox/Git functionality.
+
+Neither becomes a shared runtime containing every dependency.
+
+== Pipeline shape
+
+The successful path should read approximately like this:
+
+[source,go]
+----
+plan, err := p.planner.Plan(ctx, input)
+if err != nil {
+    return Result{}, err
+}
+
+// Persist plan; yield if human approval is required.
+
+build, err := p.builder.Build(ctx, input, plan)
+if err != nil {
+    return Result{}, err
+}
+
+verification, err := p.verifier.Verify(ctx, input, plan, build)
+if err != nil {
+    return Result{}, err
+}
+
+review, err := p.reviewer.Review(ctx, input, plan, build, verification)
+if err != nil {
+    return Result{}, err
+}
+----
+
+`Pipeline.Run` also handles durable checkpoints. Waiting for approval returns a normal waiting outcome; approval invokes `Run` again using the persisted plan. Resume loads completed results and continues from the required stage.
+
+Stage methods stay synchronous. Factory owns execution goroutines.
+
+=== Interfaces and results
+
+* Factory defines the small `Pipeliner` interface it consumes.
+* Pipeline defines its `Planner`, `Builder`, `Verifier`, and `Reviewer` interfaces.
+* Concrete stage packages implement those interfaces.
+* Inputs contain execution identity and relevant configuration—not `*Factory`, a runtime pointer, or a dependency bag.
+* Results contain typed output, report, evidence, and producing attempt/snapshot references.
+* Downstream stages receive the exact upstream results. They do not query “latest plan” or all historical task evidence.
+
+== Implementation plan
+
+Status as of 2026-09-13: steps 1–6 complete.
+`Pipeline.Run` returns an explicit `Result` (`completed`, `waiting_for_approval`, `blocked`) and owns progression policy: stage order, approval checkpoint, resume/retry position, typed handoffs, and lineage invalidation (`pipeline.EligibleAfter`). Stage `Publisher` bridges implement atomic drain-then-publish under the task lock; lineage checks in the bridges delegate to the Pipeline-owned rule.
+
+=== 1. Establish fixed-flow configuration and composition — DONE
+
+Update link:../daemon/internal/config/config.go[configuration] and the link:../daemon/templates/config.yaml[default template] for the agreed fixed sequence.
+
+Named pipeline presets can retain agent selections, but cannot reorder, repeat, or omit stages. Update configuration consumers and fixtures accordingly.
+
+Construct the concrete modules in link:../daemon/main.go[daemon/main.go], then inject Pipeline into Factory.
+
+=== 2. Extract shared execution and workspace behavior — DONE
+
+`agentexec` holds turn execution, prompts, envelopes, JSON correction, usage accounting (`runner.go`, `prompts.go`, `shared.go`, `envelope.go`, `invoke.go`).
+`workspace` holds snapshots, fingerprint, changed-files, review-base, profile reads (`snapshots.go`, `repository.go`, `types.go`).
+Factory delegates; neither package holds a shared runtime.
+
+Move shared invocation behavior from link:../daemon/internal/factory/service.go[service.go] and link:../daemon/internal/factory/message.go[message.go] into agent execution.
+
+Consolidate workspace behavior from link:../daemon/internal/factory/snapshot.go[snapshot.go], link:../daemon/internal/factory/sandbox.go[sandbox.go], and the existing link:../daemon/internal/sandbox/git.go[sandbox implementation]. Move its contracts out of Factory so lower-level packages no longer depend on the orchestrator.
+
+=== 3. Extract complete stage modules — DONE
+
+`planner`, `builder`, `verifier`, `reviewer` are Deps-based services with typed handoffs.
+Each has a narrow `Publisher` bridge in Factory (`planner_bridge.go`, `builder_bridge.go`, `verifier_bridge.go`, `reviewer_bridge.go`) owning phase lifecycle and atomic publication until step 4.
+`stage_backend.go` no longer implements any stage.
+`main.go` and the task-flow e2e test compose `service.Planner()` / `Builder()` / `Verifier()` / `Reviewer()` into `pipeline.New(...)`.
+Legacy `execute*` and `*_runner.go` retry paths remain in Factory as scaffolding.
+
+Move stage implementation from link:../daemon/internal/factory/service.go[service.go], link:../daemon/internal/factory/pipeline.go[pipeline.go], link:../daemon/internal/factory/quality.go[quality.go], and link:../daemon/internal/factory/envelope.go[envelope.go] into the owning packages.
+
+*Include initial execution, retry, and message continuation.* All three must use the same stage validation and evidence-producing code.
+
+Stage modules return outcomes. Pipeline decides what runs next and whether a review verdict completes or blocks the task.
+
+=== 4. Implement Pipeline checkpoints and progression — DONE
+
+`Pipeline.Run` returns `Result{Outcome, Plan, Build, Verification, Review}`:
+approval yields `waiting_for_approval`, failed verification and rejected
+reviews yield `blocked`, and context cancellation between stages returns
+`ctx.Err()` so a cancelled run cannot publish a late success.
+Resume works via stage `Saved*` checkpoints; verify-only retry reuses the
+selected plan/build identities. Upstream invalidation is enforced by attempt
+ordering (`pipeline.EligibleAfter`, delegated from the bridges): a changed
+plan requires approval again; a changed build requires fresh verification
+and review. Message/completion synchronization stays in the `Publisher`
+bridges as drain-then-publish under the task lock, implementing the
+Pipeline-owned checkpoint contract.
+
+Keep checkpoint mechanics internal to Pipeline:
+
+* Resolve saved results by attempt and lineage.
+* Start and complete attempts.
+* Publish reports, evidence, progression, and lifecycle events atomically.
+* Preserve synchronization between accepting messages and publishing a stage’s final result.
+* Route retry/continuation through the same typed stage methods.
+
+When an upstream result changes, downstream results become ineligible for reuse. A changed plan requires approval again; a changed build requires fresh verification and review. Verify-only retry reuses the selected plan/build.
+
+=== 5. Reduce Factory and delete superseded layers — DONE
+
+Factory stage execution goes through `Pipeliner.Run`, which returns the
+explicit `Result`. Deleted: runner wrappers (`planner_runner.go`,
+`builder_runner.go`, `verifier_runner.go`, `reviewer_runner.go`,
+`stage_runner.go`), the legacy generic loop (`legacyProgress`,
+`executeStage`) and its superseded paths (`executeBuild`, `executeReview`,
+`stagePromptData`, `plannerEnvelope`, `prepareAndPlan`). Removed the
+embedded `runtime` (fields live directly on `Service`) and obsolete
+forwarding methods (`builderValidator`, `persistBuilderEvidence`,
+`runChecks`, `runComparisons`, `freezeConfig`/`selectPipeline`/`taskPipeline`,
+`diffRepository`); callers use the composed `quality`, `pipelines`, and
+`tasks` services directly. Retry/continuation paths (`runRetryAttempt`,
+`runRetryAgent`, `continueMessages`, `drainMessages`) remain in Factory and
+reuse the same stage validation and evidence code as initial execution.
+
+=== 6. Verify through module interfaces — DONE
+
+`pipeline_test.go` covers typed handoffs/ordering, approval yield/resume
+without replanning, failure stopping downstream execution, verify-only
+retry reusing plan/build, upstream invalidation (`EligibleAfter` plus a
+changed-plan rerun), message drain reaching downstream, and cancellation
+guards (cancelled context, cancellation between stages). Stage validation
+tests live in their packages (`planner`, `builder`, `verifier`,
+`reviewer`); lifecycle/concurrency coverage stays at Factory and
+persistence coverage at Store.
+`go -C daemon test ./...` and `go -C daemon test -race ./...` pass.
+`npm run typecheck` fails on pre-existing errors in `tests/browser/report-navigation.spec.ts`, untouched by this refactor.
+
+Move stage-specific tests into their packages. Keep lifecycle/concurrency coverage at Factory and persistence coverage at Store.
+
+Add focused Pipeline tests for:
+
+* Typed handoffs and stage ordering.
+* Approval yield/resume without replanning.
+* Failure stopping downstream execution.
+* Verify-only retry.
+* Upstream changes invalidating downstream results.
+* Message arrival during completion.
+* Cancellation preventing late successful publication.
+
+Run:
+
+[source,text]
+----
+go -C daemon test ./...
+go -C daemon test -race ./...
+npm run typecheck
+npm run build
+----
+
+*Completion criterion:* reading Pipeline reveals the workflow; changing a stage’s prompts, validation, or execution behavior is localized to that stage or shared agent execution.
+
+*Unresolved questions:* None. Fixed flow and separate Verifier selected.

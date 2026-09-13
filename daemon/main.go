@@ -27,6 +27,7 @@ import (
 	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
 	"github.com/jurabek/software-factory/daemon/internal/harness"
 	piharness "github.com/jurabek/software-factory/daemon/internal/harness/pi"
+	"github.com/jurabek/software-factory/daemon/internal/pipeline"
 	sandboxgit "github.com/jurabek/software-factory/daemon/internal/sandbox"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 	"github.com/jurabek/software-factory/daemon/internal/token"
@@ -214,6 +215,12 @@ func run() error {
 		Store: db, Config: configured, ConfigPath: configPath,
 		Harnesses: registry, Git: factorygit.OSRunner{}, Sandbox: sandboxgit.Git{Runner: factorygit.OSRunner{}},
 	})
+	service.SetPipeliner(pipeline.New(
+		service.Planner(),
+		service.Builder(),
+		service.Verifier(),
+		service.Reviewer(),
+	))
 	apiHandler, err := api.New(db, service, configured, problems, loadErr, harnessNames, catalog, api.Access{DaemonID: daemonID, Token: daemonToken})
 	if err != nil {
 		return err
