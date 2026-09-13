@@ -87,19 +87,22 @@ func New(root string, dependencies Dependencies) *Service {
 // Create persists a task and starts its workflow.
 func (s *Service) Create(ctx context.Context, request task.CreateRequest) (store.Task, error) {
 	created, err := s.tasks.Create(ctx, request)
-	return s.launchCreatedTask(ctx, created, err)
+	if err != nil {
+		return store.Task{}, fmt.Errorf("failed to create task: %w", err)
+	}
+	return s.launchCreatedTask(ctx, created)
 }
 
 // CreateSession starts a child task and its workflow.
 func (s *Service) CreateSession(ctx context.Context, taskID string, request task.CreateSessionRequest) (store.Task, error) {
 	created, err := s.tasks.CreateSession(ctx, taskID, request)
-	return s.launchCreatedTask(ctx, created, err)
+	if err != nil {
+		return store.Task{}, fmt.Errorf("creating sessions failed: %w", err)
+	}
+	return s.launchCreatedTask(ctx, created)
 }
 
-func (s *Service) launchCreatedTask(ctx context.Context, task store.Task, err error) (store.Task, error) {
-	if err != nil {
-		return store.Task{}, err
-	}
+func (s *Service) launchCreatedTask(ctx context.Context, task store.Task) (store.Task, error) {
 	created, err := s.db.Task(ctx, task.ID)
 	if err != nil {
 		return store.Task{}, err

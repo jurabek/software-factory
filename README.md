@@ -40,7 +40,7 @@ go -C daemon run .
 
 Interactive Swagger API documentation is available at `http://127.0.0.1:8080/docs`; its OpenAPI document is served at `/swagger.yaml`. The daemon does not serve a frontend. `PORT` changes the port. `SOFTWARE_FACTORY_DIR` changes the default `~/.software-factory` state directory. `PI_PATH` selects Pi. The first run generates `config.yaml` and editable prompts without replacing existing files.
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for how the daemon coordinates the Task repository, agents, checks, events, persistence, recovery, and security. See [`docs/USAGE.md`](docs/USAGE.md) for the daemon connection workflow.
+See [daemon architecture](daemon/REFACTORING.md) for module ownership and dependencies. See [`docs/USAGE.md`](docs/USAGE.md) for the daemon connection workflow.
 
 The daemon binds only to loopback. Every `/api/*` request except `GET /api/v1/health` requires `Authorization: Bearer <daemon-token>`. The token is generated on first run, persisted at `$SOFTWARE_FACTORY_DIR/daemon-token`, and printed to stdout. To reach the daemon from the application, expose it through an encrypted tunnel whose exact origin is in `DAEMON_ALLOWED_ORIGINS`. Task workspaces, SQLite WAL state, JSONL traces, prompts, and Pi sessions remain under the factory directory until explicit deletion.
 
@@ -60,80 +60,79 @@ curl -s -X POST http://127.0.0.1:8080/api/v1/tasks \
   -d '{"request":"Implement feature X","repository":{"type":"local","path":"/absolute/repository"}}'
 ```
 
-Creating a Task allocates its private workspace, materializes its repository at `workspace/repository`, and starts execution. Agents and checks use that repository as their working directory. Plans contain `questions`; when non-empty, answer them with `POST /api/v1/tasks/{id}/feedback` before approval.
+Creating a Task allocates its private workspace, materializes its repository at `workspace/repository`, and starts execution. Agents and checks use that repository as their working directory. Plans contain `questions`; when non-empty, answer them with `POST /api/v1/tasks/{id}/messages` before approval.
 
 ## Task execution sequence
 
 ```mermaid
 sequenceDiagram
     actor User
-    participant Browser
     participant App as Next.js application
-    participant Registry as Daemon registry
-    participant API as Daemon tasks handler
-    participant Factory
+    participant API as Daemon API
+    participant O as Orchestrator
+    participant T as Task service
+    participant P as Pipeline
+    participant Plan as Planner
+    participant Build as Builder
+    participant Verify as Verifier
+    participant Review as Reviewer
+    participant K as Stagekit
     participant Store as SQLite store
-    participant Git
-    participant Harness as Agent harness
 
-    User->>Browser: Submit Task
-    Browser->>App: POST /api/daemons/{daemonId}/tasks
-    App->>Registry: Resolve daemon and credential
-    Registry->>API: POST /api/v1/tasks
-    API->>Factory: Create(request)
-    Factory->>Factory: Allocate Task Workspace
-    Factory->>Store: Persist preparing Task and select branch
-    Store-->>Factory: Task
-    Factory-->>API: Launch background execution
-    Factory-->>API: Task
-    API-->>Browser: 201 Created
+    User->>App: Create Task
+    App->>App: Resolve registered daemon and credential
+    App->>API: POST /api/v1/tasks
+    API->>O: Create(request)
+    O->>T: Create workspace and freeze configuration
+    T->>Store: Persist Task and execution branch
+    T-->>O: Task
+    O-->>API: Task; background worker launched
+    API-->>App: 201 Created
+    App-->>User: Task workspace
 
-    Factory->>Git: Materialize repository
-    Git-->>Factory: Repository profile and base SHA
-    Factory->>Store: Persist preparation phase and repository state
-    Factory->>Harness: Run Planner
-    Harness-->>Factory: Validated plan envelope
-    Factory->>Store: Persist plan, events, awaiting approval
+    O->>P: Run(taskID)
+    P->>Plan: Plan(input)
+    Plan->>K: Prepare repository through sandbox and Git
+    Plan->>K: Begin attempt; run agent through agentexec
+    Plan->>K: Validate and publish plan; await approval
+    K->>Store: Persist attempts, reports, snapshots and events
+    Plan-->>P: PlanResult (not approved)
+    P-->>O: Waiting for approval
 
-    Browser->>App: Open events stream
+    User->>App: Approve current plan digest
+    App->>API: POST /api/v1/tasks/{id}/approve
+    API->>O: Approve(id, actor, digest)
+    O->>Store: Validate and persist approval
+    O-->>API: Background worker launched
+    API-->>App: 202 Accepted
+
+    O->>P: Run(taskID)
+    P->>Plan: Plan(input)
+    Plan-->>P: Reuse approved PlanResult
+    P->>Build: Build(input, plan)
+    Build->>K: Execute agent; enforce protected paths; publish
+    Build-->>P: BuildResult
+    P->>Verify: Verify(input, plan, build)
+    Verify->>Verify: Run deterministic checks and advisory comparisons
+    Verify->>K: Persist evidence and transition
+    Verify-->>P: VerificationResult
+    alt Verification passed
+        P->>Review: Review(input, plan, build, verification)
+        Review->>K: Execute read-only agent; publish verdict
+        K->>Store: Complete Task or block rejected review
+        Review-->>P: ReviewResult
+        P-->>O: Completed or blocked
+    else Verification failed
+        P-->>O: Blocked; verifier already persisted state
+    end
+    Note over O,Store: Stages own lifecycle transitions; worker blocks unhandled execution errors
+
+    User->>App: Watch Task events
     App->>API: GET /api/v1/tasks/{id}/events/stream
-    API->>Store: Poll events after cursor
-    Store-->>API: New events
+    API->>Store: Read events after cursor
+    Store-->>API: Persisted events
     API-->>App: SSE events
-    App-->>Browser: SSE events
-
-    User->>Browser: Approve current plan digest
-    Browser->>App: POST .../tasks/{taskId}/approve
-    App->>Registry: Resolve daemon and credential
-    Registry->>API: POST /api/v1/tasks/{id}/approve
-    API->>Factory: Approve(id, actor, digest)
-    Factory->>Store: Persist approval and transition Task
-    Factory-->>API: Launch background execution
-    API-->>Browser: 202 Accepted
-
-    loop Each configured pipeline stage
-        alt Build or review stage
-            Factory->>Harness: Run stage agent
-            Harness-->>Factory: Validated result envelope
-        else Verify stage
-            Factory->>Git: Run deterministic checks and comparisons
-            Git-->>Factory: Check evidence
-        end
-        Factory->>Store: Persist attempt, evidence, and events
-    end
-
-    alt All stages succeed
-        Factory->>Store: Transition Task to completed
-    else Stage fails
-        Factory->>Store: Transition Task to blocked
-    end
-
-    Browser->>App: Read latest Task state and events
-    App->>API: GET Task and events
-    API->>Store: Read state and evidence
-    Store-->>API: Task and events
-    API-->>App: Current result
-    App-->>Browser: Render completed or blocked state
+    App-->>User: Render state and evidence
 ```
 
 The factory never commits, pushes, merges, deploys, or cleans up automatically.
