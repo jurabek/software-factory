@@ -923,6 +923,27 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
 				throw remapIdentityMismatch(error);
 			}
 		},
+		async artifactContent(
+			id: string,
+			taskId: string,
+			artifactId: string,
+			signal?: AbortSignal,
+		): Promise<{ connection: DaemonConnection; taskId: string; content: string }> {
+			const validatedTask = validatedTaskID(taskId);
+			const resolved = await resolve(id);
+			try {
+				const content = await options.client.artifactContent(
+					resolved.endpoint,
+					resolved.credential,
+					validatedTask,
+					artifactId,
+					{ signal },
+				);
+				return { connection: resolved.connection, taskId: validatedTask, content };
+			} catch (error) {
+				throw remapIdentityMismatch(error);
+			}
+		},
 		async checks(
 			id: string,
 			taskId: string,

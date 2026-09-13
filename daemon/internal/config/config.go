@@ -212,7 +212,8 @@ func validate(c Config, base string) []string {
 func validatePipeline(pipeline Pipeline, agents map[string]bool) []string {
 	var problems []string
 	seenIDs := map[string]bool{}
-	builds, verifies, reviews := 0, 0, 0
+	builds, verifies := 0, 0
+	seenBuild, seenVerify := false, false
 	for _, stage := range pipeline.Stages {
 		if stage.ID == "" || seenIDs[stage.ID] {
 			problems = append(problems, "pipeline "+pipeline.Name+" stage ids must be non-empty and unique")
@@ -221,38 +222,45 @@ func validatePipeline(pipeline Pipeline, agents map[string]bool) []string {
 		switch stage.Kind {
 		case "build":
 			builds++
+			seenBuild = true
 			if !agents[stage.Agent] {
 				problems = append(problems, "pipeline "+pipeline.Name+" stage "+stage.ID+" references undefined agent "+stage.Agent)
 			}
 		case "verify":
 			verifies++
+			seenVerify = true
 			if stage.Agent != "" {
 				problems = append(problems, "pipeline "+pipeline.Name+" verify stage "+stage.ID+" cannot name an agent")
 			}
 		case "review":
-			reviews++
 			if !agents[stage.Agent] {
 				problems = append(problems, "pipeline "+pipeline.Name+" stage "+stage.ID+" references undefined agent "+stage.Agent)
 			}
 		default:
 			problems = append(problems, "pipeline "+pipeline.Name+" stage "+stage.ID+" has invalid kind "+stage.Kind)
 		}
-	}
-	if builds != 1 || verifies != 1 || reviews > 1 {
-		problems = append(problems, "pipeline "+pipeline.Name+" must contain one build -> one verify -> optional review")
-	}
-	want := []string{"build", "verify"}
-	if reviews == 1 {
-		want = append(want, "review")
-	}
-	if len(pipeline.Stages) != len(want) {
-		return problems
-	}
-	for index, stage := range pipeline.Stages {
-		if stage.Kind != want[index] {
-			problems = append(problems, fmt.Sprintf("pipeline %s stage order is invalid at index %d", pipeline.Name, index))
-			break
+		if stage.Kind == "verify" && !seenBuild {
+			problems = append(problems, "pipeline "+pipeline.Name+" verify stage "+stage.ID+" requires a preceding build")
 		}
+		if stage.Kind == "review" && (!seenBuild || !seenVerify) {
+			problems = append(problems, "pipeline "+pipeline.Name+" review stage "+stage.ID+" requires preceding build and verify stages")
+		}
+	}
+	if builds == 0 || verifies == 0 {
+		problems = append(problems, "pipeline "+pipeline.Name+" must contain build and verify stages")
+	}
+	lastBuild := -1
+	lastVerify := -1
+	for index, stage := range pipeline.Stages {
+		if stage.Kind == "build" {
+			lastBuild = index
+		}
+		if stage.Kind == "verify" {
+			lastVerify = index
+		}
+	}
+	if lastBuild >= 0 && lastVerify >= 0 && lastVerify < lastBuild {
+		problems = append(problems, "pipeline "+pipeline.Name+" must verify after its final build")
 	}
 	return problems
 }

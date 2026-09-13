@@ -13,6 +13,7 @@ type Common struct {
 	Summary   string   `json:"summary"`
 	Artifacts []string `json:"artifacts"`
 	Notes     string   `json:"notes_for_next_agent"`
+	Report    string   `json:"report_markdown"`
 }
 type PlanStep struct {
 	ID                 string   `json:"id"`
@@ -48,14 +49,14 @@ type Review struct {
 }
 
 func envelopeInstructions(role string) string {
-	const common = `"status":"success","summary":"...","artifacts":[],"notes_for_next_agent":""`
+	const common = `"status":"success","summary":"...","artifacts":[],"notes_for_next_agent":"","report_markdown":"# Report\n\n..."`
 	switch role {
 	case "planner":
-		return `Return exactly one JSON object with no Markdown: {` + common + `,"steps":[{"id":"...","description":"...","expected_files":[],"acceptance_criteria":[]}],"questions":[]}`
+		return `Return exactly one JSON object: {` + common + `,"steps":[{"id":"...","description":"...","expected_files":[],"acceptance_criteria":[]}],"questions":[]}. Put the human-readable report in report_markdown.`
 	case "builder", "build":
-		return `Return exactly one JSON object with no Markdown: {` + common + `,"changed_files":[],"commit_message":"...","test_changes":[{"path":"...","reason":"..."}]}`
+		return `Return exactly one JSON object: {` + common + `,"changed_files":[],"commit_message":"...","test_changes":[{"path":"...","reason":"..."}]}. Put the human-readable report in report_markdown.`
 	case "reviewer", "review":
-		return `Return exactly one JSON object with no Markdown: {` + common + `,"approved":true,"findings":[],"blocking":[]}. Finding objects require "requirement", "met", and "evidence". A rejected review requires approved=false and a non-empty blocking array.`
+		return `Return exactly one JSON object: {` + common + `,"approved":true,"findings":[],"blocking":[]}. Put the human-readable report in report_markdown. Finding objects require "requirement", "met", and "evidence". A rejected review requires approved=false and a non-empty blocking array.`
 	default:
 		return "Return exactly one JSON object with every required field and no Markdown."
 	}
@@ -109,7 +110,7 @@ func decodeExact(text string, target any, required, allowed []string) (map[strin
 	return raw, nil
 }
 
-var commonFields = []string{"status", "summary", "artifacts", "notes_for_next_agent"}
+var commonFields = []string{"status", "summary", "artifacts", "notes_for_next_agent", "report_markdown"}
 
 func validateCommon(value Common) error {
 	if value.Status != "success" {
@@ -120,6 +121,12 @@ func validateCommon(value Common) error {
 	}
 	if value.Artifacts == nil {
 		return fmt.Errorf("envelope artifacts array is required")
+	}
+	if strings.TrimSpace(value.Report) == "" {
+		return fmt.Errorf("envelope report_markdown is required")
+	}
+	if len(value.Report) > 256<<10 {
+		return fmt.Errorf("envelope report_markdown exceeds 256 KiB")
 	}
 	return nil
 }
