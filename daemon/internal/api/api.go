@@ -14,7 +14,7 @@ import (
 
 type server struct {
 	db               *store.DB
-	factory          *factory.Service
+	factory          taskFactory
 	config           config.Config
 	validationErrors []string
 	loadError        error
@@ -24,12 +24,26 @@ type server struct {
 	daemonID         string
 }
 
+type taskFactory interface {
+	Create(context.Context, factory.CreateRequest) (store.Task, error)
+	CreateSession(context.Context, string, factory.CreateSessionRequest) (store.Task, error)
+	StageProjection(context.Context, store.Task) ([]store.StageProjection, error)
+	Approve(context.Context, string, string, string) error
+	SendMessage(context.Context, string, string, factory.SendMessageRequest) (store.Message, error)
+	Retry(context.Context, string, string, factory.RetryRequest) (store.RetryResult, error)
+	Pause(context.Context, string) error
+	Resume(context.Context, string) error
+	Abort(context.Context, string) error
+	Delete(context.Context, string) error
+	Diff(context.Context, string) (factory.Diff, error)
+}
+
 type Access struct {
 	DaemonID string
 	Token    string
 }
 
-func New(db *store.DB, service *factory.Service, cfg config.Config, problems []string, loadErr error, harnesses []string, models func(context.Context, string) ([]config.Model, error), access Access) (http.Handler, error) {
+func New(db *store.DB, service taskFactory, cfg config.Config, problems []string, loadErr error, harnesses []string, models func(context.Context, string) ([]config.Model, error), access Access) (http.Handler, error) {
 	if access.Token == "" {
 		return nil, errors.New("daemon token is required")
 	}
