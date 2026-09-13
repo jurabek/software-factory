@@ -1,18 +1,18 @@
 # Refactoring golang code base
 
 
-## Moduling and abstraction
+## Modules and abstraction
  - Currently factory part contains Allocate Task Workspace
-  - This part should be moved it is own module. And we should be able to work with Git Branches, Git Worktrees, Docker containers and we should be flexibale on working with different workspaces
+  - This part should be moved into its own module. We should be able to work with Git branches, Git worktrees, Docker containers, and different workspace implementations.
 
 - Factory->>Harness: Run stage agent 
-  - This part also compicated we can abstract Runners and create different runners for each state Like Planner, Builder, Reviewer
-  - See this code base how they did executor with it is locks and removed locks usage from everywhere like we do https://github.com/SourceCode/docker/blob/master/daemon/exec/exec.go
+  - This part is also complicated. We can abstract runners and create different runners for each state, such as Planner, Builder, and Reviewer.
+  - See how this codebase implemented an executor with its locks and removed lock usage elsewhere: https://github.com/SourceCode/docker/blob/master/daemon/exec/exec.go
 
 - Events currently all the states inserts events directly into db.Events instead we should create EventStore service and factory should send events 
-- Entiry code base should be simplified into minimum code and removed most of the part, so factory should do Orchestration through runners, that runs abstracted Planner, Builder, Reviewer and etc based on configs that we provided.
+- The entire codebase should be simplified so the factory orchestrates runners for configured Planner, Builder, Reviewer, and other stages.
 - After that runners should hand over envelop into next state through the orchestrator. 
-- And harness should provide artificats/results in MARKDOWN so we should store them and rendere them properly to user in UI.  
+- The harness should provide artifacts and results in Markdown so we can store and render them properly in the UI.
 
 ## Current Task Execution
 

@@ -17,7 +17,11 @@ func (s service) savedBuild(ctx context.Context, taskID, planAttemptID string) (
 	if err != nil {
 		return stage.BuildResult{}, false, err
 	}
-	if err = s.kit.RequireAttempt(ctx, task.ID, "planning", planAttemptID); err != nil {
+	planStage, err := s.kit.StageByKind(task, "plan")
+	if err != nil {
+		return stage.BuildResult{}, false, err
+	}
+	if err = s.kit.RequireAttempt(ctx, task.ID, planStage.ID, planAttemptID); err != nil {
 		return stage.BuildResult{}, false, err
 	}
 	stageDef, err := s.kit.StageByKind(task, "build")
@@ -55,7 +59,11 @@ func (s service) beginBuild(ctx context.Context, taskID, planAttemptID string) (
 	if err != nil {
 		return store.Task{}, store.Phase{}, err
 	}
-	if err = s.kit.RequireAttempt(ctx, task.ID, "planning", planAttemptID); err != nil {
+	planStage, err := s.kit.StageByKind(task, "plan")
+	if err != nil {
+		return store.Task{}, store.Phase{}, err
+	}
+	if err = s.kit.RequireAttempt(ctx, task.ID, planStage.ID, planAttemptID); err != nil {
 		return store.Task{}, store.Phase{}, err
 	}
 	stageDef, err := s.kit.StageByKind(task, "build")

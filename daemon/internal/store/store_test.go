@@ -517,7 +517,7 @@ func TestPhaseCompletionAndTransitionRollbackTogether(t *testing.T) {
 		t.Fatal(err)
 	}
 	event := Event{ID: "duplicate", TaskID: "task-1", PhaseID: "phase-1", AttemptID: "phase-1", Kind: session.KindPhaseEnd, Payload: session.PhasePayload{Phase: "phase-1", Status: "success"}, Display: session.Display{Role: "system", Status: "success", Title: "Phase complete"}, StartedAt: time.Now().UTC()}
-	if err = db.CompletePhaseWithTransitionAndEvent(ctx, taskDir, "phase-1", "task-1", "checking", "reviewing", "success", "", event); err == nil {
+	if err = db.CompletePhaseWithTransitionAndEvent(ctx, taskDir, "phase-1", "task-1", "checking", "reviewing", "success", "", "snapshot-1", event); err == nil {
 		t.Fatal("phase completion unexpectedly succeeded with duplicate event")
 	}
 	task, err := db.Task(ctx, "task-1")
@@ -593,7 +593,7 @@ func TestPhaseReportPublicationRollsBackWithLifecycleEvent(t *testing.T) {
 	content := "# Plan\n\nAtomic."
 	artifact := Artifact{ID: "report-1", TaskID: "task-1", AttemptID: "phase-1", Type: "plan_report", Digest: fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(content))), Content: content, MediaType: "text/markdown", Producer: "planner", CreatedAt: now()}
 	event := Event{ID: "duplicate", TaskID: "task-1", PhaseID: "phase-1", AttemptID: "phase-1", Kind: session.KindPhaseEnd, Payload: session.PhasePayload{Phase: "phase-1", Status: "success"}, StartedAt: time.Now().UTC()}
-	if err = db.CompletePhaseWithArtifactAndTransitionAndEvent(ctx, taskDir, "phase-1", "task-1", "planning", "awaiting_plan_approval", "success", "", &artifact, event); err == nil {
+	if err = db.CompletePhaseWithArtifactAndTransitionAndEvent(ctx, taskDir, "phase-1", "task-1", "planning", "awaiting_plan_approval", "success", "", "snapshot-1", &artifact, event); err == nil {
 		t.Fatal("report publication unexpectedly succeeded with duplicate event")
 	}
 	if _, err = db.Artifact(ctx, "task-1", "report-1"); !errors.Is(err, ErrNotFound) {
@@ -627,7 +627,7 @@ func TestVerificationEvidenceAndPhaseTransitionRollbackTogether(t *testing.T) {
 	}
 	check := Check{ID: "check-1", TaskID: "task-1", PhaseID: "phase-1", Name: "test", Command: "true", Attempt: 1, Status: "passed", ExitCode: 0}
 	event := Event{ID: "duplicate", TaskID: "task-1", PhaseID: "phase-1", AttemptID: "phase-1", Kind: session.KindPhaseEnd, Payload: session.PhasePayload{Phase: "phase-1", Status: "success"}, StartedAt: time.Now().UTC()}
-	if err = db.CompleteVerificationPhaseWithEvidenceAndEvent(ctx, taskDir, "phase-1", "task-1", "checking", "reviewing", "success", "", []Check{check}, nil, event); err == nil {
+	if err = db.CompleteVerificationPhaseWithEvidenceAndEvent(ctx, taskDir, "phase-1", "task-1", "checking", "reviewing", "success", "", "snapshot-1", []Check{check}, nil, event); err == nil {
 		t.Fatal("verification completion unexpectedly succeeded with duplicate event")
 	}
 	storedChecks, err := db.Checks(ctx, "task-1")

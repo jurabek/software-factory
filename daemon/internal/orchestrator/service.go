@@ -61,7 +61,8 @@ type Service struct {
 func New(root string, dependencies Dependencies) *Service {
 	snapshots := workspace.New(dependencies.Store, dependencies.Git)
 	interventions := intervention.New(intervention.Deps{
-		Store: dependencies.Store, Git: dependencies.Git, Snapshots: snapshots, Root: root,
+		Store: dependencies.Store, Git: dependencies.Git, Snapshots: snapshots,
+		Config: dependencies.Config, ConfigPath: dependencies.ConfigPath, Root: root,
 	})
 	return &Service{
 		root:   root,
@@ -123,7 +124,21 @@ func (s *Service) Approve(ctx context.Context, id, actor, expectedDigest string)
 	if task.State != string(stagekit.AwaitingApproval) {
 		return store.ErrConflict
 	}
-	payload, err := s.db.ValidEnvelope(ctx, id, "planner")
+	phases, err := s.db.Phases(ctx, id)
+	if err != nil {
+		return err
+	}
+	planStageID := ""
+	for index := len(phases) - 1; index >= 0; index-- {
+		if phases[index].Kind == "plan" {
+			planStageID = phases[index].Name
+			break
+		}
+	}
+	if planStageID == "" {
+		return store.ErrNotFound
+	}
+	payload, err := s.db.ValidEnvelope(ctx, id, planStageID)
 	if err != nil {
 		return err
 	}
