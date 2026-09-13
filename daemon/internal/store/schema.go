@@ -62,8 +62,9 @@ create table if not exists phase_definitions (
 );
 create table if not exists artifacts (
  id text primary key, task_id text not null references tasks(id) on delete cascade,
- attempt_id text, type text not null default '', digest text,
- path text, metadata_json text, created_at text not null
+  attempt_id text, type text not null default '', digest text,
+  path text, metadata_json text, content text, media_type text not null default '',
+  producer text not null default '', provenance_json text not null default '{}', created_at text not null
 );
 create table if not exists workspace_snapshots (
  digest text primary key, task_id text not null references tasks(id) on delete cascade,
@@ -124,6 +125,7 @@ func ensureRetriableColumns(ctx context.Context, db *sql.DB) error {
 		{"interventions", "anchor_json text"}, {"interventions", "expected_branch_head text"}, {"interventions", "branch_id text"}, {"interventions", "attempt_id text"},
 		{"phases", "stage_id text"}, {"envelopes", "stage_id text"}, {"messages", "stage_id text"},
 		{"checks", "stage_id text"}, {"checks", "check_phase text not null default 'primary'"}, {"checks", "comparison_baseline text"},
+		{"artifacts", "content text"}, {"artifacts", "media_type text not null default ''"}, {"artifacts", "producer text not null default ''"}, {"artifacts", "provenance_json text not null default '{}'"},
 	}
 	for _, add := range adds {
 		if _, err := db.ExecContext(ctx, `alter table `+add[0]+` add column `+add[1]); err != nil && !isDuplicateColumn(err) {

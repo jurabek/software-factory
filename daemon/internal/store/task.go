@@ -5,6 +5,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
+	"time"
+
+	"github.com/jurabek/software-factory/daemon/internal/session"
 )
 
 type Task struct {
@@ -193,6 +197,44 @@ func (db *DB) SetPrepared(ctx context.Context, id, repositoryPath, snapshot stri
 func (db *DB) SetApproval(ctx context.Context, id, digest, actor string) error {
 	_, err := db.ExecContext(ctx, `update tasks set plan_digest=?,approval_actor=?,approval_at=? where id=?`, digest, actor, now(), id)
 	return wrap("save approval", err)
+}
+
+// ApproveWithEvent publishes approval metadata, the transition into building,
+// and its lifecycle event in one transaction.
+func (db *DB) ApproveWithEvent(ctx context.Context, taskDir, id, digest, actor string, event Event) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return wrap("begin approval", err)
+	}
+	defer tx.Rollback()
+	approvedAt := now()
+	result, err := tx.ExecContext(ctx, `update tasks set plan_digest=?,approval_actor=?,approval_at=?,previous_state=state,state='building' where id=? and state='awaiting_plan_approval'`, digest, actor, approvedAt, id)
+	if err != nil {
+		return wrap("save approval", err)
+	}
+	if count, _ := result.RowsAffected(); count != 1 {
+		return ErrConflict
+	}
+	if event.FormatVersion == 0 {
+		event.FormatVersion = session.FormatVersion
+	}
+	if event.StartedAt.IsZero() {
+		event.StartedAt = time.Now().UTC()
+	}
+	sequence, err := appendEventTx(ctx, tx, event)
+	if err != nil {
+		return err
+	}
+	event.Sequence = sequence
+	if err = tx.Commit(); err != nil {
+		return wrap("commit approval", err)
+	}
+	if err = writeEventTrace(taskDir, event, sequence); err != nil {
+		// The database is authoritative; trace export is derived output.
+		slog.Error("write derived event trace", "task_id", id, "event_id", event.ID, "error", err)
+		return nil
+	}
+	return nil
 }
 
 func (db *DB) SetApprovalCandidate(ctx context.Context, id, digest string) error {

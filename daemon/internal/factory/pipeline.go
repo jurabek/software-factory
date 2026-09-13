@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/jurabek/software-factory/daemon/internal/config"
 	"github.com/jurabek/software-factory/daemon/internal/store"
@@ -286,14 +287,7 @@ func (s *Service) progress(ctx context.Context, taskID string) error {
 }
 
 func (s *Service) continueAfterBuilder(ctx context.Context, taskID string) error {
-	task, err := s.db.Task(ctx, taskID)
-	if err != nil {
-		return err
-	}
-	if task.ActiveStage != "" {
-		return s.progress(ctx, taskID)
-	}
-	return s.buildCheckReview(ctx, taskID)
+	return s.progress(ctx, taskID)
 }
 
 func (s *Service) transition(ctx context.Context, task store.Task, to State, message string) error {
@@ -321,16 +315,12 @@ func (s *Service) executeStage(ctx context.Context, task store.Task, stage confi
 	if err != nil {
 		return err
 	}
-	switch stage.Kind {
-	case "build":
-		return s.executeBuild(ctx, task, stage, phase)
-	case "verify":
-		return s.executeVerify(ctx, task, phase)
-	case "review":
-		return s.executeReview(ctx, task, stage, phase)
-	default:
+	runner := s.runner(stage)
+	if runner == nil {
 		return fmt.Errorf("unsupported stage kind %q", stage.Kind)
 	}
+	_, err = runner.Run(ctx, StageInput{Task: task, Stage: stage, Attempt: phase})
+	return err
 }
 
 func (s *Service) executeBuild(ctx context.Context, task store.Task, stage config.Stage, phase store.Phase) error {
@@ -340,21 +330,19 @@ func (s *Service) executeBuild(ctx context.Context, task store.Task, stage confi
 	}
 	data := s.stagePromptData(task)
 	data["Plan"] = s.plannerEnvelope(ctx, task)
-	payload, err := s.runRole(ctx, task, phase, stage.ID, data, s.builderValidator(ctx, task, profile))
+	validate := s.builderValidator(ctx, task, profile)
+	payload, err := s.runRole(ctx, task, phase, stage.ID, data, validate)
 	if err != nil {
 		s.failPhase(ctx, phase, err)
 		return err
 	}
-	_ = payload
-	if err = s.validateBuilderPaths(ctx, task, profile); err != nil {
-		s.failPhase(ctx, phase, err)
-		return err
-	}
-	if err = s.persistBuilderEvidence(ctx, task, phase, payload); err != nil {
-		s.failPhase(ctx, phase, err)
-		return err
-	}
-	return s.endPhase(ctx, phase, "success", nil)
+	_, err = s.completeAgentPhase(ctx, task, phase, stage.ID, stage.Agent, validate, payload, func(latest string) error {
+		if validationErr := s.validateBuilderPaths(ctx, task, profile); validationErr != nil {
+			return validationErr
+		}
+		return s.persistBuilderEvidence(ctx, task, phase, latest)
+	}, Checking)
+	return err
 }
 
 func (s *Service) executeVerify(ctx context.Context, task store.Task, phase store.Phase) error {
@@ -370,7 +358,54 @@ func (s *Service) executeVerify(ctx context.Context, task store.Task, phase stor
 		s.failPhase(ctx, phase, err)
 		return err
 	}
-	return s.endPhase(ctx, phase, "success", nil)
+	checks, err := s.db.Checks(ctx, task.ID)
+	if err != nil {
+		return err
+	}
+	phaseChecks := make([]store.Check, 0)
+	for _, check := range checks {
+		if check.PhaseID == phase.ID {
+			phaseChecks = append(phaseChecks, check)
+		}
+	}
+	comparisons, err := s.db.Comparisons(ctx, task.ID)
+	if err != nil {
+		return err
+	}
+	phaseComparisons := make([]store.Comparison, 0)
+	for _, comparison := range comparisons {
+		if comparison.PhaseID == phase.ID {
+			phaseComparisons = append(phaseComparisons, comparison)
+		}
+	}
+	report, err := verificationReport(phaseChecks)
+	if err != nil {
+		s.failPhase(ctx, phase, err)
+		return err
+	}
+	artifact := s.reportArtifact(task, phase, "verification", report, "deterministic-checks")
+	return s.completeVerificationPhaseTransitionWithArtifact(ctx, phase, Checking, Reviewing, "success", nil, phaseChecks, phaseComparisons, &artifact)
+}
+
+func (s *Service) publishVerificationReport(ctx context.Context, task store.Task, phase store.Phase, checks []store.Check) error {
+	report, err := verificationReport(checks)
+	if err != nil {
+		return err
+	}
+	return s.publishReport(ctx, task, phase, "verification", report, "deterministic-checks")
+}
+
+func verificationReport(checks []store.Check) (string, error) {
+	var report strings.Builder
+	report.WriteString("# Verification\n\n")
+	for _, check := range checks {
+		status := "passed"
+		if check.Status != "passed" {
+			status = "failed"
+		}
+		fmt.Fprintf(&report, "- **%s**: %s (`%s`)\n", check.Name, status, check.Command)
+	}
+	return report.String(), nil
 }
 
 func (s *Service) executeReview(ctx context.Context, task store.Task, stage config.Stage, phase store.Phase) error {
@@ -402,28 +437,30 @@ func (s *Service) executeReview(ctx context.Context, task store.Task, stage conf
 	}
 	data["ChangedFiles"] = changed
 	data["Diff"] = changes
-	payload, err := s.runRole(ctx, task, phase, stage.ID, data, func(text string) (any, error) { return ValidateReview(text) })
+	validate := func(text string) (any, error) { return ValidateReview(text) }
+	payload, err := s.runRole(ctx, task, phase, stage.ID, data, validate)
 	if err != nil {
 		s.failPhase(ctx, phase, err)
 		return err
 	}
-	review, err := ValidateReview(payload)
-	if err != nil || !review.Approved {
-		if err == nil {
-			err = fmt.Errorf("reviewer rejected implementation")
+	_, err = s.completeAgentPhase(ctx, task, phase, stage.ID, stage.Agent, validate, payload, func(latest string) error {
+		review, validationErr := ValidateReview(latest)
+		if validationErr != nil {
+			return validationErr
 		}
-		s.failPhase(ctx, phase, err)
-		return err
-	}
-	after, err := repositoryFingerprint(ctx, s.git, task)
-	if err != nil || before != after {
-		if err == nil {
-			err = fmt.Errorf("%s modified repository", stage.ID)
+		if !review.Approved {
+			return fmt.Errorf("reviewer rejected implementation")
 		}
-		s.failPhase(ctx, phase, err)
-		return err
-	}
-	return s.endPhase(ctx, phase, "success", nil)
+		after, fingerprintErr := repositoryFingerprint(ctx, s.git, task)
+		if fingerprintErr != nil {
+			return fingerprintErr
+		}
+		if before != after {
+			return fmt.Errorf("%s modified repository", stage.ID)
+		}
+		return nil
+	}, Completed)
+	return err
 }
 
 func (s *Service) stagePromptData(task store.Task) map[string]any {

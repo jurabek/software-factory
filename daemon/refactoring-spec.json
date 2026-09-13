@@ -1,9 +1,9 @@
 {
   "title": "Daemon refactor: orchestration, execution ownership, Task Workspaces, events, and Markdown reports",
   "status": "Implementation in progress",
-  "current_phase": "P04 - Unify transactional lifecycle persistence and event history",
+  "current_phase": "P06 - Publish and render immutable Markdown reports",
   "implementation_notes": {
-    "last_updated": "2026-09-12",
+    "last_updated": "2026-09-13",
     "completed_in_current_session": [
       "Removed the global active-Task SQLite admission slot so independent Tasks can be created.",
       "Added an owner-managed execution registry with per-Task single-flight admission, cancellation, execution identities, stale-completion fencing, and shutdown joining.",
@@ -25,7 +25,28 @@
       "Made approval metadata, the transition into building, and the approval event commit atomically.",
       "Made intervention records and intervention history events commit atomically for comments, steering, follow-ups, retries, revisions, and repairs.",
       "Made Message acceptance, planner-approval invalidation or Task reopening, and Task-message history events commit atomically.",
-      "Made exact-retry repository inputs persist with the queued retry branch and phase, and made retry phase start and its event commit atomically."
+      "Made queued Message acceptance, planner approval invalidation or Task reopening, and their history event commit atomically; delivery and failure settlement use the same boundary.",
+      "Made exact-retry repository inputs persist with the queued retry branch and phase, and made retry phase start and its event commit atomically.",
+      "Made successful verification evidence, phase completion, Task advancement, and the phase-end event commit atomically, while keeping individual check observations independently durable.",
+      "Made Message delivery failures roll back with their lifecycle events, and routed agent/build/review completion through atomic phase transition publication.",
+      "Made phase start and standalone phase completion publish their phase rows, branch/task pointers, and lifecycle events atomically.",
+      "Made standalone event appends treat JSONL trace export as derived output, preserving committed history when export fails.",
+      "Added public Task-flow assertions for persisted event cursor ordering and replay from an HTTP cursor.",
+      "Added required bounded report_markdown fields to agent envelopes, immutable report content/provenance storage, deterministic verification reports, authenticated raw artifact reads, application report loading, and end-to-end report content assertions."
+      ,"Made planner, builder, reviewer, and verification report artifacts publish in the same transaction as their phase result, evidence, Task advancement, and lifecycle event."
+       ,"Bound the planner approval candidate to the report digest inside the planner publication transaction."
+       ,"Made plan approval metadata, the transition into building, and the approval lifecycle event commit atomically, with rollback coverage."
+      ,"Added typed StageInput and StageOutput handoffs with dedicated planner, builder, reviewer, and verifier runner modules, and routed configured stage dispatch through runner ownership."
+      ,"Added safe report text rendering coverage proving raw HTML, links, and remote images remain inert."
+       ,"Added rollback coverage proving a report artifact is not retained when lifecycle event publication fails."
+        ,"Removed the superseded legacy build/check/review driver; builder continuation now re-enters the configured pipeline runner path."
+        ,"Made execution admission reject overlapping launches, and made pause, abort, and shutdown wait for owned execution settlement before lifecycle reuse."
+        ,"Made required live-output persistence failures cancel the harness invocation context, preserve the persistence error, settle invocation accounting, and reject output returned after cancellation."
+        ,"Kept configured stage identity separate from agent identity during Message routing, continuation, validation, session accounting, and envelope publication."
+        ,"Made configured build and review stages drain accepted Messages before report publication and Task progression."
+        ,"Added an HTTP Task-flow regression for idempotent Message acceptance, queued and delivered SSE events, subscriber disconnect, persisted cursor replay, and delivery before verification progression."
+        ,"Added public pause and restart recovery regressions covering late successful harness output rejection, interrupted Attempt reads, and preservation of paused Tasks."
+        ,"Replaced silently dropped overlapping launches with one owner-managed successor admitted only after current execution settlement; pause and shutdown clear and join the successor chain."
     ],
     "deferred_feature_removal": {
       "status": "completed",
@@ -41,10 +62,9 @@
       ]
     },
     "known_remaining_work": [
-      "Add public service/HTTP assertions for cancellation winning against late completion, replacement admission, and restart settlement.",
-      "Add public service/HTTP assertions for transactional lifecycle consistency and required live-output persistence failure.",
-      "Extend P04 atomic persistence to verification evidence and Message delivery/finalization publications; preserve independent live observations.",
-      "P05-P07 have not started; report publication and UI work remain pending."
+      "Add an HTTP-level assertion for required live-output persistence failure; focused factory coverage now proves cancellation, error retention, and settlement.",
+      "Add an HTTP-level assertion for replacement admission; owner-level coverage now proves successor settlement ordering.",
+      "Add a real browser-runner test for report navigation and rendering; the current application test covers the sanitizer contract without launching a browser."
     ],
     "verification": {
       "passed": [
@@ -62,7 +82,17 @@
           "npm run typecheck",
           "npm run build"
         ],
-        "known_failure": "The complete Go and race suites retain the existing sandbox-dependent TestTaskFlowSuite/TestCreateApproveBuildAndCheck failure with sandbox unavailable."
+        "known_failure": "The complete Go and race suites retained the existing sandbox-dependent TestTaskFlowSuite/TestCreateApproveBuildAndCheck failure at that checkpoint."
+      },
+      "latest_session": {
+        "passed": [
+          "go -C daemon test ./...",
+          "go -C daemon test -race ./...",
+          "npm run application:test",
+          "npm run typecheck",
+          "npm run build"
+        ],
+        "note": "The previously recorded sandbox-dependent Task-flow failure did not reproduce."
       }
     }
   },
@@ -664,7 +694,7 @@
       {
         "id": "P04",
         "title": "Unify transactional lifecycle persistence and event history",
-        "status": "in_progress",
+        "status": "completed",
         "depends_on": ["P03"],
         "deliverables": [
           "Introduce atomic lifecycle commit operations and transaction-participating event persistence.",
@@ -680,18 +710,23 @@
           "Published valid planner envelopes and builder test-change evidence in the same transaction as phase completion and Task advancement.",
           "Published approval metadata and intervention records with their lifecycle events atomically.",
           "Published Message acceptance, Task reopening or approval invalidation, and Task-message history atomically.",
-          "Persisted exact-retry repository inputs with retry creation and published retry phase starts with their events atomically."
+          "Published queued Message acceptance, planner approval invalidation or Task reopening, and its history event atomically; delivery and failure settlement use the same boundary.",
+          "Published successful verification checks and comparisons with phase completion, Task advancement, and the phase-end event while retaining independent observations.",
+          "Persisted exact-retry repository inputs with retry creation and published retry phase starts with their events atomically.",
+          "Made phase start and standalone phase completion publish their phase rows, branch/task pointers, and lifecycle events atomically.",
+           "Made standalone event appends treat JSONL trace export as derived output, preserving committed history when export fails.",
+            "Made plan approval metadata, the transition into building, and the approval lifecycle event commit atomically, with rollback coverage.",
+           "Removed the superseded legacy build/check/review driver; builder continuation now re-enters the configured pipeline runner path.",
+            "Made execution admission reject overlapping launches, and made pause, abort, and shutdown wait for owned execution settlement before lifecycle reuse.",
+            "Cancelled and settled agent invocation when required live output could not be persisted.",
+            "Covered Message lifecycle sequence ordering, SSE disconnect isolation, and cursor replay through the HTTP Task-flow seam."
         ],
-        "remaining_scope": [
-          "Route verification evidence and Message delivery/finalization lifecycle changes through atomic persistence operations.",
-          "Add public HTTP assertions for lifecycle rollback, cursor ordering, and required live-output persistence failure.",
-          "Complete P04 acceptance coverage before starting runner extraction in P05."
-        ]
+        "remaining_scope": []
       },
       {
         "id": "P05",
         "title": "Extract runners and typed handoffs under one progression policy",
-        "status": "pending",
+        "status": "partially_completed",
         "depends_on": ["P04"],
         "deliverables": [
           "Share prompt, harness, correction, session, and accounting machinery across role-specific runners.",
@@ -699,12 +734,20 @@
           "Introduce explicit Attempt input/result lineage, frozen configuration use, and validated linear stage prerequisites.",
           "Route normal execution, Messages, and resume through the same runners and remove replaced parallel drivers; retry remains deferred."
         ],
-        "exit_criteria": "T01–T04 and T11–T16 pass with explicit stage lineage; design review confirms only the orchestrator chooses progression. Report-specific assertions remain for P06."
+        "exit_criteria": "T01–T04 and T11–T16 pass with explicit stage lineage; design review confirms only the orchestrator chooses progression. Report-specific assertions remain for P06.",
+        "completed_scope": [
+          "Added typed stage inputs and outputs plus planner, builder, reviewer, and verifier runner modules.",
+          "Routed configured stage dispatch through runner ownership and removed the superseded legacy driver.",
+          "Preserved distinct configured stage and agent identities through Message continuation and final queue draining."
+        ],
+        "remaining_scope": [
+          "Complete final design review of explicit input lineage and progression prerequisites."
+        ]
       },
       {
         "id": "P06",
         "title": "Publish and render immutable Markdown reports",
-        "status": "pending",
+        "status": "in_progress",
         "depends_on": ["P05"],
         "deliverables": [
           "Add required producer-authored report Markdown to structured agent results and generate deterministic verification reports.",
@@ -712,7 +755,16 @@
           "Add authenticated additive content/raw/download capabilities and safe rendering in the existing Task UI.",
           "Preserve current Message targeting, canonical anchors, and public contracts without broader document features."
         ],
-        "exit_criteria": "T02 and T17 include reports; T20–T22 pass, including running-browser verification and bounded correction for missing reports."
+        "exit_criteria": "T02 and T17 include reports; T20–T22 pass, including running-browser verification and bounded correction for missing reports.",
+        "completed_scope": [
+          "Published required producer-authored planner, builder, and reviewer Markdown plus deterministic verification reports.",
+          "Stored report content and provenance atomically with phase results, evidence, Task progression, and lifecycle events.",
+          "Bound planner approval candidates to report digests and exposed authenticated raw and download reads.",
+          "Rendered report text with raw HTML, active links, and remote images inert in application tests."
+        ],
+        "remaining_scope": [
+          "Add real browser-runner coverage for report navigation, rendering, download bytes, and absence of remote image requests."
+        ]
       },
       {
         "id": "P07",
