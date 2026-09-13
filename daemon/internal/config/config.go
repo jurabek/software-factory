@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -37,12 +38,7 @@ func ThinkingLevelsFor(harness string) []string {
 
 // IsValidThinkingFor reports whether a thinking level is valid for a harness.
 func IsValidThinkingFor(harness, level string) bool {
-	for _, allowed := range ThinkingLevelsFor(harness) {
-		if allowed == level {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(ThinkingLevelsFor(harness), level)
 }
 
 // ApplyTaskOverrides returns c with task-level agent/model/thinking applied.

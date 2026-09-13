@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"slices"
 	"strings"
 )
 
@@ -63,13 +64,7 @@ func (h settingsHandler) modelsRead(w http.ResponseWriter, r *http.Request) {
 	if harness == "" {
 		harness = h.defaultHarness()
 	}
-	known := false
-	for _, name := range h.harnesses {
-		if name == harness {
-			known = true
-			break
-		}
-	}
+	known := slices.Contains(h.harnesses, harness)
 	if !known {
 		fail(w, http.StatusUnprocessableEntity, "unknown_harness", "harness "+harness+" is not available")
 		return

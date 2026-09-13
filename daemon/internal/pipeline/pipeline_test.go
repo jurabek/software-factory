@@ -5,6 +5,9 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+
+	"github.com/jurabek/software-factory/daemon/internal/stage"
+	"github.com/jurabek/software-factory/daemon/internal/stagekit"
 )
 
 type stages struct {
@@ -12,42 +15,42 @@ type stages struct {
 	fail  string
 }
 
-func (s *stages) Plan(context.Context, Input) (PlanResult, error) {
+func (s *stages) Plan(context.Context, stage.Input) (stage.PlanResult, error) {
 	s.calls = append(s.calls, "plan")
 	if s.fail == "plan" {
-		return PlanResult{}, errors.New("plan failed")
+		return stage.PlanResult{}, errors.New("plan failed")
 	}
-	return PlanResult{Payload: "plan", AttemptID: "p1", Approved: s.fail != "approval"}, nil
+	return stage.PlanResult{Payload: "plan", AttemptID: "p1", Approved: s.fail != "approval"}, nil
 }
 
-func (s *stages) Build(_ context.Context, _ Input, plan PlanResult) (BuildResult, error) {
+func (s *stages) Build(_ context.Context, _ stage.Input, plan stage.PlanResult) (stage.BuildResult, error) {
 	s.calls = append(s.calls, "build:"+plan.AttemptID)
 	if s.fail == "build" {
-		return BuildResult{}, errors.New("build failed")
+		return stage.BuildResult{}, errors.New("build failed")
 	}
-	return BuildResult{Payload: "build", AttemptID: "b1"}, nil
+	return stage.BuildResult{Payload: "build", AttemptID: "b1"}, nil
 }
 
-func (s *stages) Verify(_ context.Context, _ Input, plan PlanResult, build BuildResult) (VerificationResult, error) {
+func (s *stages) Verify(_ context.Context, _ stage.Input, plan stage.PlanResult, build stage.BuildResult) (stage.VerificationResult, error) {
 	s.calls = append(s.calls, "verify:"+plan.AttemptID+":"+build.AttemptID)
 	if s.fail == "verify" {
-		return VerificationResult{}, errors.New("verify failed")
+		return stage.VerificationResult{}, errors.New("verify failed")
 	}
 	if s.fail == "verify-unpassed" {
-		return VerificationResult{AttemptID: "v1", Passed: false}, nil
+		return stage.VerificationResult{AttemptID: "v1", Passed: false}, nil
 	}
-	return VerificationResult{AttemptID: "v1", Passed: true}, nil
+	return stage.VerificationResult{AttemptID: "v1", Passed: true}, nil
 }
 
-func (s *stages) Review(_ context.Context, _ Input, plan PlanResult, build BuildResult, verification VerificationResult) (ReviewResult, error) {
+func (s *stages) Review(_ context.Context, _ stage.Input, plan stage.PlanResult, build stage.BuildResult, verification stage.VerificationResult) (stage.ReviewResult, error) {
 	s.calls = append(s.calls, "review:"+plan.AttemptID+":"+build.AttemptID+":"+verification.AttemptID)
 	if s.fail == "review" {
-		return ReviewResult{}, errors.New("review failed")
+		return stage.ReviewResult{}, errors.New("review failed")
 	}
 	if s.fail == "review-rejected" {
-		return ReviewResult{AttemptID: "r1", Approved: false}, nil
+		return stage.ReviewResult{AttemptID: "r1", Approved: false}, nil
 	}
-	return ReviewResult{AttemptID: "r1", Approved: true}, nil
+	return stage.ReviewResult{AttemptID: "r1", Approved: true}, nil
 }
 
 func TestRunUsesFixedTypedFlow(t *testing.T) {
@@ -92,7 +95,7 @@ func TestApprovalResumeDoesNotReplan(t *testing.T) {
 	if _, err := p.Run(context.Background(), "task"); err != nil {
 		t.Fatal(err)
 	}
-	resumed := &resumingPlanner{plan: PlanResult{Payload: "plan", AttemptID: "p1", Approved: true}}
+	resumed := &resumingPlanner{plan: stage.PlanResult{Payload: "plan", AttemptID: "p1", Approved: true}}
 	rest := &stages{}
 	p2 := New(resumed, rest, rest, rest)
 	result, err := p2.Run(context.Background(), "task")
@@ -111,11 +114,11 @@ func TestApprovalResumeDoesNotReplan(t *testing.T) {
 }
 
 type resumingPlanner struct {
-	plan  PlanResult
+	plan  stage.PlanResult
 	plans int
 }
 
-func (s *resumingPlanner) Plan(context.Context, Input) (PlanResult, error) {
+func (s *resumingPlanner) Plan(context.Context, stage.Input) (stage.PlanResult, error) {
 	s.plans++
 	return s.plan, nil
 }
@@ -196,39 +199,39 @@ type retryStages struct {
 	pass     bool
 }
 
-func (s *retryStages) Plan(context.Context, Input) (PlanResult, error) {
+func (s *retryStages) Plan(context.Context, stage.Input) (stage.PlanResult, error) {
 	s.plans++
-	return PlanResult{Payload: "plan", AttemptID: "p1", Approved: true}, nil
+	return stage.PlanResult{Payload: "plan", AttemptID: "p1", Approved: true}, nil
 }
 
-func (s *retryStages) Build(_ context.Context, _ Input, plan PlanResult) (BuildResult, error) {
+func (s *retryStages) Build(_ context.Context, _ stage.Input, plan stage.PlanResult) (stage.BuildResult, error) {
 	s.builds++
-	return BuildResult{Payload: "build", AttemptID: "b1"}, nil
+	return stage.BuildResult{Payload: "build", AttemptID: "b1"}, nil
 }
 
-func (s *retryStages) Verify(_ context.Context, _ Input, plan PlanResult, build BuildResult) (VerificationResult, error) {
+func (s *retryStages) Verify(_ context.Context, _ stage.Input, plan stage.PlanResult, build stage.BuildResult) (stage.VerificationResult, error) {
 	s.verifies++
 	_ = plan
 	_ = build
-	return VerificationResult{AttemptID: "v1", Passed: s.pass}, nil
+	return stage.VerificationResult{AttemptID: "v1", Passed: s.pass}, nil
 }
 
-func (s *retryStages) Review(_ context.Context, _ Input, plan PlanResult, build BuildResult, verification VerificationResult) (ReviewResult, error) {
+func (s *retryStages) Review(_ context.Context, _ stage.Input, plan stage.PlanResult, build stage.BuildResult, verification stage.VerificationResult) (stage.ReviewResult, error) {
 	_, _, _ = plan, build, verification
-	return ReviewResult{AttemptID: "r1", Approved: true}, nil
+	return stage.ReviewResult{AttemptID: "r1", Approved: true}, nil
 }
 
 func TestUpstreamChangeInvalidatesDownstream(t *testing.T) {
 	// Lineage rule: a downstream result is eligible only when produced after
 	// its upstream result. A changed plan therefore requires a fresh build,
 	// and a changed build requires fresh verification and review.
-	if !EligibleAfter(3, 2) {
+	if !stagekit.EligibleAfter(3, 2) {
 		t.Fatal("downstream produced after upstream must be eligible")
 	}
-	if EligibleAfter(2, 3) {
+	if stagekit.EligibleAfter(2, 3) {
 		t.Fatal("downstream produced before upstream change must be ineligible")
 	}
-	if EligibleAfter(2, 2) {
+	if stagekit.EligibleAfter(2, 2) {
 		t.Fatal("same-sequence result must be ineligible")
 	}
 	first := &lineageStages{planID: "p1"}
@@ -259,21 +262,21 @@ type lineageStages struct {
 	buildPlanID string
 }
 
-func (s *lineageStages) Plan(context.Context, Input) (PlanResult, error) {
-	return PlanResult{Payload: "plan-" + s.planID, AttemptID: s.planID, Approved: true}, nil
+func (s *lineageStages) Plan(context.Context, stage.Input) (stage.PlanResult, error) {
+	return stage.PlanResult{Payload: "plan-" + s.planID, AttemptID: s.planID, Approved: true}, nil
 }
 
-func (s *lineageStages) Build(_ context.Context, _ Input, plan PlanResult) (BuildResult, error) {
+func (s *lineageStages) Build(_ context.Context, _ stage.Input, plan stage.PlanResult) (stage.BuildResult, error) {
 	s.buildPlanID = plan.AttemptID
-	return BuildResult{Payload: "build-" + plan.AttemptID, AttemptID: "b-" + plan.AttemptID}, nil
+	return stage.BuildResult{Payload: "build-" + plan.AttemptID, AttemptID: "b-" + plan.AttemptID}, nil
 }
 
-func (s *lineageStages) Verify(_ context.Context, _ Input, _ PlanResult, build BuildResult) (VerificationResult, error) {
-	return VerificationResult{AttemptID: "v-" + build.AttemptID, Passed: true}, nil
+func (s *lineageStages) Verify(_ context.Context, _ stage.Input, _ stage.PlanResult, build stage.BuildResult) (stage.VerificationResult, error) {
+	return stage.VerificationResult{AttemptID: "v-" + build.AttemptID, Passed: true}, nil
 }
 
-func (s *lineageStages) Review(_ context.Context, _ Input, _ PlanResult, _ BuildResult, verification VerificationResult) (ReviewResult, error) {
-	return ReviewResult{AttemptID: "r-" + verification.AttemptID, Approved: true}, nil
+func (s *lineageStages) Review(_ context.Context, _ stage.Input, _ stage.PlanResult, _ stage.BuildResult, verification stage.VerificationResult) (stage.ReviewResult, error) {
+	return stage.ReviewResult{AttemptID: "r-" + verification.AttemptID, Approved: true}, nil
 }
 
 func TestMessageDrainReachesDownstream(t *testing.T) {
@@ -299,7 +302,7 @@ type drainingPlanner struct {
 	queued []string
 }
 
-func (s *drainingPlanner) Plan(context.Context, Input) (PlanResult, error) {
+func (s *drainingPlanner) Plan(context.Context, stage.Input) (stage.PlanResult, error) {
 	payload := "plan"
 	// Drain-then-publish: consume every message queued before the atomic
 	// publication check, mirroring the Publisher bridges.
@@ -307,7 +310,7 @@ func (s *drainingPlanner) Plan(context.Context, Input) (PlanResult, error) {
 		payload += "+" + s.queued[0]
 		s.queued = s.queued[1:]
 	}
-	return PlanResult{Payload: payload, AttemptID: "p1", Approved: true}, nil
+	return stage.PlanResult{Payload: payload, AttemptID: "p1", Approved: true}, nil
 }
 
 type payloadRecorder struct {
@@ -315,20 +318,20 @@ type payloadRecorder struct {
 	buildPlan   string
 }
 
-func (s *payloadRecorder) Plan(ctx context.Context, input Input) (PlanResult, error) {
+func (s *payloadRecorder) Plan(ctx context.Context, input stage.Input) (stage.PlanResult, error) {
 	return s.passthrough.Plan(ctx, input)
 }
 
-func (s *payloadRecorder) Build(ctx context.Context, input Input, plan PlanResult) (BuildResult, error) {
+func (s *payloadRecorder) Build(ctx context.Context, input stage.Input, plan stage.PlanResult) (stage.BuildResult, error) {
 	s.buildPlan = plan.Payload
 	return s.passthrough.Build(ctx, input, plan)
 }
 
-func (s *payloadRecorder) Verify(ctx context.Context, input Input, plan PlanResult, build BuildResult) (VerificationResult, error) {
+func (s *payloadRecorder) Verify(ctx context.Context, input stage.Input, plan stage.PlanResult, build stage.BuildResult) (stage.VerificationResult, error) {
 	return s.passthrough.Verify(ctx, input, plan, build)
 }
 
-func (s *payloadRecorder) Review(ctx context.Context, input Input, plan PlanResult, build BuildResult, verification VerificationResult) (ReviewResult, error) {
+func (s *payloadRecorder) Review(ctx context.Context, input stage.Input, plan stage.PlanResult, build stage.BuildResult, verification stage.VerificationResult) (stage.ReviewResult, error) {
 	return s.passthrough.Review(ctx, input, plan, build, verification)
 }
 
@@ -368,6 +371,6 @@ func TestCancellationBetweenStagesStopsDownstream(t *testing.T) {
 
 type cancelledBuilder struct{}
 
-func (cancelledBuilder) Build(context.Context, Input, PlanResult) (BuildResult, error) {
-	return BuildResult{}, context.Canceled
+func (cancelledBuilder) Build(context.Context, stage.Input, stage.PlanResult) (stage.BuildResult, error) {
+	return stage.BuildResult{}, context.Canceled
 }
