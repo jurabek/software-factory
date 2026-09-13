@@ -40,7 +40,7 @@ go -C daemon run .
 
 Interactive Swagger API documentation is available at `http://127.0.0.1:8080/docs`; its OpenAPI document is served at `/swagger.yaml`. The daemon does not serve a frontend. `PORT` changes the port. `SOFTWARE_FACTORY_DIR` changes the default `~/.software-factory` state directory. `PI_PATH` selects Pi. The first run generates `config.yaml` and editable prompts without replacing existing files.
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for how the daemon coordinates the Task repository, agents, checks, events, persistence, recovery, and security. API examples are in [`docs/USAGE.md`](docs/USAGE.md).
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for how the daemon coordinates the Task repository, agents, checks, events, persistence, recovery, and security. See [`docs/USAGE.md`](docs/USAGE.md) for the daemon connection workflow.
 
 The daemon binds only to loopback. Every `/api/*` request except `GET /api/v1/health` requires `Authorization: Bearer <daemon-token>`. The token is generated on first run, persisted at `$SOFTWARE_FACTORY_DIR/daemon-token`, and printed to stdout. To reach the daemon from the application, expose it through an encrypted tunnel whose exact origin is in `DAEMON_ALLOWED_ORIGINS`. Task workspaces, SQLite WAL state, JSONL traces, prompts, and Pi sessions remain under the factory directory until explicit deletion.
 
