@@ -47,9 +47,9 @@ func (h tasksHandler) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/tasks/{id}/messages", h.messages)
 	mux.HandleFunc("POST /api/v1/tasks/{id}/attempts/{attemptID}/retry", h.retry)
 	mux.HandleFunc("POST /api/v1/tasks/{id}/approve", h.approve)
-	mux.Handle("POST /api/v1/tasks/{id}/pause", h.control(func(ctx context.Context, id string) error { return 	h.orchestrator.Pause(ctx, id) }))
-	mux.Handle("POST /api/v1/tasks/{id}/resume", h.control(func(ctx context.Context, id string) error { return 	h.orchestrator.Resume(ctx, id) }))
-	mux.Handle("POST /api/v1/tasks/{id}/abort", h.control(func(ctx context.Context, id string) error { return 	h.orchestrator.Abort(ctx, id) }))
+	mux.Handle("POST /api/v1/tasks/{id}/pause", h.control(h.pause))
+	mux.Handle("POST /api/v1/tasks/{id}/resume", h.control(h.resume))
+	mux.Handle("POST /api/v1/tasks/{id}/abort", h.control(h.abort))
 	mux.HandleFunc("GET /api/v1/tasks/{id}/interventions", h.interventions)
 	mux.HandleFunc("DELETE /api/v1/tasks/{id}", h.delete)
 	mux.HandleFunc("GET /api/v1/tasks/{id}/attempts", h.attempts)
@@ -73,7 +73,7 @@ func (h tasksHandler) create(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusUnprocessableEntity, "invalid_request", err.Error())
 		return
 	}
-	task, err := h.orchestrator.Create(r.Context(), request)
+	task, err := h.communicators.Creator.Create(r.Context(), request)
 	if err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			storeError(w, err)
@@ -135,7 +135,7 @@ func (h tasksHandler) createSession(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusUnprocessableEntity, "invalid_session", "session description is required")
 		return
 	}
-	session, err := h.orchestrator.CreateSession(r.Context(), r.PathValue("id"), request)
+	session, err := h.communicators.Creator.CreateSession(r.Context(), r.PathValue("id"), request)
 	if err != nil {
 		storeError(w, err)
 		return
@@ -165,8 +165,8 @@ func (h tasksHandler) response(ctx context.Context, task store.Task) (taskRespon
 	if phase == nil && len(phases) > 0 {
 		phase = &phases[len(phases)-1]
 	}
-	if h.orchestrator != nil {
-		stages, projectionErr := h.orchestrator.StageProjection(ctx, task)
+	if h.communicators.Projection != nil {
+		stages, projectionErr := h.communicators.Projection.StageProjection(ctx, task)
 		if projectionErr != nil {
 			return taskResponse{}, projectionErr
 		}
@@ -206,6 +206,39 @@ func (h tasksHandler) control(action func(context.Context, string) error) http.H
 	})
 }
 
+func (h tasksHandler) pause(ctx context.Context, id string) error {
+	return h.publishControl(ctx, id, stagekit.Paused, store.TaskPaused)
+}
+
+func (h tasksHandler) resume(ctx context.Context, id string) error {
+	task, err := h.db.Task(ctx, id)
+	if err != nil {
+		return err
+	}
+	if task.State != string(stagekit.Paused) && task.State != string(stagekit.Blocked) {
+		return store.ErrConflict
+	}
+	if task.State == string(stagekit.Blocked) && task.Error == "unresolved_questions" {
+		return store.ErrConflict
+	}
+	return h.communicators.Events.Publish(ctx, id, store.TaskResumed)
+}
+
+func (h tasksHandler) abort(ctx context.Context, id string) error {
+	return h.publishControl(ctx, id, stagekit.Aborted, store.TaskCancelled)
+}
+
+func (h tasksHandler) publishControl(ctx context.Context, id string, target stagekit.State, kind string) error {
+	task, err := h.db.Task(ctx, id)
+	if err != nil {
+		return err
+	}
+	if task.State != string(target) && !stagekit.CanTransition(stagekit.State(task.State), target) {
+		return store.ErrConflict
+	}
+	return h.communicators.Events.Publish(ctx, id, kind)
+}
+
 func (h tasksHandler) approve(w http.ResponseWriter, r *http.Request) {
 	if !h.ready(w) {
 		return
@@ -219,7 +252,7 @@ func (h tasksHandler) approve(w http.ResponseWriter, r *http.Request) {
 	if actor == "" {
 		actor = "local-user"
 	}
-	if err = h.orchestrator.Approve(r.Context(), r.PathValue("id"), actor, request.PlanDigest); err != nil {
+	if err = h.communicators.Planner.Approve(r.Context(), r.PathValue("id"), actor, request.PlanDigest); err != nil {
 		storeError(w, err)
 		return
 	}
@@ -236,7 +269,7 @@ func (h tasksHandler) sendMessage(w http.ResponseWriter, r *http.Request) {
 	if actor == "" {
 		actor = "local-user"
 	}
-	value, err := h.orchestrator.SendMessage(r.Context(), r.PathValue("id"), actor, request)
+	value, _, err := h.communicators.Messages.Send(r.Context(), r.PathValue("id"), actor, request)
 	if err != nil {
 		storeError(w, err)
 		return
@@ -262,7 +295,7 @@ func (h tasksHandler) retry(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusUnprocessableEntity, "invalid_request", err.Error())
 		return
 	}
-	value, err := h.orchestrator.Retry(r.Context(), r.PathValue("id"), r.PathValue("attemptID"), request)
+	value, _, err := h.communicators.Intervention.Retry(r.Context(), r.PathValue("id"), r.PathValue("attemptID"), request)
 	if err != nil {
 		storeError(w, err)
 		return
@@ -283,7 +316,7 @@ func (h tasksHandler) interventions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h tasksHandler) delete(w http.ResponseWriter, r *http.Request) {
-	if err := h.orchestrator.Delete(r.Context(), r.PathValue("id")); err != nil {
+	if err := h.communicators.Tasks.Delete(r.Context(), r.PathValue("id")); err != nil {
 		storeError(w, err)
 		return
 	}
@@ -373,7 +406,7 @@ func (h tasksHandler) results(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h tasksHandler) diff(w http.ResponseWriter, r *http.Request) {
-	value, err := h.orchestrator.Diff(r.Context(), r.PathValue("id"))
+	value, err := h.communicators.Tasks.Diff(r.Context(), r.PathValue("id"))
 	if err != nil {
 		storeError(w, err)
 		return

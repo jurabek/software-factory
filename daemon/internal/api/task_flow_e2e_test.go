@@ -20,17 +20,23 @@ import (
 
 	"github.com/jurabek/software-factory/daemon/internal/builder"
 	"github.com/jurabek/software-factory/daemon/internal/config"
+	"github.com/jurabek/software-factory/daemon/internal/creation"
 	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
 	"github.com/jurabek/software-factory/daemon/internal/harness"
+	"github.com/jurabek/software-factory/daemon/internal/intervention"
+	"github.com/jurabek/software-factory/daemon/internal/messaging"
 	"github.com/jurabek/software-factory/daemon/internal/orchestrator"
 	"github.com/jurabek/software-factory/daemon/internal/pipeline"
 	"github.com/jurabek/software-factory/daemon/internal/planner"
+	"github.com/jurabek/software-factory/daemon/internal/projection"
 	"github.com/jurabek/software-factory/daemon/internal/reviewer"
 	"github.com/jurabek/software-factory/daemon/internal/sandbox"
 	"github.com/jurabek/software-factory/daemon/internal/session"
 	"github.com/jurabek/software-factory/daemon/internal/stagekit"
 	"github.com/jurabek/software-factory/daemon/internal/store"
+	"github.com/jurabek/software-factory/daemon/internal/task"
 	"github.com/jurabek/software-factory/daemon/internal/verifier"
+	"github.com/jurabek/software-factory/daemon/internal/workspace"
 	"github.com/stretchr/testify/suite"
 )
 
@@ -153,17 +159,22 @@ func (s *taskFlowSuite) SetupSuite() {
 	registry := harness.Registry{"pi": s.harness}
 	sandboxRunner := sandbox.Git{Runner: factorygit.OSRunner{}}
 	kit := stagekit.New(s.db, factorygit.OSRunner{}, registry, sandboxRunner, cfg, configPath, taskRoot)
+	events := orchestrator.NewEvents(s.db)
+	taskService := task.New(taskRoot, task.Deps{Store: s.db, Config: cfg, ConfigPath: configPath, Harnesses: registry, Git: factorygit.OSRunner{}, Sandbox: sandboxRunner})
+	creationStage := creation.New(taskService, kit, events)
+	plannerStage := planner.New(kit, events)
 	s.service = orchestrator.New(taskRoot, orchestrator.Dependencies{
-		Store: s.db, Config: cfg, ConfigPath: configPath,
-		Harnesses: registry, Git: factorygit.OSRunner{}, Sandbox: sandboxRunner,
-		Workflow: pipeline.New(
-			planner.New(kit),
+		Store: s.db, Events: events, Workflow: pipeline.New(
+			plannerStage,
 			builder.New(kit),
 			verifier.New(kit),
 			reviewer.New(kit),
+			creationStage,
 		),
 	})
-	handler, err := New(s.db, s.service, cfg, nil, nil, []string{"pi"}, nil, newTestAccess())
+	interventions := intervention.New(intervention.Deps{Store: s.db, Git: factorygit.OSRunner{}, Snapshots: workspace.New(s.db, factorygit.OSRunner{}), Config: cfg, ConfigPath: configPath, Root: taskRoot, Events: events})
+	messages := messaging.New(messaging.Deps{Store: s.db, Config: cfg, ConfigPath: configPath, Harnesses: registry, Root: taskRoot, Interventions: interventions, Events: events})
+	handler, err := New(s.db, Communicators{Creator: creationStage, Events: events, Planner: plannerStage, Messages: messages, Intervention: interventions, Projection: projection.New(projection.Deps{Store: s.db, Config: cfg, ConfigPath: configPath}), Tasks: taskService}, cfg, nil, nil, []string{"pi"}, nil, newTestAccess())
 	s.Require().NoError(err)
 	s.server = httptest.NewServer(handler)
 	s.client = &http.Client{Timeout: 2 * time.Second}
@@ -195,7 +206,7 @@ func (s *taskFlowSuite) TestCreateApproveBuildAndCheck() {
 
 	var planningAttempts []store.Phase
 	s.request(http.MethodGet, "/api/v1/tasks/"+created.ID+"/attempts", nil, http.StatusOK, &planningAttempts)
-	s.Equal([]string{"prepare", "plan"}, phaseNames(planningAttempts))
+	s.Equal([]string{"creation", "plan"}, phaseNames(planningAttempts))
 	for _, attempt := range planningAttempts {
 		s.Equal("success", attempt.Status)
 	}
@@ -244,7 +255,7 @@ func (s *taskFlowSuite) TestCreateApproveBuildAndCheck() {
 
 	var attempts []store.Phase
 	s.request(http.MethodGet, "/api/v1/tasks/"+created.ID+"/attempts", nil, http.StatusOK, &attempts)
-	s.Equal([]string{"prepare", "plan", "build", "checks", "review"}, phaseNames(attempts))
+	s.Equal([]string{"creation", "plan", "build", "checks", "review"}, phaseNames(attempts))
 	for _, attempt := range attempts {
 		s.Equal("success", attempt.Status)
 	}

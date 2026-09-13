@@ -143,7 +143,7 @@ func (k *Kit) EnsurePrepared(ctx context.Context, task store.Task) (store.Task, 
 	if task.RepositoryPath != "" {
 		return task, nil
 	}
-	phase, err := k.BeginPhase(ctx, task.ID, "prepare", "git", "factory", "Prepare repository")
+	phase, err := k.BeginPhase(ctx, task.ID, "creation", "creation", "factory", "Create and prepare repository")
 	if err != nil {
 		return store.Task{}, err
 	}

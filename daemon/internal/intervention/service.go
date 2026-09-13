@@ -11,6 +11,7 @@ import (
 
 	"github.com/jurabek/software-factory/daemon/internal/config"
 	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
+	"github.com/jurabek/software-factory/daemon/internal/orchestrator"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 	"github.com/jurabek/software-factory/daemon/internal/workspace"
 )
@@ -61,6 +62,7 @@ type Deps struct {
 	Config     config.Config
 	ConfigPath string
 	Root       string
+	Events     *orchestrator.Events
 }
 
 // Service applies operator interventions to tasks.
