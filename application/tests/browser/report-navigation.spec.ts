@@ -1,6 +1,11 @@
 import { createHmac, randomBytes } from "node:crypto";
-import { createServer, type Server } from "node:http";
-import { test, expect, type Page } from "@playwright/test";
+import {
+	createServer,
+	type IncomingMessage,
+	type Server,
+	type ServerResponse,
+} from "node:http";
+import { expect, type Page, test } from "@playwright/test";
 
 const daemonID = randomBytes(16).toString("hex");
 const daemonEndpoint = "http://127.0.0.1:8081";
@@ -35,7 +40,7 @@ function connectionToken(): string {
 	return `${header}.${payload}.${signature}`;
 }
 
-function json(response: Parameters<Server["emit"]>[1], body: unknown): void {
+function json(response: ServerResponse<IncomingMessage>, body: unknown): void {
 	response.setHeader("Content-Type", "application/json");
 	response.end(JSON.stringify(body));
 }
@@ -167,8 +172,8 @@ test("report navigation renders immutable Markdown safely", async ({ page }) => 
 			await page.goto(
 				`/tasks?daemon=${daemonConnectionID}&task=${rootTaskID}&session=${taskID}`,
 				{
-				waitUntil: "commit",
-				timeout: 5_000,
+					waitUntil: "commit",
+					timeout: 5_000,
 				},
 			);
 			await test.step("open artifacts tab", async () => {

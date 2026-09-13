@@ -86,9 +86,9 @@ func (s service) Plan(ctx context.Context, input stage.Input) (stage.PlanResult,
 		s.kit.Fail(ctx, phase, err)
 		return stage.PlanResult{}, err
 	}
-	agent, ok := configured.Config.Agent("planner")
+	agent, ok := configured.Config.Agent(phase.Owner)
 	if !ok {
-		err = fmt.Errorf("agent planner not configured")
+		err = fmt.Errorf("agent %s not configured", phase.Owner)
 		s.kit.Fail(ctx, phase, err)
 		return stage.PlanResult{}, err
 	}
@@ -110,10 +110,10 @@ func (s service) Plan(ctx context.Context, input stage.Input) (stage.PlanResult,
 	turner.AgentDeadlineMS = configured.Config.Runtime.AgentDeadlineMS
 	turner.JSONFixAttempts = configured.Config.Runtime.JSONFixAttempts
 	payload, err := agentexec.RunTurn(ctx, turner, agentexec.TurnInput{
-		TaskID: task.ID, Phase: phase, Role: "planner",
+		TaskID: task.ID, Phase: phase, Role: phase.Owner,
 		HarnessName: harnessName, Model: agent.Model, Thinking: agent.Thinking, Color: agent.Color,
 		RepoPath:     task.RepositoryPath,
-		SessionDir:   filepath.Join(configured.TaskDir, "sessions", "planner", harnessName),
+		SessionDir:   filepath.Join(configured.TaskDir, "sessions", phase.Name, harnessName),
 		SystemPrompt: systemPrompt, UserPrompt: userPrompt,
 		ReadOnly: true, EnvelopeKind: "planner", CorrectionSuffix: Instructions(),
 		Validate: func(text string) (any, error) { return Validate(text) },

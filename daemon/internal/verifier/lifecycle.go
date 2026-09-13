@@ -49,7 +49,11 @@ func (s service) beginVerification(ctx context.Context, taskID, planAttemptID, b
 	if err != nil {
 		return store.Task{}, store.Phase{}, err
 	}
-	if err = s.kit.RequireAttempt(ctx, task.ID, "planning", planAttemptID); err != nil {
+	planStage, err := s.kit.StageByKind(task, "plan")
+	if err != nil {
+		return store.Task{}, store.Phase{}, err
+	}
+	if err = s.kit.RequireAttempt(ctx, task.ID, planStage.ID, planAttemptID); err != nil {
 		return store.Task{}, store.Phase{}, err
 	}
 	buildStage, err := s.kit.StageByKind(task, "build")

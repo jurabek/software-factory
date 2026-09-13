@@ -167,6 +167,15 @@ func (k *Kit) Complete(ctx context.Context, c Completion) error {
 	if err != nil {
 		return err
 	}
+	if c.Status == "success" {
+		snapshot, captureErr := k.snapshots.CaptureSnapshot(ctx, task)
+		if captureErr != nil {
+			return fmt.Errorf("capture phase output snapshot: %w", captureErr)
+		}
+		c.Phase.OutputSnapshot = snapshot.Digest
+	} else if c.Phase.OutputSnapshot == "" {
+		c.Phase.OutputSnapshot = c.Phase.InputSnapshot
+	}
 	event := session.NewPhaseEnd(session.PhasePayload{
 		Phase: c.Phase.ID, Name: c.Phase.Name, Owner: c.Phase.Owner, Kind: c.Phase.Kind,
 		Status: c.Status, Error: message, InputSnapshot: c.Phase.InputSnapshot, OutputSnapshot: c.Phase.OutputSnapshot,
@@ -178,18 +187,18 @@ func (k *Kit) Complete(ctx context.Context, c Completion) error {
 	}
 	dir := k.TaskDir(c.Phase.TaskID)
 	if c.Planner {
-		return k.db.CompletePlannerPhaseWithArtifactAndApproval(ctx, dir, c.Phase.ID, c.Phase.TaskID, string(c.From), string(c.To), c.Status, message, c.Approval, c.Artifact, eventValue)
+		return k.db.CompletePlannerPhaseWithArtifactAndApproval(ctx, dir, c.Phase.ID, c.Phase.TaskID, string(c.From), string(c.To), c.Status, message, c.Phase.OutputSnapshot, c.Approval, c.Artifact, eventValue)
 	}
 	if len(c.Checks) > 0 || len(c.Comparisons) > 0 {
 		if c.Artifact != nil {
-			return k.db.CompleteVerificationPhaseWithEvidenceArtifactAndEvent(ctx, dir, c.Phase.ID, c.Phase.TaskID, string(c.From), string(c.To), c.Status, message, c.Checks, c.Comparisons, c.Artifact, eventValue)
+			return k.db.CompleteVerificationPhaseWithEvidenceArtifactAndEvent(ctx, dir, c.Phase.ID, c.Phase.TaskID, string(c.From), string(c.To), c.Status, message, c.Phase.OutputSnapshot, c.Checks, c.Comparisons, c.Artifact, eventValue)
 		}
-		return k.db.CompleteVerificationPhaseWithEvidenceAndEvent(ctx, dir, c.Phase.ID, c.Phase.TaskID, string(c.From), string(c.To), c.Status, message, c.Checks, c.Comparisons, eventValue)
+		return k.db.CompleteVerificationPhaseWithEvidenceAndEvent(ctx, dir, c.Phase.ID, c.Phase.TaskID, string(c.From), string(c.To), c.Status, message, c.Phase.OutputSnapshot, c.Checks, c.Comparisons, eventValue)
 	}
 	if c.Artifact != nil {
-		return k.db.CompletePhaseWithArtifactAndTransitionAndEvent(ctx, dir, c.Phase.ID, c.Phase.TaskID, string(c.From), string(c.To), c.Status, message, c.Artifact, eventValue)
+		return k.db.CompletePhaseWithArtifactAndTransitionAndEvent(ctx, dir, c.Phase.ID, c.Phase.TaskID, string(c.From), string(c.To), c.Status, message, c.Phase.OutputSnapshot, c.Artifact, eventValue)
 	}
-	return k.db.CompletePhaseWithTransitionAndEvent(ctx, dir, c.Phase.ID, c.Phase.TaskID, string(c.From), string(c.To), c.Status, message, eventValue)
+	return k.db.CompletePhaseWithTransitionAndEvent(ctx, dir, c.Phase.ID, c.Phase.TaskID, string(c.From), string(c.To), c.Status, message, c.Phase.OutputSnapshot, eventValue)
 }
 
 // LatestStageAttempt returns the newest non-superseded attempt for a stage.

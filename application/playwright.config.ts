@@ -1,10 +1,12 @@
-import { defineConfig } from "@playwright/test";
 import nextEnv from "@next/env";
+import { defineConfig } from "@playwright/test";
 
 nextEnv.loadEnvConfig(process.cwd());
 
-const applicationOrigin = process.env.APPLICATION_ORIGIN ?? "http://localhost:3000";
+const applicationOrigin =
+	process.env.APPLICATION_ORIGIN ?? "http://localhost:3000";
 const browserTestDaemonOrigin = "http://127.0.0.1:8081";
+const chromiumExecutablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
 
 export default defineConfig({
 	testDir: "./tests/browser",
@@ -14,7 +16,9 @@ export default defineConfig({
 		baseURL: applicationOrigin,
 		browserName: "chromium",
 		headless: true,
-		launchOptions: { executablePath: "/usr/bin/chromium" },
+		...(chromiumExecutablePath
+			? { launchOptions: { executablePath: chromiumExecutablePath } }
+			: {}),
 	},
 	webServer: {
 		command: "npm run migrations && npm run dev",

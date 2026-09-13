@@ -95,16 +95,16 @@ func RunTurn(ctx context.Context, deps Deps, input TurnInput) (string, error) {
 		if attempt > 0 {
 			request.Prompt = "Your previous final response was invalid: " + err.Error() + "\n" + input.CorrectionSuffix
 		}
-		invocationID := uuid.New().String()
-		if err := deps.DB.BeginAgentInvocation(ctx, input.TaskID, stageID, invocationID); err != nil {
-			return "", err
-		}
 		var before string
 		if input.ReadOnly {
 			before, err = fingerprint(ctx, deps.Git, input.RepoPath)
 			if err != nil {
 				return "", err
 			}
+		}
+		invocationID := uuid.New().String()
+		if err := deps.DB.BeginAgentInvocation(ctx, input.TaskID, stageID, invocationID); err != nil {
+			return "", err
 		}
 		result, runErr := Invoke(ctx, adapter, request, input.Sink)
 		if input.ReadOnly {

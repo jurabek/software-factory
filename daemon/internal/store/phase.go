@@ -116,38 +116,38 @@ func (db *DB) EndPhase(ctx context.Context, id, status, message string) error {
 // CompletePhaseWithTransitionAndEvent publishes a phase result, its Task
 // transition, and the corresponding lifecycle event atomically. The event
 // trace is derived output and is written only after the database commit.
-func (db *DB) CompletePhaseWithTransitionAndEvent(ctx context.Context, taskDir string, phaseID, taskID, from, to, status, message string, event Event) error {
-	return db.completePhaseWithEvidenceAndTransitionAndEvent(ctx, taskDir, phaseID, taskID, from, to, status, message, nil, nil, nil, event)
+func (db *DB) CompletePhaseWithTransitionAndEvent(ctx context.Context, taskDir string, phaseID, taskID, from, to, status, message, outputSnapshot string, event Event) error {
+	return db.completePhaseWithEvidenceAndTransitionAndEvent(ctx, taskDir, phaseID, taskID, from, to, status, message, outputSnapshot, nil, nil, nil, event)
 }
 
 // CompletePhaseWithArtifactAndTransitionAndEvent publishes a phase result, its
 // required report artifact, Task progression, and lifecycle event atomically.
-func (db *DB) CompletePhaseWithArtifactAndTransitionAndEvent(ctx context.Context, taskDir string, phaseID, taskID, from, to, status, message string, artifact *Artifact, event Event) error {
-	return db.completePhaseWithEvidenceAndTransitionAndEvent(ctx, taskDir, phaseID, taskID, from, to, status, message, nil, nil, artifact, event)
+func (db *DB) CompletePhaseWithArtifactAndTransitionAndEvent(ctx context.Context, taskDir string, phaseID, taskID, from, to, status, message, outputSnapshot string, artifact *Artifact, event Event) error {
+	return db.completePhaseWithEvidenceAndTransitionAndEvent(ctx, taskDir, phaseID, taskID, from, to, status, message, outputSnapshot, nil, nil, artifact, event)
 }
 
 // CompletePlannerPhaseWithArtifactAndApproval publishes a planner report and
 // approval candidate together with the phase transition and event.
-func (db *DB) CompletePlannerPhaseWithArtifactAndApproval(ctx context.Context, taskDir string, phaseID, taskID, from, to, status, message, approval string, artifact *Artifact, event Event) error {
-	return db.completePhaseWithEvidenceAndTransitionAndEvent(ctx, taskDir, phaseID, taskID, from, to, status, message, nil, nil, artifact, event, approval)
+func (db *DB) CompletePlannerPhaseWithArtifactAndApproval(ctx context.Context, taskDir string, phaseID, taskID, from, to, status, message, outputSnapshot, approval string, artifact *Artifact, event Event) error {
+	return db.completePhaseWithEvidenceAndTransitionAndEvent(ctx, taskDir, phaseID, taskID, from, to, status, message, outputSnapshot, nil, nil, artifact, event, approval)
 }
 
 // CompleteVerificationPhaseWithEvidenceAndEvent publishes verification
 // evidence, the phase result, the Task transition, and the lifecycle event in
 // one transaction. Individual check observations may already be durable; the
 // final publication is the authoritative successful verification boundary.
-func (db *DB) CompleteVerificationPhaseWithEvidenceAndEvent(ctx context.Context, taskDir string, phaseID, taskID, from, to, status, message string, checks []Check, comparisons []Comparison, event Event) error {
-	return db.completePhaseWithEvidenceAndTransitionAndEvent(ctx, taskDir, phaseID, taskID, from, to, status, message, checks, comparisons, nil, event)
+func (db *DB) CompleteVerificationPhaseWithEvidenceAndEvent(ctx context.Context, taskDir string, phaseID, taskID, from, to, status, message, outputSnapshot string, checks []Check, comparisons []Comparison, event Event) error {
+	return db.completePhaseWithEvidenceAndTransitionAndEvent(ctx, taskDir, phaseID, taskID, from, to, status, message, outputSnapshot, checks, comparisons, nil, event)
 }
 
 // CompleteVerificationPhaseWithEvidenceArtifactAndEvent publishes verification
 // evidence, its deterministic report, the phase result, Task progression, and
 // lifecycle event in one transaction.
-func (db *DB) CompleteVerificationPhaseWithEvidenceArtifactAndEvent(ctx context.Context, taskDir string, phaseID, taskID, from, to, status, message string, checks []Check, comparisons []Comparison, artifact *Artifact, event Event) error {
-	return db.completePhaseWithEvidenceAndTransitionAndEvent(ctx, taskDir, phaseID, taskID, from, to, status, message, checks, comparisons, artifact, event)
+func (db *DB) CompleteVerificationPhaseWithEvidenceArtifactAndEvent(ctx context.Context, taskDir string, phaseID, taskID, from, to, status, message, outputSnapshot string, checks []Check, comparisons []Comparison, artifact *Artifact, event Event) error {
+	return db.completePhaseWithEvidenceAndTransitionAndEvent(ctx, taskDir, phaseID, taskID, from, to, status, message, outputSnapshot, checks, comparisons, artifact, event)
 }
 
-func (db *DB) completePhaseWithEvidenceAndTransitionAndEvent(ctx context.Context, taskDir, phaseID, taskID, from, to, status, message string, checks []Check, comparisons []Comparison, artifact *Artifact, event Event, approval ...string) error {
+func (db *DB) completePhaseWithEvidenceAndTransitionAndEvent(ctx context.Context, taskDir, phaseID, taskID, from, to, status, message, outputSnapshot string, checks []Check, comparisons []Comparison, artifact *Artifact, event Event, approval ...string) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return wrap("begin phase completion", err)
@@ -179,7 +179,7 @@ func (db *DB) completePhaseWithEvidenceAndTransitionAndEvent(ctx context.Context
 		}
 	}
 	ended := now()
-	result, err := tx.ExecContext(ctx, `update phases set status=?,error=?,ended_at=? where id=? and task_id=? and status='running'`, status, nullIfEmpty(message), ended, phaseID, taskID)
+	result, err := tx.ExecContext(ctx, `update phases set status=?,error=?,output_snapshot=?,ended_at=? where id=? and task_id=? and status='running'`, status, nullIfEmpty(message), nullIfEmpty(outputSnapshot), ended, phaseID, taskID)
 	if err != nil {
 		return wrap("complete phase", err)
 	}
@@ -220,12 +220,27 @@ func nullIfTerminalState(state string, ended string) any {
 }
 
 func (db *DB) StartQueuedPhase(ctx context.Context, taskID, phaseID string) error {
-	result, err := db.ExecContext(ctx, `update phases set status='running',started_at=?,ended_at=null,error=null where task_id=? and id=? and status='queued'`, now(), taskID, phaseID)
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return wrap("begin queued phase start", err)
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `update phases set status='running',started_at=?,ended_at=null,error=null where task_id=? and id=? and status='queued'`, now(), taskID, phaseID)
 	if err != nil {
 		return wrap("start queued phase", err)
 	}
 	if count, _ := result.RowsAffected(); count != 1 {
 		return ErrConflict
+	}
+	result, err = tx.ExecContext(ctx, `update tasks set active_phase=? where id=?`, phaseID, taskID)
+	if err != nil {
+		return wrap("set queued phase active", err)
+	}
+	if count, _ := result.RowsAffected(); count != 1 {
+		return ErrConflict
+	}
+	if err = tx.Commit(); err != nil {
+		return wrap("commit queued phase start", err)
 	}
 	return nil
 }
