@@ -1,38 +1,52 @@
 package api
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jurabek/software-factory/daemon/internal/builder"
 	"github.com/jurabek/software-factory/daemon/internal/config"
-	"github.com/jurabek/software-factory/daemon/internal/factory"
 	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
 	"github.com/jurabek/software-factory/daemon/internal/harness"
+	"github.com/jurabek/software-factory/daemon/internal/orchestrator"
+	"github.com/jurabek/software-factory/daemon/internal/pipeline"
+	"github.com/jurabek/software-factory/daemon/internal/planner"
+	"github.com/jurabek/software-factory/daemon/internal/reviewer"
 	"github.com/jurabek/software-factory/daemon/internal/sandbox"
+	"github.com/jurabek/software-factory/daemon/internal/session"
+	"github.com/jurabek/software-factory/daemon/internal/stagekit"
 	"github.com/jurabek/software-factory/daemon/internal/store"
+	"github.com/jurabek/software-factory/daemon/internal/verifier"
 	"github.com/stretchr/testify/suite"
 )
 
 const (
 	flowTaskRequest = "Create the build artifact"
-	flowPlan        = `{"status":"success","summary":"Create the requested artifact","artifacts":[],"notes_for_next_agent":"","steps":[{"id":"build-artifact","description":"Create built.txt","expected_files":["built.txt"],"acceptance_criteria":["deterministic check passes"]}],"questions":[]}`
-	flowBuild       = `{"status":"success","summary":"Created the build artifact","artifacts":[],"notes_for_next_agent":"","changed_files":["built.txt"],"commit_message":"Create build artifact","test_changes":[]}`
+	flowPlan        = `{"status":"success","summary":"Create the requested artifact","artifacts":[],"notes_for_next_agent":"","report_markdown":"# Plan\n\nCreate built.txt.","steps":[{"id":"build-artifact","description":"Create built.txt","expected_files":["built.txt"],"acceptance_criteria":["deterministic check passes"]}],"questions":[]}`
+	flowBuild       = `{"status":"success","summary":"Created the build artifact","artifacts":[],"notes_for_next_agent":"","report_markdown":"# Build\n\nCreated built.txt.","changed_files":["built.txt"],"commit_message":"Create build artifact","test_changes":[]}`
+	flowReview      = `{"status":"success","summary":"Implementation satisfies the plan","artifacts":[],"notes_for_next_agent":"","report_markdown":"# Review\n\nApproved.","approved":true,"findings":[],"blocking":[]}`
+	flowMessage     = "Keep the public API stable."
 )
 
 type taskFlowHarness struct {
-	mu       sync.Mutex
-	requests []harness.Request
+	mu           sync.Mutex
+	requests     []harness.Request
+	buildStarted chan struct{}
+	releaseBuild chan struct{}
 }
 
 func (h *taskFlowHarness) Models(context.Context) ([]harness.Model, error) {
@@ -59,7 +73,23 @@ func (h *taskFlowHarness) Run(_ context.Context, request harness.Request, _ harn
 		if err := os.WriteFile(filepath.Join(request.CWD, "built.txt"), []byte("built\n"), 0o600); err != nil {
 			return result, err
 		}
+		close(h.buildStarted)
+		select {
+		case <-h.releaseBuild:
+		case <-time.After(2 * time.Second):
+			return result, fmt.Errorf("build release timed out")
+		}
 		result.Text = flowBuild
+	case 3:
+		if !request.Resume || request.Prompt != flowMessage {
+			return result, fmt.Errorf("message continuation = %+v", request)
+		}
+		result.Text = flowBuild
+	case 4:
+		if !strings.Contains(request.SystemPrompt, "Review the implementation") || !strings.Contains(request.Prompt, "Create the requested artifact") {
+			return result, fmt.Errorf("reviewer prompt missing evidence handoff: system=%q user=%q", request.SystemPrompt, request.Prompt)
+		}
+		result.Text = flowReview
 	default:
 		return result, fmt.Errorf("unexpected harness invocation %d", invocation)
 	}
@@ -79,7 +109,7 @@ type taskFlowSuite struct {
 	harness *taskFlowHarness
 	repo    string
 	server  *httptest.Server
-	service *factory.Service
+	service *orchestrator.Service
 }
 
 func TestTaskFlowSuite(t *testing.T) {
@@ -101,6 +131,8 @@ func (s *taskFlowSuite) SetupSuite() {
 	s.writePrompt(configRoot, "planner", "user.md", "Task {{.TaskID}}: {{.Request}} in {{.Repository}}")
 	s.writePrompt(configRoot, "builder", "system.md", "Build the approved plan.")
 	s.writePrompt(configRoot, "builder", "user.md", "Task {{.TaskID}}: {{.Request}}\nPlan: {{.Plan}}")
+	s.writePrompt(configRoot, "reviewer", "system.md", "Review the implementation without editing files.")
+	s.writePrompt(configRoot, "reviewer", "user.md", "Task {{.TaskID}}: {{.Request}}\nPlan: {{.Plan}}\nChecks: {{.Checks}}")
 
 	cfg := config.Config{
 		Defaults: config.Defaults{CodingAgent: "pi", Model: "test/model", Thinking: "low"},
@@ -108,16 +140,28 @@ func (s *taskFlowSuite) SetupSuite() {
 		Agents: []config.Agent{
 			{Name: "planner", Model: "test/model", Thinking: "low", PromptEngineering: config.PromptEngineering{System: "prompts/planner/system.md", User: "prompts/planner/user.md"}},
 			{Name: "builder", Model: "test/model", Thinking: "low", PromptEngineering: config.PromptEngineering{System: "prompts/builder/system.md", User: "prompts/builder/user.md"}},
+			{Name: "reviewer", Model: "test/model", Thinking: "low", PromptEngineering: config.PromptEngineering{System: "prompts/reviewer/system.md", User: "prompts/reviewer/user.md"}},
 		},
-		Pipelines: []config.Pipeline{{Name: "standard", Default: true, Stages: []config.Stage{{ID: "build", Kind: "build", Agent: "builder"}, {ID: "checks", Kind: "verify"}}}},
+		Pipelines: []config.Pipeline{{Name: "standard", Default: true, Stages: []config.Stage{{ID: "plan", Kind: "plan", Agent: "planner"}, {ID: "build", Kind: "build", Agent: "builder"}, {ID: "checks", Kind: "verify"}, {ID: "review", Kind: "review", Agent: "reviewer"}}}},
 	}
 	var err error
 	s.db, err = store.Open(filepath.Join(root, "factory.db"))
 	s.Require().NoError(err)
-	s.harness = new(taskFlowHarness)
-	s.service = factory.NewService(filepath.Join(root, "tasks"), factory.Dependencies{
-		Store: s.db, Config: cfg, ConfigPath: filepath.Join(configRoot, "config.yaml"),
-		Harnesses: harness.Registry{"pi": s.harness}, Git: factorygit.OSRunner{}, Sandbox: sandbox.Git{Runner: factorygit.OSRunner{}},
+	s.harness = &taskFlowHarness{buildStarted: make(chan struct{}), releaseBuild: make(chan struct{})}
+	taskRoot := filepath.Join(root, "tasks")
+	configPath := filepath.Join(configRoot, "config.yaml")
+	registry := harness.Registry{"pi": s.harness}
+	sandboxRunner := sandbox.Git{Runner: factorygit.OSRunner{}}
+	kit := stagekit.New(s.db, factorygit.OSRunner{}, registry, sandboxRunner, cfg, configPath, taskRoot)
+	s.service = orchestrator.New(taskRoot, orchestrator.Dependencies{
+		Store: s.db, Config: cfg, ConfigPath: configPath,
+		Harnesses: registry, Git: factorygit.OSRunner{}, Sandbox: sandboxRunner,
+		Workflow: pipeline.New(
+			planner.New(kit),
+			builder.New(kit),
+			verifier.New(kit),
+			reviewer.New(kit),
+		),
 	})
 	handler, err := New(s.db, s.service, cfg, nil, nil, []string{"pi"}, nil, newTestAccess())
 	s.Require().NoError(err)
@@ -145,13 +189,13 @@ func (s *taskFlowSuite) TestCreateApproveBuildAndCheck() {
 	}, http.StatusCreated, &created)
 	s.Require().NotEmpty(created.ID)
 
-	planned := s.awaitState(created.ID, string(factory.AwaitingApproval))
+	planned := s.awaitState(created.ID, string(orchestrator.AwaitingApproval))
 	s.Require().NotEmpty(planned.PlanDigest)
 	s.Contains(planned.AvailableActions, "approve")
 
 	var planningAttempts []store.Phase
 	s.request(http.MethodGet, "/api/v1/tasks/"+created.ID+"/attempts", nil, http.StatusOK, &planningAttempts)
-	s.Equal([]string{"prepare", "planning"}, phaseNames(planningAttempts))
+	s.Equal([]string{"prepare", "plan"}, phaseNames(planningAttempts))
 	for _, attempt := range planningAttempts {
 		s.Equal("success", attempt.Status)
 	}
@@ -159,18 +203,48 @@ func (s *taskFlowSuite) TestCreateApproveBuildAndCheck() {
 	var planningResults []store.Envelope
 	s.request(http.MethodGet, "/api/v1/tasks/"+created.ID+"/results", nil, http.StatusOK, &planningResults)
 	s.Require().Len(planningResults, 1)
-	s.Equal("planner", planningResults[0].AgentRole)
+	s.Equal("plan", planningResults[0].AgentRole)
 	s.True(planningResults[0].Valid)
 	s.JSONEq(flowPlan, planningResults[0].Payload)
 
 	s.request(http.MethodPost, "/api/v1/tasks/"+created.ID+"/approve", map[string]string{"plan_digest": planned.PlanDigest}, http.StatusAccepted, nil)
-	completed := s.awaitState(created.ID, string(factory.Completed))
+	select {
+	case <-s.harness.buildStarted:
+	case <-time.After(2 * time.Second):
+		s.T().Fatal("build did not start")
+	}
+	var beforeMessage struct {
+		Events []store.Event `json:"events"`
+		Cursor int64         `json:"cursor"`
+	}
+	s.request(http.MethodGet, "/api/v1/tasks/"+created.ID+"/events?tail=1", nil, http.StatusOK, &beforeMessage)
+	var accepted, duplicate store.Message
+	messageBody := map[string]string{"text": flowMessage, "idempotency_key": "flow-message"}
+	s.request(http.MethodPost, "/api/v1/tasks/"+created.ID+"/messages", messageBody, http.StatusAccepted, &accepted)
+	s.request(http.MethodPost, "/api/v1/tasks/"+created.ID+"/messages", messageBody, http.StatusAccepted, &duplicate)
+	s.Equal(accepted.ID, duplicate.ID)
+	queued, queuedStream := s.readStreamEvent(created.ID, beforeMessage.Cursor, 0)
+	s.Equal(session.KindTaskMessage, queued.Kind)
+	s.Equal("queued", messageDeliveryStatus(queued))
+	queuedStream.Close()
+	close(s.harness.releaseBuild)
+	completed := s.awaitState(created.ID, string(orchestrator.Completed))
 	s.Equal("flow-e2e", completed.ApprovalActor)
 	s.NotEmpty(completed.ApprovalAt)
+	delivered, deliveredStream := s.readStreamEvent(created.ID, 0, queued.Sequence)
+	defer deliveredStream.Close()
+	for delivered.Kind != session.KindTaskMessage || messageDeliveryStatus(delivered) != "delivered" {
+		delivered = readSSEEvent(s.T(), deliveredStream.reader)
+	}
+	s.Greater(delivered.Sequence, queued.Sequence)
+	var messages []store.Message
+	s.request(http.MethodGet, "/api/v1/tasks/"+created.ID+"/messages", nil, http.StatusOK, &messages)
+	s.Require().Len(messages, 1)
+	s.Equal("delivered", messages[0].DeliveryStatus)
 
 	var attempts []store.Phase
 	s.request(http.MethodGet, "/api/v1/tasks/"+created.ID+"/attempts", nil, http.StatusOK, &attempts)
-	s.Equal([]string{"prepare", "planning", "build", "checks"}, phaseNames(attempts))
+	s.Equal([]string{"prepare", "plan", "build", "checks", "review"}, phaseNames(attempts))
 	for _, attempt := range attempts {
 		s.Equal("success", attempt.Status)
 	}
@@ -185,10 +259,101 @@ func (s *taskFlowSuite) TestCreateApproveBuildAndCheck() {
 
 	var results []store.Envelope
 	s.request(http.MethodGet, "/api/v1/tasks/"+created.ID+"/results", nil, http.StatusOK, &results)
-	s.Require().Len(results, 2)
-	s.Equal("build", results[1].OutputType)
-	s.JSONEq(flowBuild, results[1].Payload)
-	s.Len(s.harness.Requests(), 2)
+	s.Require().Len(results, 4)
+	for _, result := range results[1:3] {
+		s.Equal("build", result.OutputType)
+		s.JSONEq(flowBuild, result.Payload)
+	}
+	s.Equal("review", results[3].OutputType)
+	s.JSONEq(flowReview, results[3].Payload)
+
+	var history struct {
+		Events []store.Event `json:"events"`
+		Cursor int64         `json:"cursor"`
+	}
+	s.request(http.MethodGet, "/api/v1/tasks/"+created.ID+"/events?limit=100", nil, http.StatusOK, &history)
+	s.Require().NotEmpty(history.Events)
+	var approvalEvent *store.Event
+	for index := range history.Events {
+		if history.Events[index].Name == "task_approved" {
+			approvalEvent = &history.Events[index]
+			break
+		}
+	}
+	s.Require().NotNil(approvalEvent)
+	s.Equal("task_approved", approvalEvent.Name)
+	s.Equal(history.Events[len(history.Events)-1].Sequence, history.Cursor)
+	for index := 1; index < len(history.Events); index++ {
+		s.Greater(history.Events[index].Sequence, history.Events[index-1].Sequence)
+	}
+	var replay struct {
+		Events []store.Event `json:"events"`
+		Cursor int64         `json:"cursor"`
+	}
+	s.request(http.MethodGet, fmt.Sprintf("/api/v1/tasks/%s/events?after=%d", created.ID, history.Events[0].Sequence), nil, http.StatusOK, &replay)
+	s.Require().NotEmpty(replay.Events)
+	s.Greater(replay.Events[0].Sequence, history.Events[0].Sequence)
+	s.Equal(history.Events[len(history.Events)-1].Sequence, replay.Cursor)
+	var artifacts []store.Artifact
+	s.request(http.MethodGet, "/api/v1/tasks/"+created.ID+"/artifacts", nil, http.StatusOK, &artifacts)
+	s.Require().Len(artifacts, 4)
+	for _, artifact := range artifacts {
+		body := s.requestText("/api/v1/tasks/"+created.ID+"/artifacts/"+artifact.ID, http.StatusOK)
+		s.NotEmpty(body)
+		s.Contains(body, "#")
+	}
+	s.Len(s.harness.Requests(), 4)
+}
+
+type taskEventStream struct {
+	reader   *bufio.Reader
+	response *http.Response
+	cancel   context.CancelFunc
+}
+
+func (s *taskFlowSuite) readStreamEvent(taskID string, after, lastEventID int64) (store.Event, *taskEventStream) {
+	s.T().Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/api/v1/tasks/%s/events/stream?after=%d", s.server.URL, taskID, after), nil)
+	s.Require().NoError(err)
+	request.Header.Set("Authorization", "Bearer "+testToken)
+	if lastEventID > 0 {
+		request.Header.Set("Last-Event-ID", strconv.FormatInt(lastEventID, 10))
+	}
+	response, err := s.client.Do(request)
+	s.Require().NoError(err)
+	s.Require().Equal(http.StatusOK, response.StatusCode)
+	stream := &taskEventStream{reader: bufio.NewReader(response.Body), response: response, cancel: cancel}
+	return readSSEEvent(s.T(), stream.reader), stream
+}
+
+func (s *taskEventStream) Close() {
+	s.cancel()
+	_ = s.response.Body.Close()
+}
+
+func readSSEEvent(t *testing.T, reader *bufio.Reader) store.Event {
+	t.Helper()
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		var event store.Event
+		if err = json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data: "))), &event); err != nil {
+			t.Fatal(err)
+		}
+		return event
+	}
+}
+
+func messageDeliveryStatus(event store.Event) string {
+	payload, _ := event.Payload.(map[string]any)
+	status, _ := payload["delivery_status"].(string)
+	return status
 }
 
 func (s *taskFlowSuite) awaitState(taskID, expected string) taskResponse {
@@ -200,7 +365,7 @@ func (s *taskFlowSuite) awaitState(taskID, expected string) taskResponse {
 		if task.State == expected {
 			return task
 		}
-		if task.State == string(factory.Blocked) || task.State == string(factory.Aborted) {
+		if task.State == string(orchestrator.Blocked) || task.State == string(orchestrator.Aborted) {
 			s.T().Fatalf("task reached %s while awaiting %s: %s", task.State, expected, task.Error)
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -227,6 +392,20 @@ func (s *taskFlowSuite) request(method, path string, body any, wantStatus int, t
 	if target != nil {
 		s.Require().NoError(json.NewDecoder(response.Body).Decode(target))
 	}
+}
+
+func (s *taskFlowSuite) requestText(path string, wantStatus int) string {
+	s.T().Helper()
+	request, err := http.NewRequest(http.MethodGet, s.server.URL+path, nil)
+	s.Require().NoError(err)
+	request.Header.Set("Authorization", "Bearer "+testToken)
+	response, err := s.client.Do(request)
+	s.Require().NoError(err)
+	defer response.Body.Close()
+	s.Require().Equal(wantStatus, response.StatusCode)
+	content, err := io.ReadAll(response.Body)
+	s.Require().NoError(err)
+	return string(content)
 }
 
 func (s *taskFlowSuite) git(args ...string) {

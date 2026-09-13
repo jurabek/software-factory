@@ -22,14 +22,20 @@ import (
 	"time"
 
 	"github.com/jurabek/software-factory/daemon/internal/api"
+	"github.com/jurabek/software-factory/daemon/internal/builder"
 	"github.com/jurabek/software-factory/daemon/internal/config"
-	"github.com/jurabek/software-factory/daemon/internal/factory"
 	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
 	"github.com/jurabek/software-factory/daemon/internal/harness"
 	piharness "github.com/jurabek/software-factory/daemon/internal/harness/pi"
+	"github.com/jurabek/software-factory/daemon/internal/orchestrator"
+	"github.com/jurabek/software-factory/daemon/internal/pipeline"
+	"github.com/jurabek/software-factory/daemon/internal/planner"
+	"github.com/jurabek/software-factory/daemon/internal/reviewer"
 	sandboxgit "github.com/jurabek/software-factory/daemon/internal/sandbox"
+	"github.com/jurabek/software-factory/daemon/internal/stagekit"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 	"github.com/jurabek/software-factory/daemon/internal/token"
+	"github.com/jurabek/software-factory/daemon/internal/verifier"
 )
 
 //go:embed templates
@@ -207,9 +213,18 @@ func run() error {
 			}
 		}
 	}
-	service := factory.NewService(root, factory.Dependencies{
+	sandbox := sandboxgit.Git{Runner: factorygit.OSRunner{}}
+	kit := stagekit.New(db, factorygit.OSRunner{}, registry, sandbox, configured, configPath, root)
+	workflow := pipeline.New(
+		planner.New(kit),
+		builder.New(kit),
+		verifier.New(kit),
+		reviewer.New(kit),
+	)
+	service := orchestrator.New(root, orchestrator.Dependencies{
 		Store: db, Config: configured, ConfigPath: configPath,
-		Harnesses: registry, Git: factorygit.OSRunner{}, Sandbox: sandboxgit.Git{Runner: factorygit.OSRunner{}},
+		Harnesses: registry, Git: factorygit.OSRunner{}, Sandbox: sandbox,
+		Workflow: workflow,
 	})
 	apiHandler, err := api.New(db, service, configured, problems, loadErr, harnessNames, catalog, api.Access{DaemonID: daemonID, Token: daemonToken})
 	if err != nil {

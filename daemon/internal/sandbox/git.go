@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/jurabek/software-factory/daemon/internal/factory"
 	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
+	"github.com/jurabek/software-factory/daemon/internal/workspace"
 )
 
 // Git materializes a task repository using Git worktrees and GitHub clones.
@@ -15,14 +15,14 @@ type Git struct {
 	Runner factorygit.Runner
 }
 
-var _ factory.Sandbox = Git{}
+var _ workspace.Sandbox = Git{}
 
-func (g Git) Materialize(ctx context.Context, request factory.MaterializationRequest) (factory.Materialization, error) {
+func (g Git) Materialize(ctx context.Context, request workspace.MaterializationRequest) (workspace.Materialization, error) {
 	if request.TaskID == "" || request.Destination == "" {
-		return factory.Materialization{}, fmt.Errorf("task identity and destination are required")
+		return workspace.Materialization{}, fmt.Errorf("task identity and destination are required")
 	}
 	if g.Runner == nil {
-		return factory.Materialization{}, fmt.Errorf("git runner unavailable")
+		return workspace.Materialization{}, fmt.Errorf("git runner unavailable")
 	}
 	var profile factorygit.Profile
 	var err error
@@ -30,20 +30,20 @@ func (g Git) Materialize(ctx context.Context, request factory.MaterializationReq
 	case "local":
 		profile, err = factorygit.PrepareLocal(ctx, g.Runner, request.Source, request.Destination)
 		if err != nil {
-			return factory.Materialization{}, fmt.Errorf("materialize local repository: %w", err)
+			return workspace.Materialization{}, fmt.Errorf("materialize local repository: %w", err)
 		}
 	case "github":
 		profile, err = factorygit.PrepareGitHub(ctx, g.Runner, request.Source, request.Destination)
 		if err != nil {
-			return factory.Materialization{}, fmt.Errorf("materialize github repository: %w", err)
+			return workspace.Materialization{}, fmt.Errorf("materialize github repository: %w", err)
 		}
 	default:
-		return factory.Materialization{}, fmt.Errorf("unsupported repository source type %q", request.SourceType)
+		return workspace.Materialization{}, fmt.Errorf("unsupported repository source type %q", request.SourceType)
 	}
 	return fromProfile(profile), nil
 }
 
-func (g Git) Cleanup(ctx context.Context, request factory.CleanupRequest) error {
+func (g Git) Cleanup(ctx context.Context, request workspace.CleanupRequest) error {
 	if request.TaskID == "" {
 		return fmt.Errorf("task identity is required")
 	}
@@ -81,10 +81,10 @@ func ownedWorkingPath(workspaceRoot, workingPath string) bool {
 	return relative == filepath.Join("workspace", "repository") && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
 
-func fromProfile(profile factorygit.Profile) factory.Materialization {
-	checks := make([]factory.Check, len(profile.Checks))
+func fromProfile(profile factorygit.Profile) workspace.Materialization {
+	checks := make([]workspace.Check, len(profile.Checks))
 	for index, check := range profile.Checks {
-		checks[index] = factory.Check{ID: check.ID, Command: check.Command}
+		checks[index] = workspace.Check{ID: check.ID, Command: check.Command}
 	}
-	return factory.Materialization{Root: profile.Root, SourceType: profile.SourceType, Source: profile.Source, BaseSHA: profile.BaseSHA, BranchName: profile.BranchName, Checks: checks, Generated: profile.Generated, Protected: profile.Protected, Tests: profile.Tests, PreChangeVerification: profile.PreChangeVerification, Instructions: profile.Instructions}
+	return workspace.Materialization{Root: profile.Root, SourceType: profile.SourceType, Source: profile.Source, BaseSHA: profile.BaseSHA, BranchName: profile.BranchName, Checks: checks, Generated: profile.Generated, Protected: profile.Protected, Tests: profile.Tests, PreChangeVerification: profile.PreChangeVerification, Instructions: profile.Instructions}
 }

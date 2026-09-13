@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -60,7 +61,7 @@ func TestReserveAgentSessionConcurrentCallersShareWinner(t *testing.T) {
 	results := make([]AgentSession, callers)
 	errorsFound := make([]error, callers)
 	var wait sync.WaitGroup
-	for index := 0; index < callers; index++ {
+	for index := range callers {
 		wait.Add(1)
 		go func(index int) {
 			defer wait.Done()
@@ -272,6 +273,336 @@ func TestEventContractRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertEventContract(t, mirrored, first, session.FormatVersion)
+}
+
+func TestEventCommitSurvivesDerivedTraceFailure(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "factory.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err = db.CreateTask(ctx, Task{ID: "task-1", Request: "Task", State: "preparing", CreatedAt: now()}); err != nil {
+		t.Fatal(err)
+	}
+	taskDir := filepath.Join(t.TempDir(), "trace-file")
+	if err = os.WriteFile(taskDir, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sequence, err := db.AppendEvent(ctx, taskDir, Event{ID: "event-1", TaskID: "task-1", Kind: session.KindCustom, Payload: map[string]string{"value": "persisted"}, StartedAt: time.Now().UTC()})
+	if err != nil {
+		t.Fatalf("append event = %v, want committed despite trace failure", err)
+	}
+	if sequence == 0 {
+		t.Fatal("event sequence is zero")
+	}
+	events, err := db.Events(ctx, "task-1", 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].ID != "event-1" {
+		t.Fatalf("events = %+v, want committed event", events)
+	}
+}
+
+func TestPhaseStartAndEventRollbackTogether(t *testing.T) {
+	ctx := context.Background()
+	taskDir := t.TempDir()
+	db, err := Open(filepath.Join(t.TempDir(), "factory.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err = db.CreateTask(ctx, Task{ID: "task-1", Request: "Task", State: "building", CreatedAt: now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err = db.CreateBranch(ctx, Branch{ID: "branch-1", TaskID: "task-1", Status: "active", CreatedAt: now()}); err != nil {
+		t.Fatal(err)
+	}
+	phase := Phase{ID: "phase-1", TaskID: "task-1", Sequence: 1, Name: "build", Kind: "build", Owner: "builder", Attempt: 1, BranchID: "branch-1"}
+	if _, err = db.AppendEvent(ctx, taskDir, Event{ID: "duplicate", TaskID: "task-1", Kind: session.KindCustom, Payload: map[string]string{"value": "existing"}, StartedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	err = db.StartPhaseWithEvent(ctx, taskDir, phase, "building", Event{ID: "duplicate", TaskID: "task-1", PhaseID: phase.ID, Kind: session.KindPhaseStart, Payload: session.PhasePayload{Phase: phase.ID}, StartedAt: time.Now().UTC()})
+	if err == nil {
+		t.Fatal("phase start unexpectedly succeeded with duplicate event")
+	}
+	if _, err = db.PhaseByID(ctx, "task-1", phase.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("phase lookup error = %v, want not found", err)
+	}
+	task, err := db.Task(ctx, "task-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.ActivePhase != "" {
+		t.Fatalf("active phase = %q, want empty", task.ActivePhase)
+	}
+	branch, err := db.Branch(ctx, "task-1", "branch-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if branch.HeadAttemptID != "" {
+		t.Fatalf("branch head = %q, want empty", branch.HeadAttemptID)
+	}
+}
+
+func TestMessageDeliveryAndEventRollbackTogether(t *testing.T) {
+	ctx := context.Background()
+	taskDir := t.TempDir()
+	db, err := Open(filepath.Join(t.TempDir(), "factory.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err = db.CreateTask(ctx, Task{ID: "task-1", Request: "Task", WorkspacePath: taskDir, State: "building", CreatedAt: now()}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.ReserveAgentSession(ctx, "task-1", AgentSession{StageID: "builder", Role: "builder", Harness: "test", HarnessSessionID: "session-1", SessionDirectory: taskDir, AccountingComplete: true}); err != nil {
+		t.Fatal(err)
+	}
+	message, created, err := db.SaveMessage(ctx, Message{ID: "message-1", TaskID: "task-1", Actor: "user", Text: "continue", IdempotencyKey: "key-1", StageID: "builder", RecipientRole: "builder", AgentSessionID: "session-1", DeliveryStatus: "queued", CreatedAt: now()})
+	if err != nil || !created {
+		t.Fatalf("save message: created=%v err=%v", created, err)
+	}
+	if _, err = db.AppendEvent(ctx, taskDir, Event{ID: "duplicate", TaskID: "task-1", Kind: session.KindCustom, Payload: map[string]string{"value": "existing"}, StartedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	event := Event{ID: "duplicate", TaskID: "task-1", Kind: session.KindTaskMessage, Payload: session.TaskMessagePayload{MessageID: message.ID, TaskID: message.TaskID, Text: message.Text, RecipientRole: "builder", AgentSessionID: "session-1", DeliveryStatus: "delivered"}, Display: session.Display{Role: "user", Status: "neutral", Title: "Message delivered"}, StartedAt: time.Now().UTC()}
+	if err = db.BeginMessageInvocationWithEvent(ctx, "task-1", "builder", "invocation-1", message.ID, event, taskDir); err == nil {
+		t.Fatal("delivery unexpectedly succeeded with duplicate event")
+	}
+	storedMessage, err := db.MessageByIdempotencyKey(ctx, "task-1", "key-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storedMessage.DeliveryStatus != "queued" {
+		t.Fatalf("message status = %q, want queued", storedMessage.DeliveryStatus)
+	}
+	storedSession, err := db.AgentSession(ctx, "task-1", "builder")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storedSession.PendingInvocationID != "" {
+		t.Fatalf("pending invocation = %q, want empty", storedSession.PendingInvocationID)
+	}
+	events, err := db.Events(ctx, "task-1", 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want 1", len(events))
+	}
+}
+
+func TestMessageAcceptanceAndTaskLifecycleRollbackTogether(t *testing.T) {
+	ctx := context.Background()
+	taskDir := t.TempDir()
+	db, err := Open(filepath.Join(t.TempDir(), "factory.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err = db.CreateTask(ctx, Task{ID: "task-1", Request: "Task", WorkspacePath: taskDir, State: "awaiting_plan_approval", PlanDigest: "approved", CreatedAt: now()}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.ExecContext(ctx, `update tasks set plan_digest='approved' where id='task-1'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.AppendEvent(ctx, taskDir, Event{ID: "duplicate", TaskID: "task-1", Kind: session.KindCustom, Payload: map[string]string{"value": "existing"}, StartedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	message := Message{ID: "message-1", TaskID: "task-1", Actor: "user", Text: "change plan", IdempotencyKey: "key-1", StageID: "planner", RecipientRole: "planner", AgentSessionID: "session-1", DeliveryStatus: "queued", CreatedAt: now()}
+	event := Event{ID: "duplicate", TaskID: "task-1", Kind: session.KindTaskMessage, Payload: session.TaskMessagePayload{MessageID: message.ID, TaskID: message.TaskID, DeliveryStatus: "queued"}, StartedAt: time.Now().UTC()}
+	if _, _, err = db.AcceptMessageWithEvent(ctx, message, event, true, true, "planning", taskDir); err == nil {
+		t.Fatal("message acceptance unexpectedly succeeded with duplicate event")
+	}
+	if _, err = db.MessageByIdempotencyKey(ctx, message.TaskID, message.IdempotencyKey); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("message lookup error = %v, want not found", err)
+	}
+	task, err := db.Task(ctx, message.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.State != "awaiting_plan_approval" || task.PlanDigest != "approved" {
+		t.Fatalf("task = %+v, want unchanged approval state", task)
+	}
+}
+
+func TestMessageFailureAndEventRollbackTogether(t *testing.T) {
+	ctx := context.Background()
+	taskDir := t.TempDir()
+	db, err := Open(filepath.Join(t.TempDir(), "factory.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err = db.CreateTask(ctx, Task{ID: "task-1", Request: "Task", WorkspacePath: taskDir, State: "building", CreatedAt: now()}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = db.SaveMessage(ctx, Message{ID: "message-1", TaskID: "task-1", Actor: "user", Text: "continue", IdempotencyKey: "key-1", DeliveryStatus: "delivered", CreatedAt: now()}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.AppendEvent(ctx, taskDir, Event{ID: "duplicate", TaskID: "task-1", Kind: session.KindCustom, Payload: map[string]string{"value": "existing"}, StartedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	event := Event{ID: "duplicate", TaskID: "task-1", Kind: session.KindTaskMessage, Payload: session.TaskMessagePayload{MessageID: "message-1", TaskID: "task-1", DeliveryStatus: "failed", FailureReason: "harness_error"}, Display: session.Display{Role: "system", Status: "error", Title: "Message failed"}, StartedAt: time.Now().UTC()}
+	if _, err = db.FailMessageWithEvent(ctx, "task-1", "message-1", "harness_error", event, taskDir); err == nil {
+		t.Fatal("message failure unexpectedly succeeded with duplicate event")
+	}
+	stored, err := db.MessageByIdempotencyKey(ctx, "task-1", "key-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.DeliveryStatus != "delivered" || stored.FailureReason != "" {
+		t.Fatalf("message = %+v, want unchanged delivered message", stored)
+	}
+}
+
+func TestPhaseCompletionAndTransitionRollbackTogether(t *testing.T) {
+	ctx := context.Background()
+	taskDir := t.TempDir()
+	db, err := Open(filepath.Join(t.TempDir(), "factory.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err = db.CreateTask(ctx, Task{ID: "task-1", Request: "Task", WorkspacePath: taskDir, State: "checking", CreatedAt: now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err = db.AddPhase(ctx, Phase{ID: "phase-1", TaskID: "task-1", Sequence: 1, Name: "check", Kind: "verify", Owner: "factory", Status: "running", Attempt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.AppendEvent(ctx, taskDir, Event{ID: "duplicate", TaskID: "task-1", Kind: session.KindCustom, Payload: map[string]string{"value": "existing"}, StartedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	event := Event{ID: "duplicate", TaskID: "task-1", PhaseID: "phase-1", AttemptID: "phase-1", Kind: session.KindPhaseEnd, Payload: session.PhasePayload{Phase: "phase-1", Status: "success"}, Display: session.Display{Role: "system", Status: "success", Title: "Phase complete"}, StartedAt: time.Now().UTC()}
+	if err = db.CompletePhaseWithTransitionAndEvent(ctx, taskDir, "phase-1", "task-1", "checking", "reviewing", "success", "", "snapshot-1", event); err == nil {
+		t.Fatal("phase completion unexpectedly succeeded with duplicate event")
+	}
+	task, err := db.Task(ctx, "task-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.State != "checking" {
+		t.Fatalf("task state = %q, want checking", task.State)
+	}
+	phase, err := db.PhaseByID(ctx, "task-1", "phase-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if phase.Status != "running" {
+		t.Fatalf("phase status = %q, want running", phase.Status)
+	}
+	events, err := db.Events(ctx, "task-1", 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want 1", len(events))
+	}
+}
+
+func TestApprovalAndLifecycleEventRollbackTogether(t *testing.T) {
+	ctx := context.Background()
+	taskDir := t.TempDir()
+	db, err := Open(filepath.Join(t.TempDir(), "factory.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err = db.CreateTask(ctx, Task{ID: "task-1", Request: "Task", WorkspacePath: taskDir, State: "awaiting_plan_approval", CreatedAt: now()}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.ExecContext(ctx, `update tasks set plan_digest='candidate' where id='task-1'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.AppendEvent(ctx, taskDir, Event{ID: "duplicate", TaskID: "task-1", Kind: session.KindCustom, Payload: map[string]string{"value": "existing"}, StartedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	event := Event{ID: "duplicate", TaskID: "task-1", Kind: session.KindCustom, Name: "task_approved", Payload: map[string]string{"digest": "approved"}, StartedAt: time.Now().UTC()}
+	if err = db.ApproveWithEvent(ctx, taskDir, "task-1", "approved", "operator", event); err == nil {
+		t.Fatal("approval unexpectedly succeeded with duplicate event")
+	}
+	task, err := db.Task(ctx, "task-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.State != "awaiting_plan_approval" || task.PlanDigest != "candidate" || task.ApprovalActor != "" {
+		t.Fatalf("task = %+v, want unchanged approval state", task)
+	}
+}
+
+func TestPhaseReportPublicationRollsBackWithLifecycleEvent(t *testing.T) {
+	ctx := context.Background()
+	taskDir := t.TempDir()
+	db, err := Open(filepath.Join(t.TempDir(), "factory.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err = db.CreateTask(ctx, Task{ID: "task-1", Request: "Task", WorkspacePath: taskDir, State: "planning", CreatedAt: now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err = db.AddPhase(ctx, Phase{ID: "phase-1", TaskID: "task-1", Sequence: 1, Name: "planning", Kind: "agent", Owner: "planner", Status: "running", Attempt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.AppendEvent(ctx, taskDir, Event{ID: "duplicate", TaskID: "task-1", Kind: session.KindCustom, Payload: map[string]string{"value": "existing"}, StartedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	content := "# Plan\n\nAtomic."
+	artifact := Artifact{ID: "report-1", TaskID: "task-1", AttemptID: "phase-1", Type: "plan_report", Digest: fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(content))), Content: content, MediaType: "text/markdown", Producer: "planner", CreatedAt: now()}
+	event := Event{ID: "duplicate", TaskID: "task-1", PhaseID: "phase-1", AttemptID: "phase-1", Kind: session.KindPhaseEnd, Payload: session.PhasePayload{Phase: "phase-1", Status: "success"}, StartedAt: time.Now().UTC()}
+	if err = db.CompletePhaseWithArtifactAndTransitionAndEvent(ctx, taskDir, "phase-1", "task-1", "planning", "awaiting_plan_approval", "success", "", "snapshot-1", &artifact, event); err == nil {
+		t.Fatal("report publication unexpectedly succeeded with duplicate event")
+	}
+	if _, err = db.Artifact(ctx, "task-1", "report-1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("artifact lookup error = %v, want not found", err)
+	}
+	task, err := db.Task(ctx, "task-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.State != "planning" {
+		t.Fatalf("task state = %q, want planning", task.State)
+	}
+}
+
+func TestVerificationEvidenceAndPhaseTransitionRollbackTogether(t *testing.T) {
+	ctx := context.Background()
+	taskDir := t.TempDir()
+	db, err := Open(filepath.Join(t.TempDir(), "factory.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err = db.CreateTask(ctx, Task{ID: "task-1", Request: "Task", WorkspacePath: taskDir, State: "checking", CreatedAt: now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err = db.AddPhase(ctx, Phase{ID: "phase-1", TaskID: "task-1", Sequence: 1, Name: "verify", Kind: "verify", Owner: "factory", Status: "running", Attempt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.AppendEvent(ctx, taskDir, Event{ID: "duplicate", TaskID: "task-1", Kind: session.KindCustom, Payload: map[string]string{"value": "existing"}, StartedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	check := Check{ID: "check-1", TaskID: "task-1", PhaseID: "phase-1", Name: "test", Command: "true", Attempt: 1, Status: "passed", ExitCode: 0}
+	event := Event{ID: "duplicate", TaskID: "task-1", PhaseID: "phase-1", AttemptID: "phase-1", Kind: session.KindPhaseEnd, Payload: session.PhasePayload{Phase: "phase-1", Status: "success"}, StartedAt: time.Now().UTC()}
+	if err = db.CompleteVerificationPhaseWithEvidenceAndEvent(ctx, taskDir, "phase-1", "task-1", "checking", "reviewing", "success", "", "snapshot-1", []Check{check}, nil, event); err == nil {
+		t.Fatal("verification completion unexpectedly succeeded with duplicate event")
+	}
+	storedChecks, err := db.Checks(ctx, "task-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(storedChecks) != 0 {
+		t.Fatalf("checks = %+v, want rolled back", storedChecks)
+	}
+	phase, err := db.PhaseByID(ctx, "task-1", "phase-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if phase.Status != "running" {
+		t.Fatalf("phase status = %q, want running", phase.Status)
+	}
 }
 
 func TestAgentInvocationFinalizationIsIdempotent(t *testing.T) {

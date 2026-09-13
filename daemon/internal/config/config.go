@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -37,12 +38,7 @@ func ThinkingLevelsFor(harness string) []string {
 
 // IsValidThinkingFor reports whether a thinking level is valid for a harness.
 func IsValidThinkingFor(harness, level string) bool {
-	for _, allowed := range ThinkingLevelsFor(harness) {
-		if allowed == level {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(ThinkingLevelsFor(harness), level)
 }
 
 // ApplyTaskOverrides returns c with task-level agent/model/thinking applied.
@@ -116,6 +112,8 @@ type Stage struct {
 	Agent string `yaml:"agent,omitempty" json:"agent,omitempty"`
 }
 
+var fixedStageKinds = []string{"plan", "build", "verify", "review"}
+
 // Load reads and validates config.yaml. Prompt contents are intentionally not loaded.
 func Load(path string) (Config, []string, error) {
 	data, err := os.ReadFile(path)
@@ -131,8 +129,23 @@ func Parse(data []byte, base string) (Config, []string, error) {
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return Config{}, nil, fmt.Errorf("parse config: %w", err)
 	}
+	raw = upgradeLegacyPipelines(raw)
 	resolved := resolve(raw)
 	return resolved, validate(resolved, base), nil
+}
+
+func upgradeLegacyPipelines(c Config) Config {
+	planner := "planner"
+	if _, ok := c.Agent(planner); !ok && len(c.Agents) > 0 {
+		planner = c.Agents[0].Name
+	}
+	for index := range c.Pipelines {
+		stages := c.Pipelines[index].Stages
+		if len(stages) == 3 && stages[0].Kind == "build" && stages[1].Kind == "verify" && stages[2].Kind == "review" {
+			c.Pipelines[index].Stages = append([]Stage{{ID: "plan", Kind: "plan", Agent: planner}}, stages...)
+		}
+	}
+	return c
 }
 
 func resolve(c Config) Config {
@@ -211,47 +224,27 @@ func validate(c Config, base string) []string {
 
 func validatePipeline(pipeline Pipeline, agents map[string]bool) []string {
 	var problems []string
+	if len(pipeline.Stages) != len(fixedStageKinds) {
+		return append(problems, "pipeline "+pipeline.Name+" must contain plan, build, verify, and review exactly once in that order")
+	}
 	seenIDs := map[string]bool{}
-	builds, verifies, reviews := 0, 0, 0
-	for _, stage := range pipeline.Stages {
+	for index, stage := range pipeline.Stages {
 		if stage.ID == "" || seenIDs[stage.ID] {
 			problems = append(problems, "pipeline "+pipeline.Name+" stage ids must be non-empty and unique")
 		}
 		seenIDs[stage.ID] = true
-		switch stage.Kind {
-		case "build":
-			builds++
-			if !agents[stage.Agent] {
-				problems = append(problems, "pipeline "+pipeline.Name+" stage "+stage.ID+" references undefined agent "+stage.Agent)
-			}
-		case "verify":
-			verifies++
+		if stage.Kind != fixedStageKinds[index] {
+			problems = append(problems, "pipeline "+pipeline.Name+" must contain plan, build, verify, and review exactly once in that order")
+			break
+		}
+		if stage.Kind == "verify" {
 			if stage.Agent != "" {
 				problems = append(problems, "pipeline "+pipeline.Name+" verify stage "+stage.ID+" cannot name an agent")
 			}
-		case "review":
-			reviews++
-			if !agents[stage.Agent] {
-				problems = append(problems, "pipeline "+pipeline.Name+" stage "+stage.ID+" references undefined agent "+stage.Agent)
-			}
-		default:
-			problems = append(problems, "pipeline "+pipeline.Name+" stage "+stage.ID+" has invalid kind "+stage.Kind)
+			continue
 		}
-	}
-	if builds != 1 || verifies != 1 || reviews > 1 {
-		problems = append(problems, "pipeline "+pipeline.Name+" must contain one build -> one verify -> optional review")
-	}
-	want := []string{"build", "verify"}
-	if reviews == 1 {
-		want = append(want, "review")
-	}
-	if len(pipeline.Stages) != len(want) {
-		return problems
-	}
-	for index, stage := range pipeline.Stages {
-		if stage.Kind != want[index] {
-			problems = append(problems, fmt.Sprintf("pipeline %s stage order is invalid at index %d", pipeline.Name, index))
-			break
+		if !agents[stage.Agent] {
+			problems = append(problems, "pipeline "+pipeline.Name+" stage "+stage.ID+" references undefined agent "+stage.Agent)
 		}
 	}
 	return problems
@@ -273,4 +266,14 @@ func (c Config) Pipeline(name string) (Pipeline, bool) {
 		}
 	}
 	return Pipeline{}, false
+}
+
+// Agent resolves a role agent by name for stage prompt rendering.
+func (c Config) Agent(name string) (Agent, bool) {
+	for _, agent := range c.Agents {
+		if agent.Name == name {
+			return agent, true
+		}
+	}
+	return Agent{}, false
 }
