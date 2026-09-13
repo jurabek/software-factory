@@ -102,7 +102,7 @@ func TestReserveAgentSessionConcurrentCallersShareWinner(t *testing.T) {
 	results := make([]AgentSession, callers)
 	errorsFound := make([]error, callers)
 	var wait sync.WaitGroup
-	for index := 0; index < callers; index++ {
+	for index := range callers {
 		wait.Add(1)
 		go func(index int) {
 			defer wait.Done()

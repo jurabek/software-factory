@@ -18,14 +18,19 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jurabek/software-factory/daemon/internal/builder"
 	"github.com/jurabek/software-factory/daemon/internal/config"
-	"github.com/jurabek/software-factory/daemon/internal/factory"
 	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
 	"github.com/jurabek/software-factory/daemon/internal/harness"
+	"github.com/jurabek/software-factory/daemon/internal/orchestrator"
 	"github.com/jurabek/software-factory/daemon/internal/pipeline"
+	"github.com/jurabek/software-factory/daemon/internal/planner"
+	"github.com/jurabek/software-factory/daemon/internal/reviewer"
 	"github.com/jurabek/software-factory/daemon/internal/sandbox"
 	"github.com/jurabek/software-factory/daemon/internal/session"
+	"github.com/jurabek/software-factory/daemon/internal/stagekit"
 	"github.com/jurabek/software-factory/daemon/internal/store"
+	"github.com/jurabek/software-factory/daemon/internal/verifier"
 	"github.com/stretchr/testify/suite"
 )
 
@@ -104,7 +109,7 @@ type taskFlowSuite struct {
 	harness *taskFlowHarness
 	repo    string
 	server  *httptest.Server
-	service *factory.Service
+	service *orchestrator.Service
 }
 
 func TestTaskFlowSuite(t *testing.T) {
@@ -143,16 +148,21 @@ func (s *taskFlowSuite) SetupSuite() {
 	s.db, err = store.Open(filepath.Join(root, "factory.db"))
 	s.Require().NoError(err)
 	s.harness = &taskFlowHarness{buildStarted: make(chan struct{}), releaseBuild: make(chan struct{})}
-	s.service = factory.NewService(filepath.Join(root, "tasks"), factory.Dependencies{
-		Store: s.db, Config: cfg, ConfigPath: filepath.Join(configRoot, "config.yaml"),
-		Harnesses: harness.Registry{"pi": s.harness}, Git: factorygit.OSRunner{}, Sandbox: sandbox.Git{Runner: factorygit.OSRunner{}},
+	taskRoot := filepath.Join(root, "tasks")
+	configPath := filepath.Join(configRoot, "config.yaml")
+	registry := harness.Registry{"pi": s.harness}
+	sandboxRunner := sandbox.Git{Runner: factorygit.OSRunner{}}
+	kit := stagekit.New(s.db, factorygit.OSRunner{}, registry, sandboxRunner, cfg, configPath, taskRoot)
+	s.service = orchestrator.New(taskRoot, orchestrator.Dependencies{
+		Store: s.db, Config: cfg, ConfigPath: configPath,
+		Harnesses: registry, Git: factorygit.OSRunner{}, Sandbox: sandboxRunner,
+		Workflow: pipeline.New(
+			planner.New(kit),
+			builder.New(kit),
+			verifier.New(kit),
+			reviewer.New(kit),
+		),
 	})
-	s.service.SetPipeliner(pipeline.New(
-		s.service.Planner(),
-		s.service.Builder(),
-		s.service.Verifier(),
-		s.service.Reviewer(),
-	))
 	handler, err := New(s.db, s.service, cfg, nil, nil, []string{"pi"}, nil, newTestAccess())
 	s.Require().NoError(err)
 	s.server = httptest.NewServer(handler)
@@ -179,7 +189,7 @@ func (s *taskFlowSuite) TestCreateApproveBuildAndCheck() {
 	}, http.StatusCreated, &created)
 	s.Require().NotEmpty(created.ID)
 
-	planned := s.awaitState(created.ID, string(factory.AwaitingApproval))
+	planned := s.awaitState(created.ID, string(orchestrator.AwaitingApproval))
 	s.Require().NotEmpty(planned.PlanDigest)
 	s.Contains(planned.AvailableActions, "approve")
 
@@ -218,7 +228,7 @@ func (s *taskFlowSuite) TestCreateApproveBuildAndCheck() {
 	s.Equal("queued", messageDeliveryStatus(queued))
 	queuedStream.Close()
 	close(s.harness.releaseBuild)
-	completed := s.awaitState(created.ID, string(factory.Completed))
+	completed := s.awaitState(created.ID, string(orchestrator.Completed))
 	s.Equal("flow-e2e", completed.ApprovalActor)
 	s.NotEmpty(completed.ApprovalAt)
 	delivered, deliveredStream := s.readStreamEvent(created.ID, 0, queued.Sequence)
@@ -355,7 +365,7 @@ func (s *taskFlowSuite) awaitState(taskID, expected string) taskResponse {
 		if task.State == expected {
 			return task
 		}
-		if task.State == string(factory.Blocked) || task.State == string(factory.Aborted) {
+		if task.State == string(orchestrator.Blocked) || task.State == string(orchestrator.Aborted) {
 			s.T().Fatalf("task reached %s while awaiting %s: %s", task.State, expected, task.Error)
 		}
 		time.Sleep(10 * time.Millisecond)

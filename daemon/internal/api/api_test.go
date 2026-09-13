@@ -12,9 +12,10 @@ import (
 	"time"
 
 	"github.com/jurabek/software-factory/daemon/internal/config"
-	"github.com/jurabek/software-factory/daemon/internal/factory"
+	"github.com/jurabek/software-factory/daemon/internal/orchestrator"
 	"github.com/jurabek/software-factory/daemon/internal/session"
 	"github.com/jurabek/software-factory/daemon/internal/store"
+	"github.com/jurabek/software-factory/daemon/internal/task"
 )
 
 const testToken = "0123456789abcdef0123456789abcdef"
@@ -93,8 +94,8 @@ func TestRestartRecoveryIsVisibleThroughTaskHTTPReads(t *testing.T) {
 	}
 	defer db.Close()
 	createdAt := time.Now().UTC().Format(time.RFC3339Nano)
-	active := store.Task{ID: "active-task", Request: "request", WorkspacePath: t.TempDir(), State: string(factory.Building), CreatedAt: createdAt}
-	paused := store.Task{ID: "paused-task", Request: "paused", WorkspacePath: t.TempDir(), State: string(factory.Paused), CreatedAt: createdAt}
+	active := store.Task{ID: "active-task", Request: "request", WorkspacePath: t.TempDir(), State: string(orchestrator.Building), CreatedAt: createdAt}
+	paused := store.Task{ID: "paused-task", Request: "paused", WorkspacePath: t.TempDir(), State: string(orchestrator.Paused), CreatedAt: createdAt}
 	for _, task := range []store.Task{active, paused} {
 		if err = db.CreateTask(ctx, task); err != nil {
 			t.Fatal(err)
@@ -111,7 +112,7 @@ func TestRestartRecoveryIsVisibleThroughTaskHTTPReads(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	handler, err := New(db, factory.NewService(t.TempDir(), factory.Dependencies{Store: db}), config.Config{}, nil, nil, nil, nil, newTestAccess())
+	handler, err := New(db, orchestrator.New(t.TempDir(), orchestrator.Dependencies{Store: db}), config.Config{}, nil, nil, nil, nil, newTestAccess())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,10 +131,10 @@ func TestRestartRecoveryIsVisibleThroughTaskHTTPReads(t *testing.T) {
 		return task
 	}
 	recovered := readTask(active.ID)
-	if recovered.State != string(factory.Blocked) || recovered.PreviousState != string(factory.Building) || recovered.Error == "" {
+	if recovered.State != string(orchestrator.Blocked) || recovered.PreviousState != string(orchestrator.Building) || recovered.Error == "" {
 		t.Fatalf("recovered task = %+v", recovered)
 	}
-	if current := readTask(paused.ID); current.State != string(factory.Paused) {
+	if current := readTask(paused.ID); current.State != string(orchestrator.Paused) {
 		t.Fatalf("paused task = %+v, want unchanged", current)
 	}
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/tasks/"+active.ID+"/attempts", nil)
@@ -211,7 +212,7 @@ func TestCreateTaskAcceptsOneRepository(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	service := factory.NewService(root, factory.Dependencies{Store: db})
+	service := orchestrator.New(root, orchestrator.Dependencies{Store: db})
 	server, err := New(db, service, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil }, newTestAccess())
 	if err != nil {
 		t.Fatal(err)
@@ -241,7 +242,7 @@ func TestCreateTaskRejectsLegacyRepositoryFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	service := factory.NewService(root, factory.Dependencies{Store: db})
+	service := orchestrator.New(root, orchestrator.Dependencies{Store: db})
 	defer service.Shutdown(context.Background())
 	server, err := New(db, service, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil }, newTestAccess())
 	if err != nil {
@@ -269,12 +270,12 @@ func TestCreateAndListTaskSessions(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	service := factory.NewService(root, factory.Dependencies{Store: db})
+	service := orchestrator.New(root, orchestrator.Dependencies{Store: db})
 	server, err := New(db, service, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil }, newTestAccess())
 	if err != nil {
 		t.Fatal(err)
 	}
-	task, err := service.Create(context.Background(), factory.CreateRequest{Request: "Parent task", Repository: factory.Repository{Type: "github", Repo: "owner/app"}})
+	task, err := service.Create(context.Background(), task.CreateRequest{Request: "Parent task", Repository: task.Repository{Type: "github", Repo: "owner/app"}})
 	if err != nil {
 		t.Fatal(err)
 	}

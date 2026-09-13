@@ -1,4 +1,5 @@
-// Package reviewer owns review-stage entry and all upstream typed evidence.
+// Package reviewer owns the review stage: upstream evidence, verdict
+// validation, read-only observation, and the Reviewing -> Completed lifecycle.
 package reviewer
 
 import (
@@ -9,7 +10,8 @@ import (
 
 	"github.com/jurabek/software-factory/daemon/internal/agentexec"
 	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
-	"github.com/jurabek/software-factory/daemon/internal/pipeline"
+	"github.com/jurabek/software-factory/daemon/internal/stage"
+	"github.com/jurabek/software-factory/daemon/internal/stagekit"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 	"github.com/jurabek/software-factory/daemon/internal/workspace"
 )
@@ -66,89 +68,46 @@ type Diff struct {
 	Patch string   `json:"patch"`
 }
 
-// Evidence is the narrow store/git surface for review prompt data. Assembly
-// of the prompt payload lives in Review; this interface only reads.
-type Evidence interface {
-	Checks(ctx context.Context, taskID string) ([]store.Check, error)
-	TestChanges(ctx context.Context, taskID string) ([]store.TestChange, error)
-	Comparisons(ctx context.Context, taskID string) ([]store.Comparison, error)
-	ChangedFiles(ctx context.Context, taskID string) ([]string, error)
-	Diff(ctx context.Context, taskID string) (Diff, error)
+// Service is the review stage's public surface. Lifecycle, resume, and state
+// transitions are hidden inside the package.
+type Service interface {
+	Review(context.Context, stage.Input, stage.PlanResult, stage.BuildResult, stage.VerificationResult) (stage.ReviewResult, error)
 }
 
-// Publisher is the narrow review-scoped bridge into orchestration. It begins
-// the review phase, publishes the final payload atomically with message
-// synchronization, verdict validation, and read-only enforcement, and
-// resolves durable resume state. Checkpoint mechanics move to Pipeline later;
-// the bridge stays review-scoped.
-type Publisher interface {
-	SavedReview(ctx context.Context, taskID, verificationAttemptID string) (pipeline.ReviewResult, bool, error)
-	BeginReview(ctx context.Context, taskID, planAttemptID, buildAttemptID, verificationAttemptID string) (store.Task, store.Phase, error)
-	PublishReview(ctx context.Context, task store.Task, phase store.Phase, payload, beforeFingerprint string) (pipeline.ReviewResult, error)
-	FailReview(ctx context.Context, phase store.Phase, cause error)
-}
+type service struct{ kit *stagekit.Kit }
 
-// Deps supplies prompt configuration, evidence, turn execution, and review
-// publication.
-type Deps struct {
-	Turner     agentexec.Deps
-	Sinks      agentexec.SinkFactory
-	Configurer agentexec.Configurer
-	Publisher  Publisher
-	Evidence   Evidence
-	Git        factorygit.Runner
-}
-
-type Service struct{ deps Deps }
-
-func New(deps Deps) Service { return Service{deps: deps} }
+func New(kit *stagekit.Kit) Service { return service{kit: kit} }
 
 // Review resumes a durable result when present, otherwise assembles upstream
-// evidence, runs the review turn, and publishes the payload.
-func (s Service) Review(ctx context.Context, input pipeline.Input, plan pipeline.PlanResult, build pipeline.BuildResult, verification pipeline.VerificationResult) (pipeline.ReviewResult, error) {
-	if result, ok, err := s.deps.Publisher.SavedReview(ctx, input.TaskID, verification.AttemptID); err != nil || ok {
+// evidence, runs the review turn, and publishes the verdict.
+func (s service) Review(ctx context.Context, input stage.Input, plan stage.PlanResult, build stage.BuildResult, verification stage.VerificationResult) (stage.ReviewResult, error) {
+	if result, ok, err := s.savedReview(ctx, input.TaskID, verification.AttemptID); err != nil || ok {
 		return result, err
 	}
-	task, phase, err := s.deps.Publisher.BeginReview(ctx, input.TaskID, plan.AttemptID, build.AttemptID, verification.AttemptID)
+	task, phase, err := s.beginReview(ctx, input.TaskID, plan.AttemptID, build.AttemptID, verification.AttemptID)
 	if err != nil {
-		return pipeline.ReviewResult{}, err
+		return stage.ReviewResult{}, err
 	}
-	configured, err := s.deps.Configurer.TaskConfig(ctx, task)
+	configured, err := s.kit.TaskConfig(ctx, task)
 	if err != nil {
-		s.deps.Publisher.FailReview(ctx, phase, err)
-		return pipeline.ReviewResult{}, err
+		s.kit.Fail(ctx, phase, err)
+		return stage.ReviewResult{}, err
 	}
 	agent, ok := configured.Config.Agent(phase.Owner)
 	if !ok {
 		err = fmt.Errorf("agent %s not configured", phase.Owner)
-		s.deps.Publisher.FailReview(ctx, phase, err)
-		return pipeline.ReviewResult{}, err
+		s.kit.Fail(ctx, phase, err)
+		return stage.ReviewResult{}, err
 	}
-	before, err := workspace.Fingerprint(ctx, s.deps.Git, task)
+	before, err := workspace.Fingerprint(ctx, s.kit.Git(), task)
 	if err != nil {
-		s.deps.Publisher.FailReview(ctx, phase, err)
-		return pipeline.ReviewResult{}, err
+		s.kit.Fail(ctx, phase, err)
+		return stage.ReviewResult{}, err
 	}
-	data := map[string]any{"TaskID": task.ID, "Request": task.Request, "Repository": task.RepositoryPath, "Workspace": task.WorkspacePath, "Plan": plan.Payload}
-	if data["Checks"], err = s.deps.Evidence.Checks(ctx, task.ID); err != nil {
-		s.deps.Publisher.FailReview(ctx, phase, err)
-		return pipeline.ReviewResult{}, err
-	}
-	if data["TestChanges"], err = s.deps.Evidence.TestChanges(ctx, task.ID); err != nil {
-		s.deps.Publisher.FailReview(ctx, phase, err)
-		return pipeline.ReviewResult{}, err
-	}
-	if data["Comparisons"], err = s.deps.Evidence.Comparisons(ctx, task.ID); err != nil {
-		s.deps.Publisher.FailReview(ctx, phase, err)
-		return pipeline.ReviewResult{}, err
-	}
-	if data["ChangedFiles"], err = s.deps.Evidence.ChangedFiles(ctx, task.ID); err != nil {
-		s.deps.Publisher.FailReview(ctx, phase, err)
-		return pipeline.ReviewResult{}, err
-	}
-	if data["Diff"], err = s.deps.Evidence.Diff(ctx, task.ID); err != nil {
-		s.deps.Publisher.FailReview(ctx, phase, err)
-		return pipeline.ReviewResult{}, err
+	data, err := s.evidence(ctx, task, plan)
+	if err != nil {
+		s.kit.Fail(ctx, phase, err)
+		return stage.ReviewResult{}, err
 	}
 	systemPrompt, userPrompt, err := agentexec.RenderPrompts(
 		agent.Name,
@@ -159,26 +118,59 @@ func (s Service) Review(ctx context.Context, input pipeline.Input, plan pipeline
 		Instructions(),
 	)
 	if err != nil {
-		s.deps.Publisher.FailReview(ctx, phase, err)
-		return pipeline.ReviewResult{}, err
+		s.kit.Fail(ctx, phase, err)
+		return stage.ReviewResult{}, err
 	}
 	harnessName := configured.Config.Defaults.CodingAgent
-	turner := s.deps.Turner
+	turner := s.kit.AgentExec()
 	turner.AgentDeadlineMS = configured.Config.Runtime.AgentDeadlineMS
 	turner.JSONFixAttempts = configured.Config.Runtime.JSONFixAttempts
 	payload, err := agentexec.RunTurn(ctx, turner, agentexec.TurnInput{
 		TaskID: task.ID, Phase: phase, Role: phase.Name,
 		HarnessName: harnessName, Model: agent.Model, Thinking: agent.Thinking, Color: agent.Color,
-		RepoPath: task.RepositoryPath,
-		SessionDir: filepath.Join(configured.TaskDir, "sessions", phase.Name, harnessName),
+		RepoPath:     task.RepositoryPath,
+		SessionDir:   filepath.Join(configured.TaskDir, "sessions", phase.Name, harnessName),
 		SystemPrompt: systemPrompt, UserPrompt: userPrompt,
 		ReadOnly: true, EnvelopeKind: "review", CorrectionSuffix: Instructions(),
 		Validate: func(text string) (any, error) { return Validate(text) },
-		Sink:     s.deps.Sinks(task.ID, phase.ID, harnessName),
+		Sink:     s.kit.Sink(task.ID, phase.ID, harnessName),
 	})
 	if err != nil {
-		s.deps.Publisher.FailReview(ctx, phase, err)
-		return pipeline.ReviewResult{}, err
+		s.kit.Fail(ctx, phase, err)
+		return stage.ReviewResult{}, err
 	}
-	return s.deps.Publisher.PublishReview(ctx, task, phase, payload, before)
+	return s.publishReview(ctx, task, phase, payload, before)
+}
+
+// evidence assembles the review prompt payload from upstream artifacts.
+func (s service) evidence(ctx context.Context, task store.Task, plan stage.PlanResult) (map[string]any, error) {
+	checks, err := s.kit.DB().Checks(ctx, task.ID)
+	if err != nil {
+		return nil, err
+	}
+	testChanges, err := s.kit.DB().TestChanges(ctx, task.ID)
+	if err != nil {
+		return nil, err
+	}
+	comparisons, err := s.kit.DB().Comparisons(ctx, task.ID)
+	if err != nil {
+		return nil, err
+	}
+	changedFiles, err := workspace.ChangedFiles(ctx, s.kit.Git(), task, true)
+	if err != nil {
+		return nil, err
+	}
+	files, err := factorygit.ChangedFiles(ctx, s.kit.Git(), task.RepositoryPath, workspace.ReviewBase(task))
+	if err != nil {
+		return nil, err
+	}
+	patch, err := factorygit.Diff(ctx, s.kit.Git(), task.RepositoryPath, workspace.ReviewBase(task))
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"TaskID": task.ID, "Request": task.Request, "Repository": task.RepositoryPath, "Workspace": task.WorkspacePath,
+		"Plan": plan.Payload, "Checks": checks, "TestChanges": testChanges, "Comparisons": comparisons,
+		"ChangedFiles": changedFiles, "Diff": Diff{Files: files, Patch: patch},
+	}, nil
 }
