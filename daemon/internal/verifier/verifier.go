@@ -8,83 +8,55 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
 
 	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
-	"github.com/jurabek/software-factory/daemon/internal/pipeline"
+	"github.com/jurabek/software-factory/daemon/internal/stage"
+	"github.com/jurabek/software-factory/daemon/internal/stagekit"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 	"github.com/jurabek/software-factory/daemon/internal/workspace"
 )
 
-// CheckStore is the narrow persistence surface for check execution.
-type CheckStore interface {
-	SaveCheck(context.Context, store.Check) error
-	StartProcess(context.Context, string, string, string, string, int, string) (int64, error)
-	EndProcess(context.Context, string, int, int) error
-	Checks(context.Context, string) ([]store.Check, error)
-	Comparisons(context.Context, string) ([]store.Comparison, error)
-	SaveComparison(context.Context, store.Comparison) error
-	Phases(context.Context, string) ([]store.Phase, error)
+// Service is the verification stage's public surface. Lifecycle, resume, and
+// state transitions are hidden inside the package.
+type Service interface {
+	Verify(context.Context, stage.Input, stage.PlanResult, stage.BuildResult) (stage.VerificationResult, error)
 }
 
-// Snapshots materializes baseline trees for comparison runs.
-type Snapshots interface {
-	MaterializeScratch(context.Context, store.Task, string, string) error
-}
+type service struct{ kit *stagekit.Kit }
 
-// Publisher is the narrow verification-scoped bridge into orchestration. It
-// begins the verify phase, publishes the final report atomically, and
-// resolves durable resume state. Checkpoint mechanics move to Pipeline later;
-// the bridge stays verification-scoped.
-type Publisher interface {
-	SavedVerification(ctx context.Context, taskID, buildAttemptID string) (pipeline.VerificationResult, bool, error)
-	BeginVerification(ctx context.Context, taskID, planAttemptID, buildAttemptID string) (store.Task, store.Phase, error)
-	PublishVerification(ctx context.Context, task store.Task, phase store.Phase, checks []store.Check, comparisons []store.Comparison, report string) (pipeline.VerificationResult, error)
-	FailVerification(ctx context.Context, phase store.Phase, cause error)
-}
-
-// Deps supplies check persistence, git, scratch materialization, and verify
-// publication.
-type Deps struct {
-	Checks    CheckStore
-	Git       factorygit.Runner
-	Snapshots Snapshots
-	Publisher Publisher
-}
-
-type Service struct{ deps Deps }
-
-func New(deps Deps) Service { return Service{deps: deps} }
+func New(kit *stagekit.Kit) Service { return service{kit: kit} }
 
 // Verify resumes a durable result when present, otherwise runs primary checks
 // and baseline/test-overlay comparisons, then publishes the report.
-func (s Service) Verify(ctx context.Context, input pipeline.Input, plan pipeline.PlanResult, build pipeline.BuildResult) (pipeline.VerificationResult, error) {
-	if result, ok, err := s.deps.Publisher.SavedVerification(ctx, input.TaskID, build.AttemptID); err != nil || ok {
+func (s service) Verify(ctx context.Context, input stage.Input, plan stage.PlanResult, build stage.BuildResult) (stage.VerificationResult, error) {
+	if result, ok, err := s.savedVerification(ctx, input.TaskID, build.AttemptID); err != nil || ok {
 		return result, err
 	}
-	task, phase, err := s.deps.Publisher.BeginVerification(ctx, input.TaskID, plan.AttemptID, build.AttemptID)
+	task, phase, err := s.beginVerification(ctx, input.TaskID, plan.AttemptID, build.AttemptID)
 	if err != nil {
-		return pipeline.VerificationResult{}, err
+		return stage.VerificationResult{}, err
 	}
 	profile, err := workspace.ReadProfile(task)
 	if err != nil {
-		s.deps.Publisher.FailVerification(ctx, phase, err)
-		return pipeline.VerificationResult{}, err
+		s.kit.Fail(ctx, phase, err)
+		return stage.VerificationResult{}, err
 	}
 	if err = s.runChecks(ctx, task, phase, profile.Checks, "primary", ""); err != nil {
-		s.deps.Publisher.FailVerification(ctx, phase, err)
-		return pipeline.VerificationResult{}, err
+		s.kit.Fail(ctx, phase, err)
+		return stage.VerificationResult{}, err
 	}
 	if err = s.runComparisons(ctx, task, phase, profile); err != nil {
-		s.deps.Publisher.FailVerification(ctx, phase, err)
-		return pipeline.VerificationResult{}, err
+		s.kit.Fail(ctx, phase, err)
+		return stage.VerificationResult{}, err
 	}
-	checks, err := s.deps.Checks.Checks(ctx, task.ID)
+	checks, err := s.kit.DB().Checks(ctx, task.ID)
 	if err != nil {
-		s.deps.Publisher.FailVerification(ctx, phase, err)
-		return pipeline.VerificationResult{}, err
+		s.kit.Fail(ctx, phase, err)
+		return stage.VerificationResult{}, err
 	}
 	phaseChecks := make([]store.Check, 0)
 	for _, check := range checks {
@@ -92,10 +64,10 @@ func (s Service) Verify(ctx context.Context, input pipeline.Input, plan pipeline
 			phaseChecks = append(phaseChecks, check)
 		}
 	}
-	comparisons, err := s.deps.Checks.Comparisons(ctx, task.ID)
+	comparisons, err := s.kit.DB().Comparisons(ctx, task.ID)
 	if err != nil {
-		s.deps.Publisher.FailVerification(ctx, phase, err)
-		return pipeline.VerificationResult{}, err
+		s.kit.Fail(ctx, phase, err)
+		return stage.VerificationResult{}, err
 	}
 	phaseComparisons := make([]store.Comparison, 0)
 	for _, comparison := range comparisons {
@@ -105,10 +77,16 @@ func (s Service) Verify(ctx context.Context, input pipeline.Input, plan pipeline
 	}
 	report, err := Report(phaseChecks)
 	if err != nil {
-		s.deps.Publisher.FailVerification(ctx, phase, err)
-		return pipeline.VerificationResult{}, err
+		s.kit.Fail(ctx, phase, err)
+		return stage.VerificationResult{}, err
 	}
-	return s.deps.Publisher.PublishVerification(ctx, task, phase, phaseChecks, phaseComparisons, report)
+	passed := true
+	for _, check := range phaseChecks {
+		if check.Status != "passed" {
+			passed = false
+		}
+	}
+	return s.publishVerification(ctx, task, phase, phaseChecks, phaseComparisons, report, passed)
 }
 
 // Report renders the deterministic verification report from phase checks.
@@ -125,18 +103,6 @@ func Report(checks []store.Check) (string, error) {
 	return report.String(), nil
 }
 
-// RunChecks executes declared checks for legacy retry paths that manage
-// their own phase lifecycle.
-func (s Service) RunChecks(ctx context.Context, task store.Task, phase store.Phase, checks []workspace.Check, checkPhase, baseline string) error {
-	return s.runChecks(ctx, task, phase, checks, checkPhase, baseline)
-}
-
-// RunComparisons executes baseline/test-overlay comparisons for legacy retry
-// paths that manage their own phase lifecycle.
-func (s Service) RunComparisons(ctx context.Context, task store.Task, phase store.Phase, profile workspace.Materialization) error {
-	return s.runComparisons(ctx, task, phase, profile)
-}
-
 type checkRunError struct {
 	kind string
 	err  error
@@ -145,11 +111,11 @@ type checkRunError struct {
 func (e *checkRunError) Error() string { return e.err.Error() }
 func (e *checkRunError) Unwrap() error { return e.err }
 
-func (s Service) runChecks(ctx context.Context, task store.Task, phase store.Phase, checks []workspace.Check, checkPhase, baseline string) error {
+func (s service) runChecks(ctx context.Context, task store.Task, phase store.Phase, checks []workspace.Check, checkPhase, baseline string) error {
 	return s.runChecksAt(ctx, task, phase, task.RepositoryPath, checks, checkPhase, baseline)
 }
 
-func (s Service) runChecksAt(ctx context.Context, task store.Task, phase store.Phase, workingPath string, checks []workspace.Check, checkPhase, baseline string) error {
+func (s service) runChecksAt(ctx context.Context, task store.Task, phase store.Phase, workingPath string, checks []workspace.Check, checkPhase, baseline string) error {
 	var firstErr error
 	for index, declared := range checks {
 		check, err := s.runCheck(ctx, task, phase, workingPath, declared, index, checkPhase, baseline)
@@ -163,7 +129,7 @@ func (s Service) runChecksAt(ctx context.Context, task store.Task, phase store.P
 	return firstErr
 }
 
-func (s Service) runCheck(ctx context.Context, task store.Task, phase store.Phase, workingPath string, declared workspace.Check, index int, checkPhase, baseline string) (store.Check, error) {
+func (s service) runCheck(ctx context.Context, task store.Task, phase store.Phase, workingPath string, declared workspace.Check, index int, checkPhase, baseline string) (store.Check, error) {
 	started := time.Now().UTC()
 	check := store.Check{
 		ID:                 fmt.Sprintf("%s-%s-%s-%d", phase.ID, checkPhase, safeFileName(declared.ID), index),
@@ -194,15 +160,15 @@ func (s Service) runCheck(ctx context.Context, task store.Task, phase store.Phas
 		check.Output = err.Error()
 		check.EndedAt = time.Now().UTC().Format(time.RFC3339Nano)
 		check.DurationMS = int(time.Since(started).Milliseconds())
-		if saveErr := s.deps.Checks.SaveCheck(context.WithoutCancel(ctx), check); saveErr != nil {
+		if saveErr := s.kit.DB().SaveCheck(context.WithoutCancel(ctx), check); saveErr != nil {
 			return check, saveErr
 		}
 		return check, &checkRunError{kind: "inconclusive", err: fmt.Errorf("start check %s: %w", declared.ID, err)}
 	}
 	pid := command.Process.Pid
-	if _, err := s.deps.Checks.StartProcess(context.WithoutCancel(ctx), task.ID, phase.ID, "check", declared.ID, pid, declared.Command); err != nil {
+	if _, err := s.kit.DB().StartProcess(context.WithoutCancel(ctx), task.ID, phase.ID, "check", declared.ID, pid, declared.Command); err != nil {
 		terminateProcessGroup(pid)
-		_, _ = command.Wait(), s.deps.Checks.EndProcess(context.WithoutCancel(ctx), task.ID, pid, -1)
+		_, _ = command.Wait(), s.kit.DB().EndProcess(context.WithoutCancel(ctx), task.ID, pid, -1)
 		return check, err
 	}
 	waitErr, cancelled := waitForProcess(ctx, command)
@@ -223,8 +189,8 @@ func (s Service) runCheck(ctx context.Context, task store.Task, phase store.Phas
 	if err := os.WriteFile(logPath, []byte(check.Output), 0o600); err != nil {
 		return check, err
 	}
-	endErr := s.deps.Checks.EndProcess(context.WithoutCancel(ctx), task.ID, pid, check.ExitCode)
-	saveErr := s.deps.Checks.SaveCheck(context.WithoutCancel(ctx), check)
+	endErr := s.kit.DB().EndProcess(context.WithoutCancel(ctx), task.ID, pid, check.ExitCode)
+	saveErr := s.kit.DB().SaveCheck(context.WithoutCancel(ctx), check)
 	if endErr != nil {
 		return check, endErr
 	}
@@ -282,8 +248,7 @@ func processExitCode(err error) int {
 	if err == nil {
 		return 0
 	}
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
+	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 		return exitErr.ExitCode()
 	}
 	return -1
@@ -305,7 +270,7 @@ func safeFileName(value string) string {
 	return builder.String()
 }
 
-func (s Service) runComparisons(ctx context.Context, task store.Task, phase store.Phase, profile workspace.Materialization) error {
+func (s service) runComparisons(ctx context.Context, task store.Task, phase store.Phase, profile workspace.Materialization) error {
 	baseline, err := s.comparisonBaseline(ctx, task, phase)
 	if err != nil {
 		return err
@@ -328,7 +293,7 @@ func (s Service) runComparisons(ctx context.Context, task store.Task, phase stor
 		}
 		return nil
 	}
-	entries, entriesErr := ChangedTestEntries(ctx, s.deps.Git, task.RepositoryPath, workspace.ReviewBase(task), profile.Tests)
+	entries, entriesErr := ChangedTestEntries(ctx, s.kit.Git(), task.RepositoryPath, workspace.ReviewBase(task), profile.Tests)
 	if entriesErr != nil {
 		comparison.Status, comparison.Reason = "inconclusive", entriesErr.Error()
 		comparison.DurationMS = int(time.Since(started).Milliseconds())
@@ -368,7 +333,7 @@ func (s Service) runComparisons(ctx context.Context, task store.Task, phase stor
 	func() {
 		defer os.RemoveAll(comparisonRoot)
 		baselineRoot := filepath.Join(comparisonRoot, "baseline")
-		if materializeErr := s.deps.Snapshots.MaterializeScratch(ctx, task, baseline, baselineRoot); materializeErr != nil {
+		if materializeErr := s.kit.MaterializeScratch(ctx, task, baseline, baselineRoot); materializeErr != nil {
 			comparison.Status, comparison.Reason = "inconclusive", materializeErr.Error()
 			return
 		}
@@ -380,7 +345,7 @@ func (s Service) runComparisons(ctx context.Context, task store.Task, phase stor
 			return
 		}
 		overlayRoot := filepath.Join(comparisonRoot, "overlay")
-		if materializeErr := s.deps.Snapshots.MaterializeScratch(ctx, task, baseline, overlayRoot); materializeErr != nil {
+		if materializeErr := s.kit.MaterializeScratch(ctx, task, baseline, overlayRoot); materializeErr != nil {
 			comparison.Status, comparison.Reason = "inconclusive", materializeErr.Error()
 			return
 		}
@@ -415,12 +380,12 @@ func (s Service) runComparisons(ctx context.Context, task store.Task, phase stor
 	return nil
 }
 
-func (s Service) saveComparison(ctx context.Context, comparison *store.Comparison) error {
+func (s service) saveComparison(ctx context.Context, comparison *store.Comparison) error {
 	if ctx.Err() != nil {
 		comparison.Status = "cancelled"
 		comparison.Reason = ctx.Err().Error()
 	}
-	return s.deps.Checks.SaveComparison(context.WithoutCancel(ctx), *comparison)
+	return s.kit.DB().SaveComparison(context.WithoutCancel(ctx), *comparison)
 }
 
 // ExpectedTestChange is a Git-derived changed test entry.
@@ -460,13 +425,13 @@ func ComparisonPaths(entries []ExpectedTestChange) []string {
 	return paths
 }
 
-func (s Service) comparisonBaseline(ctx context.Context, task store.Task, current store.Phase) (string, error) {
-	phases, err := s.deps.Checks.Phases(ctx, task.ID)
+func (s service) comparisonBaseline(ctx context.Context, task store.Task, current store.Phase) (string, error) {
+	phases, err := s.kit.DB().Phases(ctx, task.ID)
 	if err != nil {
 		return "", err
 	}
-	for index := len(phases) - 1; index >= 0; index-- {
-		candidate := phases[index]
+	for _, candidate := range slices.Backward(phases) {
+
 		if candidate.Kind != "build" || candidate.InputSnapshot == "" || candidate.Superseded {
 			continue
 		}
@@ -474,8 +439,8 @@ func (s Service) comparisonBaseline(ctx context.Context, task store.Task, curren
 			return candidate.InputSnapshot, nil
 		}
 	}
-	for index := len(phases) - 1; index >= 0; index-- {
-		candidate := phases[index]
+	for _, candidate := range slices.Backward(phases) {
+
 		if candidate.Kind == "build" && candidate.InputSnapshot != "" && !candidate.Superseded {
 			return candidate.InputSnapshot, nil
 		}

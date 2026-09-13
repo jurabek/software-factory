@@ -1,5 +1,7 @@
 = Factory Module Refactoring Plan
 
+NOTE: Superseded by link:workflow-clean-room-plan.adoc[]. The interfaces from this plan remain, but stage behavior moves out of `factory.Service` into the stage modules.
+
 == Target architecture
 
 Factory owns task orchestration. Pipeline owns the fixed workflow. Each stage owns its full implementation.

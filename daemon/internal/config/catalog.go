@@ -66,11 +66,11 @@ func parseCatalogRow(fields []string) (Model, bool) {
 func parseTokenCount(field string) int {
 	normalized := strings.ToUpper(strings.ReplaceAll(field, ",", ""))
 	multiplier := 1.0
-	if strings.HasSuffix(normalized, "K") {
-		normalized = strings.TrimSuffix(normalized, "K")
+	if before, ok := strings.CutSuffix(normalized, "K"); ok {
+		normalized = before
 		multiplier = 1_000
-	} else if strings.HasSuffix(normalized, "M") {
-		normalized = strings.TrimSuffix(normalized, "M")
+	} else if before, ok := strings.CutSuffix(normalized, "M"); ok {
+		normalized = before
 		multiplier = 1_000_000
 	}
 	value, err := strconv.ParseFloat(normalized, 64)
