@@ -12,7 +12,7 @@
 		"start": "next start",
 		"typecheck": "next typegen && tsc --noEmit",
 		"test": "node --import tsx --test tests/*.test.ts",
-		"browser-test": "set -a; . ../local.env; set +a; playwright test",
+		"browser-test": "set -a; [ ! -f ../local.env ] || . ../local.env; set +a; playwright test",
 		"migrations": "node --import tsx scripts/migrate.ts",
 		"lint": "biome check .",
 		"format": "biome format --write .",

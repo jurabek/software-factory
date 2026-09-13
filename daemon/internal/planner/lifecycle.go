@@ -20,14 +20,18 @@ func (s service) savedPlan(ctx context.Context, taskID string) (stage.PlanResult
 	if err != nil {
 		return stage.PlanResult{}, false, err
 	}
-	queued, err := s.kit.DB().QueuedMessageForStages(ctx, taskID, "planner", "planning")
+	stageDef, err := s.kit.StageByKind(task, "plan")
+	if err != nil {
+		return stage.PlanResult{}, false, err
+	}
+	queued, err := s.kit.DB().QueuedMessageForStages(ctx, taskID, stageDef.ID, stageDef.Agent)
 	if err != nil {
 		return stage.PlanResult{}, false, err
 	}
 	if queued {
 		return stage.PlanResult{}, false, nil
 	}
-	phase, ok, err := s.kit.SuccessfulPhase(ctx, taskID, "planning")
+	phase, ok, err := s.kit.SuccessfulPhase(ctx, taskID, stageDef.ID)
 	if err != nil || !ok {
 		return stage.PlanResult{}, false, err
 	}
@@ -55,7 +59,14 @@ func (s service) beginPlan(ctx context.Context, taskID string) (store.Task, stor
 		}
 		task.State = string(stagekit.Planning)
 	}
-	phase, err := s.kit.BeginOrReusePhase(ctx, task.ID, "planning", "agent", "planner", "Create implementation plan")
+	stageDef, err := s.kit.StageByKind(task, "plan")
+	if err != nil {
+		return store.Task{}, store.Phase{}, err
+	}
+	if err = s.kit.SetActiveStage(ctx, task.ID, stageDef.ID); err != nil {
+		return store.Task{}, store.Phase{}, err
+	}
+	phase, err := s.kit.BeginOrReusePhase(ctx, task.ID, stageDef.ID, stageDef.Kind, stageDef.Agent, "Execute "+stageDef.ID)
 	if err != nil {
 		return store.Task{}, store.Phase{}, err
 	}
@@ -72,7 +83,7 @@ func (s service) publishPlan(ctx context.Context, task store.Task, phase store.P
 	}
 	validate := func(text string) (any, error) { return Validate(text) }
 	drain := stagekit.DrainSpec{
-		Task: task, Phase: phase, StageID: "planner", AgentName: "planner", Role: "planner",
+		Task: task, Phase: phase, StageID: phase.Name, AgentName: phase.Owner, Role: "planner",
 		ReadOnly: true, Instructions: Instructions(), Validate: validate,
 	}
 	for {
@@ -86,7 +97,7 @@ func (s service) publishPlan(ctx context.Context, task store.Task, phase store.P
 		}
 		lock := s.kit.Lock(task.ID)
 		lock.Lock()
-		_, err = s.kit.DB().NextQueuedMessage(ctx, task.ID, "planner")
+		_, err = s.kit.DB().NextQueuedMessage(ctx, task.ID, phase.Name)
 		if err == nil {
 			lock.Unlock()
 			continue

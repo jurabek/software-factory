@@ -6,3 +6,5 @@ node_modules
 /local.env
 .software-factory/
 /.software-factory
+/application/test-results/
+/application/playwright-report/

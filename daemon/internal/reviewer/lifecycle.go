@@ -22,6 +22,13 @@ func (s service) savedReview(ctx context.Context, taskID, verificationAttemptID 
 	if err != nil {
 		return stage.ReviewResult{}, false, err
 	}
+	queued, err := s.kit.DB().QueuedMessageForStages(ctx, taskID, stageDef.ID, stageDef.Agent)
+	if err != nil {
+		return stage.ReviewResult{}, false, err
+	}
+	if queued {
+		return stage.ReviewResult{}, false, nil
+	}
 	phase, ok, err := s.kit.SuccessfulPhase(ctx, task.ID, stageDef.ID)
 	if err != nil || !ok {
 		return stage.ReviewResult{}, false, err
@@ -50,7 +57,11 @@ func (s service) beginReview(ctx context.Context, taskID, planAttemptID, buildAt
 	if err != nil {
 		return store.Task{}, store.Phase{}, err
 	}
-	if err = s.kit.RequireAttempt(ctx, task.ID, "planning", planAttemptID); err != nil {
+	planStage, err := s.kit.StageByKind(task, "plan")
+	if err != nil {
+		return store.Task{}, store.Phase{}, err
+	}
+	if err = s.kit.RequireAttempt(ctx, task.ID, planStage.ID, planAttemptID); err != nil {
 		return store.Task{}, store.Phase{}, err
 	}
 	buildStage, err := s.kit.StageByKind(task, "build")
@@ -126,10 +137,13 @@ func (s service) publishReview(ctx context.Context, task store.Task, phase store
 		}
 		if !review.Approved {
 			rejected := fmt.Errorf("reviewer rejected implementation")
-			_ = s.kit.Complete(ctx, stagekit.Completion{
+			err = s.kit.Complete(ctx, stagekit.Completion{
 				Phase: phase, From: stagekit.Reviewing, To: stagekit.Blocked, Status: "failed", Cause: rejected,
 			})
 			lock.Unlock()
+			if err != nil {
+				return stage.ReviewResult{}, err
+			}
 			return stage.ReviewResult{Payload: payload, AttemptID: phase.ID, SnapshotID: phase.OutputSnapshot, Approved: false}, nil
 		}
 		after, fingerprintErr := workspace.Fingerprint(ctx, s.kit.Git(), task)

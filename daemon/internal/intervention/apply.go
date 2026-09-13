@@ -130,6 +130,9 @@ func (s *Service) Apply(ctx context.Context, taskID, actor string, request Reque
 	definitionID := phase.DefinitionID
 	var definition *store.PhaseDefinition
 	phaseKey := phase.Name
+	phaseName := phase.Name
+	phaseKind := phase.Kind
+	phaseOwner := phase.Owner
 	revision := phase.DefinitionRev
 	if request.Intent == "revise" {
 		revision++
@@ -140,22 +143,40 @@ func (s *Service) Apply(ctx context.Context, taskID, actor string, request Reque
 		definitionID = definition.ID
 	}
 	if request.Intent == "repair" {
-		phaseKey = "building"
+		_, pipeline, configErr := s.taskPipeline(task)
+		if configErr != nil {
+			return store.InterventionResult{}, configErr
+		}
+		buildStageFound := false
+		for _, configuredStage := range pipeline.Stages {
+			if configuredStage.Kind == "build" {
+				buildStageFound = true
+				phaseName = configuredStage.ID
+				phaseKind = configuredStage.Kind
+				phaseOwner = configuredStage.Agent
+				if latest, latestErr := s.deps.Store.LatestDefinition(ctx, taskID, configuredStage.ID); latestErr == nil {
+					definitionID = latest.ID
+				} else {
+					definitionID = ""
+				}
+				break
+			}
+		}
+		if !buildStageFound {
+			return store.InterventionResult{}, fmt.Errorf("task pipeline has no build stage")
+		}
 	}
 	attemptID := stagekit.RandomID()
-	newPhase := &store.Phase{ID: attemptID, TaskID: taskID, Sequence: len(phases) + 1, Name: repairName(phase, request.Intent), Kind: repairKind(phase, request.Intent), Owner: repairOwner(phase, request.Intent), Description: "Intervention " + request.Intent + ": " + request.Message, Status: "queued", Attempt: phase.Attempt + 1, BranchID: branchID, DefinitionID: definitionID, InputSnapshot: snapshotDigest}
+	newPhase := &store.Phase{ID: attemptID, TaskID: taskID, Sequence: len(phases) + 1, Name: phaseName, Kind: phaseKind, Owner: phaseOwner, Description: "Intervention " + request.Intent + ": " + request.Message, Status: "queued", Attempt: phase.Attempt + 1, BranchID: branchID, DefinitionID: definitionID, InputSnapshot: snapshotDigest}
 	anchorJSON := ""
 	if request.Target.Anchor != nil {
 		encoded, _ := json.Marshal(request.Target.Anchor)
 		anchorJSON = string(encoded)
 	}
 	value := store.Intervention{ID: stagekit.RandomID(), TaskID: taskID, TargetType: targetType, TargetID: targetID, Actor: actor, Intent: request.Intent, Text: request.Message, Delivery: delivery, IdempotencyKey: request.IdempotencyKey, Anchor: anchorJSON, ExpectedHead: request.ExpectedBranchHead, BranchID: branchID, AttemptID: attemptID, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
-	newState := string(stagekit.Blocked)
-	if task.State == string(stagekit.Completed) || task.State == string(stagekit.Aborted) {
+	newState := string(stagekit.StateForPhase(*newPhase))
+	if request.Intent == "repair" {
 		newState = string(stagekit.Building)
-		if phase.Kind == "check" {
-			newState = string(stagekit.Checking)
-		}
 	}
 	applied, err := s.deps.Store.ApplyIntervention(ctx, value, branch, newPhase, definition, newState, task.State == string(stagekit.Completed) || task.State == string(stagekit.Aborted))
 	if err != nil {
@@ -194,27 +215,6 @@ func (s *Service) traceAttempt(ctx context.Context, taskID string, phase *store.
 	_, err := s.deps.Store.AppendEvent(ctx, s.taskDir(taskID), store.Event{ID: stagekit.RandomID(), TaskID: taskID, PhaseID: phaseID, AttemptID: attemptID, BranchID: branchID, Kind: entry.Kind, Name: entry.Name, Payload: entry.Payload, Display: entry.Display, AvailableActions: actions, StartedAt: time.Now().UTC()})
 	_ = interventionID
 	return err
-}
-
-func repairName(phase *store.Phase, intent string) string {
-	if intent == "repair" {
-		return "building"
-	}
-	return phase.Name
-}
-
-func repairKind(phase *store.Phase, intent string) string {
-	if intent == "repair" {
-		return "agent"
-	}
-	return phase.Kind
-}
-
-func repairOwner(phase *store.Phase, intent string) string {
-	if intent == "repair" {
-		return "builder"
-	}
-	return phase.Owner
 }
 
 func quoteJSON(value string) string {
