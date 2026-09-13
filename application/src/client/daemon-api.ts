@@ -226,8 +226,17 @@ export type TaskArtifact = {
 	attempt_id?: string;
 	type: string;
 	digest: string;
-	path: string;
+	path?: string;
+	media_type?: string;
+	producer?: string;
+	provenance_json?: string;
 	created_at: string;
+};
+
+export type TaskArtifactContent = {
+	daemon: DaemonConnection;
+	taskId: string;
+	content: string;
 };
 export type TaskIntervention = {
 	id: string;
@@ -463,6 +472,22 @@ export function daemonArtifacts(
 		signal,
 	);
 }
+
+export function daemonArtifactContent(
+	daemonId: string,
+	taskId: string,
+	artifactId: string,
+	signal?: AbortSignal,
+) {
+	return fetch(
+		`/api/daemons/${encodeURIComponent(daemonId)}/tasks/${encodeURIComponent(taskId)}/artifacts/${encodeURIComponent(artifactId)}`,
+		{ cache: "no-store", signal },
+	).then(async (response) => {
+		if (!response.ok) throw new Error("Could not load report.");
+		return response.text();
+	});
+}
+
 export function daemonChecks(
 	daemonId: string,
 	taskId: string,

@@ -96,19 +96,18 @@ func (s *Service) SendMessage(ctx context.Context, taskID, actor string, request
 		Anchor: anchor, StageID: role, RecipientRole: agentSession.AgentName, AgentSessionID: agentSession.HarnessSessionID,
 		DeliveryStatus: "queued", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
 	}
-	stored, created, err := s.db.SaveMessage(ctx, value)
+	reopen := task.State == string(AwaitingApproval) || task.State == string(Blocked) || task.State == string(Completed)
+	event, err := s.messageEvent(ctx, value, phase)
+	if err != nil {
+		return store.Message{}, err
+	}
+	stored, created, err := s.db.AcceptMessageWithEvent(ctx, value, event, role == "planner", reopen, string(stateForRole(role)), s.taskDir(taskID))
 	if err != nil {
 		return store.Message{}, err
 	}
 	if !created {
 		return stored, nil
 	}
-	if role == "planner" {
-		if err = s.db.InvalidateApproval(ctx, taskID); err != nil {
-			return store.Message{}, err
-		}
-	}
-	_ = s.traceMessage(ctx, stored, phase)
 	if err = s.scheduleMessage(ctx, task, role); err != nil {
 		return store.Message{}, err
 	}
@@ -230,20 +229,10 @@ func (s *Service) ensureAgentSession(ctx context.Context, task store.Task, role 
 func (s *Service) scheduleMessage(ctx context.Context, task store.Task, role string) error {
 	switch State(task.State) {
 	case AwaitingApproval:
-		if err := s.db.ReopenTask(ctx, task.ID, string(stateForRole(role))); err != nil {
-			return err
-		}
 		s.launch(task.ID, func(ctx context.Context, id string) error { return s.continueMessages(ctx, id, role) })
 	case Blocked:
-		state := stateForRole(role)
-		if err := s.db.Transition(ctx, task.ID, task.State, string(state), "", ""); err != nil {
-			return err
-		}
 		s.launch(task.ID, func(ctx context.Context, id string) error { return s.continueMessages(ctx, id, role) })
 	case Completed:
-		if err := s.db.ReopenTask(ctx, task.ID, string(stateForRole(role))); err != nil {
-			return err
-		}
 		s.launch(task.ID, func(ctx context.Context, id string) error { return s.continueMessages(ctx, id, role) })
 	}
 	return nil
@@ -265,7 +254,7 @@ func (s *Service) kickQueuedMessage(taskID string) {
 	if err != nil {
 		return
 	}
-	_ = s.scheduleMessage(ctx, task, message.RecipientRole)
+	_ = s.scheduleMessage(ctx, task, message.StageID)
 }
 
 func stateForRole(role string) State {
@@ -279,40 +268,51 @@ func stateForRole(role string) State {
 	}
 }
 
-func (s *Service) continueMessages(ctx context.Context, taskID, role string) error {
+func (s *Service) continueMessages(ctx context.Context, taskID, stageID string) error {
 	task, err := s.db.Task(ctx, taskID)
 	if err != nil {
 		return err
 	}
-	phase, err := s.beginPhase(ctx, taskID, string(stateForRole(role)), "agent", role, "Continue agent session")
+	storedSession, err := s.ensureAgentSession(ctx, task, stageID)
 	if err != nil {
 		return err
 	}
-	validate := validatorForRole(role)
+	agentName := storedSession.AgentName
+	phaseName, phaseKind := string(stateForRole(agentName)), "agent"
+	if _, pipeline, pipelineErr := s.taskPipeline(task); pipelineErr == nil {
+		if stage, _, ok := stageDefinition(pipeline, stageID); ok {
+			phaseName, phaseKind = stage.ID, stage.Kind
+		}
+	}
+	phase, err := s.beginPhase(ctx, taskID, phaseName, phaseKind, agentName, "Continue agent session")
+	if err != nil {
+		return err
+	}
+	validate := validatorForRole(phaseEnvelopeKind(phase, agentName))
 	var baseline string
-	if isReadOnlyOwner(role) {
+	if phaseReadOnly(phase, agentName) {
 		baseline, err = repositoryFingerprint(ctx, s.git, task)
 		if err != nil {
 			return err
 		}
 	}
 	var profile Materialization
-	if role == "builder" {
+	if phase.Kind == "build" || agentName == "builder" {
 		profile, err = readTaskProfile(task)
 		if err != nil {
 			return err
 		}
 		validate = s.builderValidator(ctx, task, profile)
 	}
-	next := stateAfterRole(role)
-	payload, err := s.completeAgentPhase(ctx, task, phase, role, validate, "", func(payload string) error {
+	next := stateAfterRole(phaseEnvelopeKind(phase, agentName))
+	payload, err := s.completeAgentPhase(ctx, task, phase, stageID, agentName, validate, "", func(payload string) error {
 		if payload == "" {
-			return fmt.Errorf("queued message not found for %s", role)
+			return fmt.Errorf("queued message not found for %s", stageID)
 		}
-		if role == "builder" {
+		if phase.Kind == "build" || agentName == "builder" {
 			return s.validateBuilderPaths(ctx, task, profile)
 		}
-		if role == "reviewer" {
+		if phase.Kind == "review" || agentName == "reviewer" {
 			review, validateErr := ValidateReview(payload)
 			if validateErr != nil {
 				return validateErr
@@ -321,13 +321,13 @@ func (s *Service) continueMessages(ctx context.Context, taskID, role string) err
 				return fmt.Errorf("reviewer rejected implementation")
 			}
 		}
-		if isReadOnlyOwner(role) {
+		if phaseReadOnly(phase, agentName) {
 			after, changedErr := repositoryFingerprint(ctx, s.git, task)
 			if changedErr != nil {
 				return changedErr
 			}
 			if baseline != after {
-				return fmt.Errorf("%s modified repository", role)
+				return fmt.Errorf("%s modified repository", stageID)
 			}
 		}
 		return nil
@@ -335,7 +335,7 @@ func (s *Service) continueMessages(ctx context.Context, taskID, role string) err
 	if err != nil {
 		return err
 	}
-	if role == "builder" {
+	if phase.Kind == "build" || agentName == "builder" {
 		return s.continueAfterBuilder(ctx, taskID)
 	}
 	_ = payload
@@ -353,9 +353,9 @@ func stateAfterRole(role string) State {
 	}
 }
 
-func (s *Service) completeAgentPhase(ctx context.Context, task store.Task, phase store.Phase, role string, validate validator, payload string, verify func(string) error, next State) (string, error) {
+func (s *Service) completeAgentPhase(ctx context.Context, task store.Task, phase store.Phase, stageID, agentName string, validate validator, payload string, verify func(string) error, next State) (string, error) {
 	for {
-		continued, err := s.drainMessages(ctx, task, phase, role, validate)
+		continued, err := s.drainMessages(ctx, task, phase, stageID, agentName, validate)
 		if err != nil {
 			s.failPhase(ctx, phase, err)
 			return "", err
@@ -365,7 +365,7 @@ func (s *Service) completeAgentPhase(ctx context.Context, task store.Task, phase
 		}
 		lock := s.taskLock(task.ID)
 		lock.Lock()
-		_, err = s.db.NextQueuedMessage(ctx, task.ID, role)
+		_, err = s.db.NextQueuedMessage(ctx, task.ID, stageID)
 		if err == nil {
 			lock.Unlock()
 			continue
@@ -380,12 +380,44 @@ func (s *Service) completeAgentPhase(ctx context.Context, task store.Task, phase
 			lock.Unlock()
 			return "", err
 		}
-		if err = s.endPhase(ctx, phase, "success", nil); err == nil {
-			err = s.db.Transition(ctx, task.ID, string(stateForRole(role)), string(next), "", "")
+		envelopeRole := phaseEnvelopeKind(phase, agentName)
+		artifact, artifactErr := s.agentReportArtifact(task, phase, envelopeRole, payload)
+		if artifactErr != nil {
+			s.failPhase(ctx, phase, artifactErr)
+			lock.Unlock()
+			return "", artifactErr
+		}
+		if envelopeRole == "planner" {
+			err = s.completePlannerPhase(ctx, phase, stateForPhase(phase), next, "success", nil, planApprovalDigest(payload, artifact.Digest), &artifact)
+		} else {
+			err = s.completePhaseTransitionWithArtifact(ctx, phase, stateForPhase(phase), next, "success", nil, &artifact)
+		}
+		if err != nil {
+			s.failPhase(ctx, phase, err)
 		}
 		lock.Unlock()
 		return payload, err
 	}
+}
+
+func (s *Service) agentReportArtifact(task store.Task, phase store.Phase, role, payload string) (store.Artifact, error) {
+	validated, err := validatorForRole(role)(payload)
+	if err != nil {
+		if strings.TrimSpace(payload) == "" {
+			return store.Artifact{}, err
+		}
+		return s.reportArtifact(task, phase, role, payload, role), nil
+	}
+	report, err := reportMarkdown(validated)
+	if err != nil {
+		// Direct orchestration tests may supply a deliberately small custom
+		// validator. Production agent validators require report_markdown.
+		if strings.TrimSpace(payload) == "" {
+			return store.Artifact{}, err
+		}
+		report = payload
+	}
+	return s.reportArtifact(task, phase, role, report, role), nil
 }
 
 func (s *Service) validateBuilderPaths(ctx context.Context, task store.Task, profile Materialization) error {
@@ -405,33 +437,35 @@ func validatorForRole(role string) validator {
 	switch role {
 	case "planner":
 		return func(text string) (any, error) { return ValidatePlan(text) }
-	case "builder":
+	case "builder", "build":
 		return func(text string) (any, error) { return ValidateBuild(text) }
-	default:
+	case "reviewer", "review":
 		return func(text string) (any, error) { return ValidateReview(text) }
+	default:
+		return func(string) (any, error) { return nil, fmt.Errorf("unsupported envelope role %q", role) }
 	}
 }
 
-func (s *Service) drainMessages(ctx context.Context, task store.Task, phase store.Phase, role string, validate validator) (string, error) {
+func (s *Service) drainMessages(ctx context.Context, task store.Task, phase store.Phase, stageID, agentName string, validate validator) (string, error) {
 	configured, err := s.taskConfig(task)
 	if err != nil {
 		return "", err
 	}
-	agent, ok := agentForRole(configured, role)
+	agent, ok := agentForRole(configured, agentName)
 	if !ok {
-		return "", fmt.Errorf("agent %s not configured", role)
+		return "", fmt.Errorf("agent %s not configured", agentName)
 	}
 	adapter, ok := s.harnesses.Get(configured.Defaults.CodingAgent)
 	if !ok {
 		return "", fmt.Errorf("harness %s unavailable", configured.Defaults.CodingAgent)
 	}
-	storedSession, err := s.db.AgentSession(ctx, task.ID, role)
+	storedSession, err := s.db.AgentSession(ctx, task.ID, stageID)
 	if err != nil {
 		return "", err
 	}
 	var latest string
 	for {
-		message, nextErr := s.db.NextQueuedMessage(ctx, task.ID, role)
+		message, nextErr := s.db.NextQueuedMessage(ctx, task.ID, stageID)
 		if errors.Is(nextErr, store.ErrNotFound) {
 			return latest, nil
 		}
@@ -443,7 +477,7 @@ func (s *Service) drainMessages(ctx context.Context, task store.Task, phase stor
 			s.failMessage(ctx, message, phase, "session_unavailable")
 			return "", err
 		}
-		systemPrompt, promptErr := s.messageSystemPrompt(ctx, message, role)
+		systemPrompt, promptErr := s.messageSystemPrompt(ctx, message, phaseEnvelopeKind(phase, agentName))
 		if promptErr != nil {
 			s.failMessage(ctx, message, phase, "context_unavailable")
 			return "", promptErr
@@ -457,29 +491,32 @@ func (s *Service) drainMessages(ctx context.Context, task store.Task, phase stor
 		for correction := 0; correction <= configured.Runtime.JSONFixAttempts; correction++ {
 			invocationID := uuid.New().String()
 			if correction == 0 {
-				if err = s.db.BeginMessageInvocation(ctx, task.ID, role, invocationID, message.ID); err != nil {
-					return "", err
-				}
 				message.DeliveryStatus = "delivered"
 				message.DeliveredAt = time.Now().UTC().Format(time.RFC3339Nano)
-				_ = s.traceMessage(ctx, message, &phase)
-			} else if err = s.db.BeginAgentInvocation(ctx, task.ID, role, invocationID); err != nil {
+				event, eventErr := s.messageEvent(ctx, message, &phase)
+				if eventErr != nil {
+					return "", eventErr
+				}
+				if err = s.db.BeginMessageInvocationWithEvent(ctx, task.ID, stageID, invocationID, message.ID, event, s.taskDir(task.ID)); err != nil {
+					return "", err
+				}
+			} else if err = s.db.BeginAgentInvocation(ctx, task.ID, stageID, invocationID); err != nil {
 				return "", err
 			}
 			var before string
-			if isReadOnlyOwner(role) {
+			if phaseReadOnly(phase, agentName) {
 				before, err = repositoryFingerprint(ctx, s.git, task)
 				if err != nil {
 					return "", err
 				}
 			}
-			result, runErr := adapter.Run(ctx, request, s.eventSink(task.ID, phase.ID, storedSession.Harness))
-			if isReadOnlyOwner(role) {
+			result, runErr := invokeHarness(ctx, adapter, request, s.eventSink(task.ID, phase.ID, storedSession.Harness))
+			if phaseReadOnly(phase, agentName) {
 				after, fingerprintErr := repositoryFingerprint(ctx, s.git, task)
 				if fingerprintErr != nil {
 					runErr = errors.Join(runErr, fingerprintErr)
 				} else if before != after {
-					runErr = errors.Join(runErr, fmt.Errorf("%s modified repository", role))
+					runErr = errors.Join(runErr, fmt.Errorf("%s modified repository", stageID))
 				}
 			}
 			if result.SessionID == "" {
@@ -491,8 +528,8 @@ func (s *Service) drainMessages(ctx context.Context, task store.Task, phase stor
 			}
 			storedSession.SessionReady = storedSession.SessionReady || result.SessionReady
 			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-			finalizeErr := s.db.FinalizeAgentInvocation(cleanupCtx, task.ID, role, invocationID, store.AgentSession{
-				Role: role, Harness: storedSession.Harness, Provider: result.Provider, Model: result.Model, Thinking: agent.Thinking, Color: agent.Color,
+			finalizeErr := s.db.FinalizeAgentInvocation(cleanupCtx, task.ID, stageID, invocationID, store.AgentSession{
+				StageID: stageID, AgentName: agentName, Role: agentName, Harness: storedSession.Harness, Provider: result.Provider, Model: result.Model, Thinking: agent.Thinking, Color: agent.Color,
 				HarnessSessionID: storedSession.HarnessSessionID, SessionDirectory: storedSession.SessionDirectory, SessionReady: storedSession.SessionReady,
 				NativeTranscriptPath: result.NativeTranscriptPath, ContextTokens: result.ContextTokens, ContextWindow: result.ContextWindow,
 				Usage: persistedUsage(result.Usage), Cost: result.Usage.Cost, AccountingComplete: result.AccountingComplete,
@@ -513,12 +550,13 @@ func (s *Service) drainMessages(ctx context.Context, task store.Task, phase stor
 				return "", runErr
 			}
 			_, validationErr := validate(result.Text)
-			if err = s.db.SaveEnvelope(ctx, randomID(), task.ID, phase.ID, role, role, result.Text, validationErr == nil, correction+1); err != nil {
+			envelopeRole := phaseEnvelopeKind(phase, agentName)
+			if err = s.db.SaveEnvelope(ctx, randomID(), task.ID, phase.ID, stageID, envelopeRole, result.Text, validationErr == nil, correction+1); err != nil {
 				s.failMessage(ctx, message, phase, "delivery_failed")
 				return "", err
 			}
 			if validationErr == nil {
-				if role == "builder" {
+				if phase.Kind == "build" || agentName == "builder" {
 					if evidenceErr := s.persistBuilderEvidence(ctx, task, phase, result.Text); evidenceErr != nil {
 						s.failMessage(ctx, message, phase, "evidence_persistence_failed")
 						return "", evidenceErr
@@ -529,9 +567,9 @@ func (s *Service) drainMessages(ctx context.Context, task store.Task, phase stor
 			}
 			if correction == configured.Runtime.JSONFixAttempts {
 				s.failMessage(ctx, message, phase, "invalid_agent_response")
-				return "", fmt.Errorf("%s envelope invalid after corrections: %w", role, validationErr)
+				return "", fmt.Errorf("%s envelope invalid after corrections: %w", stageID, validationErr)
 			}
-			request.Prompt = "Your previous final response was invalid: " + validationErr.Error() + "\n" + envelopeInstructions(role)
+			request.Prompt = "Your previous final response was invalid: " + validationErr.Error() + "\n" + envelopeInstructions(envelopeRole)
 		}
 	}
 }
@@ -567,10 +605,13 @@ func (s *Service) messageSystemPrompt(ctx context.Context, message store.Message
 func (s *Service) failMessage(ctx context.Context, message store.Message, phase store.Phase, reason string) {
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	failed, err := s.db.FailMessage(cleanupCtx, message.TaskID, message.ID, reason)
-	if err == nil {
-		_ = s.traceMessage(cleanupCtx, failed, &phase)
+	message.DeliveryStatus = "failed"
+	message.FailureReason = reason
+	event, err := s.messageEvent(cleanupCtx, message, &phase)
+	if err != nil {
+		return
 	}
+	_, _ = s.db.FailMessageWithEvent(cleanupCtx, message.TaskID, message.ID, reason, event, s.taskDir(message.TaskID))
 }
 
 func (s *Service) Retry(ctx context.Context, taskID, attemptID string, request RetryRequest) (store.RetryResult, error) {
@@ -757,7 +798,11 @@ func (s *Service) runRetryAgent(ctx context.Context, task store.Task, phase stor
 		s.failPhase(ctx, phase, err)
 		return err
 	}
-	_, err = s.completeAgentPhase(ctx, task, phase, phase.Owner, validate, payload, func(payload string) error {
+	stageID := phase.Name
+	if phase.Kind == "agent" {
+		stageID = phase.Owner
+	}
+	_, err = s.completeAgentPhase(ctx, task, phase, stageID, phase.Owner, validate, payload, func(payload string) error {
 		switch phase.Owner {
 		case "builder":
 			return s.validateBuilderPaths(ctx, task, profile)
@@ -829,6 +874,15 @@ func stateForPhase(phase store.Phase) State {
 }
 
 func (s *Service) traceMessage(ctx context.Context, message store.Message, phase *store.Phase) error {
+	event, err := s.messageEvent(ctx, message, phase)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.AppendEvent(ctx, s.taskDir(message.TaskID), event)
+	return err
+}
+
+func (s *Service) messageEvent(ctx context.Context, message store.Message, phase *store.Phase) (store.Event, error) {
 	phaseID, branchID := "", ""
 	if phase != nil {
 		phaseID, branchID = phase.ID, phase.BranchID
@@ -842,10 +896,9 @@ func (s *Service) traceMessage(ctx context.Context, message store.Message, phase
 	if task, taskErr := s.db.Task(ctx, message.TaskID); taskErr == nil {
 		taskState = task.State
 	}
-	_, err := s.db.AppendEvent(ctx, s.taskDir(message.TaskID), store.Event{
+	return store.Event{
 		ID: randomID(), TaskID: message.TaskID, PhaseID: phaseID, AttemptID: phaseID, BranchID: branchID,
 		Kind: entry.Kind, Name: entry.Name, Payload: entry.Payload, Display: entry.Display,
 		AvailableActions: AvailableActions(phase, taskState), StartedAt: time.Now().UTC(),
-	})
-	return err
+	}, nil
 }
