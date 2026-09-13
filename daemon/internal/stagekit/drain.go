@@ -78,6 +78,13 @@ func (k *Kit) Drain(ctx context.Context, spec DrainSpec) (string, error) {
 			DeadlineMS: configured.Runtime.AgentDeadlineMS, Resume: true,
 		}
 		for correction := 0; correction <= configured.Runtime.JSONFixAttempts; correction++ {
+			var before string
+			if spec.ReadOnly {
+				before, err = fingerprint(ctx, k.git, task)
+				if err != nil {
+					return "", err
+				}
+			}
 			invocationID := uuid.New().String()
 			if correction == 0 {
 				message.DeliveryStatus = "delivered"
@@ -91,13 +98,6 @@ func (k *Kit) Drain(ctx context.Context, spec DrainSpec) (string, error) {
 				}
 			} else if err = k.db.BeginAgentInvocation(ctx, task.ID, spec.StageID, invocationID); err != nil {
 				return "", err
-			}
-			var before string
-			if spec.ReadOnly {
-				before, err = fingerprint(ctx, k.git, task)
-				if err != nil {
-					return "", err
-				}
 			}
 			result, runErr := agentexec.Invoke(ctx, adapter, request, k.Sink(task.ID, phase.ID, storedSession.Harness))
 			if spec.ReadOnly {

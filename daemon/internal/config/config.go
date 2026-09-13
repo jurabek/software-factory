@@ -129,8 +129,23 @@ func Parse(data []byte, base string) (Config, []string, error) {
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return Config{}, nil, fmt.Errorf("parse config: %w", err)
 	}
+	raw = upgradeLegacyPipelines(raw)
 	resolved := resolve(raw)
 	return resolved, validate(resolved, base), nil
+}
+
+func upgradeLegacyPipelines(c Config) Config {
+	planner := "planner"
+	if _, ok := c.Agent(planner); !ok && len(c.Agents) > 0 {
+		planner = c.Agents[0].Name
+	}
+	for index := range c.Pipelines {
+		stages := c.Pipelines[index].Stages
+		if len(stages) == 3 && stages[0].Kind == "build" && stages[1].Kind == "verify" && stages[2].Kind == "review" {
+			c.Pipelines[index].Stages = append([]Stage{{ID: "plan", Kind: "plan", Agent: planner}}, stages...)
+		}
+	}
+	return c
 }
 
 func resolve(c Config) Config {

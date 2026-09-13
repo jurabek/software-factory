@@ -8,6 +8,7 @@ import (
 	"errors"
 	"path/filepath"
 
+	"github.com/jurabek/software-factory/daemon/internal/config"
 	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 	"github.com/jurabek/software-factory/daemon/internal/workspace"
@@ -53,10 +54,12 @@ type RetryRequest struct {
 
 // Deps are the collaborators an intervention service needs.
 type Deps struct {
-	Store     *store.DB
-	Git       factorygit.Runner
-	Snapshots *workspace.Service
-	Root      string
+	Store      *store.DB
+	Git        factorygit.Runner
+	Snapshots  *workspace.Service
+	Config     config.Config
+	ConfigPath string
+	Root       string
 }
 
 // Service applies operator interventions to tasks.
@@ -71,4 +74,8 @@ func New(deps Deps) *Service {
 
 func (s *Service) taskDir(id string) string {
 	return filepath.Join(s.deps.Root, "tasks", id)
+}
+
+func (s *Service) taskPipeline(task store.Task) (config.Config, config.Pipeline, error) {
+	return config.TaskPipeline(s.deps.Config, s.deps.ConfigPath, task.ConfigSnapshot, task.Pipeline)
 }

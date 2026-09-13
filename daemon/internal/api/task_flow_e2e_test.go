@@ -195,7 +195,7 @@ func (s *taskFlowSuite) TestCreateApproveBuildAndCheck() {
 
 	var planningAttempts []store.Phase
 	s.request(http.MethodGet, "/api/v1/tasks/"+created.ID+"/attempts", nil, http.StatusOK, &planningAttempts)
-	s.Equal([]string{"prepare", "planning"}, phaseNames(planningAttempts))
+	s.Equal([]string{"prepare", "plan"}, phaseNames(planningAttempts))
 	for _, attempt := range planningAttempts {
 		s.Equal("success", attempt.Status)
 	}
@@ -203,7 +203,7 @@ func (s *taskFlowSuite) TestCreateApproveBuildAndCheck() {
 	var planningResults []store.Envelope
 	s.request(http.MethodGet, "/api/v1/tasks/"+created.ID+"/results", nil, http.StatusOK, &planningResults)
 	s.Require().Len(planningResults, 1)
-	s.Equal("planner", planningResults[0].AgentRole)
+	s.Equal("plan", planningResults[0].AgentRole)
 	s.True(planningResults[0].Valid)
 	s.JSONEq(flowPlan, planningResults[0].Payload)
 
@@ -244,7 +244,7 @@ func (s *taskFlowSuite) TestCreateApproveBuildAndCheck() {
 
 	var attempts []store.Phase
 	s.request(http.MethodGet, "/api/v1/tasks/"+created.ID+"/attempts", nil, http.StatusOK, &attempts)
-	s.Equal([]string{"prepare", "planning", "build", "checks", "review"}, phaseNames(attempts))
+	s.Equal([]string{"prepare", "plan", "build", "checks", "review"}, phaseNames(attempts))
 	for _, attempt := range attempts {
 		s.Equal("success", attempt.Status)
 	}

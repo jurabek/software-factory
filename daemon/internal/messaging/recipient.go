@@ -38,10 +38,14 @@ func (s *Service) messageRecipient(ctx context.Context, task store.Task, target 
 	if state == stagekit.Paused {
 		state = stagekit.State(task.PreviousState)
 	}
-	if state == stagekit.Preparing || state == stagekit.Planning || state == stagekit.AwaitingApproval {
-		return "planner", latest, nil
-	}
 	if _, pipeline, pipelineErr := config.TaskPipeline(s.deps.Config, s.deps.ConfigPath, task.ConfigSnapshot, task.Pipeline); pipelineErr == nil {
+		if state == stagekit.Preparing || state == stagekit.Planning || state == stagekit.AwaitingApproval {
+			for _, stage := range pipeline.Stages {
+				if stage.Kind == "plan" {
+					return stage.ID, latest, nil
+				}
+			}
+		}
 		if task.ActiveStage != "" {
 			if stage, _, ok := stageDefinition(pipeline, task.ActiveStage); ok && stage.Agent != "" {
 				return stage.ID, latest, nil

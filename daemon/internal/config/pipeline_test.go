@@ -26,3 +26,18 @@ func TestValidatePipelineRequiresFixedFlow(t *testing.T) {
 		t.Fatal("pipeline without review accepted")
 	}
 }
+
+func TestUpgradeLegacyPipelineAddsPlanStage(t *testing.T) {
+	configured := upgradeLegacyPipelines(Config{
+		Agents: []Agent{{Name: "planner"}, {Name: "builder"}, {Name: "reviewer"}},
+		Pipelines: []Pipeline{{Name: "standard", Stages: []Stage{
+			{ID: "build", Kind: "build", Agent: "builder"},
+			{ID: "check", Kind: "verify"},
+			{ID: "review", Kind: "review", Agent: "reviewer"},
+		}}},
+	})
+	stages := configured.Pipelines[0].Stages
+	if len(stages) != 4 || stages[0] != (Stage{ID: "plan", Kind: "plan", Agent: "planner"}) {
+		t.Fatalf("upgraded stages = %+v", stages)
+	}
+}

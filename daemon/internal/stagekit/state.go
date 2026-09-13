@@ -75,14 +75,14 @@ func StateForRole(role string) State {
 // StateForPhase maps an attempt to the state a retried task resumes in so the
 // owning stage can begin from a legal transition origin.
 func StateForPhase(phase store.Phase) State {
-	switch phase.Name {
-	case "planning":
+	switch phase.Kind {
+	case "plan":
 		return Planning
-	case "checks":
+	case "verify", "check":
 		return Checking
-	case "reviewing":
+	case "review":
 		return Reviewing
-	case "building":
+	case "build":
 		return Building
 	default:
 		return StateForRole(phase.Owner)

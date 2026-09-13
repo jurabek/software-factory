@@ -1516,18 +1516,10 @@ export function TaskDetail({
 										<button
 											type="button"
 											className="bg-background hover:bg-secondary aria-pressed:bg-secondary aria-pressed:border-input grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-md border px-2 py-2 text-left"
-										aria-pressed={selectedArtifact === artifact.id}
-										onClick={() => {
-											setSelectedArtifact(artifact.id);
-											void daemonArtifactContent(daemonId, task.id, artifact.id)
-												.then((content) =>
-													setArtifactContent((current) => ({
-														...current,
-														[artifact.id]: content,
-													})),
-												)
-												.catch(() => undefined);
-										}}
+											aria-pressed={selectedArtifact === artifact.id}
+											onClick={() => {
+												setSelectedArtifact(artifact.id);
+											}}
 										>
 											<File className="text-muted-foreground size-4" />
 											<span className="min-w-0">
