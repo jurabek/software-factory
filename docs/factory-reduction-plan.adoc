@@ -1,0 +1,35 @@
+= Factory Reduction Plan
+
+NOTE: Superseded by link:workflow-clean-room-plan.adoc[].
+
+== Context
+
+The previous refactor (see link:factory-module-refactoring-plan.adoc[]) routed only the initial happy path through the stage services (`planner`, `builder`, `verifier`, `reviewer`). Retry and message continuation still run a parallel legacy engine inside `factory`, and the extraction left alias/forwarder shims behind. `factory` is now ~5,200 LOC with two execution paths.
+
+The remaining work is reduction, not new abstractions: delete the legacy engine and the shims so there is a single execution path.
+
+== Current duplication
+
+* Legacy retry engine: `plan`, `runRole`, `runRetryAgent`, `executeVerify` (`service.go`, `message.go`, `pipeline.go`).
+* Legacy message engine: `continueMessages`, `completeAgentPhase`, `stateAfterRole` (`message.go`).
+* Dead code: `runRetryChecks`, `publishVerificationReport`, `verificationReport` (no callers).
+* `qualityService` wrappers: `runChecks`/`runComparisons`/`verifierService` spin up a second `verifier.Service` without a Publisher.
+* Shims: `factory/envelope.go` (type aliases), `factory/sandbox.go` (aliases), `factory/snapshot.go` (forwarders).
+
+== Reduction steps
+
+. *Delete dead code.* Remove `runRetryChecks`, `publishVerificationReport`, `verificationReport`.
+. *Delete shims.* Inline `envelope.go`/`sandbox.go`/`snapshot.go` into direct `planner`/`builder`/`reviewer`/`workspace` imports.
+. *Route retry through `Pipeliner.Run`.* `runRetryAttempt` becomes `StartQueuedPhase` then `s.progress`. Add one helper so the `Begin*` bridges reuse a queued/running retry phase (preserving its `InputSnapshot`/`DefinitionID`) instead of always `beginPhase`-ing a fresh phase. Delete `plan`, `runRole`, `runRetryAgent`, `executeVerify`.
+. *Route message continuation through the same path.* `scheduleMessage`/`Resume` call `launch(id, s.progress)`; a queued message makes its stage's `Saved*` return not-saved so the stage re-runs and drains. Delete `continueMessages`, `completeAgentPhase`.
+. *Fold `qualityService`.* Inline `builderValidator`/`persistBuilderEvidence` into `builder_bridge.go`; delete `qualityService`.
+. *Rewrite tests* that call the deleted functions directly (`message_test.go`, `session_lifecycle_test.go`, `quality_test.go`, `review_test.go`) against the public flow.
+
+== Expected result
+
+~550 lines and three files removed; one execution path (`Pipeliner.Run` → stage → bridge) for initial, retry, and continuation. No new packages, interfaces, or stage-side backend.
+
+== Guardrails
+
+* `TestExactRetryIsIdempotentAndUsesOriginalInput` (retry reuses `InputSnapshot`/`DefinitionID`) and `task_flow_e2e_test.go` must stay green.
+* `go -C daemon test ./...` passes after each step.

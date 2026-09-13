@@ -1,4 +1,5 @@
-// Package planner owns planning-stage entry and result validation.
+// Package planner owns the planning stage: its prompts, plan validation, the
+// Preparation -> Planning -> AwaitingApproval lifecycle, and durable resume.
 package planner
 
 import (
@@ -8,8 +9,8 @@ import (
 	"strings"
 
 	"github.com/jurabek/software-factory/daemon/internal/agentexec"
-	"github.com/jurabek/software-factory/daemon/internal/pipeline"
-	"github.com/jurabek/software-factory/daemon/internal/store"
+	"github.com/jurabek/software-factory/daemon/internal/stage"
+	"github.com/jurabek/software-factory/daemon/internal/stagekit"
 )
 
 type PlanStep struct {
@@ -59,49 +60,37 @@ func Instructions() string {
 	return `Return exactly one JSON object: {` + agentexec.CommonInstructions() + `,"steps":[{"id":"...","description":"...","expected_files":[],"acceptance_criteria":[]}],"questions":[]}. Put the human-readable report in report_markdown.`
 }
 
-// Publisher is the narrow plan-scoped bridge into orchestration. It begins
-// the planning phase, publishes the final payload atomically with message
-// synchronization, and resolves durable resume state. Checkpoint mechanics
-// move to Pipeline later; the bridge stays plan-scoped.
-type Publisher interface {
-	SavedPlan(ctx context.Context, taskID string) (pipeline.PlanResult, bool, error)
-	BeginPlan(ctx context.Context, taskID string) (store.Task, store.Phase, error)
-	PublishPlan(ctx context.Context, task store.Task, phase store.Phase, payload string) (pipeline.PlanResult, error)
-	FailPlan(ctx context.Context, phase store.Phase, cause error)
+// Service is the planning stage's public surface. Lifecycle, resume, and
+// state transitions are hidden inside the package.
+type Service interface {
+	Plan(context.Context, stage.Input) (stage.PlanResult, error)
 }
 
-// Deps supplies prompt configuration, turn execution, and plan publication.
-type Deps struct {
-	Turner     agentexec.Deps
-	Sinks      agentexec.SinkFactory
-	Configurer agentexec.Configurer
-	Publisher  Publisher
-}
+type service struct{ kit *stagekit.Kit }
 
-type Service struct{ deps Deps }
+// New constructs the planning stage.
+func New(kit *stagekit.Kit) Service { return service{kit: kit} }
 
-func New(deps Deps) Service { return Service{deps: deps} }
-
-// Plan resumes a durable result when present, otherwise renders planning
-// prompts, runs the planning turn, and publishes the payload.
-func (s Service) Plan(ctx context.Context, input pipeline.Input) (pipeline.PlanResult, error) {
-	if result, ok, err := s.deps.Publisher.SavedPlan(ctx, input.TaskID); err != nil || ok {
+// Plan resumes a durable plan when present, otherwise renders planning prompts,
+// runs the planning turn, and publishes the plan for approval.
+func (s service) Plan(ctx context.Context, input stage.Input) (stage.PlanResult, error) {
+	if result, ok, err := s.savedPlan(ctx, input.TaskID); err != nil || ok {
 		return result, err
 	}
-	task, phase, err := s.deps.Publisher.BeginPlan(ctx, input.TaskID)
+	task, phase, err := s.beginPlan(ctx, input.TaskID)
 	if err != nil {
-		return pipeline.PlanResult{}, err
+		return stage.PlanResult{}, err
 	}
-	configured, err := s.deps.Configurer.TaskConfig(ctx, task)
+	configured, err := s.kit.TaskConfig(ctx, task)
 	if err != nil {
-		s.deps.Publisher.FailPlan(ctx, phase, err)
-		return pipeline.PlanResult{}, err
+		s.kit.Fail(ctx, phase, err)
+		return stage.PlanResult{}, err
 	}
 	agent, ok := configured.Config.Agent("planner")
 	if !ok {
 		err = fmt.Errorf("agent planner not configured")
-		s.deps.Publisher.FailPlan(ctx, phase, err)
-		return pipeline.PlanResult{}, err
+		s.kit.Fail(ctx, phase, err)
+		return stage.PlanResult{}, err
 	}
 	data := map[string]any{"TaskID": task.ID, "Request": task.Request, "Repository": task.RepositoryPath, "Workspace": task.WorkspacePath}
 	systemPrompt, userPrompt, err := agentexec.RenderPrompts(
@@ -113,26 +102,26 @@ func (s Service) Plan(ctx context.Context, input pipeline.Input) (pipeline.PlanR
 		Instructions(),
 	)
 	if err != nil {
-		s.deps.Publisher.FailPlan(ctx, phase, err)
-		return pipeline.PlanResult{}, err
+		s.kit.Fail(ctx, phase, err)
+		return stage.PlanResult{}, err
 	}
 	harnessName := configured.Config.Defaults.CodingAgent
-	turner := s.deps.Turner
+	turner := s.kit.AgentExec()
 	turner.AgentDeadlineMS = configured.Config.Runtime.AgentDeadlineMS
 	turner.JSONFixAttempts = configured.Config.Runtime.JSONFixAttempts
 	payload, err := agentexec.RunTurn(ctx, turner, agentexec.TurnInput{
 		TaskID: task.ID, Phase: phase, Role: "planner",
 		HarnessName: harnessName, Model: agent.Model, Thinking: agent.Thinking, Color: agent.Color,
-		RepoPath: task.RepositoryPath,
-		SessionDir: filepath.Join(configured.TaskDir, "sessions", "planner", harnessName),
+		RepoPath:     task.RepositoryPath,
+		SessionDir:   filepath.Join(configured.TaskDir, "sessions", "planner", harnessName),
 		SystemPrompt: systemPrompt, UserPrompt: userPrompt,
 		ReadOnly: true, EnvelopeKind: "planner", CorrectionSuffix: Instructions(),
 		Validate: func(text string) (any, error) { return Validate(text) },
-		Sink:     s.deps.Sinks(task.ID, phase.ID, harnessName),
+		Sink:     s.kit.Sink(task.ID, phase.ID, harnessName),
 	})
 	if err != nil {
-		s.deps.Publisher.FailPlan(ctx, phase, err)
-		return pipeline.PlanResult{}, err
+		s.kit.Fail(ctx, phase, err)
+		return stage.PlanResult{}, err
 	}
-	return s.deps.Publisher.PublishPlan(ctx, task, phase, payload)
+	return s.publishPlan(ctx, task, phase, payload)
 }

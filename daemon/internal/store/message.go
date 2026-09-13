@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"strings"
 )
 
 type Message struct {
@@ -152,6 +153,25 @@ func (db *DB) NextQueuedMessage(ctx context.Context, taskID, role string) (Messa
 }
 func (db *DB) NextQueuedTaskMessage(ctx context.Context, taskID string) (Message, error) {
 	return scanMessage(db.QueryRowContext(ctx, `select sequence,id,task_id,actor,text,idempotency_key,coalesce(target_type,''),coalesce(target_id,''),coalesce(anchor_json,''),coalesce(stage_id,''),recipient_role,agent_session_id,delivery_status,coalesce(failure_reason,''),created_at,coalesce(delivered_at,''),coalesce(failed_at,'') from messages where task_id=? and delivery_status='queued' order by sequence limit 1`, taskID))
+}
+
+// QueuedMessageForStages reports whether a queued message is routed to any of
+// the given stage identifiers.
+func (db *DB) QueuedMessageForStages(ctx context.Context, taskID string, stages ...string) (bool, error) {
+	if len(stages) == 0 {
+		return false, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(stages)), ",")
+	args := make([]any, 0, len(stages)+1)
+	args = append(args, taskID)
+	for _, stage := range stages {
+		args = append(args, stage)
+	}
+	var count int
+	if err := db.QueryRowContext(ctx, `select count(*) from messages where task_id=? and delivery_status='queued' and stage_id in (`+placeholders+`)`, args...).Scan(&count); err != nil {
+		return false, wrap("count queued stage messages", err)
+	}
+	return count > 0, nil
 }
 func (db *DB) BeginMessageInvocation(ctx context.Context, taskID, role, invocationID, messageID string) error {
 	return db.beginMessageInvocation(ctx, taskID, role, invocationID, messageID, nil, "")

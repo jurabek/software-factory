@@ -12,7 +12,8 @@ import (
 
 	"github.com/jurabek/software-factory/daemon/internal/agentexec"
 	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
-	"github.com/jurabek/software-factory/daemon/internal/pipeline"
+	"github.com/jurabek/software-factory/daemon/internal/stage"
+	"github.com/jurabek/software-factory/daemon/internal/stagekit"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 	"github.com/jurabek/software-factory/daemon/internal/workspace"
 )
@@ -72,60 +73,47 @@ func Instructions() string {
 	return `Return exactly one JSON object: {` + agentexec.CommonInstructions() + `,"changed_files":[],"commit_message":"...","test_changes":[{"path":"...","reason":"..."}]}. Put the human-readable report in report_markdown.`
 }
 
-// Publisher is the narrow build-scoped bridge into orchestration. It begins
-// the build phase, publishes the final payload atomically with message
-// synchronization, and resolves durable resume state. Checkpoint mechanics
-// move to Pipeline later; the bridge stays build-scoped.
-type Publisher interface {
-	SavedBuild(ctx context.Context, taskID, planAttemptID string) (pipeline.BuildResult, bool, error)
-	BeginBuild(ctx context.Context, taskID, planAttemptID string) (store.Task, store.Phase, error)
-	PublishBuild(ctx context.Context, task store.Task, phase store.Phase, payload string) (pipeline.BuildResult, error)
-	FailBuild(ctx context.Context, phase store.Phase, cause error)
-}
-
 // EvidenceStore persists builder test evidence.
 type EvidenceStore interface {
 	SaveTestChanges(ctx context.Context, changes []store.TestChange) error
 }
 
-// Deps supplies prompt configuration, turn execution, and build publication.
-type Deps struct {
-	Turner     agentexec.Deps
-	Sinks      agentexec.SinkFactory
-	Configurer agentexec.Configurer
-	Publisher  Publisher
+// Service is the build stage's public surface. Lifecycle, resume, and state
+// transitions are hidden inside the package.
+type Service interface {
+	Build(context.Context, stage.Input, stage.PlanResult) (stage.BuildResult, error)
 }
 
-type Service struct{ deps Deps }
+type service struct{ kit *stagekit.Kit }
 
-func New(deps Deps) Service { return Service{deps: deps} }
+func New(kit *stagekit.Kit) Service { return service{kit: kit} }
 
 // Build resumes a durable result when present, otherwise renders
 // implementation prompts from the exact upstream plan, runs the build turn
 // with Git-derived test evidence validation, and publishes the payload.
-func (s Service) Build(ctx context.Context, input pipeline.Input, plan pipeline.PlanResult) (pipeline.BuildResult, error) {
-	if result, ok, err := s.deps.Publisher.SavedBuild(ctx, input.TaskID, plan.AttemptID); err != nil || ok {
+func (s service) Build(ctx context.Context, input stage.Input, plan stage.PlanResult) (stage.BuildResult, error) {
+	if result, ok, err := s.savedBuild(ctx, input.TaskID, plan.AttemptID); err != nil || ok {
 		return result, err
 	}
-	task, phase, err := s.deps.Publisher.BeginBuild(ctx, input.TaskID, plan.AttemptID)
+	task, phase, err := s.beginBuild(ctx, input.TaskID, plan.AttemptID)
 	if err != nil {
-		return pipeline.BuildResult{}, err
+		return stage.BuildResult{}, err
 	}
-	configured, err := s.deps.Configurer.TaskConfig(ctx, task)
+	configured, err := s.kit.TaskConfig(ctx, task)
 	if err != nil {
-		s.deps.Publisher.FailBuild(ctx, phase, err)
-		return pipeline.BuildResult{}, err
+		s.kit.Fail(ctx, phase, err)
+		return stage.BuildResult{}, err
 	}
 	agent, ok := configured.Config.Agent(phase.Owner)
 	if !ok {
 		err = fmt.Errorf("agent %s not configured", phase.Owner)
-		s.deps.Publisher.FailBuild(ctx, phase, err)
-		return pipeline.BuildResult{}, err
+		s.kit.Fail(ctx, phase, err)
+		return stage.BuildResult{}, err
 	}
 	profile, err := workspace.ReadProfile(task)
 	if err != nil {
-		s.deps.Publisher.FailBuild(ctx, phase, err)
-		return pipeline.BuildResult{}, err
+		s.kit.Fail(ctx, phase, err)
+		return stage.BuildResult{}, err
 	}
 	data := map[string]any{"TaskID": task.ID, "Request": task.Request, "Repository": task.RepositoryPath, "Workspace": task.WorkspacePath, "Plan": plan.Payload}
 	systemPrompt, userPrompt, err := agentexec.RenderPrompts(
@@ -137,11 +125,11 @@ func (s Service) Build(ctx context.Context, input pipeline.Input, plan pipeline.
 		Instructions(),
 	)
 	if err != nil {
-		s.deps.Publisher.FailBuild(ctx, phase, err)
-		return pipeline.BuildResult{}, err
+		s.kit.Fail(ctx, phase, err)
+		return stage.BuildResult{}, err
 	}
 	harnessName := configured.Config.Defaults.CodingAgent
-	turner := s.deps.Turner
+	turner := s.kit.AgentExec()
 	turner.AgentDeadlineMS = configured.Config.Runtime.AgentDeadlineMS
 	turner.JSONFixAttempts = configured.Config.Runtime.JSONFixAttempts
 	validate := func(text string) (any, error) {
@@ -150,18 +138,18 @@ func (s Service) Build(ctx context.Context, input pipeline.Input, plan pipeline.
 	payload, err := agentexec.RunTurn(ctx, turner, agentexec.TurnInput{
 		TaskID: task.ID, Phase: phase, Role: phase.Name,
 		HarnessName: harnessName, Model: agent.Model, Thinking: agent.Thinking, Color: agent.Color,
-		RepoPath: task.RepositoryPath,
-		SessionDir: filepath.Join(configured.TaskDir, "sessions", phase.Name, harnessName),
+		RepoPath:     task.RepositoryPath,
+		SessionDir:   filepath.Join(configured.TaskDir, "sessions", phase.Name, harnessName),
 		SystemPrompt: systemPrompt, UserPrompt: userPrompt,
 		ReadOnly: readOnly(phase), EnvelopeKind: "build", CorrectionSuffix: Instructions(),
 		Validate: validate,
-		Sink:     s.deps.Sinks(task.ID, phase.ID, harnessName),
+		Sink:     s.kit.Sink(task.ID, phase.ID, harnessName),
 	})
 	if err != nil {
-		s.deps.Publisher.FailBuild(ctx, phase, err)
-		return pipeline.BuildResult{}, err
+		s.kit.Fail(ctx, phase, err)
+		return stage.BuildResult{}, err
 	}
-	return s.deps.Publisher.PublishBuild(ctx, task, phase, payload)
+	return s.publishBuild(ctx, task, phase, payload, profile)
 }
 
 func readOnly(phase store.Phase) bool {
