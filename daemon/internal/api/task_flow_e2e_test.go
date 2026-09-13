@@ -1,15 +1,18 @@
 package api
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -20,19 +23,23 @@ import (
 	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
 	"github.com/jurabek/software-factory/daemon/internal/harness"
 	"github.com/jurabek/software-factory/daemon/internal/sandbox"
+	"github.com/jurabek/software-factory/daemon/internal/session"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 	"github.com/stretchr/testify/suite"
 )
 
 const (
 	flowTaskRequest = "Create the build artifact"
-	flowPlan        = `{"status":"success","summary":"Create the requested artifact","artifacts":[],"notes_for_next_agent":"","steps":[{"id":"build-artifact","description":"Create built.txt","expected_files":["built.txt"],"acceptance_criteria":["deterministic check passes"]}],"questions":[]}`
-	flowBuild       = `{"status":"success","summary":"Created the build artifact","artifacts":[],"notes_for_next_agent":"","changed_files":["built.txt"],"commit_message":"Create build artifact","test_changes":[]}`
+	flowPlan        = `{"status":"success","summary":"Create the requested artifact","artifacts":[],"notes_for_next_agent":"","report_markdown":"# Plan\n\nCreate built.txt.","steps":[{"id":"build-artifact","description":"Create built.txt","expected_files":["built.txt"],"acceptance_criteria":["deterministic check passes"]}],"questions":[]}`
+	flowBuild       = `{"status":"success","summary":"Created the build artifact","artifacts":[],"notes_for_next_agent":"","report_markdown":"# Build\n\nCreated built.txt.","changed_files":["built.txt"],"commit_message":"Create build artifact","test_changes":[]}`
+	flowMessage     = "Keep the public API stable."
 )
 
 type taskFlowHarness struct {
-	mu       sync.Mutex
-	requests []harness.Request
+	mu           sync.Mutex
+	requests     []harness.Request
+	buildStarted chan struct{}
+	releaseBuild chan struct{}
 }
 
 func (h *taskFlowHarness) Models(context.Context) ([]harness.Model, error) {
@@ -58,6 +65,17 @@ func (h *taskFlowHarness) Run(_ context.Context, request harness.Request, _ harn
 		}
 		if err := os.WriteFile(filepath.Join(request.CWD, "built.txt"), []byte("built\n"), 0o600); err != nil {
 			return result, err
+		}
+		close(h.buildStarted)
+		select {
+		case <-h.releaseBuild:
+		case <-time.After(2 * time.Second):
+			return result, fmt.Errorf("build release timed out")
+		}
+		result.Text = flowBuild
+	case 3:
+		if !request.Resume || request.Prompt != flowMessage {
+			return result, fmt.Errorf("message continuation = %+v", request)
 		}
 		result.Text = flowBuild
 	default:
@@ -114,7 +132,7 @@ func (s *taskFlowSuite) SetupSuite() {
 	var err error
 	s.db, err = store.Open(filepath.Join(root, "factory.db"))
 	s.Require().NoError(err)
-	s.harness = new(taskFlowHarness)
+	s.harness = &taskFlowHarness{buildStarted: make(chan struct{}), releaseBuild: make(chan struct{})}
 	s.service = factory.NewService(filepath.Join(root, "tasks"), factory.Dependencies{
 		Store: s.db, Config: cfg, ConfigPath: filepath.Join(configRoot, "config.yaml"),
 		Harnesses: harness.Registry{"pi": s.harness}, Git: factorygit.OSRunner{}, Sandbox: sandbox.Git{Runner: factorygit.OSRunner{}},
@@ -164,9 +182,39 @@ func (s *taskFlowSuite) TestCreateApproveBuildAndCheck() {
 	s.JSONEq(flowPlan, planningResults[0].Payload)
 
 	s.request(http.MethodPost, "/api/v1/tasks/"+created.ID+"/approve", map[string]string{"plan_digest": planned.PlanDigest}, http.StatusAccepted, nil)
+	select {
+	case <-s.harness.buildStarted:
+	case <-time.After(2 * time.Second):
+		s.T().Fatal("build did not start")
+	}
+	var beforeMessage struct {
+		Events []store.Event `json:"events"`
+		Cursor int64         `json:"cursor"`
+	}
+	s.request(http.MethodGet, "/api/v1/tasks/"+created.ID+"/events?tail=1", nil, http.StatusOK, &beforeMessage)
+	var accepted, duplicate store.Message
+	messageBody := map[string]string{"text": flowMessage, "idempotency_key": "flow-message"}
+	s.request(http.MethodPost, "/api/v1/tasks/"+created.ID+"/messages", messageBody, http.StatusAccepted, &accepted)
+	s.request(http.MethodPost, "/api/v1/tasks/"+created.ID+"/messages", messageBody, http.StatusAccepted, &duplicate)
+	s.Equal(accepted.ID, duplicate.ID)
+	queued, queuedStream := s.readStreamEvent(created.ID, beforeMessage.Cursor, 0)
+	s.Equal(session.KindTaskMessage, queued.Kind)
+	s.Equal("queued", messageDeliveryStatus(queued))
+	queuedStream.Close()
+	close(s.harness.releaseBuild)
 	completed := s.awaitState(created.ID, string(factory.Completed))
 	s.Equal("flow-e2e", completed.ApprovalActor)
 	s.NotEmpty(completed.ApprovalAt)
+	delivered, deliveredStream := s.readStreamEvent(created.ID, 0, queued.Sequence)
+	defer deliveredStream.Close()
+	for delivered.Kind != session.KindTaskMessage || messageDeliveryStatus(delivered) != "delivered" {
+		delivered = readSSEEvent(s.T(), deliveredStream.reader)
+	}
+	s.Greater(delivered.Sequence, queued.Sequence)
+	var messages []store.Message
+	s.request(http.MethodGet, "/api/v1/tasks/"+created.ID+"/messages", nil, http.StatusOK, &messages)
+	s.Require().Len(messages, 1)
+	s.Equal("delivered", messages[0].DeliveryStatus)
 
 	var attempts []store.Phase
 	s.request(http.MethodGet, "/api/v1/tasks/"+created.ID+"/attempts", nil, http.StatusOK, &attempts)
@@ -185,10 +233,99 @@ func (s *taskFlowSuite) TestCreateApproveBuildAndCheck() {
 
 	var results []store.Envelope
 	s.request(http.MethodGet, "/api/v1/tasks/"+created.ID+"/results", nil, http.StatusOK, &results)
-	s.Require().Len(results, 2)
-	s.Equal("build", results[1].OutputType)
-	s.JSONEq(flowBuild, results[1].Payload)
-	s.Len(s.harness.Requests(), 2)
+	s.Require().Len(results, 3)
+	for _, result := range results[1:] {
+		s.Equal("build", result.OutputType)
+		s.JSONEq(flowBuild, result.Payload)
+	}
+
+	var history struct {
+		Events []store.Event `json:"events"`
+		Cursor int64         `json:"cursor"`
+	}
+	s.request(http.MethodGet, "/api/v1/tasks/"+created.ID+"/events?limit=100", nil, http.StatusOK, &history)
+	s.Require().NotEmpty(history.Events)
+	var approvalEvent *store.Event
+	for index := range history.Events {
+		if history.Events[index].Name == "task_approved" {
+			approvalEvent = &history.Events[index]
+			break
+		}
+	}
+	s.Require().NotNil(approvalEvent)
+	s.Equal("task_approved", approvalEvent.Name)
+	s.Equal(history.Events[len(history.Events)-1].Sequence, history.Cursor)
+	for index := 1; index < len(history.Events); index++ {
+		s.Greater(history.Events[index].Sequence, history.Events[index-1].Sequence)
+	}
+	var replay struct {
+		Events []store.Event `json:"events"`
+		Cursor int64         `json:"cursor"`
+	}
+	s.request(http.MethodGet, fmt.Sprintf("/api/v1/tasks/%s/events?after=%d", created.ID, history.Events[0].Sequence), nil, http.StatusOK, &replay)
+	s.Require().NotEmpty(replay.Events)
+	s.Greater(replay.Events[0].Sequence, history.Events[0].Sequence)
+	s.Equal(history.Events[len(history.Events)-1].Sequence, replay.Cursor)
+	var artifacts []store.Artifact
+	s.request(http.MethodGet, "/api/v1/tasks/"+created.ID+"/artifacts", nil, http.StatusOK, &artifacts)
+	s.Require().Len(artifacts, 3)
+	for _, artifact := range artifacts {
+		body := s.requestText("/api/v1/tasks/"+created.ID+"/artifacts/"+artifact.ID, http.StatusOK)
+		s.NotEmpty(body)
+		s.Contains(body, "#")
+	}
+	s.Len(s.harness.Requests(), 3)
+}
+
+type taskEventStream struct {
+	reader   *bufio.Reader
+	response *http.Response
+	cancel   context.CancelFunc
+}
+
+func (s *taskFlowSuite) readStreamEvent(taskID string, after, lastEventID int64) (store.Event, *taskEventStream) {
+	s.T().Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/api/v1/tasks/%s/events/stream?after=%d", s.server.URL, taskID, after), nil)
+	s.Require().NoError(err)
+	request.Header.Set("Authorization", "Bearer "+testToken)
+	if lastEventID > 0 {
+		request.Header.Set("Last-Event-ID", strconv.FormatInt(lastEventID, 10))
+	}
+	response, err := s.client.Do(request)
+	s.Require().NoError(err)
+	s.Require().Equal(http.StatusOK, response.StatusCode)
+	stream := &taskEventStream{reader: bufio.NewReader(response.Body), response: response, cancel: cancel}
+	return readSSEEvent(s.T(), stream.reader), stream
+}
+
+func (s *taskEventStream) Close() {
+	s.cancel()
+	_ = s.response.Body.Close()
+}
+
+func readSSEEvent(t *testing.T, reader *bufio.Reader) store.Event {
+	t.Helper()
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		var event store.Event
+		if err = json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data: "))), &event); err != nil {
+			t.Fatal(err)
+		}
+		return event
+	}
+}
+
+func messageDeliveryStatus(event store.Event) string {
+	payload, _ := event.Payload.(map[string]any)
+	status, _ := payload["delivery_status"].(string)
+	return status
 }
 
 func (s *taskFlowSuite) awaitState(taskID, expected string) taskResponse {
@@ -227,6 +364,20 @@ func (s *taskFlowSuite) request(method, path string, body any, wantStatus int, t
 	if target != nil {
 		s.Require().NoError(json.NewDecoder(response.Body).Decode(target))
 	}
+}
+
+func (s *taskFlowSuite) requestText(path string, wantStatus int) string {
+	s.T().Helper()
+	request, err := http.NewRequest(http.MethodGet, s.server.URL+path, nil)
+	s.Require().NoError(err)
+	request.Header.Set("Authorization", "Bearer "+testToken)
+	response, err := s.client.Do(request)
+	s.Require().NoError(err)
+	defer response.Body.Close()
+	s.Require().Equal(wantStatus, response.StatusCode)
+	content, err := io.ReadAll(response.Body)
+	s.Require().NoError(err)
+	return string(content)
 }
 
 func (s *taskFlowSuite) git(args ...string) {

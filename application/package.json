@@ -12,6 +12,7 @@
 		"start": "next start",
 		"typecheck": "next typegen && tsc --noEmit",
 		"test": "node --import tsx --test tests/*.test.ts",
+		"browser-test": "set -a; . ../local.env; set +a; playwright test",
 		"migrations": "node --import tsx scripts/migrate.ts",
 		"lint": "biome check .",
 		"format": "biome format --write .",
@@ -32,6 +33,7 @@
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.5.12",
+		"@playwright/test": "^1.63.0",
 		"@tailwindcss/postcss": "^4.3.3",
 		"@types/node": "24.13.3",
 		"@types/pg": "8.23.1",

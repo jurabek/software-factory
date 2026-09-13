@@ -18,9 +18,17 @@ import {
 	Terminal,
 	Users,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+	useCallback,
+	useEffect,
+	useRef,
+	useState,
+	type ReactNode,
+} from "react";
 import {
 	daemonAttempts,
+	daemonArtifactContent,
+	daemonArtifacts,
 	daemonBranches,
 	daemonChecks,
 	daemonCommand,
@@ -38,6 +46,7 @@ import {
 	openTaskStream,
 	type QualifiedTask,
 	type TaskAttempt,
+	type TaskArtifact,
 	type TaskBranch,
 	type TaskCheck,
 	type TaskDetails,
@@ -57,6 +66,7 @@ import {
 	sessionDisplay,
 } from "@/client/session-contract.ts";
 import { meaningfulWorkEvents, visibleWorkEvents } from "@/client/work-log.ts";
+import { safeMarkdownText } from "@/client/safe-markdown.ts";
 import { AttemptGraph } from "@/components/attempt-graph.tsx";
 import { EventDialog } from "@/components/event-dialog.tsx";
 import { StageProgress } from "@/components/stage-progress.tsx";
@@ -113,6 +123,42 @@ function renderedArtifactContent(artifact: DisplayArtifact): string {
 	} catch {
 		return artifact.content;
 	}
+}
+
+function markdownReport(content: string): ReactNode {
+	return content.split("\n").map((line, index) => {
+		const key = `${index}-${line}`;
+		if (line.startsWith("### "))
+			return (
+				<h4 key={key} className="mt-3 font-semibold">
+					{line.slice(4)}
+				</h4>
+			);
+		if (line.startsWith("## "))
+			return (
+				<h3 key={key} className="mt-3 text-sm font-semibold">
+					{line.slice(3)}
+				</h3>
+			);
+		if (line.startsWith("# "))
+			return (
+				<h2 key={key} className="mt-3 text-base font-semibold">
+					{line.slice(2)}
+				</h2>
+			);
+		if (line.startsWith("- ") || line.startsWith("* "))
+			return (
+				<li key={key} className="ml-4 list-disc">
+					{line.slice(2)}
+				</li>
+			);
+		if (line.trim() === "") return <div key={key} className="h-2" />;
+		return (
+			<p key={key}>
+				{safeMarkdownText(line)}
+			</p>
+		);
+	});
 }
 
 function monogram(name: string): string {
@@ -329,6 +375,10 @@ export function TaskDetail({
 	const [sessions, setSessions] = useState<TaskDetails[]>([]);
 	const [messages, setMessages] = useState<TaskMessage[]>([]);
 	const [interventions, setInterventions] = useState<TaskIntervention[]>([]);
+	const [artifacts, setArtifacts] = useState<TaskArtifact[]>([]);
+	const [artifactContent, setArtifactContent] = useState<
+		Record<string, string>
+	>({});
 	const [selectedAttempt, setSelectedAttempt] = useState<string | null>(null);
 	const [selectedBranchId, setSelectedBranchId] = useState<string | null>(null);
 	const [selectedArtifact, setSelectedArtifact] = useState<string | null>(null);
@@ -363,6 +413,13 @@ export function TaskDetail({
 		branches.find((branch) => branch.id === currentTask.selected_branch_id) ??
 		branches[0];
 	const artifactViews: DisplayArtifact[] = [
+		...artifacts.map((artifact) => ({
+			id: artifact.id,
+			kind: "diff" as const,
+			title: artifact.type.replaceAll("_", " "),
+			subtitle: `attempt ${artifact.attempt_id ?? "unknown"}`,
+			content: artifactContent[artifact.id] ?? "Loading report...",
+		})),
 		...results.map((result) => ({
 			id: result.id,
 			kind: "result" as const,
@@ -449,6 +506,7 @@ export function TaskDetail({
 				branchResult,
 				checksResult,
 				resultsResult,
+				artifactsResult,
 				diffResult,
 				sessionsResult,
 				messagesResult,
@@ -459,6 +517,7 @@ export function TaskDetail({
 				daemonBranches(daemonId, task.id, signal),
 				daemonChecks(daemonId, task.id, signal),
 				daemonResults(daemonId, task.id, signal),
+				daemonArtifacts(daemonId, task.id, signal),
 				daemonDiff(daemonId, task.id, signal),
 				daemonSessions(daemonId, rootTaskId, signal),
 				daemonMessages(daemonId, task.id, signal),
@@ -469,6 +528,7 @@ export function TaskDetail({
 			setBranches(branchResult.branches ?? []);
 			setChecks(checksResult.checks ?? []);
 			setResults(resultsResult.results ?? []);
+			setArtifacts(artifactsResult.artifacts ?? []);
 			setDiff(diffResult.diff ?? { files: [], patch: "" });
 			setSessions(sessionsResult.sessions ?? []);
 			setMessages(messagesResult.messages ?? []);
@@ -494,6 +554,8 @@ export function TaskDetail({
 		setBranches([]);
 		setChecks([]);
 		setResults([]);
+		setArtifacts([]);
+		setArtifactContent({});
 		setDiff({ files: [], patch: "" });
 		setSessions([]);
 		setMessages([]);
@@ -525,6 +587,29 @@ export function TaskDetail({
 			mutationController.current?.abort();
 		};
 	}, [refreshDetails]);
+
+	useEffect(() => {
+		if (
+			!selectedArtifact ||
+			!artifacts.some((artifact) => artifact.id === selectedArtifact)
+		)
+			return;
+		const controller = new AbortController();
+		void daemonArtifactContent(
+			daemonId,
+			task.id,
+			selectedArtifact,
+			controller.signal,
+		)
+			.then((content) =>
+				setArtifactContent((current) => ({
+					...current,
+					[selectedArtifact]: content,
+				})),
+			)
+			.catch(() => undefined);
+		return () => controller.abort();
+	}, [artifacts, daemonId, selectedArtifact, task.id]);
 
 	useEffect(() => {
 		if (
@@ -1431,14 +1516,27 @@ export function TaskDetail({
 										<button
 											type="button"
 											className="bg-background hover:bg-secondary aria-pressed:bg-secondary aria-pressed:border-input grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-md border px-2 py-2 text-left"
-											aria-pressed={selectedArtifact === artifact.id}
-											onClick={() => {
-												setSelectedArtifact(artifact.id);
-											}}
+										aria-pressed={selectedArtifact === artifact.id}
+										onClick={() => {
+											setSelectedArtifact(artifact.id);
+											void daemonArtifactContent(daemonId, task.id, artifact.id)
+												.then((content) =>
+													setArtifactContent((current) => ({
+														...current,
+														[artifact.id]: content,
+													})),
+												)
+												.catch(() => undefined);
+										}}
 										>
 											<File className="text-muted-foreground size-4" />
-											<span className="text-foreground truncate text-[0.78rem]">
-												{label}
+											<span className="min-w-0">
+												<span className="text-foreground block truncate text-[0.78rem]">
+													{label}
+												</span>
+												<span className="text-muted-foreground block truncate text-[0.66rem]">
+													{artifact.subtitle}
+												</span>
 											</span>
 											<span className="text-muted-foreground text-[0.66rem]">
 												···
@@ -1459,7 +1557,10 @@ export function TaskDetail({
 									<strong className="font-medium">
 										{selectedArtifactValue.title}
 									</strong>
-									<div className="flex gap-1.5">
+									<span className="text-muted-foreground text-xs">
+										{selectedArtifactValue.subtitle}
+									</span>
+									<div>
 										<Button
 											type="button"
 											variant="outline"
@@ -1470,9 +1571,11 @@ export function TaskDetail({
 										</Button>
 									</div>
 								</div>
-								<pre className="text-muted-foreground mt-2.5 max-h-72 overflow-auto text-xs leading-relaxed break-words whitespace-pre-wrap">
-									{renderedArtifactContent(selectedArtifactValue)}
-								</pre>
+								<div className="text-muted-foreground mt-2.5 max-h-72 overflow-auto text-xs leading-relaxed break-words whitespace-pre-wrap">
+									{selectedArtifactValue.kind === "result"
+										? renderedArtifactContent(selectedArtifactValue)
+										: markdownReport(selectedArtifactValue.content)}
+								</div>
 							</article>
 						) : null}
 					</TabsContent>

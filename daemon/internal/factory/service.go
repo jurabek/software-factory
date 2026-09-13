@@ -116,6 +116,8 @@ type Service struct {
 
 type execution struct {
 	cancel context.CancelFunc
+	done   chan struct{}
+	next   func(context.Context, string) error
 }
 
 type Repository struct {
@@ -336,15 +338,29 @@ func (s *Service) Approve(ctx context.Context, id, actor, expectedDigest string)
 	if err != nil || len(plan.Questions) > 0 {
 		return store.ErrConflict
 	}
-	digest := sha256.Sum256([]byte(payload))
-	currentDigest := hex.EncodeToString(digest[:])
+	reportDigest := ""
+	artifacts, artifactErr := s.db.Artifacts(ctx, id)
+	if artifactErr != nil {
+		return artifactErr
+	}
+	for _, artifact := range artifacts {
+		if artifact.AttemptID != "" && artifact.Type == "plan_report" {
+			reportDigest = artifact.Digest
+		}
+	}
+	currentDigest := planApprovalDigest(payload, reportDigest)
 	if expectedDigest != currentDigest {
 		return ErrStalePlan
 	}
-	if err := s.db.SetApproval(ctx, id, currentDigest, actor); err != nil {
-		return err
+	event := store.Event{
+		ID: randomID(), TaskID: id, Kind: session.KindCustom, Name: "task_approved",
+		Payload: session.CustomPayload{CustomType: "task_approved", Data: session.BoundedJSON(map[string]any{
+			"task_id": id, "plan_digest": currentDigest, "actor": actor,
+		})},
+		Display:          session.Display{Role: "system", Status: "success", Title: "Plan approved"},
+		AvailableActions: []string{"pause", "abort"}, StartedAt: time.Now().UTC(),
 	}
-	if err := s.db.Transition(ctx, id, string(AwaitingApproval), string(Building), "", ""); err != nil {
+	if err := s.db.ApproveWithEvent(ctx, s.taskDir(id), id, currentDigest, actor, event); err != nil {
 		return err
 	}
 	s.launch(id, s.progress)
@@ -352,9 +368,6 @@ func (s *Service) Approve(ctx context.Context, id, actor, expectedDigest string)
 }
 
 func (s *Service) Pause(ctx context.Context, id string) error {
-	lock := s.taskLock(id)
-	lock.Lock()
-	defer lock.Unlock()
 	task, err := s.db.Task(ctx, id)
 	if err != nil {
 		return err
@@ -363,14 +376,23 @@ func (s *Service) Pause(ctx context.Context, id string) error {
 	if !CanTransition(state, Paused) {
 		return store.ErrConflict
 	}
-	s.stop(id)
+	if err := s.stopAndWait(ctx, id); err != nil {
+		return err
+	}
+	lock := s.taskLock(id)
+	lock.Lock()
+	defer lock.Unlock()
+	task, err = s.db.Task(ctx, id)
+	if err != nil {
+		return err
+	}
+	if !CanTransition(State(task.State), Paused) {
+		return store.ErrConflict
+	}
 	return s.db.Transition(ctx, id, task.State, string(Paused), task.ActivePhase, "")
 }
 
 func (s *Service) Abort(ctx context.Context, id string) error {
-	lock := s.taskLock(id)
-	lock.Lock()
-	defer lock.Unlock()
 	task, err := s.db.Task(ctx, id)
 	if err != nil {
 		return err
@@ -378,11 +400,24 @@ func (s *Service) Abort(ctx context.Context, id string) error {
 	if !CanTransition(State(task.State), Aborted) {
 		return store.ErrConflict
 	}
-	messages, err := s.db.AbortTask(ctx, id, task.State, task.ActivePhase)
+	if err := s.stopAndWait(ctx, id); err != nil {
+		return err
+	}
+	lock := s.taskLock(id)
+	lock.Lock()
+	defer lock.Unlock()
+	var messages []store.Message
+	task, err = s.db.Task(ctx, id)
 	if err != nil {
 		return err
 	}
-	s.stop(id)
+	if !CanTransition(State(task.State), Aborted) {
+		return store.ErrConflict
+	}
+	messages, err = s.db.AbortTask(ctx, id, task.State, task.ActivePhase)
+	if err != nil {
+		return err
+	}
 	for _, message := range messages {
 		_ = s.traceMessage(ctx, message, nil)
 	}
@@ -408,7 +443,7 @@ func (s *Service) Resume(ctx context.Context, id string) error {
 		if err := s.db.Transition(ctx, id, task.State, string(target), task.ActivePhase, ""); err != nil {
 			return err
 		}
-		s.launch(id, func(ctx context.Context, id string) error { return s.continueMessages(ctx, id, message.RecipientRole) })
+		s.launch(id, func(ctx context.Context, id string) error { return s.continueMessages(ctx, id, message.StageID) })
 		return nil
 	} else if !errors.Is(messageErr, store.ErrNotFound) {
 		return messageErr
@@ -502,24 +537,52 @@ func (s *Service) diffRepository(ctx context.Context, task store.Task, reviewBas
 }
 
 func (s *Service) launch(id string, run func(context.Context, string) error) {
-	ctx, cancel := context.WithCancel(context.Background())
-	active := &execution{cancel: cancel}
 	s.mu.Lock()
+	if active := s.cancel[id]; active != nil {
+		if active.next == nil {
+			active.next = run
+		}
+		s.mu.Unlock()
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	active := &execution{cancel: cancel, done: make(chan struct{})}
 	s.cancel[id] = active
 	s.mu.Unlock()
+	s.runExecution(ctx, id, active, run)
+}
+
+func (s *Service) runExecution(ctx context.Context, id string, active *execution, run func(context.Context, string) error) {
 	go func() {
 		var runErr error
 		defer func() {
+			var next func(context.Context, string) error
+			var successor *execution
+			var successorCtx context.Context
 			s.mu.Lock()
 			if s.cancel[id] == active {
-				delete(s.cancel, id)
+				next = active.next
+				if next == nil {
+					delete(s.cancel, id)
+				} else {
+					var cancel context.CancelFunc
+					successorCtx, cancel = context.WithCancel(context.Background())
+					successor = &execution{cancel: cancel, done: make(chan struct{})}
+					s.cancel[id] = successor
+				}
 			}
 			s.mu.Unlock()
-			if !errors.Is(runErr, context.Canceled) {
+			close(active.done)
+			if successor != nil {
+				s.runExecution(successorCtx, id, successor, next)
+			} else if !errors.Is(runErr, context.Canceled) {
 				s.kickQueuedMessage(id)
 			}
 		}()
 		runErr = run(ctx, id)
+		if runErr == nil && ctx.Err() != nil {
+			runErr = ctx.Err()
+		}
 		if runErr != nil && !errors.Is(runErr, context.Canceled) {
 			task, getErr := s.db.Task(context.Background(), id)
 			if getErr == nil && task.State != string(Paused) && task.State != string(Aborted) && task.State != string(Blocked) {
@@ -531,13 +594,19 @@ func (s *Service) launch(id string, run func(context.Context, string) error) {
 
 func (s *Service) Shutdown(ctx context.Context) {
 	s.mu.Lock()
-	ids := make([]string, 0, len(s.cancel))
-	for id, active := range s.cancel {
-		active.cancel()
-		ids = append(ids, id)
+	workers := make(map[string]*execution, len(s.cancel))
+	for id, worker := range s.cancel {
+		workers[id] = worker
+		worker.next = nil
+		worker.cancel()
 	}
 	s.mu.Unlock()
-	for _, id := range ids {
+	for id, worker := range workers {
+		select {
+		case <-worker.done:
+		case <-ctx.Done():
+			return
+		}
 		task, err := s.db.Task(ctx, id)
 		if err == nil && isActive(State(task.State)) {
 			_ = s.db.Transition(ctx, id, task.State, string(Blocked), task.ActivePhase, "server shutting down")
@@ -545,12 +614,23 @@ func (s *Service) Shutdown(ctx context.Context) {
 	}
 }
 
-func (s *Service) stop(id string) {
-	s.mu.Lock()
-	active := s.cancel[id]
-	s.mu.Unlock()
-	if active != nil {
-		active.cancel()
+func (s *Service) stopAndWait(ctx context.Context, id string) error {
+	for {
+		s.mu.Lock()
+		active := s.cancel[id]
+		if active != nil {
+			active.next = nil
+			active.cancel()
+		}
+		s.mu.Unlock()
+		if active == nil {
+			return nil
+		}
+		select {
+		case <-active.done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 }
 
@@ -637,7 +717,7 @@ func (s *Service) plan(ctx context.Context, task store.Task, revision map[string
 		s.failPhase(ctx, phase, err)
 		return err
 	}
-	_, err = s.completeAgentPhase(ctx, task, phase, "planner", validate, payload, func(payload string) error {
+	_, err = s.completeAgentPhase(ctx, task, phase, "planner", "planner", validate, payload, func(payload string) error {
 		after, changedErr := repositoryFingerprint(ctx, s.git, task)
 		if changedErr != nil {
 			return changedErr
@@ -647,111 +727,6 @@ func (s *Service) plan(ctx context.Context, task store.Task, revision map[string
 		}
 		return nil
 	}, AwaitingApproval)
-	return err
-}
-
-func (s *Service) buildCheckReview(ctx context.Context, id string) error {
-	task, err := s.db.Task(ctx, id)
-	if err != nil {
-		return err
-	}
-	profiles, err := readTaskProfile(task)
-	if err != nil {
-		return err
-	}
-	plan, err := s.db.ValidEnvelope(ctx, id, "planner")
-	if err != nil {
-		return err
-	}
-	if task.State == string(Building) {
-		phase, beginErr := s.beginPhase(ctx, id, "building", "agent", "builder", "Implement approved plan")
-		if beginErr != nil {
-			return beginErr
-		}
-		validate := validatorForRole("builder")
-		payload, runErr := s.runRole(ctx, task, phase, "builder", map[string]any{"TaskID": task.ID, "Request": task.Request, "Plan": plan}, validate)
-		err = runErr
-		if err != nil {
-			s.failPhase(ctx, phase, err)
-			return err
-		}
-		_, err = s.completeAgentPhase(ctx, task, phase, "builder", validate, payload, func(string) error {
-			return s.validateBuilderPaths(ctx, task, profiles)
-		}, Checking)
-		if err != nil {
-			return err
-		}
-	}
-	task, _ = s.db.Task(ctx, id)
-	if task.State == string(Checking) {
-		phase, beginErr := s.beginPhase(ctx, id, "checks", "check", "factory", "Run deterministic checks")
-		if beginErr != nil {
-			return beginErr
-		}
-		if err = s.runChecks(ctx, task, phase, profiles.Checks, "primary", ""); err != nil {
-			s.failPhase(ctx, phase, err)
-			return err
-		}
-		if err = s.endPhase(ctx, phase, "success", nil); err != nil {
-			return err
-		}
-		if err = s.db.Transition(ctx, id, string(Checking), string(Reviewing), "", ""); err != nil {
-			return err
-		}
-	}
-	task, _ = s.db.Task(ctx, id)
-	before, err := repositoryFingerprint(ctx, s.git, task)
-	if err != nil {
-		return err
-	}
-	changedFiles, err := taskChangedFiles(ctx, s.git, task, true)
-	if err != nil {
-		return err
-	}
-	phase, err := s.beginPhase(ctx, id, "reviewing", "agent", "reviewer", "Review implementation")
-	if err != nil {
-		return err
-	}
-	checks, err := s.db.Checks(ctx, id)
-	if err != nil {
-		return err
-	}
-	testChanges, err := s.db.TestChanges(ctx, id)
-	if err != nil {
-		return err
-	}
-	comparisons, err := s.db.Comparisons(ctx, id)
-	if err != nil {
-		return err
-	}
-	changes, err := s.diffRepository(ctx, task, true)
-	if err != nil {
-		s.failPhase(ctx, phase, err)
-		return err
-	}
-	validate := validatorForRole("reviewer")
-	reviewPayload, err := s.runRole(ctx, task, phase, "reviewer", map[string]any{"TaskID": task.ID, "Request": task.Request, "Plan": plan, "Checks": checks, "TestChanges": testChanges, "Comparisons": comparisons, "ChangedFiles": changedFiles, "Diff": changes}, validate)
-	if err != nil {
-		s.failPhase(ctx, phase, err)
-		return err
-	}
-	_, err = s.completeAgentPhase(ctx, task, phase, "reviewer", validate, reviewPayload, func(payload string) error {
-		review, validateErr := ValidateReview(payload)
-		if validateErr != nil {
-			return validateErr
-		}
-		if !review.Approved {
-			return fmt.Errorf("reviewer rejected implementation")
-		}
-		after, changedErr := repositoryFingerprint(ctx, s.git, task)
-		if changedErr != nil {
-			return changedErr
-		}
-		if before != after {
-			return fmt.Errorf("reviewer modified repository")
-		}
-		return nil
-	}, Completed)
 	return err
 }
 
@@ -809,7 +784,7 @@ func (s *Service) runRole(ctx context.Context, task store.Task, phase store.Phas
 				return "", err
 			}
 		}
-		result, runErr := adapter.Run(ctx, request, s.eventSink(task.ID, phase.ID, harnessName))
+		result, runErr := invokeHarness(ctx, adapter, request, s.eventSink(task.ID, phase.ID, harnessName))
 		if phaseReadOnly(phase, role) {
 			after, fingerprintErr := repositoryFingerprint(ctx, s.git, task)
 			if fingerprintErr != nil {
@@ -859,6 +834,87 @@ func (s *Service) runRole(ctx context.Context, task store.Task, phase store.Phas
 		err = validationErr
 	}
 	return "", fmt.Errorf("%s envelope invalid after corrections: %w", role, err)
+}
+
+func invokeHarness(ctx context.Context, adapter harness.Harness, request harness.Request, sink harness.EventSink) (harness.Result, error) {
+	invocationCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	var sinkMu sync.Mutex
+	var sinkErr error
+	requiredSink := func(eventCtx context.Context, event harness.Event) error {
+		err := sink(eventCtx, event)
+		if err == nil {
+			return nil
+		}
+		sinkMu.Lock()
+		if sinkErr == nil {
+			sinkErr = err
+		}
+		sinkMu.Unlock()
+		cancel()
+		return err
+	}
+
+	result, runErr := adapter.Run(invocationCtx, request, requiredSink)
+	sinkMu.Lock()
+	persistenceErr := sinkErr
+	sinkMu.Unlock()
+	if persistenceErr != nil {
+		return result, errors.Join(persistenceErr, runErr)
+	}
+	if runErr == nil {
+		runErr = invocationCtx.Err()
+	}
+	return result, runErr
+}
+
+func reportMarkdown(value any) (string, error) {
+	switch envelope := value.(type) {
+	case Plan:
+		return envelope.Report, nil
+	case Build:
+		return envelope.Report, nil
+	case Review:
+		return envelope.Report, nil
+	default:
+		body, err := json.Marshal(value)
+		if err != nil {
+			return "", fmt.Errorf("encode validated envelope: %w", err)
+		}
+		var fields struct {
+			Report string `json:"report_markdown"`
+		}
+		if err := json.Unmarshal(body, &fields); err != nil || strings.TrimSpace(fields.Report) == "" {
+			return "", fmt.Errorf("validated envelope has no report_markdown")
+		}
+		return fields.Report, nil
+	}
+}
+
+func planApprovalDigest(payload, reportDigest string) string {
+	digest := sha256.Sum256([]byte(payload + "\n" + reportDigest))
+	return hex.EncodeToString(digest[:])
+}
+
+func (s *Service) publishReport(ctx context.Context, task store.Task, phase store.Phase, kind, content, producer string) error {
+	artifact := s.reportArtifact(task, phase, kind, content, producer)
+	return s.db.CreateArtifact(ctx, artifact)
+}
+
+func (s *Service) reportArtifact(task store.Task, phase store.Phase, kind, content, producer string) store.Artifact {
+	if kind == "planner" {
+		kind = "plan"
+	}
+	digest := fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(content)))
+	provenance, _ := json.Marshal(map[string]string{
+		"task_id": task.ID, "stage_id": phase.Name, "attempt_id": phase.ID, "producer": producer,
+	})
+	return store.Artifact{
+		ID: randomID(), TaskID: task.ID, AttemptID: phase.ID, Type: kind + "_report", Digest: digest,
+		Content: content, MediaType: "text/markdown", Producer: producer, Provenance: string(provenance),
+		CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
 }
 
 func persistedUsage(value harness.Usage) session.Usage {
@@ -946,14 +1002,11 @@ func (s *Service) beginPhase(ctx context.Context, taskID, name, kind, owner, des
 		}
 	}
 	phase := store.Phase{ID: randomID(), TaskID: taskID, Sequence: len(phases) + 1, Name: name, Kind: kind, Owner: owner, Description: description, Status: "running", Attempt: 1, BranchID: task.SelectedBranchID, DefinitionID: definitionID, InputSnapshot: inputSnapshot}
-	if err = s.db.AddPhase(ctx, phase); err != nil {
+	event := session.NewPhaseStart(session.PhasePayload{Phase: phase.ID, Name: name, Owner: owner, Kind: kind, InputSnapshot: inputSnapshot})
+	eventValue := store.Event{ID: randomID(), TaskID: taskID, PhaseID: phase.ID, AttemptID: phase.ID, BranchID: phase.BranchID, Kind: event.Kind, Name: event.Name, Payload: event.Payload, Display: event.Display, AvailableActions: AvailableActions(&phase, task.State), StartedAt: time.Now().UTC()}
+	if err = s.db.StartPhaseWithEvent(ctx, s.taskDir(taskID), phase, task.State, eventValue); err != nil {
 		return store.Phase{}, err
 	}
-	if phase.BranchID != "" {
-		_ = s.db.SetBranchHead(ctx, taskID, phase.BranchID, phase.ID)
-	}
-	_ = s.db.Transition(ctx, taskID, task.State, task.State, phase.ID, "")
-	_ = s.traceBranch(ctx, taskID, phase, session.NewPhaseStart(session.PhasePayload{Phase: phase.ID, Name: name, Owner: owner, Kind: kind, InputSnapshot: inputSnapshot}))
 	return phase, nil
 }
 
@@ -995,10 +1048,65 @@ func (s *Service) endPhase(ctx context.Context, phase store.Phase, status string
 		_, _ = s.db.ExecContext(context.Background(), `update phases set output_snapshot=? where id=?`, phase.InputSnapshot, phase.ID)
 		phase.OutputSnapshot = phase.InputSnapshot
 	}
-	if err := s.db.EndPhase(ctx, phase.ID, status, message); err != nil {
+	event := session.NewPhaseEnd(session.PhasePayload{Phase: phase.ID, Name: phase.Name, Owner: phase.Owner, Kind: phase.Kind, Status: status, Error: message, InputSnapshot: phase.InputSnapshot, OutputSnapshot: phase.OutputSnapshot})
+	return s.db.EndPhaseWithEvent(ctx, s.taskDir(phase.TaskID), phase.ID, status, message, phase.OutputSnapshot, store.Event{ID: randomID(), TaskID: phase.TaskID, PhaseID: phase.ID, AttemptID: phase.ID, BranchID: phase.BranchID, Kind: event.Kind, Name: event.Name, Payload: event.Payload, Display: event.Display, StartedAt: time.Now().UTC()})
+}
+
+func (s *Service) completePhaseTransition(ctx context.Context, phase store.Phase, from, to State, status string, cause error) error {
+	return s.completePhaseTransitionWithArtifact(ctx, phase, from, to, status, cause, nil)
+}
+
+func (s *Service) completePhaseTransitionWithArtifact(ctx context.Context, phase store.Phase, from, to State, status string, cause error, artifact *store.Artifact) error {
+	return s.completeVerificationPhaseTransitionWithArtifact(ctx, phase, from, to, status, cause, nil, nil, artifact)
+}
+
+func (s *Service) completePlannerPhase(ctx context.Context, phase store.Phase, from, to State, status string, cause error, approval string, artifact *store.Artifact) error {
+	message := ""
+	if cause != nil {
+		message = cause.Error()
+	}
+	task, err := s.db.Task(ctx, phase.TaskID)
+	if err != nil {
 		return err
 	}
-	return s.traceBranch(ctx, phase.TaskID, phase, session.NewPhaseEnd(session.PhasePayload{Phase: phase.ID, Name: phase.Name, Owner: phase.Owner, Kind: phase.Kind, Status: status, Error: message, InputSnapshot: phase.InputSnapshot, OutputSnapshot: phase.OutputSnapshot}))
+	event := session.NewPhaseEnd(session.PhasePayload{Phase: phase.ID, Name: phase.Name, Owner: phase.Owner, Kind: phase.Kind, Status: status, Error: message, InputSnapshot: phase.InputSnapshot, OutputSnapshot: phase.OutputSnapshot})
+	eventValue := store.Event{ID: randomID(), TaskID: phase.TaskID, PhaseID: phase.ID, AttemptID: phase.ID, BranchID: phase.BranchID, Kind: event.Kind, Name: event.Name, Payload: event.Payload, Display: event.Display, AvailableActions: AvailableActions(&phase, task.State), StartedAt: time.Now().UTC()}
+	return s.db.CompletePlannerPhaseWithArtifactAndApproval(ctx, s.taskDir(phase.TaskID), phase.ID, phase.TaskID, string(from), string(to), status, message, approval, artifact, eventValue)
+}
+
+func (s *Service) completeVerificationPhaseTransition(ctx context.Context, phase store.Phase, from, to State, status string, cause error, checks []store.Check, comparisons []store.Comparison) error {
+	return s.completeVerificationPhaseTransitionWithArtifact(ctx, phase, from, to, status, cause, checks, comparisons, nil)
+}
+
+func (s *Service) completeVerificationPhaseTransitionWithArtifact(ctx context.Context, phase store.Phase, from, to State, status string, cause error, checks []store.Check, comparisons []store.Comparison, artifact *store.Artifact) error {
+	message := ""
+	if cause != nil {
+		message = cause.Error()
+	}
+	task, err := s.db.Task(ctx, phase.TaskID)
+	if err != nil {
+		return err
+	}
+	event := session.NewPhaseEnd(session.PhasePayload{
+		Phase: phase.ID, Name: phase.Name, Owner: phase.Owner, Kind: phase.Kind,
+		Status: status, Error: message, InputSnapshot: phase.InputSnapshot,
+		OutputSnapshot: phase.OutputSnapshot,
+	})
+	eventValue := store.Event{
+		ID: randomID(), TaskID: phase.TaskID, PhaseID: phase.ID, AttemptID: phase.ID, BranchID: phase.BranchID,
+		Kind: event.Kind, Name: event.Name, Payload: event.Payload, Display: event.Display,
+		AvailableActions: AvailableActions(&phase, task.State), StartedAt: time.Now().UTC(),
+	}
+	if len(checks) > 0 || len(comparisons) > 0 {
+		if artifact != nil {
+			return s.db.CompleteVerificationPhaseWithEvidenceArtifactAndEvent(ctx, s.taskDir(phase.TaskID), phase.ID, phase.TaskID, string(from), string(to), status, message, checks, comparisons, artifact, eventValue)
+		}
+		return s.db.CompleteVerificationPhaseWithEvidenceAndEvent(ctx, s.taskDir(phase.TaskID), phase.ID, phase.TaskID, string(from), string(to), status, message, checks, comparisons, eventValue)
+	}
+	if artifact != nil {
+		return s.db.CompletePhaseWithArtifactAndTransitionAndEvent(ctx, s.taskDir(phase.TaskID), phase.ID, phase.TaskID, string(from), string(to), status, message, artifact, eventValue)
+	}
+	return s.db.CompletePhaseWithTransitionAndEvent(ctx, s.taskDir(phase.TaskID), phase.ID, phase.TaskID, string(from), string(to), status, message, eventValue)
 }
 
 func (s *Service) traceBranch(ctx context.Context, taskID string, phase store.Phase, entry session.Entry) error {

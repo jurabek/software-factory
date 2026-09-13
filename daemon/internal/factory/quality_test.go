@@ -33,7 +33,7 @@ func TestBuilderValidatorRequiresExactlyGitDerivedTestChanges(t *testing.T) {
 	task := qualityTask(t, db, root, repositoryPath, base)
 	service := NewService(root, Dependencies{Store: db, Config: configForQuality(), Git: factorygit.OSRunner{}})
 	validate := service.builderValidator(context.Background(), task, Materialization{Tests: []string{"**/*_test.go"}})
-	valid := `{"status":"success","summary":"built","artifacts":[],"notes_for_next_agent":"","changed_files":["changed_test.go"],"commit_message":"test","test_changes":[{"path":"changed_test.go","reason":"adds the regression assertion"}]}`
+	valid := `{"status":"success","summary":"built","artifacts":[],"notes_for_next_agent":"","report_markdown":"# Build\n\nDone.","changed_files":["changed_test.go"],"commit_message":"test","test_changes":[{"path":"changed_test.go","reason":"adds the regression assertion"}]}`
 	if _, err = validate(valid); err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func TestPersistBuilderEvidenceRetainsChangeKindAndReason(t *testing.T) {
 	if err = os.WriteFile(filepath.Join(task.WorkspacePath, "repository-profile.json"), []byte(profileBody), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	payload := `{"status":"success","summary":"built","artifacts":[],"notes_for_next_agent":"","changed_files":["example_test.go"],"commit_message":"test","test_changes":[{"path":"example_test.go","reason":"covers the changed behavior"}]}`
+	payload := `{"status":"success","summary":"built","artifacts":[],"notes_for_next_agent":"","report_markdown":"# Build\n\nDone.","changed_files":["example_test.go"],"commit_message":"test","test_changes":[{"path":"example_test.go","reason":"covers the changed behavior"}]}`
 	if err = service.persistBuilderEvidence(context.Background(), task, store.Phase{ID: "build-attempt", Attempt: 1}, payload); err != nil {
 		t.Fatal(err)
 	}
