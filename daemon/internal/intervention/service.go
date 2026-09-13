@@ -1,4 +1,5 @@
 // Package intervention owns operator intent against a task: anchor validation,
+//
 // target resolution, intent policy, and the durable branch/attempt/definition
 // materialization for retry, revise, and repair. The orchestrator only launches
 // the workflow afterward.
