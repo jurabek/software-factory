@@ -8,7 +8,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/jurabek/software-factory/daemon/internal/factory"
+	"github.com/jurabek/software-factory/daemon/internal/intervention"
+	"github.com/jurabek/software-factory/daemon/internal/orchestrator"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 )
 
@@ -78,9 +79,9 @@ func storeError(w http.ResponseWriter, err error) {
 		fail(w, http.StatusConflict, "stale_anchor", "artifact anchor is stale; reselect the source content")
 	case errors.Is(err, store.ErrConflict):
 		fail(w, http.StatusConflict, "invalid_state", "task state does not allow this operation")
-	case errors.Is(err, factory.ErrStalePlan):
+	case errors.Is(err, orchestrator.ErrStalePlan):
 		fail(w, http.StatusConflict, "stale_plan", err.Error())
-	case errors.Is(err, factory.ErrInvalidFeedback):
+	case errors.Is(err, intervention.ErrInvalidFeedback):
 		fail(w, http.StatusUnprocessableEntity, "invalid_feedback", err.Error())
 	default:
 		if err != nil && containsInvalid(err.Error()) {

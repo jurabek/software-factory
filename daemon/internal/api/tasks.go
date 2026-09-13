@@ -10,9 +10,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jurabek/software-factory/daemon/internal/factory"
+	"github.com/jurabek/software-factory/daemon/internal/intervention"
+	"github.com/jurabek/software-factory/daemon/internal/messaging"
 	"github.com/jurabek/software-factory/daemon/internal/session"
+	"github.com/jurabek/software-factory/daemon/internal/stagekit"
 	"github.com/jurabek/software-factory/daemon/internal/store"
+	"github.com/jurabek/software-factory/daemon/internal/task"
 )
 
 type tasksHandler struct {
@@ -44,9 +47,9 @@ func (h tasksHandler) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/tasks/{id}/messages", h.messages)
 	mux.HandleFunc("POST /api/v1/tasks/{id}/attempts/{attemptID}/retry", h.retry)
 	mux.HandleFunc("POST /api/v1/tasks/{id}/approve", h.approve)
-	mux.Handle("POST /api/v1/tasks/{id}/pause", h.control(func(ctx context.Context, id string) error { return h.factory.Pause(ctx, id) }))
-	mux.Handle("POST /api/v1/tasks/{id}/resume", h.control(func(ctx context.Context, id string) error { return h.factory.Resume(ctx, id) }))
-	mux.Handle("POST /api/v1/tasks/{id}/abort", h.control(func(ctx context.Context, id string) error { return h.factory.Abort(ctx, id) }))
+	mux.Handle("POST /api/v1/tasks/{id}/pause", h.control(func(ctx context.Context, id string) error { return 	h.orchestrator.Pause(ctx, id) }))
+	mux.Handle("POST /api/v1/tasks/{id}/resume", h.control(func(ctx context.Context, id string) error { return 	h.orchestrator.Resume(ctx, id) }))
+	mux.Handle("POST /api/v1/tasks/{id}/abort", h.control(func(ctx context.Context, id string) error { return 	h.orchestrator.Abort(ctx, id) }))
 	mux.HandleFunc("GET /api/v1/tasks/{id}/interventions", h.interventions)
 	mux.HandleFunc("DELETE /api/v1/tasks/{id}", h.delete)
 	mux.HandleFunc("GET /api/v1/tasks/{id}/attempts", h.attempts)
@@ -65,12 +68,12 @@ func (h tasksHandler) create(w http.ResponseWriter, r *http.Request) {
 	if !h.ready(w) {
 		return
 	}
-	request, err := decode[factory.CreateRequest](r)
+	request, err := decode[task.CreateRequest](r)
 	if err != nil {
 		fail(w, http.StatusUnprocessableEntity, "invalid_request", err.Error())
 		return
 	}
-	task, err := h.factory.Create(r.Context(), request)
+	task, err := h.orchestrator.Create(r.Context(), request)
 	if err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			storeError(w, err)
@@ -123,7 +126,7 @@ func (h tasksHandler) createSession(w http.ResponseWriter, r *http.Request) {
 	if !h.ready(w) {
 		return
 	}
-	request, err := decode[factory.CreateSessionRequest](r)
+	request, err := decode[task.CreateSessionRequest](r)
 	if err != nil {
 		fail(w, http.StatusUnprocessableEntity, "invalid_request", err.Error())
 		return
@@ -132,7 +135,7 @@ func (h tasksHandler) createSession(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusUnprocessableEntity, "invalid_session", "session description is required")
 		return
 	}
-	session, err := h.factory.CreateSession(r.Context(), r.PathValue("id"), request)
+	session, err := h.orchestrator.CreateSession(r.Context(), r.PathValue("id"), request)
 	if err != nil {
 		storeError(w, err)
 		return
@@ -162,14 +165,14 @@ func (h tasksHandler) response(ctx context.Context, task store.Task) (taskRespon
 	if phase == nil && len(phases) > 0 {
 		phase = &phases[len(phases)-1]
 	}
-	if h.factory != nil {
-		stages, projectionErr := h.factory.StageProjection(ctx, task)
+	if h.orchestrator != nil {
+		stages, projectionErr := h.orchestrator.StageProjection(ctx, task)
 		if projectionErr != nil {
 			return taskResponse{}, projectionErr
 		}
 		task.Stages = stages
 	}
-	return taskResponse{Task: task, AvailableActions: factory.AvailableActions(phase, task.State)}, nil
+	return taskResponse{Task: task, AvailableActions: stagekit.AvailableActions(phase, task.State)}, nil
 }
 
 func (h tasksHandler) taskSessions(w http.ResponseWriter, r *http.Request) {
@@ -216,7 +219,7 @@ func (h tasksHandler) approve(w http.ResponseWriter, r *http.Request) {
 	if actor == "" {
 		actor = "local-user"
 	}
-	if err = h.factory.Approve(r.Context(), r.PathValue("id"), actor, request.PlanDigest); err != nil {
+	if err = h.orchestrator.Approve(r.Context(), r.PathValue("id"), actor, request.PlanDigest); err != nil {
 		storeError(w, err)
 		return
 	}
@@ -224,7 +227,7 @@ func (h tasksHandler) approve(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h tasksHandler) sendMessage(w http.ResponseWriter, r *http.Request) {
-	request, err := decode[factory.SendMessageRequest](r)
+	request, err := decode[messaging.Request](r)
 	if err != nil {
 		fail(w, http.StatusUnprocessableEntity, "invalid_request", err.Error())
 		return
@@ -233,7 +236,7 @@ func (h tasksHandler) sendMessage(w http.ResponseWriter, r *http.Request) {
 	if actor == "" {
 		actor = "local-user"
 	}
-	value, err := h.factory.SendMessage(r.Context(), r.PathValue("id"), actor, request)
+	value, err := h.orchestrator.SendMessage(r.Context(), r.PathValue("id"), actor, request)
 	if err != nil {
 		storeError(w, err)
 		return
@@ -254,12 +257,12 @@ func (h tasksHandler) messages(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h tasksHandler) retry(w http.ResponseWriter, r *http.Request) {
-	request, err := decode[factory.RetryRequest](r)
+	request, err := decode[intervention.RetryRequest](r)
 	if err != nil {
 		fail(w, http.StatusUnprocessableEntity, "invalid_request", err.Error())
 		return
 	}
-	value, err := h.factory.Retry(r.Context(), r.PathValue("id"), r.PathValue("attemptID"), request)
+	value, err := h.orchestrator.Retry(r.Context(), r.PathValue("id"), r.PathValue("attemptID"), request)
 	if err != nil {
 		storeError(w, err)
 		return
@@ -280,7 +283,7 @@ func (h tasksHandler) interventions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h tasksHandler) delete(w http.ResponseWriter, r *http.Request) {
-	if err := h.factory.Delete(r.Context(), r.PathValue("id")); err != nil {
+	if err := h.orchestrator.Delete(r.Context(), r.PathValue("id")); err != nil {
 		storeError(w, err)
 		return
 	}
@@ -370,7 +373,7 @@ func (h tasksHandler) results(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h tasksHandler) diff(w http.ResponseWriter, r *http.Request) {
-	value, err := h.factory.Diff(r.Context(), r.PathValue("id"))
+	value, err := h.orchestrator.Diff(r.Context(), r.PathValue("id"))
 	if err != nil {
 		storeError(w, err)
 		return
