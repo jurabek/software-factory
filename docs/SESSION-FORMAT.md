@@ -16,16 +16,16 @@ statuses, or roles from payload keys.
 | `sequence` | SQLite monotonic cursor; SSE `id` |
 | `id` | daemon event ID (random hex, not a native session UUID) |
 | `task_id`, `phase_id?`, `attempt_id?`, `artifact_id?`, `branch_id?`, `parent_event_id?` | lineage |
-| `kind` | `message` \| `tool_call` \| `process_start` \| `process_end` \| `phase_start` \| `phase_end` \| `intervention` \| `plan_feedback` \| `custom` |
+| `kind` | `message` \| `tool_call` \| `process_start` \| `process_end` \| `phase_start` \| `phase_end` \| `intervention` \| `plan_feedback` \| `task_message` \| `custom` |
 | `format_version` | contract version (1) |
 | `name?` | tool name for `tool_call`, empty otherwise |
 | `payload` | typed per-kind object (snake_case) |
 | `display` | daemon-computed `{role, status, title, target?, result?, preview?, duration_ms?}` |
 | `available_actions?`, `token_count?`, `started_at`, `ended_at?` | delivery metadata |
 
-`GET /tasks/{id}/events` returns
+`GET /api/v1/tasks/{id}/events` returns
 `{"events": [...], "cursor": N, "format_version": 1}`.
-`GET /tasks/{id}/sessions` returns a bare array of tasks extended with
+`GET /api/v1/tasks/{id}/sessions` returns a bare array of tasks extended with
 `agent_sessions` per item (see `AgentSession` in Swagger).
 
 Native UUIDs (Pi `--session-id`) identify
@@ -52,6 +52,9 @@ scope.
 - `intervention`: `{actor, intent, text, delivery, intervention_id?,
   target_type?, target_id?}`.
 - `plan_feedback`: `{feedback, actor?, plan_digest?}`.
+- `task_message`: `{message_id, task_id, text, recipient_role,
+  agent_session_id, target_type?, target_id?, anchor_json?, delivery_status,
+  failure_reason?}`. Delivery status is `queued`, `delivered`, or `failed`.
 - `custom`: `{custom_type, data (bounded)}`.
 
 Bounded JSON stays marshalable: oversized objects become
@@ -73,6 +76,7 @@ normalizes case without changing the payload.
 | phase_end | event | success/failure from payload.status | "Attempt finished" | payload.name | error |
 | intervention | user | neutral | "Intervention <Intent>" | — | text |
 | plan_feedback | user | neutral | "Planner feedback" | — | feedback |
+| task_message | user | failure when delivery_status is failed, otherwise neutral | "Message <delivery_status>" | recipient_role | text / first line |
 | custom | event | neutral | displayName(custom_type) | — | bounded data |
 
 ## Pi mapping (`daemon/internal/harness/pi`)
