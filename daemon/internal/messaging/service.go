@@ -15,7 +15,6 @@ import (
 	"github.com/jurabek/software-factory/daemon/internal/config"
 	"github.com/jurabek/software-factory/daemon/internal/harness"
 	"github.com/jurabek/software-factory/daemon/internal/intervention"
-	"github.com/jurabek/software-factory/daemon/internal/orchestrator"
 	"github.com/jurabek/software-factory/daemon/internal/stagekit"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 )
@@ -27,6 +26,10 @@ type Request struct {
 	IdempotencyKey string              `json:"idempotency_key"`
 }
 
+type EventPublisher interface {
+	Publish(context.Context, string, string) error
+}
+
 // Deps are the collaborators a messaging service needs.
 type Deps struct {
 	Store         *store.DB
@@ -35,7 +38,7 @@ type Deps struct {
 	Harnesses     harness.Registry
 	Root          string
 	Interventions *intervention.Service
-	Events        *orchestrator.Events
+	Events        EventPublisher
 }
 
 // Service accepts and routes task messages.

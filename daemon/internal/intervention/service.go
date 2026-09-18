@@ -6,12 +6,12 @@
 package intervention
 
 import (
+	"context"
 	"errors"
 	"path/filepath"
 
 	"github.com/jurabek/software-factory/daemon/internal/config"
 	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
-	"github.com/jurabek/software-factory/daemon/internal/orchestrator"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 	"github.com/jurabek/software-factory/daemon/internal/workspace"
 )
@@ -54,6 +54,10 @@ type RetryRequest struct {
 	IdempotencyKey string `json:"idempotency_key"`
 }
 
+type EventPublisher interface {
+	Publish(context.Context, string, string) error
+}
+
 // Deps are the collaborators an intervention service needs.
 type Deps struct {
 	Store      *store.DB
@@ -62,7 +66,7 @@ type Deps struct {
 	Config     config.Config
 	ConfigPath string
 	Root       string
-	Events     *orchestrator.Events
+	Events     EventPublisher
 }
 
 // Service applies operator interventions to tasks.

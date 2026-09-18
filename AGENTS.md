@@ -2,6 +2,7 @@
 
 - In this current phase all Database or Modules can be destructive. If you change schemas or DB. You don't need to deal with migrations.
 - Use absolute import paths; application modules use the `@/...` alias.
+- Never force-push.
 
 <!-- software-factory:start -->
 ```yaml
