@@ -1,3 +1,0 @@
-{
-  "/api/daemons/[daemonId]/tasks/route": "app/api/daemons/[daemonId]/tasks/route.js"
-}
