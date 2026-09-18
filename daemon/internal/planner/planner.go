@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/jurabek/software-factory/daemon/internal/agentexec"
+	"github.com/jurabek/software-factory/daemon/internal/orchestrator"
 	"github.com/jurabek/software-factory/daemon/internal/stage"
 	"github.com/jurabek/software-factory/daemon/internal/stagekit"
 )
@@ -64,12 +65,18 @@ func Instructions() string {
 // state transitions are hidden inside the package.
 type Service interface {
 	Plan(context.Context, stage.Input) (stage.PlanResult, error)
+	Approve(context.Context, string, string, string) error
 }
 
-type service struct{ kit *stagekit.Kit }
+type service struct {
+	kit    *stagekit.Kit
+	events *orchestrator.Events
+}
 
 // New constructs the planning stage.
-func New(kit *stagekit.Kit) Service { return service{kit: kit} }
+func New(kit *stagekit.Kit, events *orchestrator.Events) Service {
+	return service{kit: kit, events: events}
+}
 
 // Plan resumes a durable plan when present, otherwise renders planning prompts,
 // runs the planning turn, and publishes the plan for approval.

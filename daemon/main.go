@@ -24,18 +24,24 @@ import (
 	"github.com/jurabek/software-factory/daemon/internal/api"
 	"github.com/jurabek/software-factory/daemon/internal/builder"
 	"github.com/jurabek/software-factory/daemon/internal/config"
+	"github.com/jurabek/software-factory/daemon/internal/creation"
 	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
 	"github.com/jurabek/software-factory/daemon/internal/harness"
 	piharness "github.com/jurabek/software-factory/daemon/internal/harness/pi"
+	"github.com/jurabek/software-factory/daemon/internal/intervention"
+	"github.com/jurabek/software-factory/daemon/internal/messaging"
 	"github.com/jurabek/software-factory/daemon/internal/orchestrator"
 	"github.com/jurabek/software-factory/daemon/internal/pipeline"
 	"github.com/jurabek/software-factory/daemon/internal/planner"
+	"github.com/jurabek/software-factory/daemon/internal/projection"
 	"github.com/jurabek/software-factory/daemon/internal/reviewer"
 	sandboxgit "github.com/jurabek/software-factory/daemon/internal/sandbox"
 	"github.com/jurabek/software-factory/daemon/internal/stagekit"
 	"github.com/jurabek/software-factory/daemon/internal/store"
+	"github.com/jurabek/software-factory/daemon/internal/task"
 	"github.com/jurabek/software-factory/daemon/internal/token"
 	"github.com/jurabek/software-factory/daemon/internal/verifier"
+	"github.com/jurabek/software-factory/daemon/internal/workspace"
 )
 
 //go:embed templates
@@ -115,17 +121,14 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	if err = os.MkdirAll(root, 0o700); err != nil {
-		return fmt.Errorf("create factory root: %w", err)
+	if err = bootstrap(root); err != nil {
+		return fmt.Errorf("bootstrap factory: %w", err)
 	}
 	lock, err := acquireLock(filepath.Join(root, "server.lock"))
 	if err != nil {
 		return err
 	}
 	defer lock.Close()
-	if err = bootstrap(root); err != nil {
-		return fmt.Errorf("bootstrap factory: %w", err)
-	}
 	daemonID, err := loadDaemonID(root)
 	if err != nil {
 		return fmt.Errorf("load daemon identity: %w", err)
@@ -218,18 +221,23 @@ func run() error {
 	}
 	sandbox := sandboxgit.Git{Runner: factorygit.OSRunner{}}
 	kit := stagekit.New(db, factorygit.OSRunner{}, registry, sandbox, configured, configPath, root)
+	events := orchestrator.NewEvents(db)
+	taskService := task.New(root, task.Deps{Store: db, Config: configured, ConfigPath: configPath, Harnesses: registry, Git: factorygit.OSRunner{}, Sandbox: sandbox})
+	creationStage := creation.New(taskService, kit, events)
+	plannerStage := planner.New(kit, events)
+	interventions := intervention.New(intervention.Deps{Store: db, Git: factorygit.OSRunner{}, Snapshots: workspace.New(db, factorygit.OSRunner{}), Config: configured, ConfigPath: configPath, Root: root, Events: events})
+	messages := messaging.New(messaging.Deps{Store: db, Config: configured, ConfigPath: configPath, Harnesses: registry, Root: root, Interventions: interventions, Events: events})
 	workflow := pipeline.New(
-		planner.New(kit),
+		plannerStage,
 		builder.New(kit),
 		verifier.New(kit),
 		reviewer.New(kit),
+		creationStage,
 	)
 	service := orchestrator.New(root, orchestrator.Dependencies{
-		Store: db, Config: configured, ConfigPath: configPath,
-		Harnesses: registry, Git: factorygit.OSRunner{}, Sandbox: sandbox,
-		Workflow: workflow,
+		Store: db, Workflow: workflow, Events: events,
 	})
-	apiHandler, err := api.New(db, service, configured, problems, loadErr, harnessNames, catalog, api.Access{DaemonID: daemonID, Token: daemonToken})
+	apiHandler, err := api.New(db, api.Communicators{Creator: creationStage, Events: events, Planner: plannerStage, Messages: messages, Intervention: interventions, Projection: projection.New(projection.Deps{Store: db, Config: configured, ConfigPath: configPath}), Tasks: taskService}, configured, problems, loadErr, harnessNames, catalog, api.Access{DaemonID: daemonID, Token: daemonToken})
 	if err != nil {
 		return err
 	}

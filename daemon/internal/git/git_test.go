@@ -250,6 +250,57 @@ func TestPrepareLocalUsesDistinctNamedBranches(t *testing.T) {
 	}
 }
 
+func TestRestoreLocalRetryUsesFreshBranchAtRecordedHead(t *testing.T) {
+	source := t.TempDir()
+	runGit(t, source, "init")
+	writeFile(t, filepath.Join(source, "README"), "initial")
+	runGit(t, source, "add", "README")
+	runGit(t, source, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "initial")
+	initial := strings.TrimSpace(runGit(t, source, "rev-parse", "HEAD"))
+	destination := filepath.Join(t.TempDir(), "worktree")
+	if _, err := PrepareLocal(context.Background(), OSRunner{}, source, destination); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(destination, "README"), "agent")
+	runGit(t, destination, "add", "README")
+	runGit(t, destination, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "agent")
+	if err := RestoreForRetry(context.Background(), OSRunner{}, "local", source, destination, initial, "software-factory/retry/test"); err != nil {
+		t.Fatal(err)
+	}
+	if head := strings.TrimSpace(runGit(t, destination, "rev-parse", "HEAD")); head != initial {
+		t.Fatalf("retry head = %q, want %q", head, initial)
+	}
+	if branch := strings.TrimSpace(runGit(t, destination, "symbolic-ref", "--short", "HEAD")); branch != "software-factory/retry/test" {
+		t.Fatalf("retry branch = %q", branch)
+	}
+}
+
+func TestRestoreCloneRetryKeepsRecordedGitObjects(t *testing.T) {
+	source := t.TempDir()
+	runGit(t, source, "init")
+	writeFile(t, filepath.Join(source, "README"), "initial")
+	runGit(t, source, "add", "README")
+	runGit(t, source, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "initial")
+	clone := filepath.Join(t.TempDir(), "clone")
+	runGit(t, t.TempDir(), "clone", source, clone)
+	initial := strings.TrimSpace(runGit(t, clone, "rev-parse", "HEAD"))
+	writeFile(t, filepath.Join(clone, "README"), "agent")
+	runGit(t, clone, "add", "README")
+	runGit(t, clone, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "agent")
+	if err := RestoreForRetry(context.Background(), OSRunner{}, "github", "", clone, initial, "software-factory/retry/clone"); err != nil {
+		t.Fatal(err)
+	}
+	if head := strings.TrimSpace(runGit(t, clone, "rev-parse", "HEAD")); head != initial {
+		t.Fatalf("retry clone head = %q, want %q", head, initial)
+	}
+	if body, err := os.ReadFile(filepath.Join(clone, "README")); err != nil || string(body) != "initial" {
+		t.Fatalf("retry clone content = %q, err = %v", body, err)
+	}
+	if branch := strings.TrimSpace(runGit(t, clone, "symbolic-ref", "--short", "HEAD")); branch != "software-factory/retry/clone" {
+		t.Fatalf("retry clone branch = %q", branch)
+	}
+}
+
 func runGit(t *testing.T, root string, args ...string) string {
 	t.Helper()
 	command := exec.Command("git", append([]string{"-C", root}, args...)...)

@@ -439,6 +439,46 @@ func RetainRef(ctx context.Context, runner Runner, root, ref, sha string) error 
 	return nil
 }
 
+// RestoreForRetry creates a fresh execution branch at the recorded Git input.
+func RestoreForRetry(ctx context.Context, runner Runner, sourceType, canonical, working, head, branch string) error {
+	if head == "" || branch == "" {
+		return fmt.Errorf("retry Git state requires head and branch")
+	}
+	if sourceType == "local" {
+		if output, err := runner.Run(ctx, "git", "-C", canonical, "worktree", "remove", "--force", working); err != nil {
+			return fmt.Errorf("remove retry worktree: %w: %s", err, strings.TrimSpace(string(output)))
+		}
+		if output, err := runner.Run(ctx, "git", "-C", canonical, "worktree", "add", "-b", branch, working, head); err != nil {
+			return fmt.Errorf("create retry worktree: %w: %s", err, strings.TrimSpace(string(output)))
+		}
+		return nil
+	}
+
+	backup := working + ".software-factory-source"
+	if err := os.RemoveAll(backup); err != nil {
+		return fmt.Errorf("clear retry clone backup: %w", err)
+	}
+	if err := os.Rename(working, backup); err != nil {
+		return fmt.Errorf("move retry clone: %w", err)
+	}
+	restore := func() {
+		_ = os.RemoveAll(working)
+		_ = os.Rename(backup, working)
+	}
+	if output, err := runner.Run(ctx, "git", "clone", "--local", backup, working); err != nil {
+		restore()
+		return fmt.Errorf("clone retry repository: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	if output, err := runner.Run(ctx, "git", "-C", working, "switch", "-c", branch, head); err != nil {
+		restore()
+		return fmt.Errorf("create retry clone branch: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	if err := os.RemoveAll(backup); err != nil {
+		return fmt.Errorf("remove retry clone backup: %w", err)
+	}
+	return nil
+}
+
 func Head(ctx context.Context, runner Runner, root string) (string, error) {
 	return currentHead(ctx, runner, root)
 }

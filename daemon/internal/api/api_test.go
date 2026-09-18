@@ -56,7 +56,7 @@ func TestEventsTailReturnsNewestEventsInSequenceOrder(t *testing.T) {
 		}
 	}
 
-	server, err := New(db, nil, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil }, newTestAccess())
+	server, err := New(db, Communicators{}, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil }, newTestAccess())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,6 +86,65 @@ func TestEventsTailReturnsNewestEventsInSequenceOrder(t *testing.T) {
 	}
 }
 
+func TestControlsReturnAfterEnqueueWithoutWaitingForOrchestration(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(filepath.Join(t.TempDir(), "factory.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	events := orchestrator.NewEvents(db)
+	handler, err := New(db, Communicators{Events: events}, config.Config{}, nil, nil, nil, nil, newTestAccess())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		id, command, state, eventType string
+	}{
+		{id: "pause-task", command: "pause", state: string(orchestrator.Building), eventType: store.TaskPaused},
+		{id: "resume-task", command: "resume", state: string(orchestrator.Paused), eventType: store.TaskResumed},
+		{id: "abort-task", command: "abort", state: string(orchestrator.Building), eventType: store.TaskCancelled},
+	}
+	for _, test := range tests {
+		createdAt := time.Now().UTC().Format(time.RFC3339Nano)
+		if err = db.CreateTask(ctx, store.Task{ID: test.id, Request: "request", WorkspacePath: t.TempDir(), State: test.state, CreatedAt: createdAt}); err != nil {
+			t.Fatal(err)
+		}
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+test.id+"/"+test.command, nil)
+		authorize(request)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusAccepted {
+			t.Fatalf("%s status = %d: %s", test.command, response.Code, response.Body.String())
+		}
+		current, taskErr := db.Task(ctx, test.id)
+		if taskErr != nil {
+			t.Fatal(taskErr)
+		}
+		if current.State != test.state {
+			t.Fatalf("%s state = %q, want unchanged %q", test.command, current.State, test.state)
+		}
+	}
+
+	pending, err := db.PendingOrchestrationEvents(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != len(tests) {
+		t.Fatalf("pending events = %+v", pending)
+	}
+	wantEvents := make(map[string]string, len(tests))
+	for _, test := range tests {
+		wantEvents[test.id] = test.eventType
+	}
+	for _, event := range pending {
+		if wantEvents[event.TaskID] != event.Type {
+			t.Fatalf("pending event = %+v", event)
+		}
+	}
+}
+
 func TestRestartRecoveryIsVisibleThroughTaskHTTPReads(t *testing.T) {
 	ctx := context.Background()
 	db, err := store.Open(filepath.Join(t.TempDir(), "factory.db"))
@@ -112,7 +171,7 @@ func TestRestartRecoveryIsVisibleThroughTaskHTTPReads(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	handler, err := New(db, orchestrator.New(t.TempDir(), orchestrator.Dependencies{Store: db}), config.Config{}, nil, nil, nil, nil, newTestAccess())
+	handler, err := New(db, Communicators{}, config.Config{}, nil, nil, nil, nil, newTestAccess())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +218,7 @@ func TestArtifactContentRequiresTask(t *testing.T) {
 	if err = db.CreateArtifact(context.Background(), store.Artifact{ID: "report-1", TaskID: "task-1", AttemptID: "phase-1", Type: "build_report", Digest: "sha256:bbc290c9f84e532bd47737480381f0db3afae637d696806856d95d0a186bb619", Content: "# Build\n", MediaType: "text/markdown", Producer: "invocation-1", Provenance: `{"task_id":"task-1"}`, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
 		t.Fatal(err)
 	}
-	server, err := New(db, nil, config.Config{}, nil, nil, nil, nil, newTestAccess())
+	server, err := New(db, Communicators{}, config.Config{}, nil, nil, nil, nil, newTestAccess())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +240,7 @@ func TestEmptyCollectionsAreJSONArrays(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	server, err := New(db, nil, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil }, newTestAccess())
+	server, err := New(db, Communicators{}, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil }, newTestAccess())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,8 +271,8 @@ func TestCreateTaskAcceptsOneRepository(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	service := orchestrator.New(root, orchestrator.Dependencies{Store: db})
-	server, err := New(db, service, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil }, newTestAccess())
+	tasks := task.New(root, task.Deps{Store: db, Config: config.Config{}})
+	server, err := New(db, Communicators{Creator: tasks, Tasks: tasks}, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil }, newTestAccess())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +281,6 @@ func TestCreateTaskAcceptsOneRepository(t *testing.T) {
 	authorize(request)
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, request)
-	service.Shutdown(context.Background())
 	if response.Code != http.StatusCreated {
 		t.Fatalf("status = %d: %s", response.Code, response.Body.String())
 	}
@@ -242,9 +300,8 @@ func TestCreateTaskRejectsLegacyRepositoryFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	service := orchestrator.New(root, orchestrator.Dependencies{Store: db})
-	defer service.Shutdown(context.Background())
-	server, err := New(db, service, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil }, newTestAccess())
+	tasks := task.New(root, task.Deps{Store: db, Config: config.Config{}})
+	server, err := New(db, Communicators{Creator: tasks, Tasks: tasks}, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil }, newTestAccess())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,22 +327,23 @@ func TestCreateAndListTaskSessions(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	service := orchestrator.New(root, orchestrator.Dependencies{Store: db})
-	server, err := New(db, service, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil }, newTestAccess())
+	tasks := task.New(root, task.Deps{Store: db, Config: config.Config{}})
+	server, err := New(db, Communicators{Creator: tasks, Tasks: tasks}, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil }, newTestAccess())
 	if err != nil {
 		t.Fatal(err)
 	}
-	task, err := service.Create(context.Background(), task.CreateRequest{Request: "Parent task", Repository: task.Repository{Type: "github", Repo: "owner/app"}})
+	task, err := tasks.Create(context.Background(), task.CreateRequest{Request: "Parent task", Repository: task.Repository{Type: "github", Repo: "owner/app"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	service.Shutdown(context.Background())
+	if _, err = db.ExecContext(context.Background(), `update tasks set state='completed' where id=?`, task.ID); err != nil {
+		t.Fatal(err)
+	}
 
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+task.ID+"/sessions", bytes.NewBufferString(`{"request":"Investigate another approach"}`))
 	authorize(request)
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, request)
-	service.Shutdown(context.Background())
 	if response.Code != http.StatusCreated {
 		t.Fatalf("status = %d: %s", response.Code, response.Body.String())
 	}
@@ -332,7 +390,7 @@ func TestLegacyRouteHasNoAlias(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	server, err := New(db, nil, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil }, newTestAccess())
+	server, err := New(db, Communicators{}, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil }, newTestAccess())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,7 +409,7 @@ func TestTokenRequiredForAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	server, err := New(db, nil, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil }, newTestAccess())
+	server, err := New(db, Communicators{}, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil }, newTestAccess())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -389,7 +447,7 @@ func TestNewRequiresToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if _, err := New(db, nil, config.Config{}, nil, nil, nil, nil, Access{DaemonID: "x"}); err == nil {
+	if _, err := New(db, Communicators{}, config.Config{}, nil, nil, nil, nil, Access{DaemonID: "x"}); err == nil {
 		t.Fatal("New succeeded without token")
 	}
 }

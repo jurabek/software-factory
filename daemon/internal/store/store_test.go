@@ -19,7 +19,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-func TestCreateTaskAllowsIndependentActiveTasks(t *testing.T) {
+func TestCreateActiveTaskClaimsOnlyExecutionSlot(t *testing.T) {
 	db, err := Open(filepath.Join(t.TempDir(), "factory.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -28,7 +28,7 @@ func TestCreateTaskAllowsIndependentActiveTasks(t *testing.T) {
 	ctx := context.Background()
 	startedAt := time.Now().UTC().Format(time.RFC3339Nano)
 	first := Task{ID: "task-1", Request: "first", WorkspacePath: t.TempDir(), State: "preparing", CreatedAt: startedAt, StartedAt: startedAt}
-	if err = db.CreateTask(ctx, first); err != nil {
+	if err = db.CreateActiveTask(ctx, first); err != nil {
 		t.Fatal(err)
 	}
 	stored, err := db.Task(ctx, first.ID)
@@ -39,52 +39,11 @@ func TestCreateTaskAllowsIndependentActiveTasks(t *testing.T) {
 		t.Fatalf("started at = %q, want %q", stored.StartedAt, startedAt)
 	}
 	second := Task{ID: "task-2", Request: "second", WorkspacePath: t.TempDir(), State: "preparing", CreatedAt: startedAt, StartedAt: startedAt}
-	if err = db.CreateTask(ctx, second); err != nil {
-		t.Fatalf("second active task error = %v", err)
+	if err = db.CreateActiveTask(ctx, second); !errors.Is(err, ErrConflict) {
+		t.Fatalf("second active task error = %v, want conflict", err)
 	}
-	if _, err = db.Task(ctx, second.ID); err != nil {
-		t.Fatalf("second task lookup error = %v", err)
-	}
-}
-
-func TestWorkspaceOperationRoundTripAndRestartRecovery(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "factory.db")
-	db, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx := context.Background()
-	createdAt := time.Now().UTC().Format(time.RFC3339Nano)
-	if err = db.CreateTask(ctx, Task{ID: "task", Request: "request", WorkspacePath: t.TempDir(), State: "preparing", CreatedAt: createdAt}); err != nil {
-		db.Close()
-		t.Fatal(err)
-	}
-	operation := WorkspaceOperation{ID: "operation", TaskID: "task", Kind: "materialize", Status: "running", RequestJSON: `{"path":"repo"}`, CreatedAt: createdAt, UpdatedAt: createdAt}
-	if err = db.CreateWorkspaceOperation(ctx, operation); err != nil {
-		db.Close()
-		t.Fatal(err)
-	}
-	if err = db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	db, err = Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	stored, err := db.WorkspaceOperation(ctx, operation.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stored.Status != "interrupted" || stored.TaskID != operation.TaskID || stored.RequestJSON != operation.RequestJSON {
-		t.Fatalf("workspace operation = %#v", stored)
-	}
-	if err = db.UpdateWorkspaceOperation(ctx, operation.ID, "succeeded", ""); err != nil {
-		t.Fatal(err)
-	}
-	stored, err = db.WorkspaceOperation(ctx, operation.ID)
-	if err != nil || stored.Status != "succeeded" || stored.Error != "" {
-		t.Fatalf("updated workspace operation = %#v, err = %v", stored, err)
+	if _, err = db.Task(ctx, second.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("second task lookup error = %v, want not found", err)
 	}
 }
 

@@ -17,6 +17,12 @@ type Planner interface {
 	Plan(context.Context, stage.Input) (stage.PlanResult, error)
 }
 
+// Creation performs the internal setup required before a configured stage may
+// inspect the repository. It is deliberately absent from pipeline projection.
+type Creation interface {
+	Prepare(context.Context, stage.Input) error
+}
+
 type Builder interface {
 	Build(context.Context, stage.Input, stage.PlanResult) (stage.BuildResult, error)
 }
@@ -50,10 +56,15 @@ type Pipeline struct {
 	builder  Builder
 	verifier Verifier
 	reviewer Reviewer
+	creation Creation
 }
 
-func New(planner Planner, builder Builder, verifier Verifier, reviewer Reviewer) *Pipeline {
-	return &Pipeline{planner: planner, builder: builder, verifier: verifier, reviewer: reviewer}
+func New(planner Planner, builder Builder, verifier Verifier, reviewer Reviewer, creation ...Creation) *Pipeline {
+	p := &Pipeline{planner: planner, builder: builder, verifier: verifier, reviewer: reviewer}
+	if len(creation) > 0 {
+		p.creation = creation[0]
+	}
+	return p
 }
 
 // Run executes the fixed workflow and returns an explicit progression
@@ -73,6 +84,14 @@ func (p *Pipeline) Run(ctx context.Context, taskID string) (Result, error) {
 	input := stage.Input{TaskID: taskID}
 	if err := ctx.Err(); err != nil {
 		return Result{Outcome: OutcomeBlocked}, err
+	}
+	if p.creation != nil {
+		if err := p.creation.Prepare(ctx, input); err != nil {
+			return Result{}, err
+		}
+		if err := ctx.Err(); err != nil {
+			return Result{Outcome: OutcomeBlocked}, err
+		}
 	}
 	plan, err := p.planner.Plan(ctx, input)
 	if err != nil {

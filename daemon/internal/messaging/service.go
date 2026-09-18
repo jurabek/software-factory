@@ -26,6 +26,10 @@ type Request struct {
 	IdempotencyKey string              `json:"idempotency_key"`
 }
 
+type EventPublisher interface {
+	Publish(context.Context, string, string) error
+}
+
 // Deps are the collaborators a messaging service needs.
 type Deps struct {
 	Store         *store.DB
@@ -34,6 +38,7 @@ type Deps struct {
 	Harnesses     harness.Registry
 	Root          string
 	Interventions *intervention.Service
+	Events        EventPublisher
 }
 
 // Service accepts and routes task messages.
@@ -117,17 +122,14 @@ func (s *Service) Send(ctx context.Context, taskID, actor string, request Reques
 	if !created {
 		return stored, false, nil
 	}
-	return stored, shouldLaunch(stagekit.State(task.State)), nil
+	if s.deps.Events != nil {
+		if err = s.deps.Events.Publish(ctx, taskID, store.TaskMessaged); err != nil {
+			return store.Message{}, false, err
+		}
+	}
+	return stored, true, nil
 }
 
 func (s *Service) taskDir(id string) string {
 	return filepath.Join(s.deps.Root, "tasks", id)
-}
-
-func shouldLaunch(state stagekit.State) bool {
-	switch state {
-	case stagekit.AwaitingApproval, stagekit.Blocked, stagekit.Completed:
-		return true
-	}
-	return false
 }

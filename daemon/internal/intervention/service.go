@@ -6,6 +6,7 @@
 package intervention
 
 import (
+	"context"
 	"errors"
 	"path/filepath"
 
@@ -53,6 +54,10 @@ type RetryRequest struct {
 	IdempotencyKey string `json:"idempotency_key"`
 }
 
+type EventPublisher interface {
+	Publish(context.Context, string, string) error
+}
+
 // Deps are the collaborators an intervention service needs.
 type Deps struct {
 	Store      *store.DB
@@ -61,6 +66,7 @@ type Deps struct {
 	Config     config.Config
 	ConfigPath string
 	Root       string
+	Events     EventPublisher
 }
 
 // Service applies operator interventions to tasks.
