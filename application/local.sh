@@ -39,20 +39,20 @@ set +a
 : "${INITIAL_USER_PASSWORD:?Set INITIAL_USER_PASSWORD in local.env}"
 : "${DAEMON_ALLOWED_ORIGINS:?Set DAEMON_ALLOWED_ORIGINS in local.env}"
 
-docker-compose up -d postgres
+docker compose up -d postgres
 
 echo "Waiting for postgres..."
-until docker-compose exec -T postgres pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" >/dev/null 2>&1; do
+until docker compose exec -T postgres pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" >/dev/null 2>&1; do
   sleep 1
 done
 
 # POSTGRES_PASSWORD only initializes a new volume; keep an existing local role in sync.
-docker-compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
   --set=password="$POSTGRES_PASSWORD" >/dev/null <<'SQL'
 SELECT format('ALTER ROLE %I WITH PASSWORD %L', current_user, :'password') \gexec
 SQL
 
-npm --prefix "$ROOT/application" run migrations
+npm run migrations
 
-echo "Daemon not running? Start it in another terminal: go -C daemon run . (http://127.0.0.1:8080)"
-npm --prefix "$ROOT/application" run dev
+echo "Daemon not running? From the repository root, run: go -C daemon run ."
+npm run dev

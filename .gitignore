@@ -2,7 +2,6 @@
 dist
 .env
 .env.local
-/local.env
 .software-factory/
 /.software-factory
 /application/test-results/

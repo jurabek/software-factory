@@ -1,4 +1,6 @@
 # PostgreSQL only. Application runs via pure npm (see README.md).
+name: software-factory
+
 services:
   postgres:
     image: postgres:16-alpine

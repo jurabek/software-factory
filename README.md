@@ -32,7 +32,7 @@ cp application/.env.example application/.env.local
 Set `INITIAL_USER_PASSWORD` in `application/.env.local`, then run:
 
 ```bash
-POSTGRES_PASSWORD=local-password docker compose up -d
+POSTGRES_PASSWORD=local-password docker compose -f application/docker-compose.yaml up -d
 npm --prefix application ci
 npm --prefix application run migrations
 npm --prefix application run dev
