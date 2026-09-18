@@ -1,0 +1,3 @@
+{
+  "/api/daemons/[daemonId]/tasks/[taskId]/feedback/route": "app/api/daemons/[daemonId]/tasks/[taskId]/feedback/route.js"
+}
