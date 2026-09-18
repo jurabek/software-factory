@@ -12,13 +12,13 @@ checks:
   - id: go-race
     command: go -C daemon test -race ./...
   - id: typecheck
-    command: npm run typecheck
+    command: npm --prefix application run typecheck
   - id: build
-    command: npm run build
+    command: npm --prefix application run build
 generated:
   - .workspace/
   - dist/
-  - node_modules/
+  - application/node_modules/
 protected: []
 # risk_signals: []   # optional per-repo override; global defaults apply otherwise
 ```

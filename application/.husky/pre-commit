@@ -1,2 +1,3 @@
+cd application
 npm test
 npx biome check --staged --write

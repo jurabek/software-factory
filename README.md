@@ -33,14 +33,14 @@ Set `INITIAL_USER_PASSWORD` in `application/.env.local`, then run:
 
 ```bash
 POSTGRES_PASSWORD=local-password docker compose up -d
-npm ci
-npm run application:migrations
-npm run application:dev
+npm --prefix application ci
+npm --prefix application run migrations
+npm --prefix application run dev
 ```
 
 Open `http://localhost:3000`.
 
-For production, run the schema command before `npm run application:build` and `npm run application:start`.
+For production, run migrations before `npm --prefix application run build` and `npm --prefix application run start`.
 
 ## Run a daemon
 
@@ -65,7 +65,6 @@ See [usage](docs/USAGE.md) for the short connection workflow.
 ```bash
 go -C daemon test ./...
 go -C daemon test -race ./...
-npm run typecheck
-npm run build
-npm run swagger:validate
+npm --prefix application run typecheck
+npm --prefix application run build
 ```

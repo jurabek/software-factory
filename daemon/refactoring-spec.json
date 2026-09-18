@@ -69,18 +69,18 @@
     "verification": {
       "passed": [
         "go -C daemon test -race ./internal/factory ./internal/store ./internal/sandbox ./internal/git ./internal/harness/pi",
-        "npm run application:test",
-        "npm run typecheck",
-        "npm run build"
+        "npm --prefix application test",
+        "npm --prefix application run typecheck",
+        "npm --prefix application run build"
       ],
       "baseline_failure_preserved": "go -C daemon test ./... and go -C daemon test -race ./... fail only at the existing sandbox-dependent TestTaskFlowSuite/TestCreateApproveBuildAndCheck with sandbox unavailable.",
       "after_deferred_feature_removal": {
         "passed": [
           "go -C daemon test ./internal/factory ./internal/store ./internal/sandbox ./internal/git",
           "go -C daemon test -race ./internal/factory ./internal/store ./internal/sandbox ./internal/git",
-          "npm run application:test",
-          "npm run typecheck",
-          "npm run build"
+          "npm --prefix application test",
+          "npm --prefix application run typecheck",
+          "npm --prefix application run build"
         ],
         "known_failure": "The complete Go and race suites retained the existing sandbox-dependent TestTaskFlowSuite/TestCreateApproveBuildAndCheck failure at that checkpoint."
       },
@@ -88,9 +88,9 @@
         "passed": [
           "go -C daemon test ./...",
           "go -C daemon test -race ./...",
-          "npm run application:test",
-          "npm run typecheck",
-          "npm run build"
+          "npm --prefix application test",
+          "npm --prefix application run typecheck",
+          "npm --prefix application run build"
         ],
         "note": "The previously recorded sandbox-dependent Task-flow failure did not reproduce."
       }
@@ -575,9 +575,9 @@
     "verification_commands": [
       "go -C daemon test ./...",
       "go -C daemon test -race ./...",
-      "npm run application:test",
-      "npm run typecheck",
-      "npm run build"
+      "npm --prefix application test",
+      "npm --prefix application run typecheck",
+      "npm --prefix application run build"
     ],
     "runtime_verification": "Verify new report presentation and safe rendering in the running application; use existing application test tooling and add focused browser coverage rather than treating compilation as proof of behavior.",
     "baseline_policy": "Run and record the current baseline before changing implementation. Existing failures are not permission to weaken tests. Replace assertions only where this specification explicitly changes their contract; distinguish baseline failures from regressions."

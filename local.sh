@@ -52,7 +52,7 @@ docker-compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
 SELECT format('ALTER ROLE %I WITH PASSWORD %L', current_user, :'password') \gexec
 SQL
 
-npm run migrations --workspace @software-factory/application
+npm --prefix "$ROOT/application" run migrations
 
 echo "Daemon not running? Start it in another terminal: go -C daemon run . (http://127.0.0.1:8080)"
-npm run dev --workspace @software-factory/application
+npm --prefix "$ROOT/application" run dev

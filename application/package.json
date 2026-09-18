@@ -16,7 +16,7 @@
 		"migrations": "node --import tsx scripts/migrate.ts",
 		"lint": "biome check .",
 		"format": "biome format --write .",
-		"prepare": "husky"
+		"prepare": "cd .. && husky application/.husky"
 	},
 	"dependencies": {
 		"@next/env": "16.3.4",
