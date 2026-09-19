@@ -110,12 +110,14 @@ func (h *taskFlowHarness) Requests() []harness.Request {
 
 type taskFlowSuite struct {
 	suite.Suite
-	client  *http.Client
-	db      *store.DB
-	harness *taskFlowHarness
-	repo    string
-	server  *httptest.Server
-	service *orchestrator.Service
+	client       *http.Client
+	db           *store.DB
+	harness      *taskFlowHarness
+	repo         string
+	server       *httptest.Server
+	service      *orchestrator.Service
+	cancelEvents context.CancelFunc
+	eventsDone   chan struct{}
 }
 
 func TestTaskFlowSuite(t *testing.T) {
@@ -172,6 +174,13 @@ func (s *taskFlowSuite) SetupSuite() {
 			creationStage,
 		),
 	})
+	eventCtx, cancelEvents := context.WithCancel(context.Background())
+	s.cancelEvents = cancelEvents
+	s.eventsDone = make(chan struct{})
+	go func() {
+		defer close(s.eventsDone)
+		s.service.HandleEvents(eventCtx)
+	}()
 	interventions := intervention.New(intervention.Deps{Store: s.db, Git: factorygit.OSRunner{}, Snapshots: workspace.New(s.db, factorygit.OSRunner{}), Config: cfg, ConfigPath: configPath, Root: taskRoot, Events: events})
 	messages := messaging.New(messaging.Deps{Store: s.db, Config: cfg, ConfigPath: configPath, Harnesses: registry, Root: taskRoot, Interventions: interventions, Events: events})
 	handler, err := New(s.db, Communicators{Creator: creationStage, Events: events, Planner: plannerStage, Messages: messages, Intervention: interventions, Projection: projection.New(projection.Deps{Store: s.db, Config: cfg, ConfigPath: configPath}), Tasks: taskService}, cfg, nil, nil, []string{"pi"}, nil, newTestAccess())
@@ -183,6 +192,10 @@ func (s *taskFlowSuite) SetupSuite() {
 func (s *taskFlowSuite) TearDownSuite() {
 	if s.server != nil {
 		s.server.Close()
+	}
+	if s.cancelEvents != nil {
+		s.cancelEvents()
+		<-s.eventsDone
 	}
 	if s.service != nil {
 		s.service.Shutdown(context.Background())

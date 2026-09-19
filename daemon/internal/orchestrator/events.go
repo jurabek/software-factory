@@ -8,19 +8,34 @@ import (
 	"github.com/jurabek/software-factory/daemon/internal/store"
 )
 
-func (s *Service) replayEvents() {
-	_ = s.events.replay(context.Background())
-}
-
-func (s *Service) handleEvents(ctx context.Context) {
+// HandleEvents processes orchestration events until ctx is canceled.
+func (s *Service) HandleEvents(ctx context.Context) {
+	pending, err := s.db.PendingOrchestrationEvents(ctx)
+	if err == nil {
+		for _, event := range pending {
+			if ctx.Err() != nil {
+				return
+			}
+			s.handleQueuedEvent(ctx, event.ID)
+		}
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case id := <-s.events.ids:
-			err := s.handleEvent(ctx, id)
-			s.events.complete(id, err)
+			if ctx.Err() != nil {
+				return
+			}
+			s.handleQueuedEvent(ctx, id)
 		}
+	}
+}
+
+func (s *Service) handleQueuedEvent(ctx context.Context, id string) {
+	err := s.handleEvent(ctx, id)
+	if ctx.Err() == nil {
+		s.events.complete(id, err)
 	}
 }
 

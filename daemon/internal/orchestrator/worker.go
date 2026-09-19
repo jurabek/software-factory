@@ -99,7 +99,6 @@ func (s *Service) Shutdown(ctx context.Context) {
 			_ = s.db.Transition(ctx, id, task.State, string(stagekit.Blocked), task.ActivePhase, "server shutting down")
 		}
 	}
-	s.eventCancel()
 }
 
 func (s *Service) stopAndWait(ctx context.Context, id string) error {

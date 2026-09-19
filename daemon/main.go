@@ -106,13 +106,15 @@ const (
 )
 
 func main() {
-	if err := run(); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := run(ctx); err != nil {
 		slog.Error("server stopped", "error", err)
 		os.Exit(1)
 	}
 }
 
-func run() error {
+func run(rootCtx context.Context) error {
 	level := slog.LevelInfo
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 	slog.SetDefault(logger)
@@ -158,7 +160,9 @@ func run() error {
 		return err
 	}
 	defer db.Close()
-	if err = db.Recover(context.Background()); err != nil {
+	ctx, cancel := context.WithCancel(rootCtx)
+	defer cancel()
+	if err = db.Recover(ctx); err != nil {
 		return fmt.Errorf("recover stale runs: %w", err)
 	}
 	configPath := filepath.Join(root, "config.yaml")
@@ -206,7 +210,7 @@ func run() error {
 		if harnessForValidation == "" {
 			harnessForValidation = "pi"
 		}
-		if models, modelErr := catalog(context.Background(), harnessForValidation); modelErr != nil {
+		if models, modelErr := catalog(ctx, harnessForValidation); modelErr != nil {
 			problems = append(problems, modelErr.Error())
 		} else {
 			for _, agent := range configured.Agents {
@@ -237,6 +241,15 @@ func run() error {
 	service := orchestrator.New(root, orchestrator.Dependencies{
 		Store: db, Workflow: workflow, Events: events,
 	})
+	eventsDone := make(chan struct{})
+	go func() {
+		defer close(eventsDone)
+		service.HandleEvents(ctx)
+	}()
+	defer func() {
+		cancel()
+		<-eventsDone
+	}()
 	apiHandler, err := api.New(db, api.Communicators{Creator: creationStage, Events: events, Planner: plannerStage, Messages: messages, Intervention: interventions, Projection: projection.New(projection.Deps{Store: db, Config: configured, ConfigPath: configPath}), Tasks: taskService}, configured, problems, loadErr, harnessNames, catalog, api.Access{DaemonID: daemonID, Token: daemonToken})
 	if err != nil {
 		return err
@@ -246,8 +259,6 @@ func run() error {
 		Handler:           newServer(logger, apiHandler),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	done := make(chan error, 1)
 	go func() {
 		fmt.Fprintf(os.Stdout, "daemon token: %s\ndaemon token file: %s\n", daemonToken, tokenPath)

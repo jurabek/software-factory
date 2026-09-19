@@ -51,7 +51,17 @@ func TestMessagesAreIdempotentFIFOAndAbortFailsQueue(t *testing.T) {
 	registry := harness.Registry{"pi": testHarness{}}
 	events := orchestrator.NewEvents(db)
 	controller := orchestrator.New(root, orchestrator.Dependencies{Store: db, Events: events})
-	t.Cleanup(func() { controller.Shutdown(context.Background()) })
+	eventCtx, cancelEvents := context.WithCancel(context.Background())
+	eventsDone := make(chan struct{})
+	go func() {
+		defer close(eventsDone)
+		controller.HandleEvents(eventCtx)
+	}()
+	t.Cleanup(func() {
+		cancelEvents()
+		<-eventsDone
+		controller.Shutdown(context.Background())
+	})
 	interventions := intervention.New(intervention.Deps{Store: db, Git: factorygit.OSRunner{}, Snapshots: workspace.New(db, factorygit.OSRunner{}), Config: cfg, ConfigPath: configPath, Root: root, Events: events})
 	messages := New(Deps{Store: db, Config: cfg, ConfigPath: configPath, Harnesses: registry, Root: root, Interventions: interventions, Events: events})
 	tasks := task.New(root, task.Deps{Store: db, Config: cfg, ConfigPath: configPath, Harnesses: registry})

@@ -51,6 +51,28 @@ func TestExecutionOwnerAdmitsOneSuccessorAfterCurrentSettlement(t *testing.T) {
 	service.Shutdown(shutdownCtx)
 }
 
+func TestHandleEventsStopsWhenContextIsCanceled(t *testing.T) {
+	root := t.TempDir()
+	db, err := store.Open(filepath.Join(root, "factory.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	service := New(root, Dependencies{Store: db})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		service.HandleEvents(ctx)
+	}()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("event handler did not stop after context cancellation")
+	}
+}
+
 func TestAvailableActionsContainControlsOnly(t *testing.T) {
 	for _, actions := range [][]string{
 		stagekit.AvailableActions(nil, string(Preparing)),

@@ -24,34 +24,28 @@ type Dependencies struct {
 
 // Service is the factory control plane.
 type Service struct {
-	root        string
-	db          *store.DB
-	mu          sync.Mutex
-	cancel      map[string]*execution
-	taskLocks   sync.Map
-	workflow    *pipeline.Pipeline
-	events      *Events
-	eventCancel context.CancelFunc
+	root      string
+	db        *store.DB
+	mu        sync.Mutex
+	cancel    map[string]*execution
+	taskLocks sync.Map
+	workflow  *pipeline.Pipeline
+	events    *Events
 }
 
-// New constructs the orchestrator and starts its background event loop.
+// New constructs the orchestrator.
 func New(root string, dependencies Dependencies) *Service {
 	events := dependencies.Events
 	if events == nil {
 		events = NewEvents(dependencies.Store)
 	}
-	service := &Service{
+	return &Service{
 		root:     root,
 		db:       dependencies.Store,
 		cancel:   map[string]*execution{},
 		workflow: dependencies.Workflow,
 		events:   events,
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	service.eventCancel = cancel
-	go service.handleEvents(ctx)
-	service.replayEvents()
-	return service
 }
 
 func (s *Service) pause(ctx context.Context, id string) error {

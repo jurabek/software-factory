@@ -27,17 +27,6 @@ func (e *Events) Publish(ctx context.Context, taskID, kind string) error {
 	return nil
 }
 
-func (e *Events) replay(ctx context.Context) error {
-	pending, err := e.db.PendingOrchestrationEvents(ctx)
-	if err != nil {
-		return err
-	}
-	for _, event := range pending {
-		e.ids <- event.ID
-	}
-	return nil
-}
-
 func (e *Events) complete(id string, err error) {
 	_ = e.db.CompleteOrchestrationEvent(context.Background(), id, err)
 }
