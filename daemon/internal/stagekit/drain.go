@@ -140,7 +140,7 @@ func (k *Kit) Drain(ctx context.Context, spec DrainSpec) (string, error) {
 			}
 			_, validationErr := spec.Validate(result.Text)
 			envelopeRole := phaseEnvelopeKind(phase, spec.Role)
-			if err = k.db.SaveEnvelope(ctx, randomID(), task.ID, phase.ID, spec.StageID, envelopeRole, result.Text, validationErr == nil, correction+1); err != nil {
+			if err = k.db.SaveEnvelope(ctx, RandomID(), task.ID, phase.ID, spec.StageID, envelopeRole, result.Text, validationErr == nil, correction+1); err != nil {
 				k.failMessage(ctx, message, phase, "delivery_failed")
 				return "", err
 			}
@@ -219,7 +219,7 @@ func MessageEvent(ctx context.Context, db *store.DB, message store.Message, phas
 		taskState = task.State
 	}
 	return store.Event{
-		ID: randomID(), TaskID: message.TaskID, PhaseID: phaseID, AttemptID: phaseID, BranchID: branchID,
+		ID: RandomID(), TaskID: message.TaskID, PhaseID: phaseID, AttemptID: phaseID, BranchID: branchID,
 		Kind: entry.Kind, Name: entry.Name, Payload: entry.Payload, Display: entry.Display,
 		AvailableActions: AvailableActions(phase, taskState), StartedAt: time.Now().UTC(),
 	}, nil

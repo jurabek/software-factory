@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { createHealthHandler } from "@/server/health.ts";
 import { GET as creationOptions } from "../app/api/daemons/[daemonId]/creation-options/route.ts";
 import { DELETE as daemonDelete } from "../app/api/daemons/[daemonId]/route.ts";
 import { POST as daemonCommand } from "../app/api/daemons/[daemonId]/tasks/[taskId]/[command]/route.ts";
@@ -24,7 +25,6 @@ import {
 	GET as daemonList,
 	POST as daemonRegister,
 } from "../app/api/daemons/route.ts";
-import { GET as health } from "../app/api/health/route.ts";
 import { POST as login } from "../app/api/login/route.ts";
 import { POST as logout } from "../app/api/logout/route.ts";
 
@@ -82,6 +82,11 @@ test("daemon registration rejects foreign origins and missing sessions before re
 });
 
 test("health route fails when PostgreSQL or migrations are unavailable", async () => {
+	const health = createHealthHandler(() => ({
+		query: async () => {
+			throw new Error("PostgreSQL unavailable");
+		},
+	}));
 	const response = await health();
 	assert.equal(response.status, 503);
 	assert.equal(response.headers.get("Cache-Control"), "no-store");

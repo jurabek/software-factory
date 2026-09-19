@@ -156,7 +156,7 @@ func resolveJSONPointer(body []byte, pointer string) (any, error) {
 	if !strings.HasPrefix(pointer, "/") {
 		return nil, fmt.Errorf("invalid JSON pointer")
 	}
-	for _, token := range strings.Split(pointer[1:], "/") {
+	for token := range strings.SplitSeq(pointer[1:], "/") {
 		decoded, err := decodeJSONPointerToken(token)
 		if err != nil {
 			return nil, err

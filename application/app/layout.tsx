@@ -12,6 +12,9 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: ReactNode }) {
 	return (
 		<html lang="en" className="dark">
+			<head>
+				<meta name="darkreader-lock" />
+			</head>
 			<body className="antialiased">
 				<TooltipProvider delayDuration={300}>{children}</TooltipProvider>
 			</body>

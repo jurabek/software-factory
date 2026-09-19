@@ -2,7 +2,6 @@ package stagekit
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -10,19 +9,14 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"uuid"
 
 	"github.com/jurabek/software-factory/daemon/internal/session"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 )
 
 // RandomID returns a fresh opaque identifier.
-func RandomID() string { return randomID() }
-
-func randomID() string {
-	var bytes [12]byte
-	_, _ = rand.Read(bytes[:])
-	return hex.EncodeToString(bytes[:])
-}
+func RandomID() string { return uuid.NewV7().String() }
 
 func trimSpace(value string) string { return strings.TrimSpace(value) }
 
@@ -48,9 +42,9 @@ func (k *Kit) BeginPhase(ctx context.Context, taskID, name, kind, owner, descrip
 			inputSnapshot = snapshot.Digest
 		}
 	}
-	phase := store.Phase{ID: randomID(), TaskID: taskID, Sequence: len(phases) + 1, Name: name, Kind: kind, Owner: owner, Description: description, Status: "running", Attempt: 1, BranchID: task.SelectedBranchID, DefinitionID: definitionID, InputSnapshot: inputSnapshot}
+	phase := store.Phase{ID: RandomID(), TaskID: taskID, Sequence: len(phases) + 1, Name: name, Kind: kind, Owner: owner, Description: description, Status: "running", Attempt: 1, BranchID: task.SelectedBranchID, DefinitionID: definitionID, InputSnapshot: inputSnapshot}
 	event := session.NewPhaseStart(session.PhasePayload{Phase: phase.ID, Name: name, Owner: owner, Kind: kind, InputSnapshot: inputSnapshot})
-	eventValue := store.Event{ID: randomID(), TaskID: taskID, PhaseID: phase.ID, AttemptID: phase.ID, BranchID: phase.BranchID, Kind: event.Kind, Name: event.Name, Payload: event.Payload, Display: event.Display, AvailableActions: AvailableActions(&phase, task.State), StartedAt: time.Now().UTC()}
+	eventValue := store.Event{ID: RandomID(), TaskID: taskID, PhaseID: phase.ID, AttemptID: phase.ID, BranchID: phase.BranchID, Kind: event.Kind, Name: event.Name, Payload: event.Payload, Display: event.Display, AvailableActions: AvailableActions(&phase, task.State), StartedAt: time.Now().UTC()}
 	if err = k.db.StartPhaseWithEvent(ctx, k.TaskDir(taskID), phase, task.State, eventValue); err != nil {
 		return store.Phase{}, err
 	}
@@ -101,7 +95,7 @@ func (k *Kit) ensureDefinition(ctx context.Context, taskID, key, executor, owner
 	if err == nil {
 		return existing.ID
 	}
-	definition := store.PhaseDefinition{ID: randomID(), TaskID: taskID, PhaseKey: key, Revision: 1, Executor: executor, Owner: owner, Spec: "{}"}
+	definition := store.PhaseDefinition{ID: RandomID(), TaskID: taskID, PhaseKey: key, Revision: 1, Executor: executor, Owner: owner, Spec: "{}"}
 	definition.Digest = PlanDigest(key, 1, "{}")
 	definition.CreatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	if err = k.db.CreateDefinition(ctx, definition); err != nil {
@@ -136,7 +130,7 @@ func (k *Kit) EndPhase(ctx context.Context, phase store.Phase, status string, ca
 		phase.OutputSnapshot = phase.InputSnapshot
 	}
 	event := session.NewPhaseEnd(session.PhasePayload{Phase: phase.ID, Name: phase.Name, Owner: phase.Owner, Kind: phase.Kind, Status: status, Error: message, InputSnapshot: phase.InputSnapshot, OutputSnapshot: phase.OutputSnapshot})
-	return k.db.EndPhaseWithEvent(ctx, k.TaskDir(phase.TaskID), phase.ID, status, message, phase.OutputSnapshot, store.Event{ID: randomID(), TaskID: phase.TaskID, PhaseID: phase.ID, AttemptID: phase.ID, BranchID: phase.BranchID, Kind: event.Kind, Name: event.Name, Payload: event.Payload, Display: event.Display, StartedAt: time.Now().UTC()})
+	return k.db.EndPhaseWithEvent(ctx, k.TaskDir(phase.TaskID), phase.ID, status, message, phase.OutputSnapshot, store.Event{ID: RandomID(), TaskID: phase.TaskID, PhaseID: phase.ID, AttemptID: phase.ID, BranchID: phase.BranchID, Kind: event.Kind, Name: event.Name, Payload: event.Payload, Display: event.Display, StartedAt: time.Now().UTC()})
 }
 
 // Fail marks a phase failed without a transition.
@@ -181,7 +175,7 @@ func (k *Kit) Complete(ctx context.Context, c Completion) error {
 		Status: c.Status, Error: message, InputSnapshot: c.Phase.InputSnapshot, OutputSnapshot: c.Phase.OutputSnapshot,
 	})
 	eventValue := store.Event{
-		ID: randomID(), TaskID: c.Phase.TaskID, PhaseID: c.Phase.ID, AttemptID: c.Phase.ID, BranchID: c.Phase.BranchID,
+		ID: RandomID(), TaskID: c.Phase.TaskID, PhaseID: c.Phase.ID, AttemptID: c.Phase.ID, BranchID: c.Phase.BranchID,
 		Kind: event.Kind, Name: event.Name, Payload: event.Payload, Display: event.Display,
 		AvailableActions: AvailableActions(&c.Phase, task.State), StartedAt: time.Now().UTC(),
 	}
@@ -273,7 +267,7 @@ func (k *Kit) ReportArtifact(task store.Task, phase store.Phase, kind, content, 
 		"task_id": task.ID, "stage_id": phase.Name, "attempt_id": phase.ID, "producer": producer,
 	})
 	return store.Artifact{
-		ID: randomID(), TaskID: task.ID, AttemptID: phase.ID, Type: kind + "_report", Digest: digest,
+		ID: RandomID(), TaskID: task.ID, AttemptID: phase.ID, Type: kind + "_report", Digest: digest,
 		Content: content, MediaType: "text/markdown", Producer: producer, Provenance: string(provenance),
 		CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
 	}
