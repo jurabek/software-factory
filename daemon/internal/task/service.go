@@ -253,9 +253,9 @@ func (s *Service) create(ctx context.
 	if err != nil {
 		_ = os.RemoveAll(workspace)
 		return store.
-				Task{}, fmt.Errorf("encode task config: %w",
+			Task{}, fmt.Errorf("encode task config: %w",
 
-				err)
+			err)
 	}
 	if len(configured.Agents) == 0 {
 		configSnapshot = ""
