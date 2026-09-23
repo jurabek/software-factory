@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -144,14 +143,13 @@ type Completion struct {
 	From, To    State
 	Status      string
 	Cause       error
-	Artifact    *store.Artifact
 	Approval    string
 	Checks      []store.Check
 	Comparisons []store.Comparison
 	Planner     bool
 }
 
-// Complete atomically persists evidence, artifact, completion, and transition.
+// Complete atomically persists evidence, completion, and transition.
 func (k *Kit) Complete(ctx context.Context, c Completion) error {
 	message := ""
 	if c.Cause != nil {
@@ -181,16 +179,10 @@ func (k *Kit) Complete(ctx context.Context, c Completion) error {
 	}
 	dir := k.TaskDir(c.Phase.TaskID)
 	if c.Planner {
-		return k.db.CompletePlannerPhaseWithArtifactAndApproval(ctx, dir, c.Phase.ID, c.Phase.TaskID, string(c.From), string(c.To), c.Status, message, c.Phase.OutputSnapshot, c.Approval, c.Artifact, eventValue)
+		return k.db.CompletePlannerPhaseWithApproval(ctx, dir, c.Phase.ID, c.Phase.TaskID, string(c.From), string(c.To), c.Status, message, c.Phase.OutputSnapshot, c.Approval, eventValue)
 	}
 	if len(c.Checks) > 0 || len(c.Comparisons) > 0 {
-		if c.Artifact != nil {
-			return k.db.CompleteVerificationPhaseWithEvidenceArtifactAndEvent(ctx, dir, c.Phase.ID, c.Phase.TaskID, string(c.From), string(c.To), c.Status, message, c.Phase.OutputSnapshot, c.Checks, c.Comparisons, c.Artifact, eventValue)
-		}
 		return k.db.CompleteVerificationPhaseWithEvidenceAndEvent(ctx, dir, c.Phase.ID, c.Phase.TaskID, string(c.From), string(c.To), c.Status, message, c.Phase.OutputSnapshot, c.Checks, c.Comparisons, eventValue)
-	}
-	if c.Artifact != nil {
-		return k.db.CompletePhaseWithArtifactAndTransitionAndEvent(ctx, dir, c.Phase.ID, c.Phase.TaskID, string(c.From), string(c.To), c.Status, message, c.Phase.OutputSnapshot, c.Artifact, eventValue)
 	}
 	return k.db.CompletePhaseWithTransitionAndEvent(ctx, dir, c.Phase.ID, c.Phase.TaskID, string(c.From), string(c.To), c.Status, message, c.Phase.OutputSnapshot, eventValue)
 }
@@ -257,60 +249,9 @@ func (k *Kit) PhaseEnvelope(ctx context.Context, taskID, phaseID string) (string
 	return "", store.ErrNotFound
 }
 
-// ReportArtifact builds a report artifact for a phase.
-func (k *Kit) ReportArtifact(task store.Task, phase store.Phase, kind, content, producer string) store.Artifact {
-	if kind == "planner" {
-		kind = "plan"
-	}
-	digest := fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(content)))
-	provenance, _ := json.Marshal(map[string]string{
-		"task_id": task.ID, "stage_id": phase.Name, "attempt_id": phase.ID, "producer": producer,
-	})
-	return store.Artifact{
-		ID: RandomID(), TaskID: task.ID, AttemptID: phase.ID, Type: kind + "_report", Digest: digest,
-		Content: content, MediaType: "text/markdown", Producer: producer, Provenance: string(provenance),
-		CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
-	}
-}
-
-// AgentReportArtifact validates a payload, extracts its report, and builds an
-// artifact. Small custom validators may fall back to the raw payload.
-func (k *Kit) AgentReportArtifact(task store.Task, phase store.Phase, kind, payload string, validate func(string) (any, error)) (store.Artifact, error) {
-	validated, err := validate(payload)
-	if err != nil {
-		if trimSpace(payload) == "" {
-			return store.Artifact{}, err
-		}
-		return k.ReportArtifact(task, phase, kind, payload, kind), nil
-	}
-	report, err := ReportMarkdown(validated)
-	if err != nil {
-		if trimSpace(payload) == "" {
-			return store.Artifact{}, err
-		}
-		report = payload
-	}
-	return k.ReportArtifact(task, phase, kind, report, kind), nil
-}
-
-// ReportMarkdown extracts report_markdown from a validated envelope.
-func ReportMarkdown(value any) (string, error) {
-	body, err := json.Marshal(value)
-	if err != nil {
-		return "", fmt.Errorf("encode validated envelope: %w", err)
-	}
-	var fields struct {
-		Report string `json:"report_markdown"`
-	}
-	if err := json.Unmarshal(body, &fields); err != nil || trimSpace(fields.Report) == "" {
-		return "", fmt.Errorf("validated envelope has no report_markdown")
-	}
-	return fields.Report, nil
-}
-
-// PlanApprovalDigest binds a plan payload to its report digest.
-func PlanApprovalDigest(payload, reportDigest string) string {
-	digest := sha256.Sum256([]byte(payload + "\n" + reportDigest))
+// PlanApprovalDigest binds approval to the exact plan payload.
+func PlanApprovalDigest(payload string) string {
+	digest := sha256.Sum256([]byte(payload))
 	return hex.EncodeToString(digest[:])
 }
 

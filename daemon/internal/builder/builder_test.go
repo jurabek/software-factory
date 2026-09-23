@@ -6,14 +6,14 @@ import (
 )
 
 func TestValidateAcceptsWellFormedBuild(t *testing.T) {
-	payload := `{"status":"success","summary":"built","artifacts":[],"notes_for_next_agent":"","report_markdown":"# Build\n\nDone.","changed_files":["changed_test.go"],"commit_message":"test","test_changes":[{"path":"changed_test.go","reason":"adds the regression assertion"}]}`
+	payload := `{"status":"success","summary":"built","notes_for_next_agent":"","report_markdown":"# Build\n\nDone.","changed_files":["changed_test.go"],"commit_message":"test","test_changes":[{"path":"changed_test.go","reason":"adds the regression assertion"}]}`
 	if _, err := Validate(payload); err != nil {
 		t.Fatalf("valid build rejected: %v", err)
 	}
 }
 
 func TestValidateRejectsMissingTestChanges(t *testing.T) {
-	payload := `{"status":"success","summary":"built","artifacts":[],"notes_for_next_agent":"","report_markdown":"# Build","changed_files":[],"commit_message":"test"}`
+	payload := `{"status":"success","summary":"built","notes_for_next_agent":"","report_markdown":"# Build","changed_files":[],"commit_message":"test"}`
 	if _, err := Validate(payload); err == nil {
 		t.Fatal("missing test_changes accepted")
 	}

@@ -220,53 +220,8 @@ export type TaskDiff = {
 	files: string[];
 	patch: string;
 };
-export type TaskArtifact = {
-	id: string;
-	task_id: string;
-	attempt_id?: string;
-	type: string;
-	digest: string;
-	path?: string;
-	media_type?: string;
-	producer?: string;
-	provenance_json?: string;
-	created_at: string;
-};
-
-export type TaskArtifactContent = {
-	daemon: DaemonConnection;
-	taskId: string;
-	content: string;
-};
-export type TaskIntervention = {
-	id: string;
-	task_id: string;
-	target_type: string;
-	target_id: string;
-	actor: string;
-	intent: string;
-	text: string;
-	delivery: string;
-	branch_id?: string;
-	attempt_id?: string;
-	created_at: string;
-};
 export type MessageDeliveryStatus = "queued" | "delivered" | "failed";
-export type MessageTarget =
-	| { attempt_id: string }
-	| { event_id: string }
-	| {
-			artifact_id: string;
-			anchor?: {
-				kind: string;
-				start?: number;
-				end?: number;
-				quote?: string;
-				pointer?: string;
-				value_digest?: string;
-				block?: string;
-			};
-	  };
+export type MessageTarget = { attempt_id: string } | { event_id: string };
 export type TaskMessage = {
 	id: string;
 	task_id: string;
@@ -297,7 +252,7 @@ export type AgentSession = {
 	context_window?: number;
 	usage: SessionUsage;
 	cost: number;
-	accounting_complete: boolean;
+	last_entry_id?: string;
 	created_at: string;
 	last_used_at: string;
 };
@@ -403,29 +358,6 @@ export function daemonSendMessage(
 	);
 }
 
-export function daemonRetryAttempt(
-	daemonId: string,
-	taskId: string,
-	attemptId: string,
-	idempotencyKey: string,
-	signal?: AbortSignal,
-) {
-	return apiFetch<{
-		daemon: DaemonConnection;
-		taskId: string;
-		attemptId: string;
-		result: unknown;
-	}>(
-		`/api/daemons/${encodeURIComponent(daemonId)}/tasks/${encodeURIComponent(taskId)}/attempts/${encodeURIComponent(attemptId)}/retry`,
-		{
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ idempotency_key: idempotencyKey }),
-			signal,
-		},
-	);
-}
-
 export function daemonRemoveTask(
 	daemonId: string,
 	taskId: string,
@@ -460,34 +392,6 @@ export function daemonBranches(
 ) {
 	return daemonTaskResource<TaskBranch[]>(daemonId, taskId, "branches", signal);
 }
-export function daemonArtifacts(
-	daemonId: string,
-	taskId: string,
-	signal?: AbortSignal,
-) {
-	return daemonTaskResource<TaskArtifact[]>(
-		daemonId,
-		taskId,
-		"artifacts",
-		signal,
-	);
-}
-
-export function daemonArtifactContent(
-	daemonId: string,
-	taskId: string,
-	artifactId: string,
-	signal?: AbortSignal,
-) {
-	return fetch(
-		`/api/daemons/${encodeURIComponent(daemonId)}/tasks/${encodeURIComponent(taskId)}/artifacts/${encodeURIComponent(artifactId)}`,
-		{ cache: "no-store", signal },
-	).then(async (response) => {
-		if (!response.ok) throw new Error("Could not load report.");
-		return response.text();
-	});
-}
-
 export function daemonChecks(
 	daemonId: string,
 	taskId: string,
@@ -509,26 +413,6 @@ export function daemonDiff(
 ) {
 	return daemonTaskResource<TaskDiff>(daemonId, taskId, "diff", signal);
 }
-export function daemonInterventions(
-	daemonId: string,
-	taskId: string,
-	signal?: AbortSignal,
-) {
-	return daemonTaskResource<TaskIntervention[]>(
-		daemonId,
-		taskId,
-		"interventions",
-		signal,
-	).catch((error: unknown) => {
-		if (
-			error instanceof APIRequestError &&
-			(error.status === 404 || error.status === 410)
-		)
-			return { interventions: [] as TaskIntervention[] };
-		throw error;
-	});
-}
-
 export function daemonMessages(
 	daemonId: string,
 	taskId: string,

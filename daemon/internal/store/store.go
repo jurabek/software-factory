@@ -38,10 +38,6 @@ func Open(path string) (*DB, error) {
 		return nil, err
 	}
 	wrapped := &DB{DB: db}
-	if err = wrapped.RecoverPendingAgentSessions(context.Background()); err != nil {
-		db.Close()
-		return nil, err
-	}
 	if err := os.Chmod(path, 0o600); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("secure database: %w", err)
@@ -53,7 +49,6 @@ var (
 	ErrNotFound          = errors.New("not found")
 	ErrConflict          = errors.New("conflict")
 	ErrStaleBranch       = errors.New("stale_branch")
-	ErrStaleAnchor       = errors.New("stale_anchor")
 	ErrStateIncompatible = errors.New("state_incompatible: delete the configured Software Factory directory before starting this clean-break version")
 )
 

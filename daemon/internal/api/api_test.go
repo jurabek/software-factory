@@ -206,34 +206,6 @@ func TestRestartRecoveryIsVisibleThroughTaskHTTPReads(t *testing.T) {
 	}
 }
 
-func TestArtifactContentRequiresTask(t *testing.T) {
-	db, err := store.Open(filepath.Join(t.TempDir(), "factory.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if err = db.CreateTask(context.Background(), store.Task{ID: "task-1", Request: "request", WorkspacePath: t.TempDir(), State: "completed", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
-		t.Fatal(err)
-	}
-	if err = db.CreateArtifact(context.Background(), store.Artifact{ID: "report-1", TaskID: "task-1", AttemptID: "phase-1", Type: "build_report", Digest: "sha256:bbc290c9f84e532bd47737480381f0db3afae637d696806856d95d0a186bb619", Content: "# Build\n", MediaType: "text/markdown", Producer: "invocation-1", Provenance: `{"task_id":"task-1"}`, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}); err != nil {
-		t.Fatal(err)
-	}
-	server, err := New(db, Communicators{}, config.Config{}, nil, nil, nil, nil, newTestAccess())
-	if err != nil {
-		t.Fatal(err)
-	}
-	request := httptest.NewRequest(http.MethodGet, "/api/v1/tasks/task-1/artifacts/report-1", nil)
-	authorize(request)
-	response := httptest.NewRecorder()
-	server.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || response.Body.String() != "# Build\n" {
-		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
-	}
-	if response.Header().Get("Content-Type") != "text/markdown" {
-		t.Fatalf("content type = %q", response.Header().Get("Content-Type"))
-	}
-}
-
 func TestEmptyCollectionsAreJSONArrays(t *testing.T) {
 	db, err := store.Open(filepath.Join(t.TempDir(), "factory.db"))
 	if err != nil {

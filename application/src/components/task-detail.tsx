@@ -19,26 +19,22 @@ import {
 	Users,
 } from "lucide-react";
 import {
+	type ReactNode,
 	useCallback,
 	useEffect,
 	useRef,
 	useState,
-	type ReactNode,
 } from "react";
 import {
 	daemonAttempts,
-	daemonArtifactContent,
-	daemonArtifacts,
 	daemonBranches,
 	daemonChecks,
 	daemonCommand,
 	daemonDiff,
 	daemonEvents,
-	daemonInterventions,
 	daemonMessages,
 	daemonRemoveTask,
 	daemonResults,
-	daemonRetryAttempt,
 	daemonSendMessage,
 	daemonSessions,
 	daemonTask,
@@ -46,12 +42,10 @@ import {
 	openTaskStream,
 	type QualifiedTask,
 	type TaskAttempt,
-	type TaskArtifact,
 	type TaskBranch,
 	type TaskCheck,
 	type TaskDetails,
 	type TaskDiff,
-	type TaskIntervention,
 	type TaskMessage,
 	type TaskResult,
 } from "@/client/daemon-api.ts";
@@ -60,13 +54,13 @@ import {
 	RequestScope,
 	relativeTime,
 } from "@/client/daemon-ui-state.ts";
+import { safeMarkdownText } from "@/client/safe-markdown.ts";
 import {
 	formatDurationMs,
 	type SessionEvent,
 	sessionDisplay,
 } from "@/client/session-contract.ts";
 import { meaningfulWorkEvents, visibleWorkEvents } from "@/client/work-log.ts";
-import { safeMarkdownText } from "@/client/safe-markdown.ts";
 import { AttemptGraph } from "@/components/attempt-graph.tsx";
 import { EventDialog } from "@/components/event-dialog.tsx";
 import { StageProgress } from "@/components/stage-progress.tsx";
@@ -108,7 +102,7 @@ const liveTone: Record<string, string> = {
 	offline: "bg-destructive",
 };
 const visibleEventLimit = 500;
-type DisplayArtifact = {
+type DisplayReport = {
 	id: string;
 	kind: "result" | "check" | "diff";
 	title: string;
@@ -116,12 +110,12 @@ type DisplayArtifact = {
 	content: string;
 };
 
-function renderedArtifactContent(artifact: DisplayArtifact): string {
-	if (artifact.kind !== "result") return artifact.content;
+function renderedReportContent(report: DisplayReport): string {
+	if (report.kind !== "result") return report.content;
 	try {
-		return JSON.stringify(JSON.parse(artifact.content), null, 2);
+		return JSON.stringify(JSON.parse(report.content), null, 2);
 	} catch {
-		return artifact.content;
+		return report.content;
 	}
 }
 
@@ -153,11 +147,7 @@ function markdownReport(content: string): ReactNode {
 				</li>
 			);
 		if (line.trim() === "") return <div key={key} className="h-2" />;
-		return (
-			<p key={key}>
-				{safeMarkdownText(line)}
-			</p>
-		);
+		return <p key={key}>{safeMarkdownText(line)}</p>;
 	});
 }
 
@@ -197,7 +187,6 @@ type ChatItem = {
 	errored?: boolean;
 	deliveryStatus?: TaskMessage["delivery_status"];
 	failureReason?: string;
-	legacy?: boolean;
 	message?: TaskMessage;
 	event?: SessionEvent;
 };
@@ -215,7 +204,6 @@ function buildTimeline(
 	createdAt: string,
 	author: string,
 	messages: TaskMessage[],
-	interventions: TaskIntervention[],
 	events: SessionEvent[],
 ): ChatItem[] {
 	const items: ChatItem[] = [];
@@ -240,18 +228,6 @@ function buildTimeline(
 			deliveryStatus: message.delivery_status,
 			failureReason: message.failure_reason,
 			message,
-		});
-	}
-	for (const intervention of interventions) {
-		if (!intervention.text?.trim()) continue;
-		items.push({
-			key: `iv-${intervention.id}`,
-			role: "user",
-			author: intervention.actor,
-			text: intervention.text,
-			at: new Date(intervention.created_at).getTime() || 0,
-			iso: intervention.created_at,
-			legacy: true,
 		});
 	}
 	const messageIDs = new Set(messages.map((message) => message.id));
@@ -287,22 +263,7 @@ function messageTargetLabel(message: TaskMessage): string | null {
 	if (!target) return null;
 	if ("attempt_id" in target) return `Attempt ${target.attempt_id}`;
 	if ("event_id" in target) return `Event ${target.event_id}`;
-	return `Artifact ${target.artifact_id}`;
-}
-
-function messageAnchorLabel(message: TaskMessage): string | null {
-	if (!message.target || !("artifact_id" in message.target)) return null;
-	const anchor = message.target.anchor;
-	if (!anchor) return null;
-	const range =
-		typeof anchor.start === "number" && typeof anchor.end === "number"
-			? ` ${anchor.start}-${anchor.end}`
-			: "";
-	const quote = anchor.quote ? `: ${anchor.quote}` : "";
-	const pointer = anchor.pointer ? ` ${anchor.pointer}` : "";
-	const block = anchor.block ? ` ${anchor.block}` : "";
-	const digest = anchor.value_digest ? ` ${anchor.value_digest}` : "";
-	return `${anchor.kind}${range}${pointer}${block}${digest}${quote}`;
+	return null;
 }
 
 function formatSpan(ms: number): string {
@@ -374,14 +335,9 @@ export function TaskDetail({
 	const [diff, setDiff] = useState<TaskDiff>({ files: [], patch: "" });
 	const [sessions, setSessions] = useState<TaskDetails[]>([]);
 	const [messages, setMessages] = useState<TaskMessage[]>([]);
-	const [interventions, setInterventions] = useState<TaskIntervention[]>([]);
-	const [artifacts, setArtifacts] = useState<TaskArtifact[]>([]);
-	const [artifactContent, setArtifactContent] = useState<
-		Record<string, string>
-	>({});
 	const [selectedAttempt, setSelectedAttempt] = useState<string | null>(null);
 	const [selectedBranchId, setSelectedBranchId] = useState<string | null>(null);
-	const [selectedArtifact, setSelectedArtifact] = useState<string | null>(null);
+	const [selectedReport, setSelectedReport] = useState<string | null>(null);
 	const [selectedEvent, setSelectedEvent] = useState<SessionEvent | null>(null);
 	const [autoScroll] = useState(true);
 	const [events, setEvents] = useState<SessionEvent[]>([]);
@@ -404,7 +360,6 @@ export function TaskDetail({
 	const submittedMessage = useRef<{ payload: string; key: string } | null>(
 		null,
 	);
-	const retryKeys = useRef(new Map<string, string>());
 
 	const currentTask = details ?? task;
 	const rootTaskId = currentTask.parent_task_id ?? currentTask.id;
@@ -412,14 +367,7 @@ export function TaskDetail({
 		branches.find((branch) => branch.id === selectedBranchId) ??
 		branches.find((branch) => branch.id === currentTask.selected_branch_id) ??
 		branches[0];
-	const artifactViews: DisplayArtifact[] = [
-		...artifacts.map((artifact) => ({
-			id: artifact.id,
-			kind: "diff" as const,
-			title: artifact.type.replaceAll("_", " "),
-			subtitle: `attempt ${artifact.attempt_id ?? "unknown"}`,
-			content: artifactContent[artifact.id] ?? "Loading report...",
-		})),
+	const reportViews: DisplayReport[] = [
 		...results.map((result) => ({
 			id: result.id,
 			kind: "result" as const,
@@ -446,8 +394,8 @@ export function TaskDetail({
 				]
 			: []),
 	];
-	const selectedArtifactValue =
-		artifactViews.find((artifact) => artifact.id === selectedArtifact) ?? null;
+	const selectedReportValue =
+		reportViews.find((report) => report.id === selectedReport) ?? null;
 	const meaningfulEvents = meaningfulWorkEvents(events, selectedAttempt);
 	const visibleEvents = visibleWorkEvents(
 		events,
@@ -463,7 +411,6 @@ export function TaskDetail({
 		currentTask.created_at,
 		login,
 		messages,
-		interventions,
 		visibleEvents,
 	);
 	const timelineBlocks = groupTimeline(timeline);
@@ -474,7 +421,6 @@ export function TaskDetail({
 	const controls = availableActions.filter((action): action is Command =>
 		commands.includes(action as Command),
 	);
-	const canRetry = availableActions.includes("retry");
 	const messageTarget: MessageTarget | undefined = selectedAttempt
 		? { attempt_id: selectedAttempt }
 		: undefined;
@@ -506,33 +452,27 @@ export function TaskDetail({
 				branchResult,
 				checksResult,
 				resultsResult,
-				artifactsResult,
 				diffResult,
 				sessionsResult,
 				messagesResult,
-				interventionsResult,
 			] = await Promise.all([
 				daemonTask(daemonId, task.id, signal),
 				daemonAttempts(daemonId, task.id, signal),
 				daemonBranches(daemonId, task.id, signal),
 				daemonChecks(daemonId, task.id, signal),
 				daemonResults(daemonId, task.id, signal),
-				daemonArtifacts(daemonId, task.id, signal),
 				daemonDiff(daemonId, task.id, signal),
 				daemonSessions(daemonId, rootTaskId, signal),
 				daemonMessages(daemonId, task.id, signal),
-				daemonInterventions(daemonId, task.id, signal),
 			]);
 			setDetails(taskResult.task);
 			setAttempts(attemptResult.attempts ?? []);
 			setBranches(branchResult.branches ?? []);
 			setChecks(checksResult.checks ?? []);
 			setResults(resultsResult.results ?? []);
-			setArtifacts(artifactsResult.artifacts ?? []);
 			setDiff(diffResult.diff ?? { files: [], patch: "" });
 			setSessions(sessionsResult.sessions ?? []);
 			setMessages(messagesResult.messages ?? []);
-			setInterventions(interventionsResult.interventions ?? []);
 			setAvailableActions(taskResult.task.available_actions ?? []);
 			setSelectedBranchId((current) =>
 				current &&
@@ -554,15 +494,12 @@ export function TaskDetail({
 		setBranches([]);
 		setChecks([]);
 		setResults([]);
-		setArtifacts([]);
-		setArtifactContent({});
 		setDiff({ files: [], patch: "" });
 		setSessions([]);
 		setMessages([]);
-		setInterventions([]);
 		setSelectedAttempt(null);
 		setSelectedBranchId(null);
-		setSelectedArtifact(null);
+		setSelectedReport(null);
 		setSelectedEvent(null);
 		setError(null);
 		setAvailableActions([]);
@@ -590,35 +527,12 @@ export function TaskDetail({
 
 	useEffect(() => {
 		if (
-			!selectedArtifact ||
-			!artifacts.some((artifact) => artifact.id === selectedArtifact)
-		)
-			return;
-		const controller = new AbortController();
-		void daemonArtifactContent(
-			daemonId,
-			task.id,
-			selectedArtifact,
-			controller.signal,
-		)
-			.then((content) =>
-				setArtifactContent((current) => ({
-					...current,
-					[selectedArtifact]: content,
-				})),
-			)
-			.catch(() => undefined);
-		return () => controller.abort();
-	}, [artifacts, daemonId, selectedArtifact, task.id]);
-
-	useEffect(() => {
-		if (
 			autoScroll &&
-			(events.length > 0 || messages.length > 0 || interventions.length > 0) &&
+			(events.length > 0 || messages.length > 0) &&
 			chatScroll.current
 		)
 			chatScroll.current.scrollTop = chatScroll.current.scrollHeight;
-	}, [autoScroll, events, messages, interventions]);
+	}, [autoScroll, events, messages]);
 
 	useEffect(() => {
 		const current = scope.current.next();
@@ -805,37 +719,6 @@ export function TaskDetail({
 		}
 	}
 
-	async function retryAttempt() {
-		if (submitting.current || !canRetry || !selectedAttempt) return;
-		submitting.current = true;
-		const { generation, controller } = beginMutation();
-		setPendingCommand("retry");
-		setError(null);
-		try {
-			const idempotencyKey =
-				retryKeys.current.get(selectedAttempt) ?? crypto.randomUUID();
-			retryKeys.current.set(selectedAttempt, idempotencyKey);
-			await daemonRetryAttempt(
-				daemonId,
-				task.id,
-				selectedAttempt,
-				idempotencyKey,
-				controller.signal,
-			);
-			retryKeys.current.delete(selectedAttempt);
-			await refreshDetails(controller.signal);
-			if (mutationIsCurrent(generation, controller)) await onChanged();
-		} catch (failure) {
-			if (!mutationIsCurrent(generation, controller)) return;
-			setError(
-				failure instanceof Error ? failure.message : "Could not retry attempt.",
-			);
-		} finally {
-			submitting.current = false;
-			if (mutationIsCurrent(generation, controller)) setPendingCommand(null);
-		}
-	}
-
 	async function removeTask() {
 		if (pending || pendingCommand !== null) return;
 		if (!window.confirm("Delete this task and its daemon-owned files?")) return;
@@ -991,7 +874,7 @@ export function TaskDetail({
 					</Alert>
 				) : null}
 
-				{controls.length > 0 || canRetry ? (
+				{controls.length > 0 ? (
 					<fieldset
 						className="flex flex-wrap gap-2 border-b px-4 py-2.5"
 						aria-label="Task commands"
@@ -1014,18 +897,6 @@ export function TaskDetail({
 								{pendingCommand === command ? `${command}…` : command}
 							</Button>
 						))}
-						{canRetry ? (
-							<Button
-								type="button"
-								variant="outline"
-								size="sm"
-								className="uppercase"
-								disabled={offline || pending || !selectedAttempt}
-								onClick={() => void retryAttempt()}
-							>
-								{pendingCommand === "retry" ? "retrying…" : "retry exact"}
-							</Button>
-						) : null}
 					</fieldset>
 				) : null}
 				{(["completed", "aborted"] as string[]).includes(currentTask.state) ? (
@@ -1091,11 +962,9 @@ export function TaskDetail({
 										<p className="whitespace-pre-wrap break-words">
 											{block.item.text}
 										</p>
-										{block.item.deliveryStatus || block.item.legacy ? (
+										{block.item.deliveryStatus ? (
 											<p className="text-muted-foreground text-[0.68rem] uppercase tracking-[0.06em]">
-												{block.item.legacy
-													? "legacy intervention"
-													: block.item.deliveryStatus}
+												{block.item.deliveryStatus}
 												{block.item.failureReason
 													? ` · ${block.item.failureReason}`
 													: ""}
@@ -1123,14 +992,6 @@ export function TaskDetail({
 														<dt>Target</dt>
 														<dd className="text-subtle truncate">
 															{messageTargetLabel(block.item.message)}
-														</dd>
-													</div>
-												) : null}
-												{messageAnchorLabel(block.item.message) ? (
-													<div className="flex min-w-0 gap-1.5">
-														<dt>Anchor</dt>
-														<dd className="text-subtle truncate">
-															{messageAnchorLabel(block.item.message)}
 														</dd>
 													</div>
 												) : null}
@@ -1475,10 +1336,10 @@ export function TaskDetail({
 							Pipeline
 						</TabsTrigger>
 						<TabsTrigger
-							value="artifacts"
+							value="reports"
 							className="text-[0.68rem] uppercase tracking-[0.07em]"
 						>
-							Artifacts {artifactViews.length}
+							Reports {reportViews.length}
 						</TabsTrigger>
 						<TabsTrigger
 							value="workspace"
@@ -1488,7 +1349,7 @@ export function TaskDetail({
 						</TabsTrigger>
 					</TabsList>
 					<TabsContent
-						value="artifacts"
+						value="reports"
 						className="min-h-0 flex-1 overflow-y-auto p-3.5"
 					>
 						<p className="text-muted-foreground mb-3 text-[0.74rem]">
@@ -1506,19 +1367,19 @@ export function TaskDetail({
 							Grouped
 						</Label>
 						<p className="text-muted-foreground mb-2 text-[0.66rem] uppercase tracking-[0.07em]">
-							Unreferenced ({artifactViews.length})
+							Unreferenced ({reportViews.length})
 						</p>
 						<ul className="grid gap-1.5">
-							{artifactViews.map((artifact) => {
-								const label = artifact.title;
+							{reportViews.map((report) => {
+								const label = report.title;
 								return (
-									<li key={artifact.id}>
+									<li key={report.id}>
 										<button
 											type="button"
 											className="bg-background hover:bg-secondary aria-pressed:bg-secondary aria-pressed:border-input grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-md border px-2 py-2 text-left"
-											aria-pressed={selectedArtifact === artifact.id}
+											aria-pressed={selectedReport === report.id}
 											onClick={() => {
-												setSelectedArtifact(artifact.id);
+												setSelectedReport(report.id);
 											}}
 										>
 											<File className="text-muted-foreground size-4" />
@@ -1527,7 +1388,7 @@ export function TaskDetail({
 													{label}
 												</span>
 												<span className="text-muted-foreground block truncate text-[0.66rem]">
-													{artifact.subtitle}
+													{report.subtitle}
 												</span>
 											</span>
 											<span className="text-muted-foreground text-[0.66rem]">
@@ -1538,35 +1399,35 @@ export function TaskDetail({
 								);
 							})}
 						</ul>
-						{!artifactViews.length ? (
+						{!reportViews.length ? (
 							<p className="text-muted-foreground text-[0.78rem]">
-								No artifacts yet.
+								No reports yet.
 							</p>
 						) : null}
-						{selectedArtifactValue ? (
+						{selectedReportValue ? (
 							<article className="border-primary mt-4 rounded-md border p-3">
 								<div className="flex flex-wrap items-center justify-between gap-2">
 									<strong className="font-medium">
-										{selectedArtifactValue.title}
+										{selectedReportValue.title}
 									</strong>
 									<span className="text-muted-foreground text-xs">
-										{selectedArtifactValue.subtitle}
+										{selectedReportValue.subtitle}
 									</span>
 									<div>
 										<Button
 											type="button"
 											variant="outline"
 											size="xs"
-											onClick={() => setSelectedArtifact(null)}
+											onClick={() => setSelectedReport(null)}
 										>
 											Close
 										</Button>
 									</div>
 								</div>
 								<div className="text-muted-foreground mt-2.5 max-h-72 overflow-auto text-xs leading-relaxed break-words whitespace-pre-wrap">
-									{selectedArtifactValue.kind === "result"
-										? renderedArtifactContent(selectedArtifactValue)
-										: markdownReport(selectedArtifactValue.content)}
+									{selectedReportValue.kind === "result"
+										? renderedReportContent(selectedReportValue)
+										: markdownReport(selectedReportValue.content)}
 								</div>
 							</article>
 						) : null}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/jurabek/software-factory/daemon/internal/harness"
 	"github.com/jurabek/software-factory/daemon/internal/stage"
 	"github.com/jurabek/software-factory/daemon/internal/stagekit"
 	"github.com/jurabek/software-factory/daemon/internal/store"
@@ -69,68 +70,33 @@ func (s service) beginPlan(ctx context.Context, taskID string) (store.Task, stor
 	return task, phase, nil
 }
 
-// publishPlan drains message turns, enforces read-only observation, persists
-// the plan artifact, and transitions to AwaitingApproval.
-func (s service) publishPlan(ctx context.Context, task store.Task, phase store.Phase, payload string) (stage.PlanResult, error) {
-	baseline, err := workspace.Fingerprint(ctx, s.kit.Git(), task)
+// publishPlan delivers message turns, enforces read-only observation, and transitions to AwaitingApproval.
+func (s service) publishPlan(ctx context.Context, task store.Task, phase store.Phase, turn harness.TurnResult) (stage.PlanResult, error) {
+	baseline, err := workspace.Fingerprint(task)
 	if err != nil {
 		s.kit.Fail(ctx, phase, err)
 		return stage.PlanResult{}, err
 	}
-	validate := func(text string) (any, error) { return Validate(text) }
-	drain := stagekit.DrainSpec{
-		Task: task, Phase: phase, StageID: phase.Name, AgentName: phase.Owner, Role: "planner",
-		ReadOnly: true, Instructions: Instructions(), Validate: validate,
-	}
-	for {
-		continued, err := s.kit.Drain(ctx, drain)
-		if err != nil {
-			s.kit.Fail(ctx, phase, err)
-			return stage.PlanResult{}, err
-		}
-		if continued != "" {
-			payload = continued
-		}
-		lock := s.kit.Lock(task.ID)
-		lock.Lock()
-		_, err = s.kit.DB().NextQueuedMessage(ctx, task.ID, phase.Name)
-		if err == nil {
-			lock.Unlock()
-			continue
-		}
-		if !errors.Is(err, store.ErrNotFound) {
-			lock.Unlock()
-			s.kit.Fail(ctx, phase, err)
-			return stage.PlanResult{}, err
-		}
-		after, changedErr := workspace.Fingerprint(ctx, s.kit.Git(), task)
+	return s.kit.DeliverAndFinalize(ctx, stagekit.Delivery{
+		Task: task, Phase: phase, Role: "planner", ReadOnly: true, Instructions: Instructions(),
+		Validate: func(text string) (any, error) { return Validate(text) },
+	}, turn, func(turn harness.TurnResult) (stage.PlanResult, error) {
+		after, changedErr := workspace.Fingerprint(task)
 		if changedErr != nil {
 			s.kit.Fail(ctx, phase, changedErr)
-			lock.Unlock()
 			return stage.PlanResult{}, changedErr
 		}
 		if baseline != after {
 			readonlyErr := fmt.Errorf("planner modified repository")
 			s.kit.Fail(ctx, phase, readonlyErr)
-			lock.Unlock()
 			return stage.PlanResult{}, readonlyErr
 		}
-		artifact, artifactErr := s.kit.AgentReportArtifact(task, phase, "plan", payload, validate)
-		if artifactErr != nil {
-			s.kit.Fail(ctx, phase, artifactErr)
-			lock.Unlock()
-			return stage.PlanResult{}, artifactErr
-		}
-		err = s.kit.Complete(ctx, stagekit.Completion{
+		if completeErr := s.kit.Complete(ctx, stagekit.Completion{
 			Phase: phase, From: stagekit.Planning, To: stagekit.AwaitingApproval, Status: "success",
-			Approval: stagekit.PlanApprovalDigest(payload, artifact.Digest), Artifact: &artifact, Planner: true,
-		})
-		if err != nil {
-			s.kit.Fail(ctx, phase, err)
-		}
-		lock.Unlock()
-		if err != nil {
-			return stage.PlanResult{}, err
+			Approval: stagekit.PlanApprovalDigest(turn.Payload), Planner: true,
+		}); completeErr != nil {
+			s.kit.Fail(ctx, phase, completeErr)
+			return stage.PlanResult{}, completeErr
 		}
 		refreshed, err := s.kit.Task(ctx, task.ID)
 		if err != nil {
@@ -144,5 +110,5 @@ func (s service) publishPlan(ctx context.Context, task store.Task, phase store.P
 			return stage.PlanResult{}, errNoDurableResult
 		}
 		return result, nil
-	}
+	})
 }

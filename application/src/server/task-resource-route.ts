@@ -9,9 +9,7 @@ export type TaskResource =
 	| "sessions"
 	| "attempts"
 	| "branches"
-	| "artifacts"
 	| "messages"
-	| "interventions"
 	| "checks"
 	| "results"
 	| "diff";

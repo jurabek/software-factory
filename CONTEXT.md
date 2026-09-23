@@ -21,9 +21,5 @@ One immutable execution of a Task phase against recorded workspace inputs.
 _Avoid_: Retry, run, session
 
 **Task transition policy**:
-The deterministic rules that decide how a Task advances or branches after an observed outcome or Intervention.
+The deterministic rules that decide how a Task advances or branches after an observed outcome.
 _Avoid_: Campaign transition policy, routing logic, state switch
-
-**Intervention**:
-A persisted human message anchored to an Event, Artifact, or Attempt that may comment, steer, retry, revise, or repair work.
-_Avoid_: Feedback, instruction override

@@ -328,20 +328,6 @@ test("task workflow resources stay on the authenticated daemon connection", asyn
 		"task-1",
 		options,
 	);
-	await client.retryAttempt(
-		"http://127.0.0.1:8080",
-		"credential",
-		"task-1",
-		"attempt-1",
-		{ idempotency_key: "retry-key" },
-		options,
-	);
-	await client.interventions(
-		"http://127.0.0.1:8080",
-		"credential",
-		"task-1",
-		options,
-	);
 	await client.remove("http://127.0.0.1:8080", "credential", "task-1", options);
 	await client.attempts(
 		"http://127.0.0.1:8080",
@@ -350,12 +336,6 @@ test("task workflow resources stay on the authenticated daemon connection", asyn
 		options,
 	);
 	await client.branches(
-		"http://127.0.0.1:8080",
-		"credential",
-		"task-1",
-		options,
-	);
-	await client.artifacts(
 		"http://127.0.0.1:8080",
 		"credential",
 		"task-1",
@@ -379,12 +359,9 @@ test("task workflow resources stay on the authenticated daemon connection", asyn
 			"/api/v1/tasks/task-1/sessions",
 			"/api/v1/tasks/task-1/messages",
 			"/api/v1/tasks/task-1/messages",
-			"/api/v1/tasks/task-1/attempts/attempt-1/retry",
-			"/api/v1/tasks/task-1/interventions",
 			"/api/v1/tasks/task-1",
 			"/api/v1/tasks/task-1/attempts",
 			"/api/v1/tasks/task-1/branches",
-			"/api/v1/tasks/task-1/artifacts",
 			"/api/v1/tasks/task-1/checks",
 			"/api/v1/tasks/task-1/results",
 			"/api/v1/tasks/task-1/diff",
@@ -400,9 +377,6 @@ test("task workflow resources stay on the authenticated daemon connection", asyn
 	assert.deepEqual(JSON.parse(String(requests[3].init?.body)), {
 		text: "Revise",
 		idempotency_key: "message-key",
-	});
-	assert.deepEqual(JSON.parse(String(requests[5].init?.body)), {
-		idempotency_key: "retry-key",
 	});
 });
 
@@ -474,7 +448,6 @@ test("event reads preserve lineage and available actions", async () => {
 					task_id: "task-1",
 					phase_id: "phase-1",
 					attempt_id: "attempt-1",
-					artifact_id: "artifact-1",
 					branch_id: "branch-1",
 					kind: "phase_end",
 					payload: { status: "passed" },
@@ -504,7 +477,6 @@ test("event reads preserve lineage and available actions", async () => {
 					task_id: "task-1",
 					phase_id: "phase-1",
 					attempt_id: "attempt-1",
-					artifact_id: "artifact-1",
 					branch_id: "branch-1",
 					kind: "phase_end",
 					payload: { status: "passed" },
@@ -530,9 +502,8 @@ test("event reads preserve exact task message payload", async () => {
 		text: "Keep this shape",
 		recipient_role: "builder",
 		agent_session_id: "session-1",
-		target_type: "artifact",
-		target_id: "artifact-1",
-		anchor_json: '{"kind":"text_range","start":0,"end":4}',
+		target_type: "attempt",
+		target_id: "attempt-1",
 		delivery_status: "delivered",
 	};
 	const client = createDaemonClient(async () =>

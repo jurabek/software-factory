@@ -13,7 +13,7 @@ type Check struct {
 	Command            string `json:"command"`
 	Status             string `json:"status"`
 	Output             string `json:"output"`
-	ArtifactPath       string `json:"artifact_path"`
+	OutputPath         string `json:"output_path"`
 	Attempt            int    `json:"attempt"`
 	ExitCode           int    `json:"exit_code"`
 	DurationMS         int    `json:"duration_ms"`
@@ -22,11 +22,11 @@ type Check struct {
 }
 
 func (db *DB) SaveCheck(ctx context.Context, check Check) error {
-	_, err := db.ExecContext(ctx, `insert or replace into checks(id,task_id,phase_id,stage_id,check_phase,comparison_baseline,name,command,attempt,status,exit_code,output,artifact_path,duration_ms,started_at,ended_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, check.ID, check.TaskID, nullIfEmpty(check.PhaseID), nullIfEmpty(check.StageID), check.Phase, nullIfEmpty(check.ComparisonBaseline), check.Name, check.Command, check.Attempt, check.Status, check.ExitCode, check.Output, check.ArtifactPath, check.DurationMS, check.StartedAt, check.EndedAt)
+	_, err := db.ExecContext(ctx, `insert or replace into checks(id,task_id,phase_id,stage_id,check_phase,comparison_baseline,name,command,attempt,status,exit_code,output,output_path,duration_ms,started_at,ended_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, check.ID, check.TaskID, nullIfEmpty(check.PhaseID), nullIfEmpty(check.StageID), check.Phase, nullIfEmpty(check.ComparisonBaseline), check.Name, check.Command, check.Attempt, check.Status, check.ExitCode, check.Output, check.OutputPath, check.DurationMS, check.StartedAt, check.EndedAt)
 	return wrap("save check", err)
 }
 func (db *DB) Checks(ctx context.Context, taskID string) ([]Check, error) {
-	rows, err := db.QueryContext(ctx, `select id,task_id,coalesce(phase_id,''),coalesce(stage_id,''),coalesce(check_phase,'primary'),coalesce(comparison_baseline,''),name,command,attempt,status,coalesce(exit_code,-1),coalesce(output,''),coalesce(artifact_path,''),coalesce(duration_ms,0),coalesce(started_at,''),coalesce(ended_at,'') from checks where task_id=? order by rowid`, taskID)
+	rows, err := db.QueryContext(ctx, `select id,task_id,coalesce(phase_id,''),coalesce(stage_id,''),coalesce(check_phase,'primary'),coalesce(comparison_baseline,''),name,command,attempt,status,coalesce(exit_code,-1),coalesce(output,''),coalesce(output_path,''),coalesce(duration_ms,0),coalesce(started_at,''),coalesce(ended_at,'') from checks where task_id=? order by rowid`, taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -34,7 +34,7 @@ func (db *DB) Checks(ctx context.Context, taskID string) ([]Check, error) {
 	values := make([]Check, 0)
 	for rows.Next() {
 		var value Check
-		if err := rows.Scan(&value.ID, &value.TaskID, &value.PhaseID, &value.StageID, &value.Phase, &value.ComparisonBaseline, &value.Name, &value.Command, &value.Attempt, &value.Status, &value.ExitCode, &value.Output, &value.ArtifactPath, &value.DurationMS, &value.StartedAt, &value.EndedAt); err != nil {
+		if err := rows.Scan(&value.ID, &value.TaskID, &value.PhaseID, &value.StageID, &value.Phase, &value.ComparisonBaseline, &value.Name, &value.Command, &value.Attempt, &value.Status, &value.ExitCode, &value.Output, &value.OutputPath, &value.DurationMS, &value.StartedAt, &value.EndedAt); err != nil {
 			return nil, err
 		}
 		values = append(values, value)

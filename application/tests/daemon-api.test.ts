@@ -1,10 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
-import {
-	daemonCommand,
-	daemonInterventions,
-	daemonTask,
-} from "../src/client/daemon-api.ts";
+import { daemonCommand, daemonTask } from "../src/client/daemon-api.ts";
 
 const originalFetch = globalThis.fetch;
 
@@ -48,13 +44,4 @@ test("task details preserve daemon available actions", async () => {
 
 	const result = await daemonTask("daemon-1", "task-1");
 	assert.deepEqual(result.task.available_actions, ["pause"]);
-});
-
-test("missing legacy intervention endpoint returns empty history", async () => {
-	for (const status of [404, 410]) {
-		globalThis.fetch = (async () =>
-			new Response(null, { status })) as typeof fetch;
-		const result = await daemonInterventions("daemon-1", "task-1");
-		assert.deepEqual(result.interventions, []);
-	}
 });

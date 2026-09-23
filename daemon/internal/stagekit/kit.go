@@ -9,21 +9,25 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jurabek/software-factory/daemon/internal/agentexec"
 	"github.com/jurabek/software-factory/daemon/internal/config"
-	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
 	"github.com/jurabek/software-factory/daemon/internal/harness"
 	"github.com/jurabek/software-factory/daemon/internal/session"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 	"github.com/jurabek/software-factory/daemon/internal/workspace"
 )
 
+// TaskConfig carries resolved task configuration for stage prompt rendering.
+type TaskConfig struct {
+	Config     config.Config
+	ConfigPath string
+	TaskDir    string
+}
+
 // Kit is the shared lifecycle support injected into every stage module. It
-// owns durable mechanics: task locks, phase attempts, transitions, artifacts,
+// owns durable mechanics: task locks, phase attempts, transitions,
 // lineage, config resolution, events, and message draining.
 type Kit struct {
 	db         *store.DB
-	git        factorygit.Runner
 	harnesses  harness.Registry
 	sandbox    workspace.Sandbox
 	snapshots  *workspace.Service
@@ -34,13 +38,12 @@ type Kit struct {
 }
 
 // New constructs the shared stage kit.
-func New(db *store.DB, git factorygit.Runner, harnesses harness.Registry, sandbox workspace.Sandbox, config config.Config, configPath, root string) *Kit {
+func New(db *store.DB, harnesses harness.Registry, sandbox workspace.Sandbox, config config.Config, configPath, root string) *Kit {
 	return &Kit{
 		db:         db,
-		git:        git,
 		harnesses:  harnesses,
 		sandbox:    sandbox,
-		snapshots:  workspace.New(db, git),
+		snapshots:  workspace.New(db),
 		config:     config,
 		configPath: configPath,
 		root:       root,
@@ -61,13 +64,23 @@ func (l *Locker) Lock(id string) *sync.Mutex {
 // DB exposes the store for stage-owned reads.
 func (k *Kit) DB() *store.DB { return k.db }
 
-// AgentExec returns the shared agent-turn dependencies bound to this kit.
-func (k *Kit) AgentExec() agentexec.Deps {
-	return agentexec.Deps{DB: k.db, Harnesses: k.harnesses, Git: k.git}
+// AgentExec returns the shared agent-turn dependencies bound to this kit. When
+// a registered harness exposes a native session reader, it is attached so
+// native entries remain authoritative for usage and reports.
+func (k *Kit) AgentExec() harness.Deps {
+	return harness.Deps{DB: k.db, Harnesses: k.harnesses, NativeReader: k.nativeReader()}
 }
 
-// Git exposes the git runner for stage-owned reads.
-func (k *Kit) Git() factorygit.Runner { return k.git }
+func (k *Kit) nativeReader() harness.NativeReader {
+	var reader harness.NativeReader
+	for _, adapter := range k.harnesses {
+		if candidate, ok := adapter.(harness.NativeReader); ok {
+			reader = candidate
+			break
+		}
+	}
+	return reader
+}
 
 // MaterializeScratch materializes a snapshot digest into a scratch directory.
 func (k *Kit) MaterializeScratch(ctx context.Context, task store.Task, digest, destination string) error {
@@ -105,14 +118,14 @@ func (k *Kit) SetActiveStage(ctx context.Context, taskID, stageID string) error 
 // Task loads a task.
 func (k *Kit) Task(ctx context.Context, id string) (store.Task, error) { return k.db.Task(ctx, id) }
 
-// TaskConfig resolves a task's frozen configuration. It satisfies
-// agentexec.Configurer so stages render prompts without the orchestrator.
-func (k *Kit) TaskConfig(ctx context.Context, task store.Task) (agentexec.TaskConfig, error) {
+// TaskConfig resolves a task's frozen configuration so stages render prompts
+// without the orchestrator.
+func (k *Kit) TaskConfig(ctx context.Context, task store.Task) (TaskConfig, error) {
 	configured, err := k.resolveConfig(task)
 	if err != nil {
-		return agentexec.TaskConfig{}, err
+		return TaskConfig{}, err
 	}
-	return agentexec.TaskConfig{Config: configured, ConfigPath: k.configPath, TaskDir: k.TaskDir(task.ID)}, nil
+	return TaskConfig{Config: configured, ConfigPath: k.configPath, TaskDir: k.TaskDir(task.ID)}, nil
 }
 
 func (k *Kit) resolveConfig(task store.Task) (config.Config, error) {
@@ -220,7 +233,7 @@ func (k *Kit) Trace(ctx context.Context, taskID, phaseID string, entry session.E
 			}
 		}
 	}
-	_, err := k.db.AppendEvent(ctx, k.TaskDir(taskID), store.Event{ID: RandomID(), TaskID: taskID, PhaseID: phaseID, AttemptID: attemptID, BranchID: branchID, Kind: entry.Kind, Name: entry.Name, Payload: entry.Payload, Display: entry.Display, AvailableActions: actions, StartedAt: time.Now().UTC()})
+	_, err := k.db.AppendEvent(ctx, k.TaskDir(taskID), store.Event{ID: RandomID(), TaskID: taskID, PhaseID: phaseID, AttemptID: attemptID, BranchID: branchID, Kind: entry.Kind, Name: entry.Name, NativeEntryID: entry.NativeEntryID, RequestID: entry.RequestID, Payload: entry.Payload, Display: entry.Display, AvailableActions: actions, StartedAt: time.Now().UTC()})
 	return err
 }
 
@@ -237,9 +250,6 @@ func AvailableActions(phase *store.Phase, taskState string) []string {
 	case string(Aborted), string(Completed):
 	case string(Preparing), string(Planning), string(Building), string(Checking), string(Reviewing):
 		actions = append(actions, "pause", "abort")
-	}
-	if phase != nil && phase.Status != "running" && phase.Status != "queued" {
-		actions = append(actions, "retry")
 	}
 	return actions
 }

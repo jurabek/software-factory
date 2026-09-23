@@ -48,7 +48,6 @@ export type DaemonEvent = {
 	task_id: string;
 	phase_id?: string;
 	attempt_id?: string;
-	artifact_id?: string;
 	branch_id?: string;
 	parent_event_id?: string;
 	kind: SessionKind;
@@ -100,17 +99,12 @@ export type CreateTaskInput = {
 };
 
 export type CreateSessionInput = { request: string };
-export type MessageTarget =
-	| { attempt_id: string }
-	| { event_id: string }
-	| { artifact_id: string; anchor?: unknown };
+export type MessageTarget = { attempt_id: string } | { event_id: string };
 export type MessageInput = {
 	text: string;
 	target?: MessageTarget;
 	idempotency_key: string;
 };
-export type RetryInput = { idempotency_key: string };
-
 export const daemonCommands: readonly DaemonCommand[] = [
 	"approve",
 	"pause",
@@ -130,7 +124,6 @@ const safeUpstreamCodes = new Set([
 	"invalid_state",
 	"stale_plan",
 	"stale_branch",
-	"stale_anchor",
 ]);
 
 const safeMessages: Record<string, string> = {
@@ -145,7 +138,6 @@ const safeMessages: Record<string, string> = {
 	invalid_state: "Task state does not allow this operation.",
 	stale_plan: "Stored plan is stale; refresh and reselect the action.",
 	stale_branch: "Selected branch head is stale; refresh lineage and reselect.",
-	stale_anchor: "Artifact anchor is stale; reselect the source content.",
 };
 
 export class DaemonRequestError extends Error {
@@ -272,30 +264,6 @@ async function requestJSON(
 			"Daemon returned an invalid response.",
 		);
 	}
-}
-
-async function requestText(
-	fetcher: typeof fetch,
-	endpoint: string,
-	credential: string,
-	path: string,
-	options: DaemonRequestOptions & { download?: boolean } = {},
-): Promise<string> {
-	const response = await fetcher(`${endpoint}${path}`, {
-		method: "GET",
-		headers: requestHeaders(credential, options, {
-			Accept: "text/markdown",
-			...(options.download ? { "X-Download": "1" } : {}),
-		}),
-		cache: "no-store",
-		redirect: "error",
-		signal: combinedSignal(options.signal, true),
-	});
-	if (!response.ok) {
-		const code = await safeCode(response.status, response);
-		throw new DaemonRequestError(response.status, code, safeMessage(code, response.status));
-	}
-	return response.text();
 }
 
 function assertTaskShape(task: unknown): asserts task is DaemonTask {
@@ -774,20 +742,6 @@ export function createDaemonClient(fetcher: typeof fetch = fetch) {
 				options,
 			);
 		},
-		async interventions(
-			endpoint: string,
-			credential: string,
-			taskId: string,
-			options: DaemonRequestOptions = {},
-		): Promise<unknown> {
-			return requestJSON(
-				fetcher,
-				endpoint,
-				credential,
-				`/api/v1/tasks/${encodeURIComponent(taskId)}/interventions`,
-				options,
-			);
-		},
 		async remove(
 			endpoint: string,
 			credential: string,
@@ -831,22 +785,6 @@ export function createDaemonClient(fetcher: typeof fetch = fetch) {
 				options,
 			);
 		},
-		async retryAttempt(
-			endpoint: string,
-			credential: string,
-			taskId: string,
-			attemptId: string,
-			input: RetryInput,
-			options: DaemonRequestOptions = {},
-		): Promise<unknown> {
-			return requestJSON(
-				fetcher,
-				endpoint,
-				credential,
-				`/api/v1/tasks/${encodeURIComponent(taskId)}/attempts/${encodeURIComponent(attemptId)}/retry`,
-				{ ...options, method: "POST", body: input },
-			);
-		},
 		async branches(
 			endpoint: string,
 			credential: string,
@@ -858,35 +796,6 @@ export function createDaemonClient(fetcher: typeof fetch = fetch) {
 				endpoint,
 				credential,
 				`/api/v1/tasks/${encodeURIComponent(taskId)}/branches`,
-				options,
-			);
-		},
-		async artifacts(
-			endpoint: string,
-			credential: string,
-			taskId: string,
-			options: DaemonRequestOptions = {},
-		): Promise<unknown> {
-			return requestJSON(
-				fetcher,
-				endpoint,
-				credential,
-				`/api/v1/tasks/${encodeURIComponent(taskId)}/artifacts`,
-				options,
-			);
-		},
-		async artifactContent(
-			endpoint: string,
-			credential: string,
-			taskId: string,
-			artifactId: string,
-			options: DaemonRequestOptions = {},
-		): Promise<string> {
-			return requestText(
-				fetcher,
-				endpoint,
-				credential,
-				`/api/v1/tasks/${encodeURIComponent(taskId)}/artifacts/${encodeURIComponent(artifactId)}`,
 				options,
 			);
 		},
@@ -1011,9 +920,6 @@ export function createDaemonClient(fetcher: typeof fetch = fetch) {
 						: {}),
 					...(typeof event.attempt_id === "string"
 						? { attempt_id: event.attempt_id }
-						: {}),
-					...(typeof event.artifact_id === "string"
-						? { artifact_id: event.artifact_id }
 						: {}),
 					...(typeof event.branch_id === "string"
 						? { branch_id: event.branch_id }

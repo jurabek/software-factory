@@ -13,19 +13,19 @@ func (s *Service) Diff(ctx context.Context, id string) (Diff, error) {
 	if err != nil {
 		return Diff{}, err
 	}
-	return s.diffRepository(ctx, task, false)
+	return s.diffRepository(task, false)
 }
 
-func (s *Service) diffRepository(ctx context.Context, task store.Task, reviewBase bool) (Diff, error) {
+func (s *Service) diffRepository(task store.Task, reviewBase bool) (Diff, error) {
 	base := task.BaseSHA
 	if reviewBase && task.ReviewBaseSHA != "" {
 		base = task.ReviewBaseSHA
 	}
-	files, err := factorygit.ChangedFiles(ctx, s.deps.Git, task.RepositoryPath, base)
+	files, err := factorygit.ChangedFiles(task.RepositoryPath, base)
 	if err != nil {
 		return Diff{}, err
 	}
-	patch, err := factorygit.Diff(ctx, s.deps.Git, task.RepositoryPath, base)
+	patch, err := factorygit.Diff(task.RepositoryPath, base)
 	if err != nil {
 		return Diff{}, err
 	}

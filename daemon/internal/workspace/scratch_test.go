@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 )
 
@@ -33,7 +32,7 @@ func TestMaterializeScratchPreservesModesSymlinksAndIsolation(t *testing.T) {
 	scratchGit(t, repositoryPath, "add", ".")
 	scratchGit(t, repositoryPath, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-m", "base")
 	task := scratchTask(t, db, root, repositoryPath, "")
-	service := New(db, factorygit.OSRunner{})
+	service := New(db)
 	snapshot, err := service.CaptureSnapshot(context.Background(), task)
 	if err != nil {
 		t.Fatal(err)

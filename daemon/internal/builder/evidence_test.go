@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 )
 
@@ -23,16 +22,16 @@ func TestValidateWithEvidenceRequiresExactlyGitDerivedTestChanges(t *testing.T) 
 	base := strings.TrimSpace(evidenceGit(t, repositoryPath, "rev-parse", "HEAD"))
 	evidenceWrite(t, filepath.Join(repositoryPath, "changed_test.go"), "package example\nfunc TestChanged(t *testing.T) {}\n")
 
-	valid := `{"status":"success","summary":"built","artifacts":[],"notes_for_next_agent":"","report_markdown":"# Build\n\nDone.","changed_files":["changed_test.go"],"commit_message":"test","test_changes":[{"path":"changed_test.go","reason":"adds the regression assertion"}]}`
-	if _, err := ValidateWithEvidence(context.Background(), factorygit.OSRunner{}, repositoryPath, base, []string{"**/*_test.go"}, valid); err != nil {
+	valid := `{"status":"success","summary":"built","notes_for_next_agent":"","report_markdown":"# Build\n\nDone.","changed_files":["changed_test.go"],"commit_message":"test","test_changes":[{"path":"changed_test.go","reason":"adds the regression assertion"}]}`
+	if _, err := ValidateWithEvidence(repositoryPath, base, []string{"**/*_test.go"}, valid); err != nil {
 		t.Fatal(err)
 	}
 	missing := strings.Replace(valid, `[{"path":"changed_test.go","reason":"adds the regression assertion"}]`, `[]`, 1)
-	if _, err := ValidateWithEvidence(context.Background(), factorygit.OSRunner{}, repositoryPath, base, []string{"**/*_test.go"}, missing); err == nil {
+	if _, err := ValidateWithEvidence(repositoryPath, base, []string{"**/*_test.go"}, missing); err == nil {
 		t.Fatal("missing Git-derived test change accepted")
 	}
 	unknown := strings.Replace(valid, `{"path":"changed_test.go","reason":"adds the regression assertion"}`, `{"path":"other_test.go","reason":"adds the regression assertion"}`, 1)
-	if _, err := ValidateWithEvidence(context.Background(), factorygit.OSRunner{}, repositoryPath, base, []string{"**/*_test.go"}, unknown); err == nil {
+	if _, err := ValidateWithEvidence(repositoryPath, base, []string{"**/*_test.go"}, unknown); err == nil {
 		t.Fatal("unknown repository test change accepted")
 	}
 }
@@ -56,8 +55,8 @@ func TestPersistEvidenceRetainsChangeKindAndReason(t *testing.T) {
 	if err = os.WriteFile(filepath.Join(task.WorkspacePath, "repository-profile.json"), []byte(profileBody), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	payload := `{"status":"success","summary":"built","artifacts":[],"notes_for_next_agent":"","report_markdown":"# Build\n\nDone.","changed_files":["example_test.go"],"commit_message":"test","test_changes":[{"path":"example_test.go","reason":"covers the changed behavior"}]}`
-	if err = PersistEvidence(context.Background(), factorygit.OSRunner{}, db, task, store.Phase{ID: "build-attempt", Attempt: 1}, payload); err != nil {
+	payload := `{"status":"success","summary":"built","notes_for_next_agent":"","report_markdown":"# Build\n\nDone.","changed_files":["example_test.go"],"commit_message":"test","test_changes":[{"path":"example_test.go","reason":"covers the changed behavior"}]}`
+	if err = PersistEvidence(context.Background(), db, task, store.Phase{ID: "build-attempt", Attempt: 1}, payload); err != nil {
 		t.Fatal(err)
 	}
 	changes, err := db.TestChanges(context.Background(), task.ID)

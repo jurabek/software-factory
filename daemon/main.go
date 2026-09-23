@@ -25,20 +25,18 @@ import (
 	"github.com/jurabek/software-factory/daemon/internal/builder"
 	"github.com/jurabek/software-factory/daemon/internal/config"
 	"github.com/jurabek/software-factory/daemon/internal/creation"
-	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
 	"github.com/jurabek/software-factory/daemon/internal/harness"
 	piharness "github.com/jurabek/software-factory/daemon/internal/harness/pi"
-	"github.com/jurabek/software-factory/daemon/internal/intervention"
 	"github.com/jurabek/software-factory/daemon/internal/messaging"
 	"github.com/jurabek/software-factory/daemon/internal/orchestrator"
 	"github.com/jurabek/software-factory/daemon/internal/pipeline"
 	"github.com/jurabek/software-factory/daemon/internal/planner"
 	"github.com/jurabek/software-factory/daemon/internal/projection"
 	"github.com/jurabek/software-factory/daemon/internal/reviewer"
-	sandboxgit "github.com/jurabek/software-factory/daemon/internal/sandbox"
 	"github.com/jurabek/software-factory/daemon/internal/stagekit"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 	"github.com/jurabek/software-factory/daemon/internal/task"
+	"github.com/jurabek/software-factory/daemon/internal/timeline"
 	"github.com/jurabek/software-factory/daemon/internal/token"
 	"github.com/jurabek/software-factory/daemon/internal/verifier"
 	"github.com/jurabek/software-factory/daemon/internal/workspace"
@@ -168,8 +166,17 @@ func run(rootCtx context.Context) error {
 	configPath := filepath.Join(root, "config.yaml")
 	configured, problems, loadErr := config.Load(configPath)
 	piPath := envOrDefault("PI_PATH", "pi")
+	extensionPath, err := installPiExtension(root)
+	if err != nil {
+		return fmt.Errorf("install pi extension: %w", err)
+	}
+	piAdapter := piharness.New(piPath, extensionPath)
+	defer piAdapter.Shutdown()
 	registry := harness.Registry{
-		"pi": piharness.Harness{Path: piPath},
+		"pi": piAdapter,
+	}
+	if err = harness.ReconcilePendingTurns(ctx, db, piAdapter); err != nil {
+		return fmt.Errorf("reconcile in-flight agent turns: %w", err)
 	}
 	harnessNames := make([]string, 0, len(registry))
 	for name := range registry {
@@ -223,14 +230,13 @@ func run(rootCtx context.Context) error {
 			}
 		}
 	}
-	sandbox := sandboxgit.Git{Runner: factorygit.OSRunner{}}
-	kit := stagekit.New(db, factorygit.OSRunner{}, registry, sandbox, configured, configPath, root)
+	sandbox := workspace.Git{}
+	kit := stagekit.New(db, registry, sandbox, configured, configPath, root)
 	events := orchestrator.NewEvents(db)
-	taskService := task.New(root, task.Deps{Store: db, Config: configured, ConfigPath: configPath, Harnesses: registry, Git: factorygit.OSRunner{}, Sandbox: sandbox})
+	taskService := task.New(root, task.Deps{Store: db, Config: configured, ConfigPath: configPath, Harnesses: registry, Sandbox: sandbox})
 	creationStage := creation.New(taskService, kit, events)
 	plannerStage := planner.New(kit, events)
-	interventions := intervention.New(intervention.Deps{Store: db, Git: factorygit.OSRunner{}, Snapshots: workspace.New(db, factorygit.OSRunner{}), Config: configured, ConfigPath: configPath, Root: root, Events: events})
-	messages := messaging.New(messaging.Deps{Store: db, Config: configured, ConfigPath: configPath, Harnesses: registry, Root: root, Interventions: interventions, Events: events})
+	messages := messaging.New(messaging.Deps{Store: db, Config: configured, ConfigPath: configPath, Harnesses: registry, Root: root, Events: events})
 	workflow := pipeline.New(
 		plannerStage,
 		builder.New(kit),
@@ -250,7 +256,7 @@ func run(rootCtx context.Context) error {
 		cancel()
 		<-eventsDone
 	}()
-	apiHandler, err := api.New(db, api.Communicators{Creator: creationStage, Events: events, Planner: plannerStage, Messages: messages, Intervention: interventions, Projection: projection.New(projection.Deps{Store: db, Config: configured, ConfigPath: configPath}), Tasks: taskService}, configured, problems, loadErr, harnessNames, catalog, api.Access{DaemonID: daemonID, Token: daemonToken})
+	apiHandler, err := api.New(db, api.Communicators{Creator: creationStage, Events: events, Planner: plannerStage, Messages: messages, Projection: projection.New(projection.Deps{Store: db, Config: configured, ConfigPath: configPath}), Tasks: taskService, Timeline: timeline.New(db, piAdapter)}, configured, problems, loadErr, harnessNames, catalog, api.Access{DaemonID: daemonID, Token: daemonToken})
 	if err != nil {
 		return err
 	}
@@ -414,6 +420,17 @@ func installTemplates(root string) error {
 		}
 		return createIfMissing(destination, data)
 	})
+}
+
+func installPiExtension(root string) (string, error) {
+	path := filepath.Join(root, "pi-extension", "factory.ts")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(path, piharness.ExtensionSource(), 0o600); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 func createIfMissing(path string, data []byte) error {

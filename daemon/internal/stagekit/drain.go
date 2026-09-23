@@ -5,161 +5,162 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"time"
 
-	"uuid"
-
-	"github.com/jurabek/software-factory/daemon/internal/agentexec"
-	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
 	"github.com/jurabek/software-factory/daemon/internal/harness"
 	"github.com/jurabek/software-factory/daemon/internal/session"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 )
 
-// DrainSpec parameterizes a message-continuation drain for one stage.
-type DrainSpec struct {
+// Delivery describes how queued messages for one stage become agent turns:
+// the phase to run, the role that renders prompts, read-only enforcement, the
+// instructions appended to the system prompt, the envelope validator, and an
+// optional persistence hook for stage evidence.
+type Delivery struct {
 	Task         store.Task
 	Phase        store.Phase
-	StageID      string
-	AgentName    string
 	Role         string
 	ReadOnly     bool
 	Instructions string
 	Validate     func(string) (any, error)
-	// OnValid lets a stage persist evidence from the final payload.
+	// OnValid persists stage evidence from the final payload of each turn.
 	OnValid func(ctx context.Context, payload string) error
 }
 
-// Drain delivers queued messages to a running stage's agent session until the
-// queue is empty, returning the latest valid payload.
-func (k *Kit) Drain(ctx context.Context, spec DrainSpec) (string, error) {
-	task := spec.Task
-	phase := spec.Phase
+// DeliverAndFinalize delivers every queued message as one agent turn, then
+// runs finalize under the task lock once the queue is empty. A message queued
+// while finalizing restarts the loop. finalize completes the phase and returns
+// the stage result; delivery failures mark the phase failed.
+//
+//	Stage            DeliverAndFinalize       DB            RunTurn        pi process
+//	  |                     |                 |               |               	|
+//	  |--Delivery+finalize->|                 |               |               	|
+//	  |                     |--deliver()----->|               |               	|
+//	  |                     |<-message/none---|               |               	|
+//	  |                     |--RunTurn(msg)------------------>|               	|
+//	  |                     |                 |  OnDispatch: markDelivered      |
+//	  |                     |                 |               |--prompt(stdin)> |
+//	  |                     |                 |               |<-events+settled |
+//	  |                     |<-TurnResult---------------------|               	|
+//	  |                     |   ...repeat until queue empty...                	|
+//	  |                     |--NextQueuedMessage (locked)--->|               	|
+//	  |                     |<-none--------------------------|               	|
+//	  |                     |--finalize(turn)  [complete phase, transition]  	|
+//	  |<-result-------------|                 |               |               	|
+func (k *Kit) DeliverAndFinalize[T any](ctx context.Context, spec Delivery, turn harness.TurnResult, finalize func(harness.TurnResult) (T, error)) (T, error) {
+	var zero T
+	for {
+		latest, err := k.deliver(ctx, spec)
+		if err != nil {
+			k.Fail(ctx, spec.Phase, err)
+			return zero, err
+		}
+		if latest.Payload != "" {
+			turn = latest
+		}
+		lock := k.Lock(spec.Task.ID)
+		lock.Lock()
+		_, err = k.db.NextQueuedMessage(ctx, spec.Task.ID, spec.Phase.Name)
+		if err == nil {
+			lock.Unlock()
+			continue
+		}
+		if !errors.Is(err, store.ErrNotFound) {
+			lock.Unlock()
+			k.Fail(ctx, spec.Phase, err)
+			return zero, err
+		}
+		result, finalizeErr := finalize(turn)
+		lock.Unlock()
+		return result, finalizeErr
+	}
+}
+
+// deliver runs one agent turn per queued message, in queue order, returning
+// the latest settled payload (zero TurnResult when nothing was queued).
+// Execution mechanics live in harness.RunTurn; deliver owns only message
+// bookkeeping.
+func (k *Kit) deliver(ctx context.Context, spec Delivery) (harness.TurnResult, error) {
+	task, phase := spec.Task, spec.Phase
 	configured, err := k.resolveConfig(task)
 	if err != nil {
-		return "", err
+		return harness.TurnResult{}, err
 	}
-	agent, ok := configured.Agent(spec.AgentName)
+	agent, ok := configured.Agent(phase.Owner)
 	if !ok {
-		return "", fmt.Errorf("agent %s not configured", spec.AgentName)
+		return harness.TurnResult{}, fmt.Errorf("agent %s not configured", phase.Owner)
 	}
-	adapter, ok := k.harnesses.Get(configured.Defaults.CodingAgent)
-	if !ok {
-		return "", fmt.Errorf("harness %s unavailable", configured.Defaults.CodingAgent)
-	}
-	storedSession, err := k.db.AgentSession(ctx, task.ID, spec.StageID)
+	storedSession, err := k.db.AgentSession(ctx, task.ID, phase.Name)
 	if err != nil {
-		return "", err
+		return harness.TurnResult{}, err
 	}
-	var latest string
+	var latest harness.TurnResult
 	for {
-		message, nextErr := k.db.NextQueuedMessage(ctx, task.ID, spec.StageID)
+		message, nextErr := k.db.NextQueuedMessage(ctx, task.ID, phase.Name)
 		if errors.Is(nextErr, store.ErrNotFound) {
 			return latest, nil
 		}
 		if nextErr != nil {
-			return "", nextErr
+			return harness.TurnResult{}, nextErr
 		}
 		if message.AgentSessionID != storedSession.HarnessSessionID {
 			err = fmt.Errorf("message agent session identity is stale")
 			k.failMessage(ctx, message, phase, "session_unavailable")
-			return "", err
+			return harness.TurnResult{}, err
 		}
 		systemPrompt, promptErr := k.messageSystemPrompt(ctx, message, spec.Role, spec.Instructions)
 		if promptErr != nil {
 			k.failMessage(ctx, message, phase, "context_unavailable")
-			return "", promptErr
+			return harness.TurnResult{}, promptErr
 		}
-		request := harness.Request{
-			CWD: task.RepositoryPath, Prompt: message.Text, SystemPrompt: systemPrompt,
-			Model: agent.Model, Thinking: agent.Thinking, SessionID: storedSession.HarnessSessionID,
-			SessionDirectory: storedSession.SessionDirectory, RawOutputPath: filepath.Join(storedSession.SessionDirectory, "raw-output.jsonl"),
-			DeadlineMS: configured.Runtime.AgentDeadlineMS, Resume: true,
+		turner := k.AgentExec()
+		turner.AgentDeadlineMS = configured.Runtime.AgentDeadlineMS
+		turner.JSONFixAttempts = configured.Runtime.JSONFixAttempts
+		turn, runErr := harness.RunTurn(ctx, turner, harness.TurnInput{
+			TaskID: task.ID, RequestID: RandomID(), Phase: phase, Role: spec.Role,
+			HarnessName: configured.Defaults.CodingAgent, Model: agent.Model, Thinking: agent.Thinking, Color: agent.Color,
+			RepoPath: task.RepositoryPath, SessionDir: storedSession.SessionDirectory,
+			SystemPrompt: systemPrompt, UserPrompt: message.Text,
+			ReadOnly: spec.ReadOnly, EnvelopeKind: phaseEnvelopeKind(phase, spec.Role),
+			CorrectionSuffix: spec.Instructions, Validate: spec.Validate,
+			Sink:       k.Sink(task.ID, phase.ID, storedSession.Harness),
+			OnDispatch: k.markDelivered(message, &phase),
+		})
+		if runErr != nil {
+			reason := "harness_error"
+			if errors.Is(runErr, context.Canceled) {
+				reason = "invocation_cancelled"
+			}
+			k.failMessage(ctx, message, phase, reason)
+			return harness.TurnResult{}, runErr
 		}
-		for correction := 0; correction <= configured.Runtime.JSONFixAttempts; correction++ {
-			var before string
-			if spec.ReadOnly {
-				before, err = fingerprint(ctx, k.git, task)
-				if err != nil {
-					return "", err
-				}
+		if spec.OnValid != nil {
+			if evidenceErr := spec.OnValid(ctx, turn.Payload); evidenceErr != nil {
+				k.failMessage(ctx, message, phase, "evidence_persistence_failed")
+				return harness.TurnResult{}, evidenceErr
 			}
-			invocationID := uuid.New().String()
-			if correction == 0 {
-				message.DeliveryStatus = "delivered"
-				message.DeliveredAt = time.Now().UTC().Format(time.RFC3339Nano)
-				event, eventErr := MessageEvent(ctx, k.db, message, &phase)
-				if eventErr != nil {
-					return "", eventErr
-				}
-				if err = k.db.BeginMessageInvocationWithEvent(ctx, task.ID, spec.StageID, invocationID, message.ID, event, k.TaskDir(task.ID)); err != nil {
-					return "", err
-				}
-			} else if err = k.db.BeginAgentInvocation(ctx, task.ID, spec.StageID, invocationID); err != nil {
-				return "", err
-			}
-			result, runErr := agentexec.Invoke(ctx, adapter, request, k.Sink(task.ID, phase.ID, storedSession.Harness))
-			if spec.ReadOnly {
-				after, fingerprintErr := fingerprint(ctx, k.git, task)
-				if fingerprintErr != nil {
-					runErr = errors.Join(runErr, fingerprintErr)
-				} else if before != after {
-					runErr = errors.Join(runErr, fmt.Errorf("%s modified repository", spec.StageID))
-				}
-			}
-			if result.SessionID == "" {
-				result.SessionID = storedSession.HarnessSessionID
-			}
-			sessionMismatch := result.SessionID != storedSession.HarnessSessionID
-			if sessionMismatch {
-				runErr = errors.Join(runErr, fmt.Errorf("harness session identity changed from %s to %s", storedSession.HarnessSessionID, result.SessionID))
-			}
-			storedSession.SessionReady = storedSession.SessionReady || result.SessionReady
-			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-			finalizeErr := k.db.FinalizeAgentInvocation(cleanupCtx, task.ID, spec.StageID, invocationID, store.AgentSession{
-				StageID: spec.StageID, AgentName: spec.AgentName, Role: spec.AgentName, Harness: storedSession.Harness, Provider: result.Provider, Model: result.Model, Thinking: agent.Thinking, Color: agent.Color,
-				HarnessSessionID: storedSession.HarnessSessionID, SessionDirectory: storedSession.SessionDirectory, SessionReady: storedSession.SessionReady,
-				NativeTranscriptPath: result.NativeTranscriptPath, ContextTokens: result.ContextTokens, ContextWindow: result.ContextWindow,
-				Usage: persistedUsage(result.Usage), Cost: result.Usage.Cost, AccountingComplete: result.AccountingComplete,
-			})
-			cancel()
-			if finalizeErr != nil {
-				k.failMessage(ctx, message, phase, "delivery_failed")
-				return "", finalizeErr
-			}
-			if runErr != nil {
-				reason := "harness_error"
-				if sessionMismatch {
-					reason = "session_identity_changed"
-				} else if errors.Is(runErr, context.Canceled) {
-					reason = "invocation_cancelled"
-				}
-				k.failMessage(ctx, message, phase, reason)
-				return "", runErr
-			}
-			_, validationErr := spec.Validate(result.Text)
-			envelopeRole := phaseEnvelopeKind(phase, spec.Role)
-			if err = k.db.SaveEnvelope(ctx, RandomID(), task.ID, phase.ID, spec.StageID, envelopeRole, result.Text, validationErr == nil, correction+1); err != nil {
-				k.failMessage(ctx, message, phase, "delivery_failed")
-				return "", err
-			}
-			if validationErr == nil {
-				if spec.OnValid != nil {
-					if evidenceErr := spec.OnValid(ctx, result.Text); evidenceErr != nil {
-						k.failMessage(ctx, message, phase, "evidence_persistence_failed")
-						return "", evidenceErr
-					}
-				}
-				latest = result.Text
-				break
-			}
-			if correction == configured.Runtime.JSONFixAttempts {
-				k.failMessage(ctx, message, phase, "invalid_agent_response")
-				return "", fmt.Errorf("%s envelope invalid after corrections: %w", spec.StageID, validationErr)
-			}
-			request.Prompt = "Your previous final response was invalid: " + validationErr.Error() + "\n" + spec.Instructions
 		}
+		latest = turn
+	}
+}
+
+// markDelivered returns the OnDispatch hook that durably records one message's
+// delivery in the same window as the invocation marker. It fires once, on the
+// first correction attempt.
+func (k *Kit) markDelivered(message store.Message, phase *store.Phase) func(context.Context, string) error {
+	delivered := false
+	return func(dispatchCtx context.Context, _ string) error {
+		if delivered {
+			return nil
+		}
+		delivered = true
+		message.DeliveryStatus = "delivered"
+		message.DeliveredAt = time.Now().UTC().Format(time.RFC3339Nano)
+		event, err := MessageEvent(dispatchCtx, k.db, message, phase)
+		if err != nil {
+			return err
+		}
+		return k.db.DeliverMessageWithEvent(dispatchCtx, message.TaskID, message.ID, event, k.TaskDir(message.TaskID))
 	}
 }
 
@@ -212,7 +213,7 @@ func MessageEvent(ctx context.Context, db *store.DB, message store.Message, phas
 	entry := session.NewTaskMessage(session.TaskMessagePayload{
 		MessageID: message.ID, TaskID: message.TaskID, Text: message.Text, RecipientRole: message.RecipientRole,
 		AgentSessionID: message.AgentSessionID, TargetType: message.TargetType, TargetID: message.TargetID,
-		Anchor: message.Anchor, DeliveryStatus: message.DeliveryStatus, FailureReason: message.FailureReason,
+		DeliveryStatus: message.DeliveryStatus, FailureReason: message.FailureReason,
 	})
 	taskState := ""
 	if task, taskErr := db.Task(ctx, message.TaskID); taskErr == nil {
@@ -230,15 +231,4 @@ func phaseEnvelopeKind(phase store.Phase, role string) string {
 		return phase.Kind
 	}
 	return role
-}
-
-func fingerprint(ctx context.Context, runner factorygit.Runner, task store.Task) (string, error) {
-	if task.RepositoryPath == "" {
-		return "", nil
-	}
-	return factorygit.Fingerprint(ctx, runner, task.RepositoryPath)
-}
-
-func persistedUsage(value harness.Usage) session.Usage {
-	return session.Usage{Input: value.Input, Output: value.Output, CacheRead: value.CacheRead, CacheWrite: value.CacheWrite, Reasoning: value.Reasoning, TotalTokens: value.TotalTokens}
 }

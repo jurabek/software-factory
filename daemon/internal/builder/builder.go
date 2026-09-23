@@ -10,8 +10,8 @@ import (
 
 	"uuid"
 
-	"github.com/jurabek/software-factory/daemon/internal/agentexec"
 	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
+	"github.com/jurabek/software-factory/daemon/internal/harness"
 	"github.com/jurabek/software-factory/daemon/internal/stage"
 	"github.com/jurabek/software-factory/daemon/internal/stagekit"
 	"github.com/jurabek/software-factory/daemon/internal/store"
@@ -24,7 +24,7 @@ type TestChange struct {
 }
 
 type Result struct {
-	agentexec.Common
+	stage.Common
 	ChangedFiles  []string     `json:"changed_files"`
 	CommitMessage string       `json:"commit_message"`
 	TestChanges   []TestChange `json:"test_changes"`
@@ -32,11 +32,11 @@ type Result struct {
 
 func Validate(text string) (Result, error) {
 	var value Result
-	fields := append(append([]string{}, agentexec.CommonFields...), "changed_files", "commit_message", "test_changes")
-	if err := agentexec.DecodeExact(text, &value, fields, fields); err != nil {
+	fields := append(append([]string{}, stage.CommonFields...), "changed_files", "commit_message", "test_changes")
+	if err := stage.DecodeExact(text, &value, fields, fields); err != nil {
 		return value, err
 	}
-	if err := agentexec.ValidateCommon(value.Common); err != nil {
+	if err := stage.ValidateCommon(value.Common); err != nil {
 		return value, err
 	}
 	if value.ChangedFiles == nil {
@@ -70,7 +70,7 @@ func Validate(text string) (Result, error) {
 }
 
 func Instructions() string {
-	return `Return exactly one JSON object: {` + agentexec.CommonInstructions() + `,"changed_files":[],"commit_message":"...","test_changes":[{"path":"...","reason":"..."}]}. Put the human-readable report in report_markdown.`
+	return `Return exactly one JSON object: {` + stage.CommonInstructions() + `,"changed_files":[],"commit_message":"...","test_changes":[{"path":"...","reason":"..."}]}. Put the human-readable report in report_markdown.`
 }
 
 // EvidenceStore persists builder test evidence.
@@ -116,12 +116,11 @@ func (s service) Build(ctx context.Context, input stage.Input, plan stage.PlanRe
 		return stage.BuildResult{}, err
 	}
 	data := map[string]any{"TaskID": task.ID, "Request": task.Request, "Repository": task.RepositoryPath, "Workspace": task.WorkspacePath, "Plan": plan.Payload}
-	systemPrompt, userPrompt, err := agentexec.RenderPrompts(
+	systemPrompt, userPrompt, err := stagekit.RenderPrompts(
 		agent.Name,
 		agent.PromptEngineering.SystemContent, agent.PromptEngineering.System,
 		agent.PromptEngineering.UserContent, agent.PromptEngineering.User,
 		data, filepath.Dir(configured.ConfigPath),
-		filepath.Join(configured.TaskDir, "prompts", agent.Name),
 		Instructions(),
 	)
 	if err != nil {
@@ -133,10 +132,10 @@ func (s service) Build(ctx context.Context, input stage.Input, plan stage.PlanRe
 	turner.AgentDeadlineMS = configured.Config.Runtime.AgentDeadlineMS
 	turner.JSONFixAttempts = configured.Config.Runtime.JSONFixAttempts
 	validate := func(text string) (any, error) {
-		return ValidateWithEvidence(ctx, turner.Git, task.RepositoryPath, workspace.ReviewBase(task), profile.Tests, text)
+		return ValidateWithEvidence(task.RepositoryPath, workspace.ReviewBase(task), profile.Tests, text)
 	}
-	payload, err := agentexec.RunTurn(ctx, turner, agentexec.TurnInput{
-		TaskID: task.ID, Phase: phase, Role: phase.Name,
+	turn, err := harness.RunTurn(ctx, turner, harness.TurnInput{
+		TaskID: task.ID, RequestID: stagekit.RandomID(), Phase: phase, Role: phase.Name,
 		HarnessName: harnessName, Model: agent.Model, Thinking: agent.Thinking, Color: agent.Color,
 		RepoPath:     task.RepositoryPath,
 		SessionDir:   filepath.Join(configured.TaskDir, "sessions", phase.Name, harnessName),
@@ -149,7 +148,7 @@ func (s service) Build(ctx context.Context, input stage.Input, plan stage.PlanRe
 		s.kit.Fail(ctx, phase, err)
 		return stage.BuildResult{}, err
 	}
-	return s.publishBuild(ctx, task, phase, payload, profile)
+	return s.publishBuild(ctx, task, phase, turn, profile)
 }
 
 func readOnly(phase store.Phase) bool {
@@ -158,12 +157,12 @@ func readOnly(phase store.Phase) bool {
 
 // ValidateWithEvidence validates the envelope and requires test_changes to
 // match exactly the Git-derived changed tests.
-func ValidateWithEvidence(ctx context.Context, git factorygit.Runner, repoPath, base string, tests []string, text string) (Result, error) {
+func ValidateWithEvidence(repoPath, base string, tests []string, text string) (Result, error) {
 	build, err := Validate(text)
 	if err != nil {
 		return build, err
 	}
-	expected, err := ChangedTestSet(ctx, git, repoPath, base, tests)
+	expected, err := ChangedTestSet(repoPath, base, tests)
 	if err != nil {
 		return build, err
 	}
@@ -174,8 +173,8 @@ func ValidateWithEvidence(ctx context.Context, git factorygit.Runner, repoPath, 
 }
 
 // ChangedTestSet returns the Git-derived changed tests for a base.
-func ChangedTestSet(ctx context.Context, git factorygit.Runner, repoPath, base string, tests []string) (map[string]factorygit.Change, error) {
-	entries, err := factorygit.ChangedEntries(ctx, git, repoPath, base)
+func ChangedTestSet(repoPath, base string, tests []string) (map[string]factorygit.Change, error) {
+	entries, err := factorygit.ChangedEntries(repoPath, base)
 	if err != nil {
 		return nil, fmt.Errorf("read changes: %w", err)
 	}
@@ -218,7 +217,7 @@ func ValidateTestChangeSet(changes []TestChange, expected map[string]factorygit.
 
 // PersistEvidence validates test evidence against Git-derived changes and
 // stores it for the attempt.
-func PersistEvidence(ctx context.Context, git factorygit.Runner, db EvidenceStore, task store.Task, phase store.Phase, payload string) error {
+func PersistEvidence(ctx context.Context, db EvidenceStore, task store.Task, phase store.Phase, payload string) error {
 	build, err := Validate(payload)
 	if err != nil {
 		return err
@@ -227,7 +226,7 @@ func PersistEvidence(ctx context.Context, git factorygit.Runner, db EvidenceStor
 	if err != nil {
 		return err
 	}
-	expected, err := ChangedTestSet(ctx, git, task.RepositoryPath, workspace.ReviewBase(task), profile.Tests)
+	expected, err := ChangedTestSet(task.RepositoryPath, workspace.ReviewBase(task), profile.Tests)
 	if err != nil {
 		return err
 	}
@@ -254,8 +253,8 @@ func PersistEvidence(ctx context.Context, git factorygit.Runner, db EvidenceStor
 }
 
 // CheckProtectedPaths rejects builds touching protected paths.
-func CheckProtectedPaths(ctx context.Context, git factorygit.Runner, repoPath, base string, protected []string) error {
-	files, err := factorygit.ChangedFiles(ctx, git, repoPath, base)
+func CheckProtectedPaths(repoPath, base string, protected []string) error {
+	files, err := factorygit.ChangedFiles(repoPath, base)
 	if err != nil {
 		return err
 	}

@@ -210,46 +210,6 @@ paths:
           $ref: "#/responses/Conflict"
         "422":
           $ref: "#/responses/UnprocessableEntity"
-  /tasks/{id}/artifacts:
-    parameters:
-      - $ref: "#/parameters/TaskID"
-    get:
-      tags: [Tasks]
-      operationId: listTaskArtifacts
-      summary: List immutable task artifacts
-      responses:
-        "200":
-          description: Artifact metadata ordered oldest first; content is omitted
-          schema:
-            type: array
-            items:
-              $ref: "#/definitions/Artifact"
-        "404":
-          $ref: "#/responses/NotFound"
-        "500":
-          $ref: "#/responses/InternalError"
-  /tasks/{id}/artifacts/{artifactID}:
-    parameters:
-      - $ref: "#/parameters/TaskID"
-      - in: path
-        name: artifactID
-        type: string
-        required: true
-    get:
-      tags: [Tasks]
-      operationId: getTaskArtifactContent
-      summary: Get immutable artifact content
-      produces:
-        - text/markdown
-      responses:
-        "200":
-          description: Artifact source content
-          schema:
-            type: string
-        "404":
-          $ref: "#/responses/NotFound"
-        "500":
-          $ref: "#/responses/InternalError"
   /tasks/{id}/approve:
     parameters:
       - $ref: "#/parameters/TaskID"
@@ -280,19 +240,6 @@ paths:
           $ref: "#/responses/Conflict"
         "422":
           $ref: "#/responses/UnprocessableEntity"
-  /tasks/{id}/interventions:
-    parameters:
-      - $ref: "#/parameters/TaskID"
-    get:
-      tags: [Tasks]
-      operationId: listTaskInterventions
-      responses:
-        "200":
-          description: Persisted Task interventions
-          schema:
-            type: array
-            items:
-              $ref: "#/definitions/Intervention"
   /tasks/{id}/messages:
     parameters:
       - $ref: "#/parameters/TaskID"
@@ -404,36 +351,6 @@ paths:
               $ref: "#/definitions/Phase"
         "404":
           $ref: "#/responses/NotFound"
-        "500":
-          $ref: "#/responses/InternalError"
-  /tasks/{id}/attempts/{attemptID}/retry:
-    parameters:
-      - $ref: "#/parameters/TaskID"
-      - in: path
-        name: attemptID
-        type: string
-        required: true
-    post:
-      tags: [Tasks]
-      operationId: retryTaskAttempt
-      summary: Queue and execute an Attempt from its exact phase definition and input snapshot
-      parameters:
-        - in: body
-          name: retry
-          required: true
-          schema:
-            $ref: "#/definitions/RetryRequest"
-      responses:
-        "202":
-          description: One child branch and queued Attempt created
-          schema:
-            $ref: "#/definitions/RetryResult"
-        "404":
-          $ref: "#/responses/NotFound"
-        "409":
-          $ref: "#/responses/Conflict"
-        "422":
-          $ref: "#/responses/UnprocessableEntity"
         "500":
           $ref: "#/responses/InternalError"
   /tasks/{id}/events:
@@ -705,14 +622,11 @@ definitions:
         minimum: 1
   Runtime:
     type: object
-    required: [agent_deadline_ms, empty_turn_retries, json_fix_attempts]
+    required: [agent_deadline_ms, json_fix_attempts]
     properties:
       agent_deadline_ms:
         type: integer
         minimum: 1
-      empty_turn_retries:
-        type: integer
-        minimum: 0
       json_fix_attempts:
         type: integer
         minimum: 0
@@ -783,36 +697,6 @@ definitions:
       request:
         type: string
         minLength: 1
-  Artifact:
-    type: object
-    required: [id, task_id, type, digest, created_at]
-    properties:
-      id:
-        type: string
-      task_id:
-        type: string
-      attempt_id:
-        type: string
-      type:
-        type: string
-      digest:
-        type: string
-      path:
-        type: string
-      metadata_json:
-        type: string
-      content:
-        type: string
-        description: Present on content reads; omitted from list responses
-      media_type:
-        type: string
-      producer:
-        type: string
-      provenance_json:
-        type: string
-      created_at:
-        type: string
-        format: date-time
   Task:
     type: object
     required: [id, request, workspace_path, repository_type, repository_source, state, total_cost, created_at, available_actions]
@@ -873,7 +757,7 @@ definitions:
         description: Authoritative deterministic controls currently available for this Task
         items:
           type: string
-          enum: [approve, pause, resume, abort, retry]
+          enum: [approve, pause, resume, abort]
       created_at:
         type: string
         format: date-time
@@ -930,20 +814,21 @@ definitions:
         type: string
       attempt_id:
         type: string
-      artifact_id:
-        type: string
       branch_id:
         type: string
       parent_event_id:
         type: string
       kind:
         type: string
-        enum: [message, task_message, tool_call, process_start, process_end, phase_start, phase_end, intervention, plan_feedback, custom]
+        enum: [message, task_message, tool_call, process_start, process_end, phase_start, phase_end, plan_feedback, custom]
       format_version:
         type: integer
         minimum: 1
       name:
         type: string
+      native_entry_id:
+        type: string
+        description: Authoritative harness session entry this event was derived from, when available
       payload:
         type: object
       display:
@@ -999,7 +884,7 @@ definitions:
         type: integer
   AgentSession:
     type: object
-    required: [role, harness, harness_session_id, session_directory, session_ready, usage, cost, accounting_complete, created_at, last_used_at]
+    required: [role, harness, harness_session_id, session_directory, session_ready, usage, cost, created_at, last_used_at]
     properties:
       role:
         type: string
@@ -1022,6 +907,9 @@ definitions:
         type: boolean
       native_transcript_path:
         type: string
+      last_entry_id:
+        type: string
+        description: Native session entry cursor for the latest settled turn
       context_tokens:
         type: integer
       context_window:
@@ -1031,9 +919,6 @@ definitions:
       cost:
         type: number
         format: double
-      accounting_complete:
-        type: boolean
-        description: False while an invocation is pending, after crash recovery with unrecorded spend, or when terminal accounting was incomplete
       created_at:
         type: string
         format: date-time
@@ -1091,7 +976,7 @@ definitions:
         type: integer
   Check:
     type: object
-    required: [id, task_id, phase_id, name, command, status, output, artifact_path, attempt, exit_code, duration_ms, started_at, ended_at]
+    required: [id, task_id, phase_id, name, command, status, output, output_path, attempt, exit_code, duration_ms, started_at, ended_at]
     properties:
       id:
         type: string
@@ -1107,7 +992,7 @@ definitions:
         type: string
       output:
         type: string
-      artifact_path:
+      output_path:
         type: string
       attempt:
         type: integer
@@ -1142,22 +1027,7 @@ definitions:
     properties:
       attempt_id: {type: string}
       event_id: {type: string}
-      artifact_id: {type: string}
-      anchor:
-        $ref: "#/definitions/Anchor"
-    description: At most one target ID; anchor is valid only with artifact_id
-  Anchor:
-    type: object
-    required: [kind]
-    additionalProperties: false
-    properties:
-      kind: {type: string, enum: [text_range, line_range, block, json_pointer]}
-      start: {type: integer, minimum: 0}
-      end: {type: integer, minimum: 0}
-      quote: {type: string}
-      pointer: {type: string}
-      value_digest: {type: string}
-      block: {type: string}
+    description: At most one target ID
   SendMessageRequest:
     type: object
     required: [text, idempotency_key]
@@ -1188,34 +1058,6 @@ definitions:
       created_at: {type: string, format: date-time}
       delivered_at: {type: string, format: date-time}
       failed_at: {type: string, format: date-time}
-  RetryRequest:
-    type: object
-    required: [idempotency_key]
-    additionalProperties: false
-    properties:
-      idempotency_key: {type: string, minLength: 1}
-  RetryResult:
-    type: object
-    required: [source_attempt_id, branch_id, attempt_id, created_at]
-    properties:
-      source_attempt_id: {type: string}
-      branch_id: {type: string}
-      attempt_id: {type: string}
-      created_at: {type: string, format: date-time}
-  Intervention:
-    type: object
-    required: [id, task_id, target_type, target_id, actor, intent, text, delivery, idempotency_key, created_at]
-    properties:
-      id: {type: string}
-      task_id: {type: string}
-      target_type: {type: string}
-      target_id: {type: string}
-      actor: {type: string}
-      intent: {type: string}
-      text: {type: string}
-      delivery: {type: string}
-      idempotency_key: {type: string}
-      created_at: {type: string, format: date-time}
   AcceptedResponse:
     type: object
     required: [accepted]

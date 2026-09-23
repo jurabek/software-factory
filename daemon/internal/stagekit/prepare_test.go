@@ -52,7 +52,7 @@ func prepareTestKit(t *testing.T, sandbox workspace.Sandbox) (*Kit, store.Task) 
 	if err = db.CreateTask(context.Background(), task); err != nil {
 		t.Fatal(err)
 	}
-	return New(db, nil, nil, sandbox, config.Config{}, "", root), task
+	return New(db, nil, sandbox, config.Config{}, "", root), task
 }
 
 func TestPrepareRepositoryUsesTaskIdentity(t *testing.T) {

@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/jurabek/software-factory/daemon/internal/agentexec"
 	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
+	"github.com/jurabek/software-factory/daemon/internal/harness"
 	"github.com/jurabek/software-factory/daemon/internal/stage"
 	"github.com/jurabek/software-factory/daemon/internal/stagekit"
 	"github.com/jurabek/software-factory/daemon/internal/store"
@@ -23,7 +23,7 @@ type Finding struct {
 }
 
 type Result struct {
-	agentexec.Common
+	stage.Common
 	Approved bool      `json:"approved"`
 	Findings []Finding `json:"findings"`
 	Blocking []string  `json:"blocking"`
@@ -31,11 +31,11 @@ type Result struct {
 
 func Validate(text string) (Result, error) {
 	var value Result
-	fields := append(append([]string{}, agentexec.CommonFields...), "approved", "findings", "blocking")
-	if err := agentexec.DecodeExact(text, &value, fields, fields); err != nil {
+	fields := append(append([]string{}, stage.CommonFields...), "approved", "findings", "blocking")
+	if err := stage.DecodeExact(text, &value, fields, fields); err != nil {
 		return value, err
 	}
-	if err := agentexec.ValidateCommon(value.Common); err != nil {
+	if err := stage.ValidateCommon(value.Common); err != nil {
 		return value, err
 	}
 	if value.Findings == nil || value.Blocking == nil {
@@ -59,7 +59,7 @@ func Validate(text string) (Result, error) {
 }
 
 func Instructions() string {
-	return `Return exactly one JSON object: {` + agentexec.CommonInstructions() + `,"approved":true,"findings":[],"blocking":[]}. Put the human-readable report in report_markdown. Finding objects require "requirement", "met", and "evidence". A rejected review requires approved=false and a non-empty blocking array.`
+	return `Return exactly one JSON object: {` + stage.CommonInstructions() + `,"approved":true,"findings":[],"blocking":[]}. Put the human-readable report in report_markdown. Finding objects require "requirement", "met", and "evidence". A rejected review requires approved=false and a non-empty blocking array.`
 }
 
 // Diff is the repository patch under review.
@@ -99,7 +99,7 @@ func (s service) Review(ctx context.Context, input stage.Input, plan stage.PlanR
 		s.kit.Fail(ctx, phase, err)
 		return stage.ReviewResult{}, err
 	}
-	before, err := workspace.Fingerprint(ctx, s.kit.Git(), task)
+	before, err := workspace.Fingerprint(task)
 	if err != nil {
 		s.kit.Fail(ctx, phase, err)
 		return stage.ReviewResult{}, err
@@ -109,12 +109,11 @@ func (s service) Review(ctx context.Context, input stage.Input, plan stage.PlanR
 		s.kit.Fail(ctx, phase, err)
 		return stage.ReviewResult{}, err
 	}
-	systemPrompt, userPrompt, err := agentexec.RenderPrompts(
+	systemPrompt, userPrompt, err := stagekit.RenderPrompts(
 		agent.Name,
 		agent.PromptEngineering.SystemContent, agent.PromptEngineering.System,
 		agent.PromptEngineering.UserContent, agent.PromptEngineering.User,
 		data, filepath.Dir(configured.ConfigPath),
-		filepath.Join(configured.TaskDir, "prompts", agent.Name),
 		Instructions(),
 	)
 	if err != nil {
@@ -125,8 +124,8 @@ func (s service) Review(ctx context.Context, input stage.Input, plan stage.PlanR
 	turner := s.kit.AgentExec()
 	turner.AgentDeadlineMS = configured.Config.Runtime.AgentDeadlineMS
 	turner.JSONFixAttempts = configured.Config.Runtime.JSONFixAttempts
-	payload, err := agentexec.RunTurn(ctx, turner, agentexec.TurnInput{
-		TaskID: task.ID, Phase: phase, Role: phase.Name,
+	turn, err := harness.RunTurn(ctx, turner, harness.TurnInput{
+		TaskID: task.ID, RequestID: stagekit.RandomID(), Phase: phase, Role: phase.Name,
 		HarnessName: harnessName, Model: agent.Model, Thinking: agent.Thinking, Color: agent.Color,
 		RepoPath:     task.RepositoryPath,
 		SessionDir:   filepath.Join(configured.TaskDir, "sessions", phase.Name, harnessName),
@@ -139,10 +138,10 @@ func (s service) Review(ctx context.Context, input stage.Input, plan stage.PlanR
 		s.kit.Fail(ctx, phase, err)
 		return stage.ReviewResult{}, err
 	}
-	return s.publishReview(ctx, task, phase, payload, before)
+	return s.publishReview(ctx, task, phase, turn, before)
 }
 
-// evidence assembles the review prompt payload from upstream artifacts.
+// evidence assembles the review prompt payload from upstream results.
 func (s service) evidence(ctx context.Context, task store.Task, plan stage.PlanResult) (map[string]any, error) {
 	checks, err := s.kit.DB().Checks(ctx, task.ID)
 	if err != nil {
@@ -156,15 +155,15 @@ func (s service) evidence(ctx context.Context, task store.Task, plan stage.PlanR
 	if err != nil {
 		return nil, err
 	}
-	changedFiles, err := workspace.ChangedFiles(ctx, s.kit.Git(), task, true)
+	changedFiles, err := workspace.ChangedFiles(task, true)
 	if err != nil {
 		return nil, err
 	}
-	files, err := factorygit.ChangedFiles(ctx, s.kit.Git(), task.RepositoryPath, workspace.ReviewBase(task))
+	files, err := factorygit.ChangedFiles(task.RepositoryPath, workspace.ReviewBase(task))
 	if err != nil {
 		return nil, err
 	}
-	patch, err := factorygit.Diff(ctx, s.kit.Git(), task.RepositoryPath, workspace.ReviewBase(task))
+	patch, err := factorygit.Diff(task.RepositoryPath, workspace.ReviewBase(task))
 	if err != nil {
 		return nil, err
 	}

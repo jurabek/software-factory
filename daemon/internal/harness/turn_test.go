@@ -1,4 +1,4 @@
-package agentexec
+package harness
 
 import (
 	"context"
@@ -11,23 +11,58 @@ import (
 
 	"uuid"
 
-	"github.com/jurabek/software-factory/daemon/internal/harness"
 	"github.com/jurabek/software-factory/daemon/internal/session"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 )
 
-type errorScriptedHarness struct {
-	requests []harness.Request
-	results  []harness.Result
+// scriptedHarness is a session-oriented fake adapter. Each Open records the
+// session spec and returns a handle that replays scripted events and results.
+type scriptedHarness struct {
+	specs    []SessionSpec
+	requests []Prompt
+	events   []session.Entry
+	results  []Result
 	errs     []error
+	entries  []NativeEntry
+	replies  map[string]string
+	stats    Stats
+	native   bool
+	// cancelled is closed when a required live-event sink failure cancels the
+	// invocation.
+	cancelled chan struct{}
 }
 
-func (h *errorScriptedHarness) Models(context.Context) ([]harness.Model, error) {
-	return nil, nil
+func (h *scriptedHarness) Models(context.Context) ([]Model, error) { return nil, nil }
+
+func (h *scriptedHarness) Open(_ context.Context, spec SessionSpec) (Session, error) {
+	h.specs = append(h.specs, spec)
+	return &scriptedSession{harness: h, spec: spec}, nil
 }
 
-func (h *errorScriptedHarness) Run(_ context.Context, request harness.Request, _ harness.EventSink) (harness.Result, error) {
-	h.requests = append(h.requests, request)
+type scriptedSession struct {
+	harness *scriptedHarness
+	spec    SessionSpec
+}
+
+func (s *scriptedSession) Prompt(ctx context.Context, prompt Prompt, sink EventSink) (Result, error) {
+	h := s.harness
+	h.requests = append(h.requests, prompt)
+	for _, event := range h.events {
+		event.RequestID = prompt.RequestID
+		if err := sink(ctx, event); err != nil {
+			if h.cancelled != nil {
+				select {
+				case <-ctx.Done():
+					close(h.cancelled)
+				case <-time.After(time.Second):
+				}
+			}
+			return Result{}, err
+		}
+	}
+	if len(h.results) == 0 {
+		return Result{SessionID: s.spec.SessionID, SessionReady: true}, nil
+	}
 	result := h.results[0]
 	h.results = h.results[1:]
 	var runErr error
@@ -35,31 +70,34 @@ func (h *errorScriptedHarness) Run(_ context.Context, request harness.Request, _
 		runErr = h.errs[0]
 		h.errs = h.errs[1:]
 	}
+	if result.SessionID == "" {
+		result.SessionID = s.spec.SessionID
+	}
 	return result, runErr
 }
 
-type liveEventFailureHarness struct {
-	cancelled chan struct{}
-}
-
-func (h *liveEventFailureHarness) Models(context.Context) ([]harness.Model, error) {
-	return nil, nil
-}
-
-func (h *liveEventFailureHarness) Run(ctx context.Context, request harness.Request, sink harness.EventSink) (harness.Result, error) {
-	if err := sink(ctx, session.NewMessage(session.MessagePayload{Role: "assistant", Text: "required output"})); err == nil {
-		return harness.Result{}, errors.New("live event persistence unexpectedly succeeded")
+func (s *scriptedSession) Stats(context.Context) (Stats, error) {
+	if !s.harness.native {
+		return Stats{}, ErrNoNativeRecord
 	}
-	select {
-	case <-ctx.Done():
-		close(h.cancelled)
-	case <-time.After(time.Second):
-		return harness.Result{}, errors.New("invocation context was not cancelled after live event failure")
-	}
-	return harness.Result{SessionID: request.SessionID, SessionReady: true, AccountingComplete: true}, nil
+	return s.harness.stats, nil
 }
 
-func testTurnDeps(t *testing.T, adapter harness.Harness, fixAttempts int) (Deps, *store.DB, store.Task) {
+func (s *scriptedSession) Entries(context.Context) ([]NativeEntry, error) {
+	return s.harness.entries, nil
+}
+
+func (s *scriptedSession) Report(_ context.Context, requestID string) (Report, bool, error) {
+	text, ok := s.harness.replies[requestID]
+	if !ok {
+		return Report{}, false, nil
+	}
+	return Report{EntryID: "native-" + requestID, Text: text}, true, nil
+}
+
+func (s *scriptedSession) Close() error { return nil }
+
+func testTurnDeps(t *testing.T, adapter Harness, fixAttempts int) (Deps, *store.DB, store.Task) {
 	t.Helper()
 	root := t.TempDir()
 	db, err := store.Open(filepath.Join(root, "factory.db"))
@@ -78,7 +116,7 @@ func testTurnDeps(t *testing.T, adapter harness.Harness, fixAttempts int) (Deps,
 	if err = db.CreateTask(context.Background(), task); err != nil {
 		t.Fatal(err)
 	}
-	deps := Deps{DB: db, Harnesses: harness.Registry{"pi": adapter}, JSONFixAttempts: fixAttempts}
+	deps := Deps{DB: db, Harnesses: Registry{"pi": adapter}, JSONFixAttempts: fixAttempts}
 	return deps, db, task
 }
 
@@ -89,10 +127,10 @@ func validBuild(text string) (any, error) {
 	return text, nil
 }
 
-func runTurn(t *testing.T, deps Deps, db *store.DB, task store.Task, phase store.Phase, role string, validate Validate) (string, error) {
+func runTurn(t *testing.T, deps Deps, db *store.DB, task store.Task, phase store.Phase, role string, validate Validate) (TurnResult, error) {
 	t.Helper()
 	return RunTurn(context.Background(), deps, TurnInput{
-		TaskID: task.ID, Phase: phase, Role: role, HarnessName: "pi",
+		TaskID: task.ID, RequestID: "req-test", Phase: phase, Role: role, HarnessName: "pi",
 		Model: "provider/model", Thinking: "low",
 		SessionDir: filepath.Join(task.WorkspacePath, "sessions", role, "pi"),
 		UserPrompt: "do it", SystemPrompt: "system",
@@ -101,11 +139,12 @@ func runTurn(t *testing.T, deps Deps, db *store.DB, task store.Task, phase store
 	})
 }
 
-func testSink(db *store.DB, taskID, phaseID string) harness.EventSink {
-	return func(ctx context.Context, event harness.Event) error {
+func testSink(db *store.DB, taskID, phaseID string) EventSink {
+	return func(ctx context.Context, event Event) error {
 		_, err := db.AppendEvent(ctx, "", store.Event{
 			ID: uuid.New().String(), TaskID: taskID, PhaseID: phaseID,
-			Kind: event.Kind, Name: event.Name, Payload: event.Payload, Display: event.Display,
+			Kind: event.Kind, Name: event.Name, NativeEntryID: event.NativeEntryID, RequestID: event.RequestID,
+			Payload: event.Payload, Display: event.Display,
 			StartedAt: time.Now().UTC(),
 		})
 		return err
@@ -113,8 +152,8 @@ func testSink(db *store.DB, taskID, phaseID string) harness.EventSink {
 }
 
 func TestRunTurnPersistsMetadataOnRunError(t *testing.T) {
-	agent := &errorScriptedHarness{
-		results: []harness.Result{{Text: "boom", SessionReady: true, AccountingComplete: false, Usage: harness.Usage{Input: 10, Output: 5, TotalTokens: 15, Cost: 0.02}}},
+	agent := &scriptedHarness{
+		results: []Result{{Text: "boom", SessionReady: true, Usage: Usage{Input: 10, Output: 5, TotalTokens: 15, Cost: 0.02}}},
 		errs:    []error{errors.New("cli failed")},
 	}
 	deps, db, task := testTurnDeps(t, agent, 0)
@@ -135,13 +174,13 @@ func TestRunTurnPersistsMetadataOnRunError(t *testing.T) {
 	if stored.Usage.Input != 10 || stored.Usage.Output != 5 {
 		t.Fatalf("usage = %+v, want input 10 output 5", stored.Usage)
 	}
-	if stored.AccountingComplete {
-		t.Fatal("accounting_complete = true, want false")
-	}
 }
 
 func TestRunTurnCancelsInvocationWhenRequiredLiveEventCannotPersist(t *testing.T) {
-	agent := &liveEventFailureHarness{cancelled: make(chan struct{})}
+	agent := &scriptedHarness{
+		cancelled: make(chan struct{}),
+		events:    []session.Entry{session.NewMessage(session.MessagePayload{Role: "assistant", Text: "required output"})},
+	}
 	deps, db, task := testTurnDeps(t, agent, 0)
 	ctx := context.Background()
 	phase := store.Phase{ID: "phase-1", TaskID: task.ID, Sequence: 1, Name: "building", Kind: "agent", Owner: "builder", Status: "running", Attempt: 1}
@@ -172,16 +211,16 @@ func TestRunTurnCancelsInvocationWhenRequiredLiveEventCannotPersist(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored.PendingInvocationID != "" || !stored.AccountingComplete {
-		t.Fatalf("agent session = %+v, want settled invocation accounting", stored)
+	if stored.PendingInvocationID != "" {
+		t.Fatalf("agent session = %+v, want settled invocation", stored)
 	}
 }
 
-func TestRunTurnCorrectionSetsResumeAfterInit(t *testing.T) {
-	agent := &errorScriptedHarness{
-		results: []harness.Result{
-			{Text: "invalid", SessionReady: true, AccountingComplete: true},
-			{Text: `{"ok":true}`, SessionReady: true, AccountingComplete: true},
+func TestRunTurnCorrectionReusesOneSession(t *testing.T) {
+	agent := &scriptedHarness{
+		results: []Result{
+			{Text: "invalid", SessionReady: true},
+			{Text: `{"ok":true}`, SessionReady: true},
 		},
 	}
 	deps, db, task := testTurnDeps(t, agent, 1)
@@ -191,19 +230,16 @@ func TestRunTurnCorrectionSetsResumeAfterInit(t *testing.T) {
 	if len(agent.requests) != 2 {
 		t.Fatalf("requests = %d, want 2", len(agent.requests))
 	}
-	if agent.requests[0].Resume {
-		t.Fatal("first request Resume = true, want false")
-	}
-	if !agent.requests[1].Resume {
-		t.Fatal("correction request Resume = false, want true after initialization")
+	if len(agent.specs) != 1 {
+		t.Fatalf("sessions opened = %d, want 1 reused across the correction", len(agent.specs))
 	}
 }
 
 func TestRunTurnPreservesReadyWhenFailedResultOmitsReadiness(t *testing.T) {
-	agent := &errorScriptedHarness{
-		results: []harness.Result{
-			{Text: `{"ok":true}`, SessionReady: true, AccountingComplete: true},
-			{Text: "boom", SessionReady: false, AccountingComplete: false},
+	agent := &scriptedHarness{
+		results: []Result{
+			{Text: `{"ok":true}`, SessionReady: true},
+			{Text: "boom", SessionReady: false},
 		},
 		errs: []error{nil, errors.New("cli failed")},
 	}
@@ -224,9 +260,32 @@ func TestRunTurnPreservesReadyWhenFailedResultOmitsReadiness(t *testing.T) {
 	}
 }
 
+func TestRunTurnForksOnlyOnFirstCorrectionAttempt(t *testing.T) {
+	agent := &scriptedHarness{
+		results: []Result{
+			{Text: "invalid", SessionReady: true},
+			{Text: `{"ok":true}`, SessionReady: true},
+		},
+	}
+	deps, db, task := testTurnDeps(t, agent, 1)
+	phase := store.Phase{ID: "phase-1", Attempt: 2, ForkNative: true, NativeBaseEntryID: "checkpoint-1"}
+	if _, err := runTurn(t, deps, db, task, phase, "builder", validBuild); err != nil {
+		t.Fatal(err)
+	}
+	if len(agent.requests) != 2 {
+		t.Fatalf("requests = %d, want 2", len(agent.requests))
+	}
+	if agent.requests[0].ForkAtEntryID != "checkpoint-1" {
+		t.Fatalf("first ForkAtEntryID = %q, want checkpoint-1", agent.requests[0].ForkAtEntryID)
+	}
+	if agent.requests[1].ForkAtEntryID != "" {
+		t.Fatalf("correction ForkAtEntryID = %q, want empty", agent.requests[1].ForkAtEntryID)
+	}
+}
+
 func TestRunTurnSessionMismatchErrorsEvenWithRunError(t *testing.T) {
-	agent := &errorScriptedHarness{
-		results: []harness.Result{{SessionID: "00000000-0000-0000-0000-000000000000", Text: "boom", SessionReady: true, AccountingComplete: false}},
+	agent := &scriptedHarness{
+		results: []Result{{SessionID: "00000000-0000-0000-0000-000000000000", Text: "boom", SessionReady: true}},
 		errs:    []error{errors.New("cli failed")},
 	}
 	deps, db, task := testTurnDeps(t, agent, 0)

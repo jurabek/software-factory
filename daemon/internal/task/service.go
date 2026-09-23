@@ -4,7 +4,6 @@
 package task
 
 import (
-	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
 	"github.com/jurabek/software-factory/daemon/internal/harness"
 	"github.com/jurabek/software-factory/daemon/internal/workspace"
 
@@ -47,7 +46,6 @@ type Deps struct {
 	Config     config.Config
 	ConfigPath string
 	Harnesses  harness.Registry
-	Git        factorygit.Runner
 	Sandbox    workspace.Sandbox
 }
 

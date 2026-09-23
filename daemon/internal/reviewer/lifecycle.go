@@ -2,9 +2,9 @@ package reviewer
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
+	"github.com/jurabek/software-factory/daemon/internal/harness"
 	"github.com/jurabek/software-factory/daemon/internal/stage"
 	"github.com/jurabek/software-factory/daemon/internal/stagekit"
 	"github.com/jurabek/software-factory/daemon/internal/store"
@@ -100,80 +100,44 @@ func (s service) beginReview(ctx context.Context, taskID, planAttemptID, buildAt
 	return task, phase, nil
 }
 
-// publishReview drains message turns, validates the verdict, enforces
+// publishReview delivers message turns, validates the verdict, enforces
 // read-only observation, and applies the terminal transition.
-func (s service) publishReview(ctx context.Context, task store.Task, phase store.Phase, payload, before string) (stage.ReviewResult, error) {
-	validate := func(text string) (any, error) { return Validate(text) }
-	drain := stagekit.DrainSpec{
-		Task: task, Phase: phase, StageID: phase.Name, AgentName: phase.Owner, Role: "review",
-		ReadOnly: true, Instructions: Instructions(), Validate: validate,
-	}
-	for {
-		continued, err := s.kit.Drain(ctx, drain)
-		if err != nil {
-			s.kit.Fail(ctx, phase, err)
-			return stage.ReviewResult{}, err
-		}
-		if continued != "" {
-			payload = continued
-		}
-		lock := s.kit.Lock(task.ID)
-		lock.Lock()
-		_, err = s.kit.DB().NextQueuedMessage(ctx, task.ID, phase.Name)
-		if err == nil {
-			lock.Unlock()
-			continue
-		}
-		if !errors.Is(err, store.ErrNotFound) {
-			lock.Unlock()
-			s.kit.Fail(ctx, phase, err)
-			return stage.ReviewResult{}, err
-		}
+func (s service) publishReview(ctx context.Context, task store.Task, phase store.Phase, turn harness.TurnResult, before string) (stage.ReviewResult, error) {
+	return s.kit.DeliverAndFinalize(ctx, stagekit.Delivery{
+		Task: task, Phase: phase, Role: "review", ReadOnly: true, Instructions: Instructions(),
+		Validate: func(text string) (any, error) { return Validate(text) },
+	}, turn, func(turn harness.TurnResult) (stage.ReviewResult, error) {
+		payload := turn.Payload
 		review, validationErr := Validate(payload)
 		if validationErr != nil {
 			s.kit.Fail(ctx, phase, validationErr)
-			lock.Unlock()
 			return stage.ReviewResult{}, validationErr
 		}
 		if !review.Approved {
 			rejected := fmt.Errorf("reviewer rejected implementation")
-			err = s.kit.Complete(ctx, stagekit.Completion{
+			if err := s.kit.Complete(ctx, stagekit.Completion{
 				Phase: phase, From: stagekit.Reviewing, To: stagekit.Blocked, Status: "failed", Cause: rejected,
-			})
-			lock.Unlock()
-			if err != nil {
+			}); err != nil {
 				return stage.ReviewResult{}, err
 			}
 			return stage.ReviewResult{Payload: payload, AttemptID: phase.ID, SnapshotID: phase.OutputSnapshot, Approved: false}, nil
 		}
-		after, fingerprintErr := workspace.Fingerprint(ctx, s.kit.Git(), task)
+		after, fingerprintErr := workspace.Fingerprint(task)
 		if fingerprintErr != nil {
 			s.kit.Fail(ctx, phase, fingerprintErr)
-			lock.Unlock()
 			return stage.ReviewResult{}, fingerprintErr
 		}
 		if before != after {
 			readonlyErr := fmt.Errorf("%s modified repository", phase.Name)
 			s.kit.Fail(ctx, phase, readonlyErr)
-			lock.Unlock()
 			return stage.ReviewResult{}, readonlyErr
 		}
-		artifact, artifactErr := s.kit.AgentReportArtifact(task, phase, "review", payload, validate)
-		if artifactErr != nil {
-			s.kit.Fail(ctx, phase, artifactErr)
-			lock.Unlock()
-			return stage.ReviewResult{}, artifactErr
-		}
-		err = s.kit.Complete(ctx, stagekit.Completion{
-			Phase: phase, From: stagekit.Reviewing, To: stagekit.Completed, Status: "success", Artifact: &artifact,
-		})
-		if err != nil {
+		if err := s.kit.Complete(ctx, stagekit.Completion{
+			Phase: phase, From: stagekit.Reviewing, To: stagekit.Completed, Status: "success",
+		}); err != nil {
 			s.kit.Fail(ctx, phase, err)
-		}
-		lock.Unlock()
-		if err != nil {
 			return stage.ReviewResult{}, err
 		}
 		return stage.ReviewResult{Payload: payload, AttemptID: phase.ID, SnapshotID: phase.OutputSnapshot, Approved: true}, nil
-	}
+	})
 }

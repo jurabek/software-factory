@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jurabek/software-factory/daemon/internal/intervention"
 	"github.com/jurabek/software-factory/daemon/internal/messaging"
 	"github.com/jurabek/software-factory/daemon/internal/session"
 	"github.com/jurabek/software-factory/daemon/internal/stagekit"
@@ -45,18 +44,14 @@ func (h tasksHandler) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/tasks/{id}/sessions", h.taskSessions)
 	mux.HandleFunc("POST /api/v1/tasks/{id}/messages", h.sendMessage)
 	mux.HandleFunc("GET /api/v1/tasks/{id}/messages", h.messages)
-	mux.HandleFunc("POST /api/v1/tasks/{id}/attempts/{attemptID}/retry", h.retry)
 	mux.HandleFunc("POST /api/v1/tasks/{id}/approve", h.approve)
 	mux.Handle("POST /api/v1/tasks/{id}/pause", h.control(h.pause))
 	mux.Handle("POST /api/v1/tasks/{id}/resume", h.control(h.resume))
 	mux.Handle("POST /api/v1/tasks/{id}/abort", h.control(h.abort))
-	mux.HandleFunc("GET /api/v1/tasks/{id}/interventions", h.interventions)
 	mux.HandleFunc("DELETE /api/v1/tasks/{id}", h.delete)
 	mux.HandleFunc("GET /api/v1/tasks/{id}/attempts", h.attempts)
 	mux.HandleFunc("GET /api/v1/tasks/{id}/attempts/{attemptID}", h.attempt)
 	mux.HandleFunc("GET /api/v1/tasks/{id}/branches", h.branches)
-	mux.HandleFunc("GET /api/v1/tasks/{id}/artifacts", h.artifacts)
-	mux.HandleFunc("GET /api/v1/tasks/{id}/artifacts/{artifactID}", h.artifact)
 	mux.HandleFunc("GET /api/v1/tasks/{id}/events", h.events)
 	mux.HandleFunc("GET /api/v1/tasks/{id}/events/stream", h.stream)
 	mux.HandleFunc("GET /api/v1/tasks/{id}/results", h.results)
@@ -289,32 +284,6 @@ func (h tasksHandler) messages(w http.ResponseWriter, r *http.Request) {
 	write(w, http.StatusOK, values)
 }
 
-func (h tasksHandler) retry(w http.ResponseWriter, r *http.Request) {
-	request, err := decode[intervention.RetryRequest](r)
-	if err != nil {
-		fail(w, http.StatusUnprocessableEntity, "invalid_request", err.Error())
-		return
-	}
-	value, _, err := h.communicators.Intervention.Retry(r.Context(), r.PathValue("id"), r.PathValue("attemptID"), request)
-	if err != nil {
-		storeError(w, err)
-		return
-	}
-	write(w, http.StatusAccepted, value)
-}
-
-func (h tasksHandler) interventions(w http.ResponseWriter, r *http.Request) {
-	if !h.exists(w, r) {
-		return
-	}
-	values, err := h.db.Interventions(r.Context(), r.PathValue("id"))
-	if err != nil {
-		internal(w, err)
-		return
-	}
-	write(w, http.StatusOK, values)
-}
-
 func (h tasksHandler) delete(w http.ResponseWriter, r *http.Request) {
 	if err := h.communicators.Tasks.Delete(r.Context(), r.PathValue("id")); err != nil {
 		storeError(w, err)
@@ -354,31 +323,6 @@ func (h tasksHandler) branches(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	write(w, http.StatusOK, values)
-}
-
-func (h tasksHandler) artifacts(w http.ResponseWriter, r *http.Request) {
-	if !h.exists(w, r) {
-		return
-	}
-	values, err := h.db.Artifacts(r.Context(), r.PathValue("id"))
-	if err != nil {
-		internal(w, err)
-		return
-	}
-	write(w, http.StatusOK, values)
-}
-
-func (h tasksHandler) artifact(w http.ResponseWriter, r *http.Request) {
-	artifact, err := h.db.Artifact(r.Context(), r.PathValue("id"), r.PathValue("artifactID"))
-	if err != nil {
-		storeError(w, err)
-		return
-	}
-	if artifact.MediaType == "" {
-		artifact.MediaType = "text/markdown; charset=utf-8"
-	}
-	w.Header().Set("Content-Type", artifact.MediaType)
-	_, _ = w.Write([]byte(artifact.Content))
 }
 
 func (h tasksHandler) checks(w http.ResponseWriter, r *http.Request) {
@@ -432,11 +376,20 @@ func (h tasksHandler) events(w http.ResponseWriter, r *http.Request) {
 		internal(w, err)
 		return
 	}
+	values = h.resolveTimeline(r.Context(), values)
 	cursor := after
 	if len(values) > 0 {
 		cursor = values[len(values)-1].Sequence
 	}
 	write(w, http.StatusOK, map[string]any{"events": values, "cursor": cursor, "format_version": session.FormatVersion})
+}
+
+// resolveTimeline hydrates agent-derived events from native session entries.
+func (h tasksHandler) resolveTimeline(ctx context.Context, events []store.Event) []store.Event {
+	if h.communicators.Timeline == nil {
+		return events
+	}
+	return h.communicators.Timeline.Resolve(ctx, events)
 }
 
 func (h tasksHandler) stream(w http.ResponseWriter, r *http.Request) {
@@ -465,6 +418,7 @@ func (h tasksHandler) stream(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return false
 		}
+		events = h.resolveTimeline(r.Context(), events)
 		for _, event := range events {
 			body, _ := json.Marshal(event)
 			fmt.Fprintf(w, "id: %d\nevent: event\ndata: %s\n\n", event.Sequence, body)

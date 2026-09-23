@@ -1,4 +1,4 @@
-package sandbox
+package workspace
 
 import "testing"
 

@@ -18,7 +18,7 @@ func TestBeginOrReusePhaseStartsQueuedRetryAttempt(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
-	kit := New(db, nil, nil, nil, config.Config{}, "", filepath.Join(root, "tasks"))
+	kit := New(db, nil, nil, config.Config{}, "", filepath.Join(root, "tasks"))
 
 	createdAt := time.Now().UTC().Format(time.RFC3339Nano)
 	task := store.Task{

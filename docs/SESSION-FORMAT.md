@@ -16,7 +16,7 @@ statuses, or roles from payload keys.
 | `sequence` | SQLite monotonic cursor; SSE `id` |
 | `id` | daemon event ID (random hex, not a native session UUID) |
 | `task_id`, `phase_id?`, `attempt_id?`, `artifact_id?`, `branch_id?`, `parent_event_id?` | lineage |
-| `kind` | `message` \| `tool_call` \| `process_start` \| `process_end` \| `phase_start` \| `phase_end` \| `intervention` \| `plan_feedback` \| `task_message` \| `custom` |
+| `kind` | `message` \| `tool_call` \| `process_start` \| `process_end` \| `phase_start` \| `phase_end` \| `plan_feedback` \| `task_message` \| `custom` |
 | `format_version` | contract version (1) |
 | `name?` | tool name for `tool_call`, empty otherwise |
 | `payload` | typed per-kind object (snake_case) |
@@ -49,8 +49,6 @@ scope.
   duration_ms}`.
 - `phase_start` / `phase_end`: `{phase, name?, kind?, owner?, status?, error?,
   input_snapshot?, output_snapshot?}`.
-- `intervention`: `{actor, intent, text, delivery, intervention_id?,
-  target_type?, target_id?}`.
 - `plan_feedback`: `{feedback, actor?, plan_digest?}`.
 - `task_message`: `{message_id, task_id, text, recipient_role,
   agent_session_id, target_type?, target_id?, anchor_json?, delivery_status,
@@ -74,7 +72,6 @@ normalizes case without changing the payload.
 | process_end | event | success if exit_code==0 else failure | "Agent process finished" | — | — |
 | phase_start | event | running | "Attempt started" | payload.name | — |
 | phase_end | event | success/failure from payload.status | "Attempt finished" | payload.name | error |
-| intervention | user | neutral | "Intervention <Intent>" | — | text |
 | plan_feedback | user | neutral | "Planner feedback" | — | feedback |
 | task_message | user | failure when delivery_status is failed, otherwise neutral | "Message <delivery_status>" | recipient_role | text / first line |
 | custom | event | neutral | displayName(custom_type) | — | bounded data |

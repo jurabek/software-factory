@@ -111,7 +111,7 @@ func (s *Service) create(ctx context.Context, request CreateRequest, parentTaskI
 		return store.Task{}, err
 	}
 	workspace := filepath.Join(s.root, "tasks", id)
-	for _, directory := range []string{workspace, filepath.Join(workspace, "workspace", "repository"), filepath.Join(workspace, "attempts"), filepath.Join(workspace, "snapshots"), filepath.Join(workspace, "artifacts"), filepath.Join(workspace, "sessions"), filepath.Join(workspace, "workspace", "snapshots"), filepath.Join(workspace, "workspace", "branches"), filepath.Join(workspace, "workspace", "attempts")} {
+	for _, directory := range []string{workspace, filepath.Join(workspace, "workspace", "repository"), filepath.Join(workspace, "attempts"), filepath.Join(workspace, "snapshots"), filepath.Join(workspace, "sessions"), filepath.Join(workspace, "workspace", "snapshots"), filepath.Join(workspace, "workspace", "branches"), filepath.Join(workspace, "workspace", "attempts")} {
 		if err = os.MkdirAll(directory, 0o700); err != nil {
 			_ = os.RemoveAll(workspace)
 			return store.Task{}, fmt.Errorf("create task workspace: %w", err)
