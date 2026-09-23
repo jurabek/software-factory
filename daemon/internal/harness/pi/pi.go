@@ -108,6 +108,12 @@ func processEvent(event map[string]any, tools map[string]toolStart, result *harn
 	switch typeName {
 	case "message_start", "message_update", "tool_execution_update":
 		return nil
+	case "agent_start", "agent_end", "session_start", "session_end", "entry_appended":
+		// RPC session-lifecycle noise. agent_end carries a full session dump
+		// (messages with cwd/preamble/project_context/skills sections) that is
+		// never human-readable; the authoritative record lives in the native
+		// session file and is hydrated at read time.
+		return nil
 	case "tool_execution_start":
 		id := stringValue(event, "toolCallId", "tool_call_id")
 		tools[id] = toolStart{name: stringValue(event, "toolName", "tool_name", "name"), arguments: firstValue(event, "args", "arguments"), startedAt: eventTime(event, time.Now())}

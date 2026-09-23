@@ -1,12 +1,13 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { parseAgentEnvelope } from "@/client/agent-envelope.ts";
 import {
 	eventReadable,
 	formatDurationMs,
-	sessionDisplay,
 	type SessionDisplay,
 	type SessionEvent,
+	sessionDisplay,
 } from "@/client/session-contract.ts";
 import {
 	Dialog,
@@ -83,8 +84,13 @@ export function EventDialog({
 								event.kind === "tool_call"
 									? event.payload.result
 									: event.kind === "message"
-										? event.payload.text
+										? (parseAgentEnvelope(event.payload.text)?.report ??
+											event.payload.text)
 										: undefined;
+							const envelope =
+								event.kind === "message"
+									? parseAgentEnvelope(event.payload.text)
+									: null;
 							return (
 								<>
 									<DialogHeader className="flex-row items-center gap-3 border-b px-4 py-3">
@@ -181,6 +187,11 @@ export function EventDialog({
 												<h3 className="text-muted-foreground text-[0.66rem] uppercase tracking-[0.07em]">
 													{event.kind === "message" ? "Message" : "Result"}
 												</h3>
+												{envelope?.summary ? (
+													<p className="text-subtle text-[0.85rem] font-medium">
+														{envelope.summary}
+													</p>
+												) : null}
 												<pre className="bg-surface-sunken text-subtle overflow-x-auto rounded-md border p-3 text-[0.82rem] leading-relaxed break-words whitespace-pre-wrap">
 													{content}
 												</pre>

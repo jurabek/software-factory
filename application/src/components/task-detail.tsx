@@ -26,6 +26,10 @@ import {
 	useState,
 } from "react";
 import {
+	type AgentEnvelope,
+	parseAgentEnvelope,
+} from "@/client/agent-envelope.ts";
+import {
 	daemonAttempts,
 	daemonBranches,
 	daemonChecks,
@@ -112,11 +116,18 @@ type DisplayReport = {
 
 function renderedReportContent(report: DisplayReport): string {
 	if (report.kind !== "result") return report.content;
+	const envelope = parseAgentEnvelope(report.content);
+	if (envelope) return envelope.report;
 	try {
 		return JSON.stringify(JSON.parse(report.content), null, 2);
 	} catch {
 		return report.content;
 	}
+}
+
+function reportEnvelope(report: DisplayReport): AgentEnvelope | null {
+	if (report.kind !== "result") return null;
+	return parseAgentEnvelope(report.content);
 }
 
 function markdownReport(content: string): ReactNode {
@@ -149,6 +160,81 @@ function markdownReport(content: string): ReactNode {
 		if (line.trim() === "") return <div key={key} className="h-2" />;
 		return <p key={key}>{safeMarkdownText(line)}</p>;
 	});
+}
+
+function EnvelopeView({ text }: { text: string }): ReactNode {
+	const envelope = parseAgentEnvelope(text);
+	if (!envelope) return <>{markdownReport(text)}</>;
+	return (
+		<span className="grid min-w-0 gap-2">
+			{envelope.summary ? (
+				<strong className="text-foreground text-[0.85rem] font-medium">
+					{envelope.summary}
+				</strong>
+			) : null}
+			<span className="text-subtle grid gap-1 text-[0.85rem] leading-relaxed">
+				{markdownReport(envelope.report)}
+			</span>
+			{envelope.steps && envelope.steps.length > 0 ? (
+				<span className="grid gap-1">
+					<span className="text-muted-foreground text-[0.68rem] uppercase tracking-[0.07em]">
+						Steps ({envelope.steps.length})
+					</span>
+					<ol className="grid gap-1.5">
+						{envelope.steps.map((step) => (
+							<li
+								key={step.id}
+								className="border-input bg-background rounded-md border px-2 py-1.5"
+							>
+								<span className="text-foreground block text-[0.8rem] font-medium">
+									{step.id} · {step.description}
+								</span>
+								{step.acceptance_criteria &&
+								step.acceptance_criteria.length > 0 ? (
+									<span className="text-muted-foreground block text-[0.72rem]">
+										Accept: {step.acceptance_criteria.join(" · ")}
+									</span>
+								) : null}
+							</li>
+						))}
+					</ol>
+				</span>
+			) : null}
+			{envelope.questions && envelope.questions.length > 0 ? (
+				<span className="border-warning bg-background grid gap-1 rounded-md border px-2 py-1.5">
+					<span className="text-warning text-[0.68rem] uppercase tracking-[0.07em]">
+						Needs your answers ({envelope.questions.length})
+					</span>
+					<ol className="grid list-decimal gap-1 pl-4 text-[0.8rem]">
+						{envelope.questions.map((question, index) => (
+							// biome-ignore lint/suspicious/noArrayIndexKey: questions have no IDs and stay ordered.
+							<li key={`${index}:${question}`}>{question}</li>
+						))}
+					</ol>
+				</span>
+			) : null}
+			{envelope.changed_files && envelope.changed_files.length > 0 ? (
+				<span className="text-muted-foreground text-[0.75rem]">
+					Changed: {envelope.changed_files.join(", ")}
+					{envelope.commit_message ? ` · ${envelope.commit_message}` : ""}
+				</span>
+			) : null}
+			{typeof envelope.approved === "boolean" ? (
+				<span
+					className={
+						envelope.approved
+							? "text-success text-[0.75rem] font-medium"
+							: "text-destructive text-[0.75rem] font-medium"
+					}
+				>
+					{envelope.approved ? "Approved" : "Changes requested"}
+					{envelope.blocking && envelope.blocking.length > 0
+						? ` · ${envelope.blocking.join(" · ")}`
+						: ""}
+				</span>
+			) : null}
+		</span>
+	);
 }
 
 function monogram(name: string): string {
@@ -1100,6 +1186,9 @@ export function TaskDetail({
 										const isResponse =
 											!!item.text &&
 											(item.text.includes("\n") || item.text.length > 160);
+										const envelope = item.text
+											? parseAgentEnvelope(item.text)
+											: null;
 										const content = (
 											<>
 												<span
@@ -1121,20 +1210,26 @@ export function TaskDetail({
 														<Brain className="size-4" />
 													)}
 												</span>
-												<p
-													className={cn(
-														"m-0 min-w-0 break-words",
-														item.errored
-															? "text-destructive"
-															: item.role === "system"
-																? "text-warning"
-																: isResponse
-																	? "text-subtle whitespace-pre-wrap"
-																	: "text-muted-foreground italic",
-													)}
-												>
-													{item.text}
-												</p>
+												{envelope ? (
+													<span className="m-0 min-w-0 break-words">
+														<EnvelopeView text={item.text ?? ""} />
+													</span>
+												) : (
+													<p
+														className={cn(
+															"m-0 min-w-0 break-words",
+															item.errored
+																? "text-destructive"
+																: item.role === "system"
+																	? "text-warning"
+																	: isResponse
+																		? "text-subtle whitespace-pre-wrap"
+																		: "text-muted-foreground italic",
+														)}
+													>
+														{item.text}
+													</p>
+												)}
 												<time className="text-muted-foreground pt-0.5 text-[0.7rem] whitespace-nowrap">
 													{relativeTime(item.iso)}
 												</time>
@@ -1425,9 +1520,24 @@ export function TaskDetail({
 									</div>
 								</div>
 								<div className="text-muted-foreground mt-2.5 max-h-72 overflow-auto text-xs leading-relaxed break-words whitespace-pre-wrap">
-									{selectedReportValue.kind === "result"
-										? renderedReportContent(selectedReportValue)
-										: markdownReport(selectedReportValue.content)}
+									{selectedReportValue.kind === "result" &&
+									reportEnvelope(selectedReportValue) ? (
+										<>
+											<EnvelopeView text={selectedReportValue.content} />
+											<details className="mt-3">
+												<summary className="cursor-pointer text-[0.72rem]">
+													Raw envelope JSON
+												</summary>
+												<pre className="bg-surface-sunken mt-1 overflow-x-auto rounded-md border p-2 whitespace-pre-wrap">
+													{selectedReportValue.content}
+												</pre>
+											</details>
+										</>
+									) : selectedReportValue.kind === "result" ? (
+										renderedReportContent(selectedReportValue)
+									) : (
+										markdownReport(selectedReportValue.content)
+									)}
 								</div>
 							</article>
 						) : null}

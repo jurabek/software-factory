@@ -187,6 +187,16 @@ func Describe(kind Kind, payload any) Display {
 			if strings.EqualFold(value.StopReason, "error") || strings.EqualFold(value.StopReason, "aborted") {
 				status = "failure"
 			}
+			if strings.EqualFold(value.Role, "assistant") {
+				if summary, report, ok := envelopeHuman(value.Text); ok {
+					display := Display{Role: role, Status: status, Title: title, Target: truncate(summary, maxTargetBytes), Result: truncate(report, MaxJSONBytes)}
+					display.Preview = firstLine(summary, maxPreviewBytes)
+					if display.Preview == "" {
+						display.Preview = firstLine(report, maxPreviewBytes)
+					}
+					return display
+				}
+			}
 			return withText(Display{Role: role, Status: status, Title: title}, value.Text)
 		}
 	case KindToolCall:
@@ -250,6 +260,38 @@ func withText(display Display, text string) Display {
 	display.Result = truncate(text, MaxJSONBytes)
 	display.Preview = firstLine(display.Result, maxPreviewBytes)
 	return display
+}
+
+// envelopeHuman extracts the human-readable summary and report from a
+// deterministic agent envelope (planner/builder/reviewer JSON). It mirrors
+// stage.object extraction so fenced or whitespace-padded envelopes still
+// resolve to report_markdown instead of raw JSON.
+func envelopeHuman(text string) (string, string, bool) {
+	trimmed := strings.TrimSpace(text)
+	if strings.HasPrefix(trimmed, "```") {
+		first := strings.Index(trimmed, "\n")
+		last := strings.LastIndex(trimmed, "```")
+		if first >= 0 && last > first {
+			trimmed = strings.TrimSpace(trimmed[first+1 : last])
+		}
+	}
+	start := strings.Index(trimmed, "{")
+	end := strings.LastIndex(trimmed, "}")
+	if start < 0 || end < start {
+		return "", "", false
+	}
+	var envelope struct {
+		Status  string `json:"status"`
+		Summary string `json:"summary"`
+		Report  string `json:"report_markdown"`
+	}
+	if err := json.Unmarshal([]byte(trimmed[start:end+1]), &envelope); err != nil {
+		return "", "", false
+	}
+	if strings.TrimSpace(envelope.Report) == "" {
+		return "", "", false
+	}
+	return strings.TrimSpace(envelope.Summary), envelope.Report, true
 }
 
 func status(value string) string {

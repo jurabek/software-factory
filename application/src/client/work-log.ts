@@ -1,3 +1,4 @@
+import { isLifecycleNoise } from "@/client/agent-envelope.ts";
 import type { SessionEvent } from "@/client/session-contract.ts";
 
 export function visibleWorkEvents(
@@ -17,8 +18,9 @@ export function meaningfulWorkEvents(
 ): SessionEvent[] {
 	return events.filter(
 		(event) =>
-			!attemptId ||
-			event.attempt_id === attemptId ||
-			event.phase_id === attemptId,
+			!isLifecycleNoise(event) &&
+			(!attemptId ||
+				event.attempt_id === attemptId ||
+				event.phase_id === attemptId),
 	);
 }

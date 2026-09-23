@@ -6,3 +6,4 @@ dist
 /.software-factory
 /application/test-results/
 /application/playwright-report/
+*.tsbuildinfo
