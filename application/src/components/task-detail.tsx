@@ -19,16 +19,16 @@ import {
 	Users,
 } from "lucide-react";
 import {
+	type ReactNode,
 	useCallback,
 	useEffect,
 	useRef,
 	useState,
-	type ReactNode,
 } from "react";
 import {
-	daemonAttempts,
 	daemonArtifactContent,
 	daemonArtifacts,
+	daemonAttempts,
 	daemonBranches,
 	daemonChecks,
 	daemonCommand,
@@ -43,8 +43,8 @@ import {
 	type MessageTarget,
 	openTaskStream,
 	type QualifiedTask,
-	type TaskAttempt,
 	type TaskArtifact,
+	type TaskAttempt,
 	type TaskBranch,
 	type TaskCheck,
 	type TaskDetails,
@@ -57,13 +57,13 @@ import {
 	RequestScope,
 	relativeTime,
 } from "@/client/daemon-ui-state.ts";
+import { safeMarkdownText } from "@/client/safe-markdown.ts";
 import {
 	formatDurationMs,
 	type SessionEvent,
 	sessionDisplay,
 } from "@/client/session-contract.ts";
 import { meaningfulWorkEvents, visibleWorkEvents } from "@/client/work-log.ts";
-import { safeMarkdownText } from "@/client/safe-markdown.ts";
 import { AttemptGraph } from "@/components/attempt-graph.tsx";
 import { EventDialog } from "@/components/event-dialog.tsx";
 import { StageProgress } from "@/components/stage-progress.tsx";
@@ -150,11 +150,7 @@ function markdownReport(content: string): ReactNode {
 				</li>
 			);
 		if (line.trim() === "") return <div key={key} className="h-2" />;
-		return (
-			<p key={key}>
-				{safeMarkdownText(line)}
-			</p>
-		);
+		return <p key={key}>{safeMarkdownText(line)}</p>;
 	});
 }
 
@@ -587,7 +583,11 @@ export function TaskDetail({
 	}, [artifacts, daemonId, selectedArtifact, task.id]);
 
 	useEffect(() => {
-		if (autoScroll && (events.length > 0 || messages.length > 0) && chatScroll.current)
+		if (
+			autoScroll &&
+			(events.length > 0 || messages.length > 0) &&
+			chatScroll.current
+		)
 			chatScroll.current.scrollTop = chatScroll.current.scrollHeight;
 	}, [autoScroll, events, messages]);
 

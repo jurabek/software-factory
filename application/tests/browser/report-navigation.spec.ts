@@ -23,7 +23,9 @@ const report = `# Plan report
 const timestamp = "2026-09-13T12:00:00Z";
 
 function connectionToken(): string {
-	const header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
+	const header = Buffer.from(
+		JSON.stringify({ alg: "HS256", typ: "JWT" }),
+	).toString("base64url");
 	const payload = Buffer.from(
 		JSON.stringify({
 			iss: "software-factory-daemon",
@@ -74,9 +76,11 @@ function startMockDaemon(): Promise<Server> {
 	const mock = createServer((request, response) => {
 		const path = new URL(request.url ?? "/", "http://127.0.0.1:8080").pathname;
 		if (path === "/api/v1/identity") return json(response, { id: daemonID });
-		if (path === "/api/v1/health") return json(response, { status: "ok", errors: [] });
+		if (path === "/api/v1/health")
+			return json(response, { status: "ok", errors: [] });
 		if (path === "/api/v1/tasks") return json(response, [rootTask(), task()]);
-		if (path === `/api/v1/tasks/${rootTaskID}`) return json(response, rootTask());
+		if (path === `/api/v1/tasks/${rootTaskID}`)
+			return json(response, rootTask());
 		if (path === `/api/v1/tasks/${taskID}`) return json(response, task());
 		if (path === `/api/v1/tasks/${taskID}/artifacts`) {
 			return json(response, [
@@ -102,9 +106,11 @@ function startMockDaemon(): Promise<Server> {
 			response.end(": heartbeat\n\n");
 			return;
 		}
-		if (path.endsWith("/events")) return json(response, { events: [], cursor: 0 });
+		if (path.endsWith("/events"))
+			return json(response, { events: [], cursor: 0 });
 		if (path.endsWith("/diff")) return json(response, { files: [], patch: "" });
-		if (/\/(attempts|branches|checks|results|sessions|messages)$/.test(path)) return json(response, []);
+		if (/\/(attempts|branches|checks|results|sessions|messages)$/.test(path))
+			return json(response, []);
 		response.statusCode = 404;
 		response.end();
 	});
@@ -116,35 +122,46 @@ function startMockDaemon(): Promise<Server> {
 
 async function login(page: Page): Promise<void> {
 	await page.goto("/login");
-	await page.getByLabel("Login").fill(process.env.INITIAL_USER_LOGIN ?? "owner");
-	await page.getByLabel("Password").fill(process.env.INITIAL_USER_PASSWORD ?? "");
+	await page
+		.getByLabel("Login")
+		.fill(process.env.INITIAL_USER_LOGIN ?? "owner");
+	await page
+		.getByLabel("Password")
+		.fill(process.env.INITIAL_USER_PASSWORD ?? "");
 	await page.getByRole("button", { name: "Sign in" }).click();
 	await expect(page).toHaveURL(/\/tasks/);
 }
 
 async function registerDaemon(page: Page): Promise<string> {
-	return page.evaluate(async ({ token, endpoint }) => {
-		const connections = (await (await fetch("/api/daemons")).json()) as {
-			daemons: { id: string; name: string; endpoint: string }[];
-		};
-		for (const connection of connections.daemons) {
-			if (
-				connection.name.startsWith("Browser report ") &&
-				connection.endpoint === endpoint
-			)
-				await fetch(`/api/daemons/${connection.id}`, { method: "DELETE" });
-		}
-		const response = await fetch("/api/daemons", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ token, name: `Browser report ${Date.now()}` }),
-		});
-		if (!response.ok) throw new Error(`daemon registration failed: ${response.status}`);
-		return (await response.json()).connection.id as string;
-	}, { token: connectionToken(), endpoint: daemonEndpoint });
+	return page.evaluate(
+		async ({ token, endpoint }) => {
+			const connections = (await (await fetch("/api/daemons")).json()) as {
+				daemons: { id: string; name: string; endpoint: string }[];
+			};
+			for (const connection of connections.daemons) {
+				if (
+					connection.name.startsWith("Browser report ") &&
+					connection.endpoint === endpoint
+				)
+					await fetch(`/api/daemons/${connection.id}`, { method: "DELETE" });
+			}
+			const response = await fetch("/api/daemons", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ token, name: `Browser report ${Date.now()}` }),
+			});
+			if (!response.ok)
+				throw new Error(`daemon registration failed: ${response.status}`);
+			return (await response.json()).connection.id as string;
+		},
+		{ token: connectionToken(), endpoint: daemonEndpoint },
+	);
 }
 
-async function removeDaemon(page: Page, daemonConnectionID: string): Promise<void> {
+async function removeDaemon(
+	page: Page,
+	daemonConnectionID: string,
+): Promise<void> {
 	await page.evaluate(async (id) => {
 		await fetch(`/api/daemons/${id}`, { method: "DELETE" });
 	}, daemonConnectionID);
@@ -157,16 +174,21 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async () => {
-	await new Promise<void>((resolve, reject) => daemon.close((error) => (error ? reject(error) : resolve())));
+	await new Promise<void>((resolve, reject) =>
+		daemon.close((error) => (error ? reject(error) : resolve())),
+	);
 });
 
-test("report navigation renders immutable Markdown safely", async ({ page }) => {
+test("report navigation renders immutable Markdown safely", async ({
+	page,
+}) => {
 	await login(page);
 	const daemonConnectionID = await registerDaemon(page);
 	try {
 		const externalRequests: string[] = [];
 		page.on("request", (request) => {
-			if (request.url().startsWith("https://example.test/")) externalRequests.push(request.url());
+			if (request.url().startsWith("https://example.test/"))
+				externalRequests.push(request.url());
 		});
 		await test.step("open report", async () => {
 			await page.goto(
@@ -189,15 +211,25 @@ test("report navigation renders immutable Markdown safely", async ({ page }) => 
 				expect(response.status()).toBe(200);
 			});
 		});
-		const reportView = page.locator("article", { hasText: "readable evidence" });
+		const reportView = page.locator("article", {
+			hasText: "readable evidence",
+		});
 		await test.step("assert safe report", async () => {
 			await expect(reportView).toContainText("attempt plan-attempt-1");
 			await expect(reportView).toContainText("readable evidence");
 			await expect(reportView).toContainText("window.__reportScriptRan = true");
 			await expect(reportView.locator("script")).toHaveCount(0);
-			await expect(reportView.locator('a[href="https://example.test/active"]')).toHaveCount(0);
-			await expect(reportView.locator('img[src="https://example.test/pixel.png"]')).toHaveCount(0);
-			expect(await page.evaluate(() => (window as { __reportScriptRan?: boolean }).__reportScriptRan)).toBeUndefined();
+			await expect(
+				reportView.locator('a[href="https://example.test/active"]'),
+			).toHaveCount(0);
+			await expect(
+				reportView.locator('img[src="https://example.test/pixel.png"]'),
+			).toHaveCount(0);
+			expect(
+				await page.evaluate(
+					() => (window as { __reportScriptRan?: boolean }).__reportScriptRan,
+				),
+			).toBeUndefined();
 			expect(externalRequests).toEqual([]);
 		});
 	} finally {

@@ -291,7 +291,11 @@ async function requestText(
 	});
 	if (!response.ok) {
 		const code = await safeCode(response.status, response);
-		throw new DaemonRequestError(response.status, code, safeMessage(code, response.status));
+		throw new DaemonRequestError(
+			response.status,
+			code,
+			safeMessage(code, response.status),
+		);
 	}
 	return response.text();
 }

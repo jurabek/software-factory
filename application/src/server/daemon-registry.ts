@@ -898,7 +898,11 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
 			taskId: string,
 			artifactId: string,
 			signal?: AbortSignal,
-		): Promise<{ connection: DaemonConnection; taskId: string; content: string }> {
+		): Promise<{
+			connection: DaemonConnection;
+			taskId: string;
+			content: string;
+		}> {
 			const validatedTask = validatedTaskID(taskId);
 			const resolved = await resolve(id);
 			try {
@@ -909,7 +913,11 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
 					artifactId,
 					{ signal },
 				);
-				return { connection: resolved.connection, taskId: validatedTask, content };
+				return {
+					connection: resolved.connection,
+					taskId: validatedTask,
+					content,
+				};
 			} catch (error) {
 				throw remapIdentityMismatch(error);
 			}
