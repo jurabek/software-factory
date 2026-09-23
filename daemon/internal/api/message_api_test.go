@@ -52,7 +52,7 @@ func TestTaskReadsExposeAuthoritativeAvailableActions(t *testing.T) {
 	defer db.Close()
 	createdAt := time.Now().UTC().Format(time.RFC3339Nano)
 	task := store.Task{ID: "task-actions", Request: "request", WorkspacePath: t.TempDir(), RepositoryType: "github", RepositorySource: "owner/repo", State: "preparing", CreatedAt: createdAt}
-	if err = db.CreateTask(context.Background(), task); err != nil {
+	if err = db.Tasks.Create(context.Background(), task); err != nil {
 		t.Fatal(err)
 	}
 	server, err := New(db, Communicators{}, config.Config{}, nil, nil, nil, func(context.Context, string) ([]config.Model, error) { return []config.Model{}, nil }, newTestAccess())
@@ -69,7 +69,7 @@ func TestTaskReadsExposeAuthoritativeAvailableActions(t *testing.T) {
 		}
 	}
 	phase := store.Phase{ID: "done", TaskID: task.ID, Sequence: 1, Name: "reviewing", Kind: "agent", Owner: "reviewer", Status: "success", Attempt: 1}
-	if err = db.AddPhase(context.Background(), phase); err != nil {
+	if err = db.Phases.Add(context.Background(), phase); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = db.ExecContext(context.Background(), `update tasks set state='completed',active_phase=null where id=?`, task.ID); err != nil {

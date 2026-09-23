@@ -16,7 +16,7 @@ import (
 	"github.com/jurabek/software-factory/daemon/internal/workspace"
 )
 
-func verifierTestKit(t *testing.T, root string) (*stagekit.Kit, *store.DB) {
+func verifierTestKit(t *testing.T, root string) (*stagekit.Kit, *store.Store) {
 	t.Helper()
 	db, err := store.Open(filepath.Join(root, "factory.db"))
 	if err != nil {
@@ -26,13 +26,13 @@ func verifierTestKit(t *testing.T, root string) (*stagekit.Kit, *store.DB) {
 	return stagekit.New(db, nil, nil, config.Config{}, "", root), db
 }
 
-func verifierTask(t *testing.T, db *store.DB, root, repositoryPath, base string) store.Task {
+func verifierTask(t *testing.T, db *store.Store, root, repositoryPath, base string) store.Task {
 	t.Helper()
 	task := store.Task{ID: "task-1", Request: "quality", WorkspacePath: filepath.Join(root, "task"), RepositoryType: "local", RepositorySource: repositoryPath, RepositoryPath: repositoryPath, BaseSHA: base, ReviewBaseSHA: base, State: string(stagekit.Preparing), CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
 	if err := os.MkdirAll(task.WorkspacePath, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.CreateTask(context.Background(), task); err != nil {
+	if err := db.Tasks.Create(context.Background(), task); err != nil {
 		t.Fatal(err)
 	}
 	return task
@@ -63,7 +63,7 @@ func TestCheckCancellationKillsProcessGroupAndPersistsCancelledRecord(t *testing
 	case <-time.After(3 * time.Second):
 		t.Fatal("check process did not terminate after cancellation")
 	}
-	checks, err := db.Checks(context.Background(), task.ID)
+	checks, err := db.Checks.List(context.Background(), task.ID)
 	if err != nil || len(checks) != 1 || checks[0].Status != "cancelled" {
 		t.Fatalf("checks = %#v, err = %v", checks, err)
 	}
@@ -84,7 +84,7 @@ func TestComparisonFailureIsPersistedAsAdvisoryObservation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = db.AddPhase(context.Background(), store.Phase{ID: "build-attempt", TaskID: task.ID, Sequence: 1, Name: "build", Kind: "build", Status: "success", Attempt: 1, BranchID: "branch", InputSnapshot: digest}); err != nil {
+	if err = db.Phases.Add(context.Background(), store.Phase{ID: "build-attempt", TaskID: task.ID, Sequence: 1, Name: "build", Kind: "build", Status: "success", Attempt: 1, BranchID: "branch", InputSnapshot: digest}); err != nil {
 		t.Fatal(err)
 	}
 	verifierWrite(t, filepath.Join(repositoryPath, "changed_test.go"), "changed\n")
@@ -97,14 +97,14 @@ func TestComparisonFailureIsPersistedAsAdvisoryObservation(t *testing.T) {
 	if err = service.runComparisons(context.Background(), task, verify, profile); err != nil {
 		t.Fatal(err)
 	}
-	comparisons, err := db.Comparisons(context.Background(), task.ID)
+	comparisons, err := db.Evidence.Comparisons(context.Background(), task.ID)
 	if err != nil || len(comparisons) != 1 {
 		t.Fatalf("comparisons = %#v, err = %v", comparisons, err)
 	}
 	if comparisons[0].Status != "overlay_checks_failed" || comparisons[0].BaselineSnapshot != digest || len(comparisons[0].OverlayPaths) != 1 {
 		t.Fatalf("comparison = %#v", comparisons[0])
 	}
-	checks, err := db.Checks(context.Background(), task.ID)
+	checks, err := db.Checks.List(context.Background(), task.ID)
 	if err != nil || len(checks) != 2 {
 		t.Fatalf("checks = %#v, err = %v", checks, err)
 	}

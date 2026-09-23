@@ -18,7 +18,7 @@ func TestExecutionOwnerAdmitsOneSuccessorAfterCurrentSettlement(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	created := store.Task{ID: "task-1", Request: "change", WorkspacePath: filepath.Join(root, "tasks", "task-1"), State: string(Preparing), CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
-	if err = db.CreateTask(context.Background(), created); err != nil {
+	if err = db.Tasks.Create(context.Background(), created); err != nil {
 		t.Fatal(err)
 	}
 	service := New(root, Dependencies{Store: db})

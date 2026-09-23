@@ -60,13 +60,13 @@ func TestMaterializeScratchPreservesModesSymlinksAndIsolation(t *testing.T) {
 	}
 }
 
-func scratchTask(t *testing.T, db *store.DB, root, repositoryPath, base string) store.Task {
+func scratchTask(t *testing.T, db *store.Store, root, repositoryPath, base string) store.Task {
 	t.Helper()
 	task := store.Task{ID: "task-1", Request: "scratch", WorkspacePath: filepath.Join(root, "task"), RepositoryType: "local", RepositorySource: repositoryPath, RepositoryPath: repositoryPath, BaseSHA: base, ReviewBaseSHA: base, State: "preparing", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
 	if err := os.MkdirAll(task.WorkspacePath, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.CreateTask(context.Background(), task); err != nil {
+	if err := db.Tasks.Create(context.Background(), task); err != nil {
 		t.Fatal(err)
 	}
 	return task

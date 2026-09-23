@@ -26,21 +26,21 @@ func TestBeginOrReusePhaseStartsQueuedRetryAttempt(t *testing.T) {
 		RepositoryType: "github", RepositorySource: "owner/repository", State: string(Blocked),
 		CreatedAt: createdAt, StartedAt: createdAt,
 	}
-	if err = db.CreateActiveTask(ctx, task); err != nil {
+	if err = db.Tasks.CreateActive(ctx, task); err != nil {
 		t.Fatal(err)
 	}
 	branch := store.Branch{ID: "branch-1", TaskID: task.ID, Status: "active", CreatedAt: createdAt}
-	if err = db.CreateBranch(ctx, branch); err != nil {
+	if err = db.Branches.Create(ctx, branch); err != nil {
 		t.Fatal(err)
 	}
-	if err = db.SelectBranch(ctx, task.ID, branch.ID); err != nil {
+	if err = db.Branches.Select(ctx, task.ID, branch.ID); err != nil {
 		t.Fatal(err)
 	}
 	queued := store.Phase{
 		ID: "phase-2", TaskID: task.ID, Sequence: 2, Name: "building", Kind: "agent", Owner: "builder",
 		Status: "queued", Attempt: 2, BranchID: branch.ID, DefinitionID: "definition-1", InputSnapshot: "in-snap",
 	}
-	if err = db.AddPhase(ctx, queued); err != nil {
+	if err = db.Phases.Add(ctx, queued); err != nil {
 		t.Fatal(err)
 	}
 
@@ -54,7 +54,7 @@ func TestBeginOrReusePhaseStartsQueuedRetryAttempt(t *testing.T) {
 	if phase.InputSnapshot != "in-snap" || phase.DefinitionID != "definition-1" {
 		t.Fatalf("queued retry identity lost: %#v", phase)
 	}
-	stored, err := db.PhaseByID(ctx, task.ID, queued.ID)
+	stored, err := db.Phases.ByID(ctx, task.ID, queued.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

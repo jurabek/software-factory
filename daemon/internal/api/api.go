@@ -16,7 +16,7 @@ import (
 )
 
 type server struct {
-	db               *store.DB
+	db               *store.Store
 	communicators    Communicators
 	config           config.Config
 	validationErrors []string
@@ -56,7 +56,7 @@ type Access struct {
 	Token    string
 }
 
-func New(db *store.DB, communicators Communicators, cfg config.Config, problems []string, loadErr error, harnesses []string, models func(context.Context, string) ([]config.Model, error), access Access) (http.Handler, error) {
+func New(db *store.Store, communicators Communicators, cfg config.Config, problems []string, loadErr error, harnesses []string, models func(context.Context, string) ([]config.Model, error), access Access) (http.Handler, error) {
 	if access.Token == "" {
 		return nil, errors.New("daemon token is required")
 	}

@@ -160,7 +160,7 @@ func run(rootCtx context.Context) error {
 	defer db.Close()
 	ctx, cancel := context.WithCancel(rootCtx)
 	defer cancel()
-	if err = db.Recover(ctx); err != nil {
+	if err = db.Processes.Recover(ctx); err != nil {
 		return fmt.Errorf("recover stale runs: %w", err)
 	}
 	configPath := filepath.Join(root, "config.yaml")

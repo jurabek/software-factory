@@ -143,15 +143,15 @@ func (s service) Review(ctx context.Context, input stage.Input, plan stage.PlanR
 
 // evidence assembles the review prompt payload from upstream results.
 func (s service) evidence(ctx context.Context, task store.Task, plan stage.PlanResult) (map[string]any, error) {
-	checks, err := s.kit.DB().Checks(ctx, task.ID)
+	checks, err := s.kit.DB().Checks.List(ctx, task.ID)
 	if err != nil {
 		return nil, err
 	}
-	testChanges, err := s.kit.DB().TestChanges(ctx, task.ID)
+	testChanges, err := s.kit.DB().Evidence.TestChanges(ctx, task.ID)
 	if err != nil {
 		return nil, err
 	}
-	comparisons, err := s.kit.DB().Comparisons(ctx, task.ID)
+	comparisons, err := s.kit.DB().Evidence.Comparisons(ctx, task.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -184,7 +184,7 @@ func (s service) savedReview(ctx context.Context, taskID, verificationAttemptID 
 		return stage.ReviewResult{}, false,
 			err
 	}
-	queued, err := s.kit.DB().QueuedMessageForStages(ctx, taskID, stageDef.ID, stageDef.Agent)
+	queued, err := s.kit.DB().Messages.QueuedForStages(ctx, taskID, stageDef.ID, stageDef.Agent)
 	if err != nil {
 		return stage.ReviewResult{},
 			false, err

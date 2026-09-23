@@ -13,7 +13,7 @@ import (
 
 // Deps are the collaborators a projection service needs.
 type Deps struct {
-	Store      *store.DB
+	Store      *store.Store
 	Config     config.Config
 	ConfigPath string
 }
@@ -37,7 +37,7 @@ func (s *Service) StageProjection(ctx context.Context, task store.Task) ([]store
 	if len(pipeline.Stages) == 0 {
 		return []store.StageProjection{}, nil
 	}
-	phases, err := s.deps.Store.Phases(ctx, task.ID)
+	phases, err := s.deps.Store.Phases.List(ctx, task.ID)
 	if err != nil {
 		return nil, err
 	}

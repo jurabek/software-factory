@@ -54,7 +54,7 @@ type Delivery struct {
 // first correction attempt.
 
 // MessageEvent builds the history event recorded for a task message.
-func MessageEvent(ctx context.Context, db *store.DB, message store.Message, phase *store.Phase) (store.Event, error) {
+func MessageEvent(ctx context.Context, db *store.Store, message store.Message, phase *store.Phase) (store.Event, error) {
 	phaseID, branchID := "", ""
 	if phase != nil {
 		phaseID, branchID = phase.ID, phase.BranchID
@@ -65,7 +65,7 @@ func MessageEvent(ctx context.Context, db *store.DB, message store.Message, phas
 		DeliveryStatus: message.DeliveryStatus, FailureReason: message.FailureReason,
 	})
 	taskState := ""
-	if task, taskErr := db.Task(ctx, message.TaskID); taskErr == nil {
+	if task, taskErr := db.Tasks.Get(ctx, message.TaskID); taskErr == nil {
 		taskState = task.State
 	}
 	return store.Event{

@@ -156,7 +156,7 @@ func (s service) Approve(ctx context.Context, taskID, actor, expectedDigest stri
 		return err
 	}
 	payload, err := s.kit.
-		DB().ValidEnvelope(ctx, taskID, stageDef.ID)
+		DB().Envelopes.Valid(ctx, taskID, stageDef.ID)
 	if err != nil {
 		return err
 	}
@@ -184,10 +184,10 @@ func (s service) Approve(ctx context.Context, taskID, actor, expectedDigest stri
 			Status: "success", Title: "Plan approved",
 		}, AvailableActions: []string{"pause", "abort"}, StartedAt: time.Now().UTC(),
 	}
-	if err = s.kit.DB().SetApproval(ctx, taskID, currentDigest, actor); err != nil {
+	if err = s.kit.DB().Tasks.SetApproval(ctx, taskID, currentDigest, actor); err != nil {
 		return err
 	}
-	if _, err = s.kit.DB().AppendEvent(ctx,
+	if _, err = s.kit.DB().Events.Append(ctx,
 		s.kit.
 			TaskDir(taskID), event); err != nil {
 		return err
@@ -207,7 +207,7 @@ func (s service) savedPlan(ctx context.Context, taskID string) (stage.PlanResult
 	if err != nil {
 		return stage.PlanResult{}, false, err
 	}
-	queued, err := s.kit.DB().QueuedMessageForStages(ctx, taskID, stageDef.ID, stageDef.Agent)
+	queued, err := s.kit.DB().Messages.QueuedForStages(ctx, taskID, stageDef.ID, stageDef.Agent)
 	if err != nil {
 		return stage.PlanResult{}, false, err
 	}

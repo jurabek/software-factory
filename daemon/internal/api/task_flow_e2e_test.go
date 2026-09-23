@@ -139,7 +139,7 @@ func (h *taskFlowHarness) Requests() []harness.Prompt {
 type taskFlowSuite struct {
 	suite.Suite
 	client       *http.Client
-	db           *store.DB
+	db           *store.Store
 	harness      *taskFlowHarness
 	repo         string
 	server       *httptest.Server

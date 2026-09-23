@@ -94,7 +94,7 @@ func (s service) Verify(ctx context.Context, input stage.Input, plan stage.PlanR
 		s.kit.Fail(ctx, phase, err)
 		return stage.VerificationResult{}, err
 	}
-	checks, err := s.kit.DB().Checks(ctx, task.ID)
+	checks, err := s.kit.DB().Checks.List(ctx, task.ID)
 	if err != nil {
 		s.kit.Fail(ctx, phase, err)
 		return stage.VerificationResult{}, err
@@ -105,7 +105,7 @@ func (s service) Verify(ctx context.Context, input stage.Input, plan stage.PlanR
 			phaseChecks = append(phaseChecks, check)
 		}
 	}
-	comparisons, err := s.kit.DB().Comparisons(ctx, task.ID)
+	comparisons, err := s.kit.DB().Evidence.Comparisons(ctx, task.ID)
 	if err != nil {
 		s.kit.Fail(ctx, phase, err)
 		return stage.VerificationResult{}, err
@@ -201,15 +201,15 @@ func (s service) runCheck(ctx context.Context, task store.Task, phase store.Phas
 		check.Output = err.Error()
 		check.EndedAt = time.Now().UTC().Format(time.RFC3339Nano)
 		check.DurationMS = int(time.Since(started).Milliseconds())
-		if saveErr := s.kit.DB().SaveCheck(context.WithoutCancel(ctx), check); saveErr != nil {
+		if saveErr := s.kit.DB().Checks.Save(context.WithoutCancel(ctx), check); saveErr != nil {
 			return check, saveErr
 		}
 		return check, &checkRunError{kind: "inconclusive", err: fmt.Errorf("start check %s: %w", declared.ID, err)}
 	}
 	pid := command.Process.Pid
-	if _, err := s.kit.DB().StartProcess(context.WithoutCancel(ctx), task.ID, phase.ID, "check", declared.ID, pid, declared.Command); err != nil {
+	if _, err := s.kit.DB().Processes.Start(context.WithoutCancel(ctx), task.ID, phase.ID, "check", declared.ID, pid, declared.Command); err != nil {
 		terminateProcessGroup(pid)
-		_, _ = command.Wait(), s.kit.DB().EndProcess(context.WithoutCancel(ctx), task.ID, pid, -1)
+		_, _ = command.Wait(), s.kit.DB().Processes.End(context.WithoutCancel(ctx), task.ID, pid, -1)
 		return check, err
 	}
 	waitErr, cancelled := waitForProcess(ctx, command)
@@ -230,8 +230,8 @@ func (s service) runCheck(ctx context.Context, task store.Task, phase store.Phas
 	if err := os.WriteFile(logPath, []byte(check.Output), 0o600); err != nil {
 		return check, err
 	}
-	endErr := s.kit.DB().EndProcess(context.WithoutCancel(ctx), task.ID, pid, check.ExitCode)
-	saveErr := s.kit.DB().SaveCheck(context.WithoutCancel(ctx), check)
+	endErr := s.kit.DB().Processes.End(context.WithoutCancel(ctx), task.ID, pid, check.ExitCode)
+	saveErr := s.kit.DB().Checks.Save(context.WithoutCancel(ctx), check)
 	if endErr != nil {
 		return check, endErr
 	}
@@ -426,7 +426,7 @@ func (s service) saveComparison(ctx context.Context, comparison *store.Compariso
 		comparison.Status = "cancelled"
 		comparison.Reason = ctx.Err().Error()
 	}
-	return s.kit.DB().SaveComparison(context.WithoutCancel(ctx), *comparison)
+	return s.kit.DB().Evidence.SaveComparison(context.WithoutCancel(ctx), *comparison)
 }
 
 // ExpectedTestChange is a Git-derived changed test entry.
@@ -467,7 +467,7 @@ func ComparisonPaths(entries []ExpectedTestChange) []string {
 }
 
 func (s service) comparisonBaseline(ctx context.Context, task store.Task, current store.Phase) (string, error) {
-	phases, err := s.kit.DB().Phases(ctx, task.ID)
+	phases, err := s.kit.DB().Phases.List(ctx, task.ID)
 	if err != nil {
 		return "", err
 	}
@@ -563,7 +563,7 @@ func (s service) savedVerification(ctx context.Context,
 	}
 	checks,
 
-		err := s.kit.DB().Checks(ctx, task.ID)
+		err := s.kit.DB().Checks.List(ctx, task.ID)
 	if err != nil {
 		return stage.VerificationResult{},
 			false, err

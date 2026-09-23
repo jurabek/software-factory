@@ -54,7 +54,7 @@ type Diff struct {
 
 // Deps are the collaborators a task service needs.
 type Deps struct {
-	Store      *store.DB
+	Store      *store.Store
 	Config     config.Config
 	ConfigPath string
 	Harnesses  harness.Registry
@@ -73,7 +73,7 @@ func New(root string, deps Deps) *Service {
 }
 
 func (s *Service) ensureBranch(ctx context.Context, taskID, parent string) error {
-	task, err := s.deps.Store.Task(ctx, taskID)
+	task, err := s.deps.Store.Tasks.Get(ctx, taskID)
 	if err != nil {
 		return err
 	}
@@ -81,21 +81,21 @@ func (s *Service) ensureBranch(ctx context.Context, taskID, parent string) error
 	if task.SelectedBranchID != "" {
 		return nil
 	}
-	branches, err := s.deps.Store.Branches(ctx, taskID)
+	branches, err := s.deps.Store.Branches.List(ctx, taskID)
 	if err != nil {
 		return err
 	}
 	if len(branches) > 0 {
-		return s.deps.Store.SelectBranch(
+		return s.deps.Store.Branches.Select(
 			ctx, taskID,
 			branches[0].ID)
 	}
 	branch := store.Branch{ID: stagekit.
 		RandomID(), TaskID: taskID, ParentBranchID: parent, Status: "active", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
-	if err = s.deps.Store.CreateBranch(ctx, branch); err != nil {
+	if err = s.deps.Store.Branches.Create(ctx, branch); err != nil {
 		return err
 	}
-	return s.deps.Store.SelectBranch(ctx, taskID, branch.ID)
+	return s.deps.Store.Branches.Select(ctx, taskID, branch.ID)
 }
 
 func (s *Service) Create(ctx context.Context, request CreateRequest) (store.Task,
@@ -116,8 +116,7 @@ func (s *Service) Create(ctx context.Context, request CreateRequest) (store.Task
 }
 
 func (s *Service) CreateSession(ctx context.Context, taskID string, request CreateSessionRequest) (store.Task, error) {
-	task, err := s.deps.Store.
-		Task(ctx, taskID)
+	task, err := s.deps.Store.Tasks.Get(ctx, taskID)
 	if err != nil {
 		return store.Task{}, err
 	}
@@ -125,7 +124,7 @@ func (s *Service) CreateSession(ctx context.Context, taskID string, request Crea
 		ParentTaskID !=
 		"" {
 		task, err = s.
-			deps.Store.Task(
+			deps.Store.Tasks.Get(
 			ctx, task.ParentTaskID)
 		if err != nil {
 			return store.
@@ -254,9 +253,9 @@ func (s *Service) create(ctx context.
 	if err != nil {
 		_ = os.RemoveAll(workspace)
 		return store.
-				Task{}, fmt.Errorf("encode task config: %w",
+			Task{}, fmt.Errorf("encode task config: %w",
 
-				err)
+			err)
 	}
 	if len(configured.Agents) == 0 {
 		configSnapshot = ""
@@ -284,7 +283,7 @@ func (s *Service) create(ctx context.
 			err)
 	}
 	if err := s.deps.
-		Store.CreateActiveTask(ctx, task); err != nil {
+		Store.Tasks.CreateActive(ctx, task); err != nil {
 		_ = os.RemoveAll(workspace)
 		return store.Task{}, err
 	}
@@ -292,8 +291,7 @@ func (s *Service) create(ctx context.
 }
 
 func (s *Service) Delete(ctx context.Context, id string) error {
-	task, err := s.deps.Store.
-		Task(ctx, id)
+	task, err := s.deps.Store.Tasks.Get(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -301,7 +299,7 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	if task.
 		ParentTaskID == "" {
 		tasks, err = s.deps.
-			Store.TaskSessions(ctx, id)
+			Store.Tasks.Sessions(ctx, id)
 		if err != nil {
 			return err
 		}
@@ -327,16 +325,14 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 		}
 	}
 	return s.deps.
-		Store.
-		DeleteTask(ctx,
-			id)
+		Store.Tasks.Delete(ctx,
+		id)
 }
 
 func (s *Service) Diff(ctx context.
 	Context, id string,
 ) (Diff, error) {
-	task, err := s.deps.Store.
-		Task(ctx, id)
+	task, err := s.deps.Store.Tasks.Get(ctx, id)
 	if err != nil {
 		return Diff{}, err
 	}

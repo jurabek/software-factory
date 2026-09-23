@@ -59,7 +59,7 @@ func TestPersistEvidenceRetainsChangeKindAndReason(t *testing.T) {
 	if err = PersistEvidence(context.Background(), db, task, store.Phase{ID: "build-attempt", Attempt: 1}, payload); err != nil {
 		t.Fatal(err)
 	}
-	changes, err := db.TestChanges(context.Background(), task.ID)
+	changes, err := db.Evidence.TestChanges(context.Background(), task.ID)
 	if err != nil || len(changes) != 1 {
 		t.Fatalf("changes = %#v, err = %v", changes, err)
 	}
@@ -68,13 +68,13 @@ func TestPersistEvidenceRetainsChangeKindAndReason(t *testing.T) {
 	}
 }
 
-func evidenceTask(t *testing.T, db *store.DB, root, repositoryPath, base string) store.Task {
+func evidenceTask(t *testing.T, db *store.Store, root, repositoryPath, base string) store.Task {
 	t.Helper()
 	task := store.Task{ID: "task-1", Request: "evidence", WorkspacePath: filepath.Join(root, "task"), RepositoryType: "local", RepositorySource: repositoryPath, RepositoryPath: repositoryPath, BaseSHA: base, ReviewBaseSHA: base, State: "preparing", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
 	if err := os.MkdirAll(task.WorkspacePath, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.CreateTask(context.Background(), task); err != nil {
+	if err := db.Tasks.Create(context.Background(), task); err != nil {
 		t.Fatal(err)
 	}
 	return task

@@ -47,7 +47,7 @@ type EventPublisher interface {
 
 // Deps are the collaborators a messaging service needs.
 type Deps struct {
-	Store      *store.DB
+	Store      *store.Store
 	Config     config.Config
 	ConfigPath string
 	Harnesses  harness.Registry
@@ -76,12 +76,12 @@ func (s *Service) Send(ctx context.Context, taskID, actor string, request Reques
 	if request.IdempotencyKey == "" {
 		return store.Message{}, false, fmt.Errorf("idempotency_key is required")
 	}
-	if existing, err := s.deps.Store.MessageByIdempotencyKey(ctx, taskID, request.IdempotencyKey); err == nil {
+	if existing, err := s.deps.Store.Messages.ByIdempotencyKey(ctx, taskID, request.IdempotencyKey); err == nil {
 		return existing, false, nil
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return store.Message{}, false, err
 	}
-	task, err := s.deps.Store.Task(ctx, taskID)
+	task, err := s.deps.Store.Tasks.Get(ctx, taskID)
 	if err != nil {
 		return store.Message{}, false, err
 	}
@@ -115,7 +115,7 @@ func (s *Service) Send(ctx context.Context, taskID, actor string, request Reques
 	if err != nil {
 		return store.Message{}, false, err
 	}
-	stored, created, err := s.deps.Store.AcceptMessageWithEvent(ctx, value, event, role == "planner", reopen, string(stagekit.StateForRole(role)), s.taskDir(taskID))
+	stored, created, err := s.deps.Store.Messages.AcceptWithEvent(ctx, value, event, role == "planner", reopen, string(stagekit.StateForRole(role)), s.taskDir(taskID))
 	if err != nil {
 		return store.Message{}, false, err
 	}
@@ -148,7 +148,7 @@ func (s *Service) messageRecipient(ctx context.
 	}
 	if task.ActivePhase !=
 		"" {
-		active, err := s.deps.Store.PhaseByID(ctx, task.ID, task.ActivePhase)
+		active, err := s.deps.Store.Phases.ByID(ctx, task.ID, task.ActivePhase)
 		if err == nil && active.Status == "running" && active.Kind != "check" && active.Kind != "git" {
 			if active.Kind == "agent" {
 				return active.Owner, &active,
@@ -157,7 +157,7 @@ func (s *Service) messageRecipient(ctx context.
 			return active.Name, &active, nil
 		}
 	}
-	phases, err := s.deps.Store.Phases(ctx, task.ID)
+	phases, err := s.deps.Store.Phases.List(ctx, task.ID)
 	if err != nil {
 		return "", nil, err
 	}
@@ -283,8 +283,7 @@ func (s *Service) ensureAgentSession(ctx context.Context, task store.Task, role 
 	}
 	stored, err := s.
 		deps.
-		Store.
-		AgentSession(ctx, task.ID, role)
+		Store.AgentSessions.Get(ctx, task.ID, role)
 	if err == nil {
 		if stored.
 			Harness != harnessName {
@@ -298,7 +297,7 @@ func (s *Service) ensureAgentSession(ctx context.Context, task store.Task, role 
 		return store.AgentSession{}, err
 	}
 	return s.deps.
-		Store.ReserveAgentSession(ctx, task.ID, store.
+		Store.AgentSessions.Reserve(ctx, task.ID, store.
 		AgentSession{StageID: role, AgentName: agentName, Role: agentName, Harness: harnessName, Model: agent.Model, Thinking: agent.Thinking, Color: agent.Color, HarnessSessionID: uuid.New().String(), SessionDirectory: filepath.Join(s.taskDir(task.
 		ID), "sessions", role, harnessName)})
 }
@@ -319,7 +318,7 @@ func (s *Service) Resolve(ctx context.Context,
 		return "", "", nil, fmt.Errorf("target accepts exactly one of event_id or attempt_id")
 	}
 	if target.AttemptID != "" {
-		phase, err := s.deps.Store.PhaseByID(ctx, taskID, target.AttemptID)
+		phase, err := s.deps.Store.Phases.ByID(ctx, taskID, target.AttemptID)
 		if err != nil {
 			return "", "", nil, err
 		}
@@ -327,7 +326,7 @@ func (s *Service) Resolve(ctx context.Context,
 			phase.ID, &phase, nil
 	}
 	if target.EventID != "" {
-		event, err := s.deps.Store.EventByID(ctx, taskID,
+		event, err := s.deps.Store.Events.ByID(ctx, taskID,
 			target.EventID)
 		if err !=
 			nil {
@@ -344,14 +343,14 @@ func (s *Service) Resolve(ctx context.Context,
 					ID,
 				nil, nil
 		}
-		phase, err := s.deps.Store.PhaseByID(ctx, taskID, attemptID)
+		phase, err := s.deps.Store.Phases.ByID(ctx, taskID, attemptID)
 		if err != nil {
 			return "event", event.ID, nil, nil
 		}
 		return "event", event.ID, &phase,
 			nil
 	}
-	phases, err := s.deps.Store.Phases(
+	phases, err := s.deps.Store.Phases.List(
 		ctx, taskID)
 	if err != nil {
 		return "", "", nil, err

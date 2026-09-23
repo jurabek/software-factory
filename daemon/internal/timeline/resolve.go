@@ -15,12 +15,12 @@ import (
 
 // Resolver hydrates agent-derived events from native session entries.
 type Resolver struct {
-	DB     *store.DB
+	DB     *store.Store
 	Reader harness.NativeReader
 }
 
 // New constructs a timeline resolver.
-func New(db *store.DB, reader harness.NativeReader) *Resolver {
+func New(db *store.Store, reader harness.NativeReader) *Resolver {
 	return &Resolver{DB: db, Reader: reader}
 }
 
@@ -42,7 +42,7 @@ func (r *Resolver) Resolve(ctx context.Context, events []store.Event) []store.Ev
 	}
 	index := map[string]harness.NativeEntry{}
 	for taskID := range tasks {
-		sessions, err := r.DB.AgentSessions(ctx, taskID)
+		sessions, err := r.DB.AgentSessions.List(ctx, taskID)
 		if err != nil {
 			continue
 		}

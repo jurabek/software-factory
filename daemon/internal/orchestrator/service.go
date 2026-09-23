@@ -41,7 +41,7 @@ type execution struct {
 
 // Dependencies are the collaborators the orchestrator consumes.
 type Dependencies struct {
-	Store    *store.DB
+	Store    *store.Store
 	Workflow *pipeline.Pipeline
 	Events   *Events
 }
@@ -49,7 +49,7 @@ type Dependencies struct {
 // Service is the factory control plane.
 type Service struct {
 	root      string
-	db        *store.DB
+	db        *store.Store
 	mu        sync.Mutex
 	cancel    map[string]*execution
 	taskLocks sync.Map
@@ -73,7 +73,7 @@ func New(root string, dependencies Dependencies) *Service {
 }
 
 func (s *Service) pause(ctx context.Context, id string) error {
-	task, err := s.db.Task(ctx, id)
+	task, err := s.db.Tasks.Get(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -89,18 +89,18 @@ func (s *Service) pause(ctx context.Context, id string) error {
 	lock := s.taskLock(id)
 	lock.Lock()
 	defer lock.Unlock()
-	task, err = s.db.Task(ctx, id)
+	task, err = s.db.Tasks.Get(ctx, id)
 	if err != nil {
 		return err
 	}
 	if !stagekit.CanTransition(stagekit.State(task.State), stagekit.Paused) {
 		return store.ErrConflict
 	}
-	return s.db.Transition(ctx, id, task.State, string(stagekit.Paused), task.ActivePhase, "")
+	return s.db.Tasks.Transition(ctx, id, task.State, string(stagekit.Paused), task.ActivePhase, "")
 }
 
 func (s *Service) abort(ctx context.Context, id string) error {
-	task, err := s.db.Task(ctx, id)
+	task, err := s.db.Tasks.Get(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -117,14 +117,14 @@ func (s *Service) abort(ctx context.Context, id string) error {
 	lock.Lock()
 	defer lock.Unlock()
 	var messages []store.Message
-	task, err = s.db.Task(ctx, id)
+	task, err = s.db.Tasks.Get(ctx, id)
 	if err != nil {
 		return err
 	}
 	if !stagekit.CanTransition(stagekit.State(task.State), stagekit.Aborted) {
 		return store.ErrConflict
 	}
-	messages, err = s.db.AbortTask(ctx, id, task.State, task.ActivePhase)
+	messages, err = s.db.Tasks.Abort(ctx, id, task.State, task.ActivePhase)
 	if err != nil {
 		return err
 	}
@@ -142,7 +142,7 @@ func (s *Service) taskLock(id string) *sync.Mutex {
 }
 
 func (s *Service) HandleEvents(ctx context.Context) {
-	pending, err := s.db.PendingOrchestrationEvents(ctx)
+	pending, err := s.db.Orchestration.Pending(ctx)
 	if err == nil {
 		for _, event := range pending {
 			if ctx.Err() != nil {
@@ -173,7 +173,7 @@ func (s *Service) handleQueuedEvent(ctx context.Context, id string) {
 }
 
 func (s *Service) handleEvent(ctx context.Context, id string) error {
-	event, err := s.db.OrchestrationEvent(ctx, id)
+	event, err := s.db.Orchestration.Get(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -181,7 +181,7 @@ func (s *Service) handleEvent(ctx context.Context, id string) error {
 		Type {
 	case store.TaskCreated, store.TaskMessaged, store.TaskRetried:
 		task,
-			taskErr := s.db.Task(ctx, event.TaskID)
+			taskErr := s.db.Tasks.Get(ctx, event.TaskID)
 		if taskErr != nil {
 			err = taskErr
 		} else if task.
@@ -191,14 +191,14 @@ func (s *Service) handleEvent(ctx context.Context, id string) error {
 			s.launch(task.ID, s.progress)
 		}
 	case store.TaskResumed:
-		task, taskErr := s.db.Task(ctx, event.TaskID)
+		task, taskErr := s.db.Tasks.Get(ctx, event.TaskID)
 		if taskErr != nil {
 			err = taskErr
 		} else if task.State == string(stagekit.Paused) {
 			if task.PreviousState == "" {
 				err = store.ErrConflict
 			} else {
-				err = s.db.Transition(ctx, task.
+				err = s.db.Tasks.Transition(ctx, task.
 					ID, task.
 					State,
 
@@ -214,7 +214,7 @@ func (s *Service) handleEvent(ctx context.Context, id string) error {
 			err = store.ErrConflict
 		}
 	case store.TaskApproved:
-		task, taskErr := s.db.Task(ctx,
+		task, taskErr := s.db.Tasks.Get(ctx,
 			event.
 				TaskID)
 		if taskErr != nil {
@@ -222,7 +222,7 @@ func (s *Service) handleEvent(ctx context.Context, id string) error {
 		} else if task.State ==
 			string(stagekit.AwaitingApproval) {
 			err = s.
-				db.Transition(ctx, task.ID, task.State, string(stagekit.
+				db.Tasks.Transition(ctx, task.ID, task.State, string(stagekit.
 				Building), task.
 				ActivePhase, "")
 			if err == nil {
@@ -317,12 +317,12 @@ func (s *Service) runExecution(ctx context.Context, id string, active *execution
 		}
 		if runErr != nil && !errors.Is(runErr, context.
 			Canceled) {
-			task, getErr := s.db.Task(context.Background(),
+			task, getErr := s.db.Tasks.Get(context.Background(),
 				id)
 			if getErr == nil && task.State != string(stagekit.Paused) &&
 				task.State != string(stagekit.Aborted) && task.State !=
 				string(stagekit.Blocked) {
-				_ = s.db.Transition(context.
+				_ = s.db.Tasks.Transition(context.
 					Background(), id, task.State, string(stagekit.
 					Blocked), task.ActivePhase,
 					runErr.
@@ -353,11 +353,10 @@ func (s *Service) Shutdown(ctx context.
 			Done():
 			return
 		}
-		task, err := s.db.
-			Task(ctx, id)
+		task, err := s.db.Tasks.Get(ctx, id)
 		if err == nil && stagekit.IsActive(stagekit.
 			State(task.State)) {
-			_ = s.db.Transition(ctx, id, task.State, string(stagekit.Blocked), task.ActivePhase,
+			_ = s.db.Tasks.Transition(ctx, id, task.State, string(stagekit.Blocked), task.ActivePhase,
 				"server shutting down")
 		}
 	}
@@ -402,8 +401,7 @@ func (s *Service) kickQueuedMessage(taskID string) {
 	lock.Lock()
 	defer lock.Unlock()
 	task, err := s.
-		db.
-		Task(ctx, taskID)
+		db.Tasks.Get(ctx, taskID)
 	if err != nil {
 		return
 	}
@@ -413,7 +411,7 @@ func (s *Service) kickQueuedMessage(taskID string) {
 		return
 	}
 	message,
-		err := s.db.NextQueuedTaskMessage(ctx, taskID)
+		err := s.db.Messages.NextQueuedForTask(ctx, taskID)
 	if err != nil {
 		return
 	}
@@ -428,6 +426,6 @@ func (s *Service) traceMessage(ctx context.Context, message store.Message, phase
 	if err != nil {
 		return err
 	}
-	_, err = s.db.AppendEvent(ctx, s.taskDir(message.TaskID), event)
+	_, err = s.db.Events.Append(ctx, s.taskDir(message.TaskID), event)
 	return err
 }

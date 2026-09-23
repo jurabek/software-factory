@@ -72,11 +72,6 @@ func Instructions() string {
 	return `Return exactly one JSON object: {` + stage.CommonInstructions() + `,"changed_files":[],"commit_message":"...","test_changes":[{"path":"...","reason":"..."}]}. Put the human-readable report in report_markdown.`
 }
 
-// EvidenceStore persists builder test evidence.
-type EvidenceStore interface {
-	SaveTestChanges(ctx context.Context, changes []store.TestChange) error
-}
-
 // Service is the build stage's public surface. Lifecycle, resume, and state
 // transitions are hidden inside the package.
 type Service interface {
@@ -216,7 +211,7 @@ func ValidateTestChangeSet(changes []TestChange, expected map[string]factorygit.
 
 // PersistEvidence validates test evidence against Git-derived changes and
 // stores it for the attempt.
-func PersistEvidence(ctx context.Context, db EvidenceStore, task store.Task, phase store.Phase, payload string) error {
+func PersistEvidence(ctx context.Context, db *store.Store, task store.Task, phase store.Phase, payload string) error {
 	build, err := Validate(payload)
 	if err != nil {
 		return err
@@ -248,7 +243,7 @@ func PersistEvidence(ctx context.Context, db EvidenceStore, task store.Task, pha
 			CreatedAt:  time.Now().UTC().Format(time.RFC3339Nano),
 		})
 	}
-	return db.SaveTestChanges(ctx, changes)
+	return db.Evidence.SaveTestChanges(ctx, changes)
 }
 
 // CheckProtectedPaths rejects builds touching protected paths.
@@ -293,7 +288,7 @@ func (
 	}
 	queued,
 		err := s.kit.
-		DB().QueuedMessageForStages(ctx, taskID, stageDef.
+		DB().Messages.QueuedForStages(ctx, taskID, stageDef.
 		ID, "builder")
 	if err != nil {
 		return stage.BuildResult{}, false, err

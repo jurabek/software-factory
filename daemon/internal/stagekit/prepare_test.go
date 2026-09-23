@@ -49,7 +49,7 @@ func prepareTestKit(t *testing.T, sandbox workspace.Sandbox) (*Kit, store.Task) 
 	if err = os.MkdirAll(task.WorkspacePath, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err = db.CreateTask(context.Background(), task); err != nil {
+	if err = db.Tasks.Create(context.Background(), task); err != nil {
 		t.Fatal(err)
 	}
 	return New(db, nil, sandbox, config.Config{}, "", root), task

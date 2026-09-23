@@ -106,7 +106,7 @@ func TestMessagesAreIdempotentFIFOAndAbortFailsQueue(t *testing.T) {
 	}
 	deadline := time.Now().Add(time.Second)
 	for {
-		current, taskErr := db.Task(ctx, created.ID)
+		current, taskErr := db.Tasks.Get(ctx, created.ID)
 		if taskErr != nil {
 			t.Fatal(taskErr)
 		}
@@ -118,7 +118,7 @@ func TestMessagesAreIdempotentFIFOAndAbortFailsQueue(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
-	stored, err := db.Messages(ctx, created.ID)
+	stored, err := db.Messages.List(ctx, created.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestMessagesAreIdempotentFIFOAndAbortFailsQueue(t *testing.T) {
 	if _, _, err = messages.Send(ctx, created.ID, "tester", Request{Text: "abort this task", IdempotencyKey: "three"}); err == nil {
 		t.Fatal("message accepted after abort")
 	}
-	if task, err := db.Task(ctx, created.ID); err != nil || task.State != string(stagekit.Aborted) {
+	if task, err := db.Tasks.Get(ctx, created.ID); err != nil || task.State != string(stagekit.Aborted) {
 		t.Fatalf("task = %+v, err = %v", task, err)
 	}
 }
