@@ -7,6 +7,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"sync"
 
@@ -14,6 +15,29 @@ import (
 	"github.com/jurabek/software-factory/daemon/internal/stagekit"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 )
+
+// State is the task lifecycle state owned by the stage modules. The
+// orchestrator keeps aliases for control-plane checks and tests.
+type State = stagekit.State
+
+const (
+	Preparing        = stagekit.Preparing
+	Planning         = stagekit.Planning
+	AwaitingApproval = stagekit.AwaitingApproval
+	Building         = stagekit.Building
+	Checking         = stagekit.Checking
+	Reviewing        = stagekit.Reviewing
+	Completed        = stagekit.Completed
+	Blocked          = stagekit.Blocked
+	Paused           = stagekit.Paused
+	Aborted          = stagekit.Aborted
+)
+
+type execution struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+	next   func(context.Context, string) error
+}
 
 // Dependencies are the collaborators the orchestrator consumes.
 type Dependencies struct {
@@ -115,4 +139,291 @@ func (s *Service) taskDir(id string) string { return filepath.Join(s.root, "task
 func (s *Service) taskLock(id string) *sync.Mutex {
 	value, _ := s.taskLocks.LoadOrStore(id, &sync.Mutex{})
 	return value.(*sync.Mutex)
+}
+
+func (s *Service) HandleEvents(ctx context.Context) {
+	pending, err := s.db.PendingOrchestrationEvents(ctx)
+	if err == nil {
+		for _, event := range pending {
+			if ctx.Err() != nil {
+				return
+			}
+			s.handleQueuedEvent(ctx, event.ID)
+		}
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case id :=
+			<-s.events.ids:
+			if ctx.Err() != nil {
+				return
+			}
+			s.handleQueuedEvent(ctx, id)
+		}
+
+	}
+}
+func (s *Service) handleQueuedEvent(ctx context.Context, id string) {
+	err := s.handleEvent(ctx,
+		id)
+	if ctx.Err() == nil {
+		s.events.complete(id, err)
+	}
+}
+func (s *Service) handleEvent(ctx context.Context, id string) error {
+	event, err := s.db.OrchestrationEvent(ctx, id)
+	if err != nil {
+		return err
+	}
+	switch event.
+		Type {
+	case store.TaskCreated, store.TaskMessaged, store.TaskRetried:
+		task,
+			taskErr := s.db.Task(ctx, event.TaskID)
+		if taskErr != nil {
+			err = taskErr
+		} else if task.
+			State != string(stagekit.Paused) &&
+
+			task.State != string(stagekit.Aborted) {
+			s.launch(task.ID, s.progress)
+		}
+	case store.TaskResumed:
+		task, taskErr := s.db.Task(ctx, event.TaskID)
+		if taskErr != nil {
+			err = taskErr
+		} else if task.State == string(stagekit.Paused) {
+			if task.PreviousState == "" {
+				err = store.ErrConflict
+			} else {
+				err = s.db.Transition(ctx, task.
+					ID, task.
+					State,
+
+					task.PreviousState, task.ActivePhase, "")
+				if err == nil {
+					s.launch(task.ID, s.progress)
+				}
+			}
+		} else if task.State == string(stagekit.
+			Blocked) {
+			s.launch(task.ID, s.progress)
+		} else {
+			err = store.ErrConflict
+		}
+	case store.TaskApproved:
+		task, taskErr := s.db.Task(ctx,
+			event.
+				TaskID)
+		if taskErr != nil {
+			err = taskErr
+		} else if task.State ==
+			string(stagekit.AwaitingApproval) {
+			err = s.
+				db.Transition(ctx, task.ID, task.State, string(stagekit.
+				Building), task.
+				ActivePhase, "")
+			if err == nil {
+				s.launch(task.ID,
+					s.progress)
+			}
+		} else if task.State != string(stagekit.
+			Building,
+		) {
+			err =
+				store.ErrConflict
+		}
+	case store.
+		TaskPaused:
+		err = s.pause(ctx, event.TaskID)
+	case
+		store.TaskCancelled:
+		err = s.abort(ctx, event.
+			TaskID,
+		)
+	default:
+		err = errors.New("unknown orchestration event")
+	}
+	return err
+}
+func (s *Service) progress(ctx context.
+	Context, taskID string) error {
+	if s.workflow == nil {
+		return nil
+	}
+	_, err := s.workflow.Run(ctx, taskID)
+	return err
+
+}
+func (s *Service) launch(id string, run func(context.Context, string) error) {
+	s.mu.Lock()
+	if active := s.cancel[id]; active != nil {
+		if active.next == nil {
+			active.next = run
+		}
+		s.mu.Unlock()
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	active := &execution{cancel: cancel, done: make(chan struct{})}
+	s.
+		cancel[id] = active
+	s.mu.Unlock()
+
+	s.runExecution(ctx, id, active, run)
+}
+func (s *Service) runExecution(ctx context.Context, id string, active *execution, run func(context.
+	Context, string) error) {
+	go func() {
+		var runErr error
+		defer func() {
+			var next func(context.Context, string) error
+			var successor *execution
+			var successorCtx context.Context
+			s.mu.Lock()
+			if s.cancel[id] ==
+				active {
+				next = active.next
+				if next == nil {
+					delete(s.cancel, id)
+				} else {
+					var cancel context.CancelFunc
+					successorCtx,
+
+						cancel = context.WithCancel(context.Background())
+					successor = &execution{cancel: cancel, done: make(chan struct{})}
+					s.cancel[id] = successor
+				}
+			}
+			s.mu.Unlock()
+			close(active.done)
+			if successor != nil {
+				s.runExecution(successorCtx,
+					id, successor,
+
+					next)
+			} else if !errors.Is(runErr, context.
+				Canceled) {
+				s.kickQueuedMessage(id)
+			}
+		}()
+		runErr = run(ctx, id)
+		if runErr == nil &&
+			ctx.Err() != nil {
+			runErr = ctx.Err()
+		}
+		if runErr != nil && !errors.Is(runErr, context.
+			Canceled) {
+			task, getErr := s.db.Task(context.Background(),
+				id)
+			if getErr == nil && task.State != string(stagekit.Paused) &&
+				task.State != string(stagekit.Aborted) && task.State !=
+				string(stagekit.Blocked) {
+				_ = s.db.Transition(context.
+					Background(), id, task.State, string(stagekit.
+					Blocked), task.ActivePhase,
+					runErr.
+						Error())
+			}
+		}
+	}()
+}
+
+func (s *Service) Shutdown(ctx context.
+	Context) {
+	s.mu.Lock()
+	workers := make(map[string]*execution,
+
+		len(s.cancel))
+	for id, worker := range s.cancel {
+		workers[id] = worker
+		worker.
+			next = nil
+		worker.cancel()
+	}
+	s.mu.Unlock()
+	for id, worker := range workers {
+		select {
+		case <-worker.done:
+		case <-ctx.
+			Done():
+			return
+		}
+		task, err := s.db.
+			Task(ctx, id)
+		if err == nil && stagekit.IsActive(stagekit.
+			State(task.State)) {
+			_ = s.db.Transition(ctx, id, task.State, string(stagekit.Blocked), task.ActivePhase,
+				"server shutting down")
+		}
+	}
+}
+func (s *Service) stopAndWait(ctx context.Context, id string) error {
+	for {
+		s.mu.Lock()
+		active := s.cancel[id]
+		if active != nil {
+			active.next = nil
+
+			active.cancel()
+		}
+		s.mu.Unlock()
+		if active == nil {
+			return nil
+		}
+		select {
+		case <-active.done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+func (s *Service) scheduleMessage(ctx context.Context, task store.Task, role string) error {
+	_ =
+		role
+	switch stagekit.State(task.State) {
+	case stagekit.AwaitingApproval,
+
+		stagekit.Blocked, stagekit.Completed:
+		return s.events.Publish(ctx,
+			task.ID, store.TaskMessaged)
+	}
+	return nil
+}
+func (s *Service) kickQueuedMessage(taskID string) {
+	ctx := context.Background()
+	lock := s.taskLock(taskID)
+	lock.Lock()
+	defer lock.Unlock()
+	task, err :=
+		s.
+			db.
+			Task(ctx, taskID)
+	if err != nil {
+		return
+	}
+	if task.State != string(stagekit.
+		AwaitingApproval) && task.State != string(stagekit.Blocked) && task.State !=
+		string(stagekit.Completed) {
+		return
+	}
+	message,
+		err := s.db.NextQueuedTaskMessage(ctx, taskID)
+	if err != nil {
+		return
+	}
+	_ = s.scheduleMessage(ctx, task, message.StageID)
+}
+func (s *Service) traceMessage(ctx context.Context, message store.Message, phase *store.Phase) error {
+	event, err := stagekit.MessageEvent(ctx, s.db, message,
+
+		phase,
+	)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.AppendEvent(ctx, s.taskDir(message.TaskID), event)
+	return err
 }

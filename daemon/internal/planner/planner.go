@@ -4,14 +4,19 @@ package planner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/jurabek/software-factory/daemon/internal/harness"
 	"github.com/jurabek/software-factory/daemon/internal/orchestrator"
+	"github.com/jurabek/software-factory/daemon/internal/session"
 	"github.com/jurabek/software-factory/daemon/internal/stage"
 	"github.com/jurabek/software-factory/daemon/internal/stagekit"
+	"github.com/jurabek/software-factory/daemon/internal/store"
+	"github.com/jurabek/software-factory/daemon/internal/workspace"
 )
 
 type PlanStep struct {
@@ -131,3 +136,190 @@ func (s service) Plan(ctx context.Context, input stage.Input) (stage.PlanResult,
 	}
 	return s.publishPlan(ctx, task, phase, turn)
 }
+
+func (s service) Approve(ctx context.Context, taskID, actor, expectedDigest string) error {
+	expectedDigest = strings.TrimSpace(expectedDigest)
+	if expectedDigest ==
+		"" {
+		return fmt.Errorf("plan_digest is required")
+	}
+	task, err :=
+		s.kit.Task(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	if task.State !=
+		string(stagekit.AwaitingApproval) {
+		return store.ErrConflict
+	}
+	stageDef, err := s.kit.StageByKind(task, "plan")
+	if err != nil {
+		return err
+	}
+	payload, err := s.kit.
+		DB().ValidEnvelope(ctx, taskID, stageDef.ID)
+	if err != nil {
+		return err
+	}
+	plan, err := Validate(payload)
+	if err !=
+		nil || len(plan.Questions) > 0 {
+		return store.ErrConflict
+	}
+	currentDigest :=
+		stagekit.
+			PlanApprovalDigest(payload)
+	if expectedDigest !=
+		currentDigest {
+		return ErrStalePlan
+	}
+	event := store.Event{ID: stagekit.RandomID(), TaskID: taskID, Kind: session.KindCustom,
+
+		Name: "task_approved", Payload: session.CustomPayload{CustomType: "task_approved",
+			Data: session.
+				BoundedJSON(map[string]any{"task_id": taskID, "plan_digest": currentDigest, "actor": actor})}, Display: session.
+			Display{Role: "system",
+			Status: "success", Title: "Plan approved"}, AvailableActions: []string{"pause", "abort"}, StartedAt: time.Now().UTC()}
+	if err = s.kit.DB().SetApproval(ctx, taskID, currentDigest, actor); err != nil {
+		return err
+	}
+	if _, err = s.kit.DB().AppendEvent(ctx,
+		s.kit.
+			TaskDir(taskID), event); err != nil {
+		return err
+	}
+	return s.events.Publish(ctx, taskID, store.
+		TaskApproved)
+}
+
+func (s service) savedPlan(ctx context.Context, taskID string) (stage.PlanResult, bool, error) {
+	task, err :=
+		s.
+			kit.
+			Task(ctx, taskID)
+	if err != nil {
+		return stage.PlanResult{}, false, err
+	}
+	stageDef, err := s.kit.StageByKind(task, "plan")
+	if err != nil {
+		return stage.PlanResult{}, false, err
+	}
+	queued, err :=
+		s.kit.DB().QueuedMessageForStages(ctx, taskID, stageDef.ID, stageDef.Agent)
+	if err != nil {
+		return stage.PlanResult{}, false, err
+	}
+	if queued {
+		return stage.PlanResult{}, false, nil
+	}
+	phase, ok, err := s.kit.
+		SuccessfulPhase(ctx, taskID, stageDef.ID)
+	if err != nil ||
+		!ok {
+		return stage.PlanResult{}, false, err
+	}
+	payload, err := s.
+		kit.PhaseEnvelope(ctx, taskID,
+
+		phase.ID)
+	if err != nil {
+		return stage.PlanResult{}, false, err
+	}
+	return stage.
+		PlanResult{Payload: payload, AttemptID: phase.ID, SnapshotID: phase.
+		OutputSnapshot,
+		Approved: task.
+			ApprovalActor != ""}, true, nil
+}
+
+func (s service) beginPlan(ctx context.Context, taskID string) (store.Task, store.Phase, error) {
+	task, err := s.kit.Task(ctx, taskID)
+	if err !=
+
+		nil {
+		return store.Task{}, store.Phase{}, err
+	}
+	if task.State == string(stagekit.Preparing) {
+		if err = s.kit.Transition(ctx,
+			task, stagekit.Planning, ""); err != nil {
+			return store.Task{}, store.Phase{}, err
+		}
+		task.State = string(stagekit.Planning)
+	}
+	stageDef, err := s.kit.StageByKind(task, "plan")
+	if err != nil {
+		return store.Task{}, store.Phase{}, err
+	}
+	if err = s.kit.SetActiveStage(ctx, task.ID, stageDef.
+		ID); err != nil {
+		return store.
+			Task{}, store.Phase{}, err
+	}
+	phase,
+		err := s.kit.BeginOrReusePhase(ctx, task.ID, stageDef.
+		ID, stageDef.Kind, stageDef.
+		Agent, "Execute "+stageDef.ID)
+	if err != nil {
+		return store.Task{}, store.
+			Phase{}, err
+	}
+	return task, phase, nil
+}
+
+func (s service) publishPlan(ctx context.Context, task store.Task, phase store.Phase, turn harness.TurnResult) (stage.PlanResult, error) {
+	baseline,
+
+		err := workspace.Fingerprint(task)
+	if err != nil {
+
+		s.kit.Fail(ctx, phase, err)
+		return stage.PlanResult{}, err
+	}
+	return s.
+		kit.DeliverAndFinalize(ctx, stagekit.Delivery{Task: task, Phase: phase,
+		Role: "planner", ReadOnly: true, Instructions: Instructions(), Validate: func(text string) (any, error) {
+			return Validate(text)
+		}}, turn,
+		func(turn harness.TurnResult) (stage.PlanResult, error) {
+			after, changedErr := workspace.Fingerprint(task)
+			if changedErr !=
+				nil {
+				s.kit.Fail(
+					ctx, phase, changedErr)
+				return stage.PlanResult{},
+					changedErr
+			}
+			if baseline !=
+				after {
+				readonlyErr := fmt.Errorf("planner modified repository")
+				s.kit.Fail(ctx, phase, readonlyErr)
+				return stage.PlanResult{}, readonlyErr
+			}
+			if completeErr := s.kit.
+				Complete(ctx, stagekit.Completion{
+					Phase: phase, From: stagekit.Planning, To: stagekit.AwaitingApproval,
+					Status: "success", Approval: stagekit.PlanApprovalDigest(turn.Payload), Planner: true}); completeErr != nil {
+
+				s.kit.Fail(ctx, phase,
+					completeErr)
+				return stage.PlanResult{}, completeErr
+			}
+			refreshed, err := s.kit.Task(ctx,
+				task.ID)
+			if err != nil {
+				return stage.PlanResult{}, err
+			}
+			result, ok, err := s.savedPlan(ctx,
+				refreshed.ID)
+			if err != nil {
+				return stage.PlanResult{}, err
+			}
+			if !ok {
+				return stage.PlanResult{}, errNoDurableResult
+			}
+			return result, nil
+		})
+}
+
+var ErrStalePlan = errors.New("plan digest is stale")
+var errNoDurableResult = errors.New("planner completed without a durable result")

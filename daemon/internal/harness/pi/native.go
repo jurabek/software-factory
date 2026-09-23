@@ -2,7 +2,6 @@ package pi
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
 	"errors"
 	"io/fs"
@@ -59,13 +58,6 @@ type rawCost struct {
 
 // Entries reads the full native session tree, including abandoned branches and
 // pre-compaction history. It is the authoritative record, not get_messages.
-func (h Harness) Entries(_ context.Context, ref harness.SessionRef) ([]harness.NativeEntry, error) {
-	records, err := readSession(ref.Directory, ref.ID)
-	if err != nil {
-		return nil, err
-	}
-	return nativeEntries(records), nil
-}
 
 // nativeEntries projects native session records into the harness entry shape.
 func nativeEntries(records []sessionRecord) []harness.NativeEntry {
@@ -96,52 +88,11 @@ func nativeEntries(records []sessionRecord) []harness.NativeEntry {
 
 // Stats derives usage and cost totals from the native session, including tool
 // work and compaction, matching Pi's own session totals.
-func (h Harness) Stats(_ context.Context, ref harness.SessionRef) (harness.Stats, error) {
-	records, err := readSession(ref.Directory, ref.ID)
-	if err != nil {
-		return harness.Stats{}, err
-	}
-	var stats harness.Stats
-	for _, record := range records {
-		if record.ID != "" && record.Type != "session" {
-			stats.LeafID = record.ID
-		}
-		usage := record.Usage
-		if record.Message != nil && record.Message.Usage != nil {
-			usage = record.Message.Usage
-		}
-		if usage == nil {
-			continue
-		}
-		stats.Usage.Input += usage.Input
-		stats.Usage.Output += usage.Output
-		stats.Usage.CacheRead += usage.CacheRead
-		stats.Usage.CacheWrite += usage.CacheWrite
-		stats.Usage.Reasoning += usage.Reasoning
-		stats.Usage.TotalTokens += usage.TotalTokens
-		stats.Usage.Cost += usage.Cost.Total
-		if record.Message != nil && record.Message.Role == "assistant" {
-			stats.ContextTokens = usage.Input + usage.CacheRead + usage.CacheWrite
-		}
-	}
-	return stats, nil
-}
 
 // Report resolves the assistant text produced by a factory request. It uses
 // the recorded factory-request subtree rather than the active leaf, so a
 // correction branch still resolves to its own final response. The returned
 // report carries the exact native entry that authored it.
-func (h Harness) Report(_ context.Context, ref harness.SessionRef, requestID string) (harness.Report, bool, error) {
-	if requestID == "" {
-		return harness.Report{}, false, nil
-	}
-	records, err := readSession(ref.Directory, ref.ID)
-	if err != nil {
-		return harness.Report{}, false, nil
-	}
-	report, ok := reportFromRecords(records, requestID)
-	return report, ok, nil
-}
 
 func reportFromRecords(records []sessionRecord, requestID string) (harness.Report, bool) {
 	grant, ok := findRequest(records, requestID)

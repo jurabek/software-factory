@@ -4,9 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -35,25 +33,7 @@ type Event struct {
 	EndedAt          *time.Time      `json:"ended_at,omitempty"`
 }
 
-func (db *DB) AppendEvent(ctx context.Context, taskDir string, event Event) (int64, error) {
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, fmt.Errorf("begin event append: %w", err)
-	}
-	defer tx.Rollback()
-	sequence, err := appendEventTx(ctx, tx, event)
-	if err != nil {
-		return 0, err
-	}
-	if err = tx.Commit(); err != nil {
-		return 0, fmt.Errorf("commit event: %w", err)
-	}
-	if err = writeEventTrace(taskDir, event, sequence); err != nil {
-		// The database is authoritative; trace export is derived output.
-		slog.Error("write derived event trace", "task_id", event.TaskID, "event_id", event.ID, "error", err)
-	}
-	return sequence, nil
-}
+// The database is authoritative; trace export is derived output.
 
 type eventInserter interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
@@ -110,60 +90,9 @@ func writeEventTrace(taskDir string, event Event, sequence int64) error {
 	}
 	return file.Sync()
 }
-func (db *DB) Events(ctx context.Context, taskID string, after int64, limit int) ([]Event, error) {
-	limit = eventLimit(limit)
-	rows, err := db.QueryContext(ctx, `select sequence,id,task_id,coalesce(phase_id,''),coalesce(parent_event_id,''),kind,format_version,coalesce(name,''),coalesce(native_entry_id,''),coalesce(request_id,''),payload_json,display_json,token_count,started_at,ended_at,coalesce(attempt_id,''),coalesce(branch_id,''),coalesce(actions_json,'[]') from events where task_id=? and sequence>? order by sequence limit ?`, taskID, after, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return scanEvents(rows)
-}
-func (db *DB) RecentEvents(ctx context.Context, taskID string, limit int) ([]Event, error) {
-	limit = eventLimit(limit)
-	rows, err := db.QueryContext(ctx, `select sequence,id,task_id,phase_id,parent_event_id,kind,format_version,name,native_entry_id,request_id,payload_json,display_json,token_count,started_at,ended_at,attempt_id,branch_id,actions_json from (select sequence,id,task_id,coalesce(phase_id,'') as phase_id,coalesce(parent_event_id,'') as parent_event_id,kind,format_version,coalesce(name,'') as name,coalesce(native_entry_id,'') as native_entry_id,coalesce(request_id,'') as request_id,payload_json,display_json,token_count,started_at,ended_at,coalesce(attempt_id,'') as attempt_id,coalesce(branch_id,'') as branch_id,coalesce(actions_json,'[]') as actions_json from events where task_id=? order by sequence desc limit ?) order by sequence`, taskID, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return scanEvents(rows)
-}
-func (db *DB) EventByID(ctx context.Context, taskID, eventID string) (Event, error) {
-	var event Event
-	var payload, display, started, actions string
-	var ended sql.NullString
-	err := db.QueryRowContext(ctx, `select sequence,id,task_id,coalesce(phase_id,''),coalesce(parent_event_id,''),kind,format_version,coalesce(name,''),coalesce(native_entry_id,''),coalesce(request_id,''),payload_json,display_json,token_count,started_at,ended_at,coalesce(attempt_id,''),coalesce(branch_id,''),coalesce(actions_json,'[]') from events where task_id=? and id=?`, taskID, eventID).Scan(&event.Sequence, &event.ID, &event.TaskID, &event.PhaseID, &event.ParentEventID, &event.Kind, &event.FormatVersion, &event.Name, &event.NativeEntryID, &event.RequestID, &payload, &display, &event.TokenCount, &started, &ended, &event.AttemptID, &event.BranchID, &actions)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Event{}, ErrNotFound
-	}
-	if err != nil {
-		return Event{}, wrap("read event", err)
-	}
-	if err := json.Unmarshal([]byte(payload), &event.Payload); err != nil {
-		return Event{}, wrap("decode event payload", err)
-	}
-	if err := json.Unmarshal([]byte(display), &event.Display); err != nil {
-		return Event{}, wrap("decode event display", err)
-	}
-	_ = json.Unmarshal([]byte(actions), &event.AvailableActions)
-	event.StartedAt, _ = time.Parse(time.RFC3339Nano, started)
-	if ended.Valid {
-		value, _ := time.Parse(time.RFC3339Nano, ended.String)
-		event.EndedAt = &value
-	}
-	return event, nil
-}
 
 // EventsByRequest returns the agent-derived events recorded for a factory
 // request in append order.
-func (db *DB) EventsByRequest(ctx context.Context, taskID, requestID string) ([]Event, error) {
-	rows, err := db.QueryContext(ctx, `select sequence,id,task_id,coalesce(phase_id,''),coalesce(parent_event_id,''),kind,format_version,coalesce(name,''),coalesce(native_entry_id,''),coalesce(request_id,''),payload_json,display_json,token_count,started_at,ended_at,coalesce(attempt_id,''),coalesce(branch_id,''),coalesce(actions_json,'[]') from events where task_id=? and request_id=? order by sequence`, taskID, requestID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return scanEvents(rows)
-}
 
 // EventNativeLink pairs a persisted event with its authoritative native entry.
 type EventNativeLink struct {
@@ -174,25 +103,6 @@ type EventNativeLink struct {
 // SetEventNativeEntries backfills native entry references for a request's
 // events. It is the write half of the reference index; payloads are resolved
 // from the native session at read time.
-func (db *DB) SetEventNativeEntries(ctx context.Context, taskID string, links []EventNativeLink) error {
-	if len(links) == 0 {
-		return nil
-	}
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin native link: %w", err)
-	}
-	defer tx.Rollback()
-	for _, link := range links {
-		if link.EventID == "" || link.NativeEntryID == "" {
-			continue
-		}
-		if _, err = tx.ExecContext(ctx, `update events set native_entry_id=? where task_id=? and id=?`, link.NativeEntryID, taskID, link.EventID); err != nil {
-			return fmt.Errorf("link native entry: %w", err)
-		}
-	}
-	return wrap("commit native links", tx.Commit())
-}
 
 func eventLimit(limit int) int {
 	if limit <= 0 || limit > 1000 {

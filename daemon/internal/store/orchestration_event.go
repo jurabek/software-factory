@@ -1,11 +1,5 @@
 package store
 
-import (
-	"context"
-	"database/sql"
-	"fmt"
-)
-
 // OrchestrationEvent is a durable command for the background task controller.
 // Delivery is at-least-once; handlers must derive their effects from task state.
 type OrchestrationEvent struct {
@@ -25,42 +19,3 @@ const (
 )
 
 // EnqueueOrchestrationEvent records a command after its durable task mutation.
-func (db *DB) EnqueueOrchestrationEvent(ctx context.Context, event OrchestrationEvent) error {
-	_, err := db.ExecContext(ctx, `insert into orchestration_events(id,task_id,type,created_at) values(?,?,?,?)`, event.ID, event.TaskID, event.Type, now())
-	return wrap("enqueue orchestration event", err)
-}
-
-func (db *DB) OrchestrationEvent(ctx context.Context, id string) (OrchestrationEvent, error) {
-	var event OrchestrationEvent
-	err := db.QueryRowContext(ctx, `select id,task_id,type from orchestration_events where id=?`, id).Scan(&event.ID, &event.TaskID, &event.Type)
-	if err == sql.ErrNoRows {
-		return OrchestrationEvent{}, ErrNotFound
-	}
-	return event, wrap("read orchestration event", err)
-}
-
-func (db *DB) PendingOrchestrationEvents(ctx context.Context) ([]OrchestrationEvent, error) {
-	rows, err := db.QueryContext(ctx, `select id,task_id,type from orchestration_events where status='pending' order by created_at,id`)
-	if err != nil {
-		return nil, wrap("list pending orchestration events", err)
-	}
-	defer rows.Close()
-	values := []OrchestrationEvent{}
-	for rows.Next() {
-		var event OrchestrationEvent
-		if err = rows.Scan(&event.ID, &event.TaskID, &event.Type); err != nil {
-			return nil, fmt.Errorf("scan orchestration event: %w", err)
-		}
-		values = append(values, event)
-	}
-	return values, rows.Err()
-}
-
-func (db *DB) CompleteOrchestrationEvent(ctx context.Context, id string, cause error) error {
-	status, message := "handled", ""
-	if cause != nil {
-		status, message = "pending", cause.Error()
-	}
-	_, err := db.ExecContext(ctx, `update orchestration_events set status=?,error=?,handled_at=? where id=?`, status, nullIfEmpty(message), now(), id)
-	return wrap("complete orchestration event", err)
-}

@@ -11,6 +11,4 @@ Git-derived changed files:
 {{.ChangedFiles}}
 
 Git diff:
-{{range .Diff}}
-{{.Patch}}
-{{end}}
+{{.Diff.Patch}}

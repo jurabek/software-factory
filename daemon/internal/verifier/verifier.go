@@ -3,6 +3,8 @@ package verifier
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -10,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -19,6 +22,44 @@ import (
 	"github.com/jurabek/software-factory/daemon/internal/store"
 	"github.com/jurabek/software-factory/daemon/internal/workspace"
 )
+
+const maxCapturedOutput = 64 << 10
+
+func randomID() string {
+	var bytes [12]byte
+	_, _ = rand.Read(bytes[:])
+	return hex.EncodeToString(bytes[:])
+}
+
+func nowString() string { return time.Now().UTC().Format(time.RFC3339Nano) }
+
+func withinPath(root, candidate string) bool {
+	relative, err := filepath.Rel(root, candidate)
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
+type tailCapture struct {
+	mu    sync.Mutex
+	data  []byte
+	limit int
+}
+
+func (capture *tailCapture) Write(data []byte) (int, error) {
+	capture.mu.Lock()
+	defer capture.mu.Unlock()
+	length := len(data)
+	capture.data = append(capture.data, data...)
+	if len(capture.data) > capture.limit {
+		capture.data = capture.data[len(capture.data)-capture.limit:]
+	}
+	return length, nil
+}
+
+func (capture *tailCapture) String() string {
+	capture.mu.Lock()
+	defer capture.mu.Unlock()
+	return string(capture.data)
+}
 
 // Service is the verification stage's public surface. Lifecycle, resume, and
 // state transitions are hidden inside the package.
@@ -490,4 +531,129 @@ func CopyOverlayPath(sourceRoot, destinationRoot, relative string) error {
 		return err
 	}
 	return os.Chmod(destination, info.Mode().Perm())
+}
+
+func (s service) savedVerification(ctx context.Context,
+	taskID, buildAttemptID string) (stage.VerificationResult, bool,
+
+	error) {
+	task, err := s.kit.Task(ctx, taskID)
+	if err != nil {
+		return stage.
+			VerificationResult{}, false, err
+	}
+	stageDef, err := s.kit.StageByKind(task, "verify")
+	if err != nil {
+		return stage.VerificationResult{}, false,
+			err
+	}
+	phase, ok, err := s.kit.SuccessfulPhase(ctx, task.
+		ID, stageDef.ID)
+	if err != nil || !ok {
+		return stage.VerificationResult{}, false, err
+	}
+	eligible,
+		err := s.kit.
+		AttemptAfter(ctx, task.ID, phase.ID, buildAttemptID)
+	if err != nil {
+		return stage.VerificationResult{}, false, err
+	}
+	if !eligible {
+		return stage.VerificationResult{}, false, nil
+	}
+	checks,
+
+		err := s.kit.DB().Checks(ctx, task.ID)
+	if err != nil {
+		return stage.VerificationResult{},
+			false, err
+	}
+	passed := true
+	for _, check := range checks {
+		if check.PhaseID == phase.ID && check.Status != "passed" {
+			passed = false
+		}
+	}
+	return stage.VerificationResult{
+		AttemptID: phase.ID, SnapshotID: phase.OutputSnapshot,
+
+		Passed: passed,
+	}, true, nil
+}
+
+func (s service) beginVerification(ctx context.Context, taskID, planAttemptID, buildAttemptID string) (store.Task, store.Phase, error) {
+	task,
+
+		err := s.kit.Task(ctx, taskID)
+	if err != nil {
+		return store.Task{}, store.Phase{}, err
+	}
+	planStage,
+		err := s.kit.StageByKind(task, "plan")
+	if err != nil {
+		return store.Task{}, store.Phase{}, err
+	}
+	if err = s.kit.RequireAttempt(ctx, task.ID, planStage.ID, planAttemptID); err !=
+		nil {
+		return store.Task{}, store.Phase{},
+			err
+	}
+	buildStage, err := s.kit.StageByKind(task, "build")
+	if err !=
+		nil {
+		return store.Task{}, store.Phase{}, err
+	}
+	if err = s.kit.RequireAttempt(ctx, task.ID, buildStage.ID, buildAttemptID); err != nil {
+		return store.Task{}, store.Phase{}, err
+	}
+	stageDef,
+
+		err := s.kit.StageByKind(task, "verify")
+	if err != nil {
+		return store.Task{}, store.Phase{}, err
+	}
+	if err = s.kit.SetActiveStage(ctx,
+		task.
+			ID, stageDef.ID,
+	); err != nil {
+		return store.Task{}, store.Phase{}, err
+	}
+	task, err = s.kit.Task(ctx, task.ID)
+	if err != nil {
+		return store.Task{}, store.Phase{}, err
+	}
+	if err = s.kit.Transition(ctx, task, stagekit.Checking,
+		""); err != nil {
+		return store.Task{}, store.Phase{}, err
+	}
+	task.State = string(stagekit.Checking)
+	phase, err := s.kit.BeginOrReusePhase(ctx, task.ID, stageDef.ID, stageDef.Kind, stageDef.Agent,
+
+		"Execute "+stageDef.ID)
+	if err != nil {
+		return store.Task{}, store.Phase{}, err
+	}
+	return task, phase, nil
+}
+
+func (s service) publishVerification(ctx context.Context, phase store.Phase, checks []store.Check,
+
+	comparisons []store.Comparison, report string, passed bool) (stage.VerificationResult, error) {
+	status, to := "success", stagekit.Reviewing
+	if !passed {
+		status, to = "failed", stagekit.Blocked
+	}
+	if err := s.kit.Complete(
+		ctx, stagekit.Completion{Phase: phase,
+			From: stagekit.
+				Checking, To: to, Status: status, Checks: checks,
+
+			Comparisons: comparisons}); err != nil {
+		s.kit.
+			Fail(ctx, phase,
+				err)
+		return stage.VerificationResult{}, err
+	}
+	return stage.VerificationResult{AttemptID: phase.ID, SnapshotID: phase.
+		OutputSnapshot, Report: report, Passed: passed}, nil
 }
