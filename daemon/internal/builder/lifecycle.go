@@ -133,14 +133,8 @@ func (s service) publishBuild(ctx context.Context, task store.Task, phase store.
 			lock.Unlock()
 			return stage.BuildResult{}, err
 		}
-		artifact, artifactErr := s.kit.AgentReportArtifact(task, phase, "build", turn, validate)
-		if artifactErr != nil {
-			s.kit.Fail(ctx, phase, artifactErr)
-			lock.Unlock()
-			return stage.BuildResult{}, artifactErr
-		}
 		err = s.kit.Complete(ctx, stagekit.Completion{
-			Phase: phase, From: stagekit.Building, To: stagekit.Checking, Status: "success", Artifact: &artifact,
+			Phase: phase, From: stagekit.Building, To: stagekit.Checking, Status: "success",
 		})
 		if err != nil {
 			s.kit.Fail(ctx, phase, err)

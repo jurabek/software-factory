@@ -70,8 +70,7 @@ func (s service) beginPlan(ctx context.Context, taskID string) (store.Task, stor
 	return task, phase, nil
 }
 
-// publishPlan drains message turns, enforces read-only observation, persists
-// the plan artifact, and transitions to AwaitingApproval.
+// publishPlan drains message turns, enforces read-only observation, and transitions to AwaitingApproval.
 func (s service) publishPlan(ctx context.Context, task store.Task, phase store.Phase, turn harness.TurnResult) (stage.PlanResult, error) {
 	baseline, err := workspace.Fingerprint(ctx, s.kit.Git(), task)
 	if err != nil {
@@ -116,15 +115,9 @@ func (s service) publishPlan(ctx context.Context, task store.Task, phase store.P
 			lock.Unlock()
 			return stage.PlanResult{}, readonlyErr
 		}
-		artifact, artifactErr := s.kit.AgentReportArtifact(task, phase, "plan", turn, validate)
-		if artifactErr != nil {
-			s.kit.Fail(ctx, phase, artifactErr)
-			lock.Unlock()
-			return stage.PlanResult{}, artifactErr
-		}
 		err = s.kit.Complete(ctx, stagekit.Completion{
 			Phase: phase, From: stagekit.Planning, To: stagekit.AwaitingApproval, Status: "success",
-			Approval: stagekit.PlanApprovalDigest(turn.Payload, artifact.Digest), Artifact: &artifact, Planner: true,
+			Approval: stagekit.PlanApprovalDigest(turn.Payload), Planner: true,
 		})
 		if err != nil {
 			s.kit.Fail(ctx, phase, err)

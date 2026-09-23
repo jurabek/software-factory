@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -211,7 +210,6 @@ func TestEventContractRoundTrip(t *testing.T) {
 		TaskID:           "task-1",
 		PhaseID:          "phase-1",
 		AttemptID:        "attempt-1",
-		ArtifactID:       "artifact-1",
 		BranchID:         "branch-1",
 		ParentEventID:    "parent-1",
 		Kind:             session.KindToolCall,
@@ -532,7 +530,7 @@ func TestApprovalAndLifecycleEventRollbackTogether(t *testing.T) {
 	}
 }
 
-func TestPhaseReportPublicationRollsBackWithLifecycleEvent(t *testing.T) {
+func TestPhaseCompletionRollsBackWithLifecycleEvent(t *testing.T) {
 	ctx := context.Background()
 	taskDir := t.TempDir()
 	db, err := Open(filepath.Join(t.TempDir(), "factory.db"))
@@ -549,14 +547,9 @@ func TestPhaseReportPublicationRollsBackWithLifecycleEvent(t *testing.T) {
 	if _, err = db.AppendEvent(ctx, taskDir, Event{ID: "duplicate", TaskID: "task-1", Kind: session.KindCustom, Payload: map[string]string{"value": "existing"}, StartedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
-	content := "# Plan\n\nAtomic."
-	artifact := Artifact{ID: "report-1", TaskID: "task-1", AttemptID: "phase-1", Type: "plan_report", Digest: fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(content))), Content: content, MediaType: "text/markdown", Producer: "planner", CreatedAt: now()}
 	event := Event{ID: "duplicate", TaskID: "task-1", PhaseID: "phase-1", AttemptID: "phase-1", Kind: session.KindPhaseEnd, Payload: session.PhasePayload{Phase: "phase-1", Status: "success"}, StartedAt: time.Now().UTC()}
-	if err = db.CompletePhaseWithArtifactAndTransitionAndEvent(ctx, taskDir, "phase-1", "task-1", "planning", "awaiting_plan_approval", "success", "", "snapshot-1", &artifact, event); err == nil {
-		t.Fatal("report publication unexpectedly succeeded with duplicate event")
-	}
-	if _, err = db.Artifact(ctx, "task-1", "report-1"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("artifact lookup error = %v, want not found", err)
+	if err = db.CompletePhaseWithTransitionAndEvent(ctx, taskDir, "phase-1", "task-1", "planning", "awaiting_plan_approval", "success", "", "snapshot-1", event); err == nil {
+		t.Fatal("phase completion unexpectedly succeeded with duplicate event")
 	}
 	task, err := db.Task(ctx, "task-1")
 	if err != nil {

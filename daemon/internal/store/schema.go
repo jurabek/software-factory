@@ -25,14 +25,14 @@ create table if not exists orchestration_events (
  created_at text not null, handled_at text
 );
 create table if not exists envelopes (id text primary key, task_id text not null references tasks(id) on delete cascade, phase_id text, stage_id text, agent_role text not null, output_type text not null, payload_json text not null, valid integer not null, attempt integer not null, created_at text not null);
-create table if not exists checks (id text not null, task_id text not null references tasks(id) on delete cascade, phase_id text, stage_id text, check_phase text not null default 'primary', comparison_baseline text, name text not null, command text not null, attempt integer not null, status text not null, exit_code integer, output text, artifact_path text, duration_ms integer, started_at text, ended_at text, primary key (task_id, id, attempt));
+create table if not exists checks (id text not null, task_id text not null references tasks(id) on delete cascade, phase_id text, stage_id text, check_phase text not null default 'primary', comparison_baseline text, name text not null, command text not null, attempt integer not null, status text not null, exit_code integer, output text, output_path text, duration_ms integer, started_at text, ended_at text, primary key (task_id, id, attempt));
 create table if not exists processes (id integer primary key autoincrement, task_id text not null references tasks(id) on delete cascade, phase_id text, kind text not null, name text not null, pid integer not null, display_command text not null, status text not null, exit_code integer, started_at text not null, ended_at text);
 create table if not exists agent_sessions (task_id text not null, stage_id text not null, agent_name text not null, role text not null default '', harness text not null, provider text, model text, thinking text, color text, harness_session_id text not null, session_directory text not null, session_ready integer not null default 0, native_transcript_path text, pending_invocation_id text, pending_request_id text, pending_phase_id text, context_tokens integer, context_window integer, usage_json text, cost real not null default 0, last_entry_id text, created_at text not null, last_used_at text not null, primary key(task_id, stage_id));
 create table if not exists messages (
  sequence integer primary key autoincrement,
  id text not null unique, task_id text not null references tasks(id) on delete cascade,
  actor text not null, text text not null, idempotency_key text not null,
- target_type text, target_id text, anchor_json text,
+ target_type text, target_id text,
  stage_id text, recipient_role text not null, agent_session_id text not null,
  delivery_status text not null, failure_reason text,
  created_at text not null, delivered_at text, failed_at text,
@@ -56,12 +56,6 @@ create table if not exists phase_definitions (
  owner text not null default '', spec_json text not null default '{}', digest text not null default '',
  parent_revision integer not null default 0, created_at text not null,
  unique(task_id, phase_key, revision)
-);
-create table if not exists artifacts (
- id text primary key, task_id text not null references tasks(id) on delete cascade,
-  attempt_id text, type text not null default '', digest text,
-  path text, metadata_json text, content text, media_type text not null default '',
-  producer text not null default '', provenance_json text not null default '{}', created_at text not null
 );
 create table if not exists workspace_snapshots (
  digest text primary key, task_id text not null references tasks(id) on delete cascade,
@@ -125,10 +119,9 @@ func ensureRetriableColumns(ctx context.Context, db *sql.DB) error {
 		{"tasks", "coding_agent text not null default ''"}, {"tasks", "model text not null default ''"}, {"tasks", "thinking text not null default ''"},
 		{"phases", "branch_id text"}, {"phases", "definition_id text"}, {"phases", "input_snapshot text"}, {"phases", "output_snapshot text"}, {"phases", "superseded integer not null default 0"},
 		{"phases", "native_base_entry_id text"}, {"phases", "fork_native integer not null default 0"},
-		{"events", "attempt_id text"}, {"events", "artifact_id text"}, {"events", "branch_id text"}, {"events", "actions_json text"}, {"events", "request_id text"},
+		{"events", "attempt_id text"}, {"events", "branch_id text"}, {"events", "actions_json text"}, {"events", "request_id text"},
 		{"phases", "stage_id text"}, {"envelopes", "stage_id text"}, {"messages", "stage_id text"},
-		{"checks", "stage_id text"}, {"checks", "check_phase text not null default 'primary'"}, {"checks", "comparison_baseline text"},
-		{"artifacts", "content text"}, {"artifacts", "media_type text not null default ''"}, {"artifacts", "producer text not null default ''"}, {"artifacts", "provenance_json text not null default '{}'"},
+		{"checks", "stage_id text"}, {"checks", "check_phase text not null default 'primary'"}, {"checks", "comparison_baseline text"}, {"checks", "output_path text"},
 	}
 	for _, add := range adds {
 		if _, err := db.ExecContext(ctx, `alter table `+add[0]+` add column `+add[1]); err != nil && !isDuplicateColumn(err) {

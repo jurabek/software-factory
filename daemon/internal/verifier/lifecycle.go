@@ -85,17 +85,15 @@ func (s service) beginVerification(ctx context.Context, taskID, planAttemptID, b
 	return task, phase, nil
 }
 
-// publishVerification persists the report with its checks/comparisons evidence
-// and applies the verification verdict's terminal transition.
-func (s service) publishVerification(ctx context.Context, task store.Task, phase store.Phase, checks []store.Check, comparisons []store.Comparison, report string, passed bool) (stage.VerificationResult, error) {
-	artifact := s.kit.ReportArtifact(task, phase, "verification", report, "deterministic-checks", "")
+// publishVerification persists checks/comparisons evidence and applies the verification verdict's terminal transition.
+func (s service) publishVerification(ctx context.Context, phase store.Phase, checks []store.Check, comparisons []store.Comparison, report string, passed bool) (stage.VerificationResult, error) {
 	status, to := "success", stagekit.Reviewing
 	if !passed {
 		status, to = "failed", stagekit.Blocked
 	}
 	if err := s.kit.Complete(ctx, stagekit.Completion{
 		Phase: phase, From: stagekit.Checking, To: to, Status: status,
-		Checks: checks, Comparisons: comparisons, Artifact: &artifact,
+		Checks: checks, Comparisons: comparisons,
 	}); err != nil {
 		s.kit.Fail(ctx, phase, err)
 		return stage.VerificationResult{}, err

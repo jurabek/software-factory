@@ -32,7 +32,7 @@ func TestCreateAllocatesWorkspaceBranchAndConfigSnapshot(t *testing.T) {
 	if created.Request != "build" || created.WorkspacePath != filepath.Join(root, "tasks", created.ID) {
 		t.Fatalf("created task = %+v", created)
 	}
-	for _, relative := range []string{"task.json", "workspace/repository", "attempts", "snapshots", "artifacts", "sessions"} {
+	for _, relative := range []string{"task.json", "workspace/repository", "attempts", "snapshots", "sessions"} {
 		if _, err = os.Stat(filepath.Join(created.WorkspacePath, relative)); err != nil {
 			t.Fatalf("workspace item %s: %v", relative, err)
 		}

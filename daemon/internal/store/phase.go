@@ -2,11 +2,9 @@ package store
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 )
 
@@ -123,19 +121,13 @@ func (db *DB) EndPhase(ctx context.Context, id, status, message string) error {
 // transition, and the corresponding lifecycle event atomically. The event
 // trace is derived output and is written only after the database commit.
 func (db *DB) CompletePhaseWithTransitionAndEvent(ctx context.Context, taskDir string, phaseID, taskID, from, to, status, message, outputSnapshot string, event Event) error {
-	return db.completePhaseWithEvidenceAndTransitionAndEvent(ctx, taskDir, phaseID, taskID, from, to, status, message, outputSnapshot, nil, nil, nil, event)
+	return db.completePhaseWithEvidenceAndTransitionAndEvent(ctx, taskDir, phaseID, taskID, from, to, status, message, outputSnapshot, nil, nil, event)
 }
 
-// CompletePhaseWithArtifactAndTransitionAndEvent publishes a phase result, its
-// required report artifact, Task progression, and lifecycle event atomically.
-func (db *DB) CompletePhaseWithArtifactAndTransitionAndEvent(ctx context.Context, taskDir string, phaseID, taskID, from, to, status, message, outputSnapshot string, artifact *Artifact, event Event) error {
-	return db.completePhaseWithEvidenceAndTransitionAndEvent(ctx, taskDir, phaseID, taskID, from, to, status, message, outputSnapshot, nil, nil, artifact, event)
-}
-
-// CompletePlannerPhaseWithArtifactAndApproval publishes a planner report and
-// approval candidate together with the phase transition and event.
-func (db *DB) CompletePlannerPhaseWithArtifactAndApproval(ctx context.Context, taskDir string, phaseID, taskID, from, to, status, message, outputSnapshot, approval string, artifact *Artifact, event Event) error {
-	return db.completePhaseWithEvidenceAndTransitionAndEvent(ctx, taskDir, phaseID, taskID, from, to, status, message, outputSnapshot, nil, nil, artifact, event, approval)
+// CompletePlannerPhaseWithApproval publishes a planner result and approval
+// candidate together with the phase transition and event.
+func (db *DB) CompletePlannerPhaseWithApproval(ctx context.Context, taskDir string, phaseID, taskID, from, to, status, message, outputSnapshot, approval string, event Event) error {
+	return db.completePhaseWithEvidenceAndTransitionAndEvent(ctx, taskDir, phaseID, taskID, from, to, status, message, outputSnapshot, nil, nil, event, approval)
 }
 
 // CompleteVerificationPhaseWithEvidenceAndEvent publishes verification
@@ -143,24 +135,17 @@ func (db *DB) CompletePlannerPhaseWithArtifactAndApproval(ctx context.Context, t
 // one transaction. Individual check observations may already be durable; the
 // final publication is the authoritative successful verification boundary.
 func (db *DB) CompleteVerificationPhaseWithEvidenceAndEvent(ctx context.Context, taskDir string, phaseID, taskID, from, to, status, message, outputSnapshot string, checks []Check, comparisons []Comparison, event Event) error {
-	return db.completePhaseWithEvidenceAndTransitionAndEvent(ctx, taskDir, phaseID, taskID, from, to, status, message, outputSnapshot, checks, comparisons, nil, event)
+	return db.completePhaseWithEvidenceAndTransitionAndEvent(ctx, taskDir, phaseID, taskID, from, to, status, message, outputSnapshot, checks, comparisons, event)
 }
 
-// CompleteVerificationPhaseWithEvidenceArtifactAndEvent publishes verification
-// evidence, its deterministic report, the phase result, Task progression, and
-// lifecycle event in one transaction.
-func (db *DB) CompleteVerificationPhaseWithEvidenceArtifactAndEvent(ctx context.Context, taskDir string, phaseID, taskID, from, to, status, message, outputSnapshot string, checks []Check, comparisons []Comparison, artifact *Artifact, event Event) error {
-	return db.completePhaseWithEvidenceAndTransitionAndEvent(ctx, taskDir, phaseID, taskID, from, to, status, message, outputSnapshot, checks, comparisons, artifact, event)
-}
-
-func (db *DB) completePhaseWithEvidenceAndTransitionAndEvent(ctx context.Context, taskDir, phaseID, taskID, from, to, status, message, outputSnapshot string, checks []Check, comparisons []Comparison, artifact *Artifact, event Event, approval ...string) error {
+func (db *DB) completePhaseWithEvidenceAndTransitionAndEvent(ctx context.Context, taskDir, phaseID, taskID, from, to, status, message, outputSnapshot string, checks []Check, comparisons []Comparison, event Event, approval ...string) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return wrap("begin phase completion", err)
 	}
 	defer tx.Rollback()
 	for _, check := range checks {
-		if _, err = tx.ExecContext(ctx, `insert or replace into checks(id,task_id,phase_id,stage_id,check_phase,comparison_baseline,name,command,attempt,status,exit_code,output,artifact_path,duration_ms,started_at,ended_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, check.ID, check.TaskID, nullIfEmpty(check.PhaseID), nullIfEmpty(check.StageID), check.Phase, nullIfEmpty(check.ComparisonBaseline), check.Name, check.Command, check.Attempt, check.Status, check.ExitCode, check.Output, check.ArtifactPath, check.DurationMS, check.StartedAt, check.EndedAt); err != nil {
+		if _, err = tx.ExecContext(ctx, `insert or replace into checks(id,task_id,phase_id,stage_id,check_phase,comparison_baseline,name,command,attempt,status,exit_code,output,output_path,duration_ms,started_at,ended_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, check.ID, check.TaskID, nullIfEmpty(check.PhaseID), nullIfEmpty(check.StageID), check.Phase, nullIfEmpty(check.ComparisonBaseline), check.Name, check.Command, check.Attempt, check.Status, check.ExitCode, check.Output, check.OutputPath, check.DurationMS, check.StartedAt, check.EndedAt); err != nil {
 			return wrap("publish verification check", err)
 		}
 	}
@@ -171,17 +156,6 @@ func (db *DB) completePhaseWithEvidenceAndTransitionAndEvent(ctx context.Context
 		}
 		if _, err = tx.ExecContext(ctx, `insert or replace into comparisons(id,task_id,phase_id,attempt,status,reason,baseline_snapshot,overlay_paths_json,created_at,duration_ms) values(?,?,?,?,?,?,?,?,?,?)`, comparison.ID, comparison.TaskID, comparison.PhaseID, comparison.Attempt, comparison.Status, comparison.Reason, nullIfEmpty(comparison.BaselineSnapshot), string(overlay), comparison.CreatedAt, comparison.DurationMS); err != nil {
 			return wrap("publish verification comparison", err)
-		}
-	}
-	if artifact != nil {
-		if artifact.Content != "" {
-			expected := fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(artifact.Content)))
-			if artifact.Digest != expected {
-				return fmt.Errorf("publish artifact: content digest mismatch")
-			}
-		}
-		if _, err = tx.ExecContext(ctx, `insert into artifacts(id,task_id,attempt_id,type,digest,path,metadata_json,content,media_type,producer,provenance_json,created_at) values(?,?,?,?,?,?,?,?,?,?,?,?)`, artifact.ID, artifact.TaskID, nullIfEmpty(artifact.AttemptID), artifact.Type, artifact.Digest, nullIfEmpty(artifact.Path), nullIfEmpty(artifact.Metadata), nullIfEmpty(artifact.Content), artifact.MediaType, artifact.Producer, artifact.Provenance, artifact.CreatedAt); err != nil {
-			return wrap("publish artifact", err)
 		}
 	}
 	ended := now()

@@ -40,17 +40,7 @@ func (s service) Approve(ctx context.Context, taskID, actor, expectedDigest stri
 	if err != nil || len(plan.Questions) > 0 {
 		return store.ErrConflict
 	}
-	reportDigest := ""
-	artifacts, err := s.kit.DB().Artifacts(ctx, taskID)
-	if err != nil {
-		return err
-	}
-	for _, artifact := range artifacts {
-		if artifact.AttemptID != "" && artifact.Type == "plan_report" {
-			reportDigest = artifact.Digest
-		}
-	}
-	currentDigest := stagekit.PlanApprovalDigest(payload, reportDigest)
+	currentDigest := stagekit.PlanApprovalDigest(payload)
 	if expectedDigest != currentDigest {
 		return ErrStalePlan
 	}

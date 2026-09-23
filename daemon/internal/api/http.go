@@ -74,8 +74,6 @@ func storeError(w http.ResponseWriter, err error) {
 		fail(w, http.StatusNotFound, "not_found", "resource not found")
 	case errors.Is(err, store.ErrStaleBranch):
 		fail(w, http.StatusConflict, "stale_branch", "selected branch head is stale; refresh lineage and reselect the action")
-	case errors.Is(err, store.ErrStaleAnchor):
-		fail(w, http.StatusConflict, "stale_anchor", "artifact anchor is stale; reselect the source content")
 	case errors.Is(err, store.ErrConflict):
 		fail(w, http.StatusConflict, "invalid_state", "task state does not allow this operation")
 	case errors.Is(err, planner.ErrStalePlan):
@@ -90,7 +88,7 @@ func storeError(w http.ResponseWriter, err error) {
 }
 
 func containsInvalid(message string) bool {
-	for _, prefix := range []string{"text is required", "plan_digest is required", "idempotency_key is required", "attempt input snapshot is required", "target accepts", "anchor ", "unknown anchor"} {
+	for _, prefix := range []string{"text is required", "plan_digest is required", "idempotency_key is required", "attempt input snapshot is required", "target accepts"} {
 		if strings.Contains(message, prefix) {
 			return true
 		}

@@ -9,15 +9,14 @@ import (
 
 // Common is the envelope shape every agent-authored stage payload shares.
 type Common struct {
-	Status    string   `json:"status"`
-	Summary   string   `json:"summary"`
-	Artifacts []string `json:"artifacts"`
-	Notes     string   `json:"notes_for_next_agent"`
-	Report    string   `json:"report_markdown"`
+	Status  string `json:"status"`
+	Summary string `json:"summary"`
+	Notes   string `json:"notes_for_next_agent"`
+	Report  string `json:"report_markdown"`
 }
 
 // CommonFields lists the shared envelope fields accepted by every stage.
-var CommonFields = []string{"status", "summary", "artifacts", "notes_for_next_agent", "report_markdown"}
+var CommonFields = []string{"status", "summary", "notes_for_next_agent", "report_markdown"}
 
 // DecodeExact decodes a JSON envelope, rejecting unknown and missing fields.
 func DecodeExact(text string, target any, required, allowed []string) error {
@@ -59,9 +58,6 @@ func ValidateCommon(value Common) error {
 	if strings.TrimSpace(value.Summary) == "" {
 		return fmt.Errorf("envelope summary is required")
 	}
-	if value.Artifacts == nil {
-		return fmt.Errorf("envelope artifacts array is required")
-	}
 	if strings.TrimSpace(value.Report) == "" {
 		return fmt.Errorf("envelope report_markdown is required")
 	}
@@ -73,7 +69,7 @@ func ValidateCommon(value Common) error {
 
 // CommonInstructions renders the shared field example used in prompts.
 func CommonInstructions() string {
-	return `"status":"success","summary":"...","artifacts":[],"notes_for_next_agent":"","report_markdown":"# Report\n\n..."`
+	return `"status":"success","summary":"...","notes_for_next_agent":"","report_markdown":"# Report\n\n..."`
 }
 
 func object(text string) ([]byte, error) {

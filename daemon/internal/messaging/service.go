@@ -5,7 +5,6 @@ package messaging
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -77,12 +76,6 @@ func (s *Service) Send(ctx context.Context, taskID, actor string, request Reques
 	if err != nil {
 		return store.Message{}, false, err
 	}
-	if request.Target.Anchor != nil && request.Target.ArtifactID == "" {
-		return store.Message{}, false, fmt.Errorf("anchor requires artifact_id")
-	}
-	if err = s.ValidateAnchor(ctx, taskID, target); err != nil {
-		return store.Message{}, false, err
-	}
 	role, phase, err := s.messageRecipient(ctx, task, targetPhase)
 	if err != nil {
 		return store.Message{}, false, err
@@ -91,21 +84,13 @@ func (s *Service) Send(ctx context.Context, taskID, actor string, request Reques
 	if err != nil {
 		return store.Message{}, false, err
 	}
-	anchor := ""
-	if request.Target.Anchor != nil {
-		encoded, marshalErr := json.Marshal(request.Target.Anchor)
-		if marshalErr != nil {
-			return store.Message{}, false, marshalErr
-		}
-		anchor = string(encoded)
-	}
 	if targetType == "task" {
 		targetType, targetID = "", ""
 	}
 	value := store.Message{
 		ID: stagekit.RandomID(), TaskID: taskID, Actor: actor, Text: request.Text,
 		IdempotencyKey: request.IdempotencyKey, TargetType: targetType, TargetID: targetID,
-		Anchor: anchor, StageID: role, RecipientRole: agentSession.AgentName, AgentSessionID: agentSession.HarnessSessionID,
+		StageID: role, RecipientRole: agentSession.AgentName, AgentSessionID: agentSession.HarnessSessionID,
 		DeliveryStatus: "queued", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	reopen := task.State == string(stagekit.AwaitingApproval) || task.State == string(stagekit.Blocked) || task.State == string(stagekit.Completed)

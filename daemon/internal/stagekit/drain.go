@@ -156,7 +156,7 @@ func MessageEvent(ctx context.Context, db *store.DB, message store.Message, phas
 	entry := session.NewTaskMessage(session.TaskMessagePayload{
 		MessageID: message.ID, TaskID: message.TaskID, Text: message.Text, RecipientRole: message.RecipientRole,
 		AgentSessionID: message.AgentSessionID, TargetType: message.TargetType, TargetID: message.TargetID,
-		Anchor: message.Anchor, DeliveryStatus: message.DeliveryStatus, FailureReason: message.FailureReason,
+		DeliveryStatus: message.DeliveryStatus, FailureReason: message.FailureReason,
 	})
 	taskState := ""
 	if task, taskErr := db.Task(ctx, message.TaskID); taskErr == nil {

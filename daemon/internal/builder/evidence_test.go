@@ -23,7 +23,7 @@ func TestValidateWithEvidenceRequiresExactlyGitDerivedTestChanges(t *testing.T) 
 	base := strings.TrimSpace(evidenceGit(t, repositoryPath, "rev-parse", "HEAD"))
 	evidenceWrite(t, filepath.Join(repositoryPath, "changed_test.go"), "package example\nfunc TestChanged(t *testing.T) {}\n")
 
-	valid := `{"status":"success","summary":"built","artifacts":[],"notes_for_next_agent":"","report_markdown":"# Build\n\nDone.","changed_files":["changed_test.go"],"commit_message":"test","test_changes":[{"path":"changed_test.go","reason":"adds the regression assertion"}]}`
+	valid := `{"status":"success","summary":"built","notes_for_next_agent":"","report_markdown":"# Build\n\nDone.","changed_files":["changed_test.go"],"commit_message":"test","test_changes":[{"path":"changed_test.go","reason":"adds the regression assertion"}]}`
 	if _, err := ValidateWithEvidence(context.Background(), factorygit.OSRunner{}, repositoryPath, base, []string{"**/*_test.go"}, valid); err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestPersistEvidenceRetainsChangeKindAndReason(t *testing.T) {
 	if err = os.WriteFile(filepath.Join(task.WorkspacePath, "repository-profile.json"), []byte(profileBody), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	payload := `{"status":"success","summary":"built","artifacts":[],"notes_for_next_agent":"","report_markdown":"# Build\n\nDone.","changed_files":["example_test.go"],"commit_message":"test","test_changes":[{"path":"example_test.go","reason":"covers the changed behavior"}]}`
+	payload := `{"status":"success","summary":"built","notes_for_next_agent":"","report_markdown":"# Build\n\nDone.","changed_files":["example_test.go"],"commit_message":"test","test_changes":[{"path":"example_test.go","reason":"covers the changed behavior"}]}`
 	if err = PersistEvidence(context.Background(), factorygit.OSRunner{}, db, task, store.Phase{ID: "build-attempt", Attempt: 1}, payload); err != nil {
 		t.Fatal(err)
 	}

@@ -17,7 +17,7 @@ Treat Pi's native sessions as the authoritative record of agent history, usage, 
 5. As a task author, I want completed history served from the durable Pi journal, so that I see the settled record rather than a re-derived copy.
 6. As a task author, I want exact retry to branch the conversation from the Attempt's input checkpoint, so that each Attempt is faithful to its recorded inputs and earlier paths remain navigable.
 7. As a task author, I want Attempt boundaries visible in the conversation, so that I can tell which Attempt produced which response.
-8. As a reviewer, I want human messages still anchored to stable factory event and artifact identities, so that targeting does not change.
+8. As a reviewer, I want human messages still target stable factory event and attempt identities, so that targeting does not change.
 9. As a reviewer, I want a human-approved plan's digest still bound to the exact report content, so that approval cannot be satisfied by a different response.
 10. As a daemon operator, I want the existing numeric event cursor and replay contract preserved, so that the application UI keeps working without changes.
 11. As a daemon operator, I want accepted-but-undelivered messages to remain durable in the factory store, so that they survive a crash even though Pi's queue is memory-only.
@@ -55,7 +55,7 @@ A good test asserts external behavior through a seam, not implementation details
 
 - **Harness seam.** Test the session-oriented harness adapter and the shared correction/repair loop with a scripted fake adapter (prior art: `errorScriptedHarness`, `liveEventFailureHarness` in the agent runner tests). Cover session identity preservation, read-only enforcement, accounting-from-stats, correction retries, and cancellation.
 - **Workflow seam.** Test Task transition policy, exact-retry branching, message delivery/idempotency, and restart reconciliation through the existing pipeline and e2e task-flow tests (prior art: `TestMessageDrainReachesDownstream`, `TestCancellationPreventsLatePublication`, `TestCancellationBetweenStagesStopsDownstream`, `TestMessagesAreIdempotentFIFOAndAbortFailsQueue`).
-- **API/contract seam.** Test numeric cursors, event targeting, report-content resolution, and SSE replay through the existing API and store tests (prior art: cursor/replay assertions in the API tests and the task-flow e2e test).
+- **API/contract seam.** Test numeric cursors, event targeting, report resolution, and SSE replay through the existing API and store tests (prior art: cursor/replay assertions in the API tests and the task-flow e2e test).
 - **Store seam.** Test the reference index, outbox durability, and clean-break incompatibility through the existing store tests (prior art: `TestReserveAgentSessionConcurrentCallersShareWinner`, `TestMessageDeliveryAndEventRollbackTogether`, `TestOpenRecoversPendingAgentInvocation`).
 
 ## Out of Scope
@@ -116,10 +116,7 @@ Legend: `[x]` complete, `[~]` partial, `[ ]` not started.
   payloads from that entry at read time. Factory event ids remain the targeting
   identity and numeric cursors/replay order are unchanged.
 - [x] **Reports.** The harness resolves the report text and its exact native
-  entry id from the assistant entry for the request subtree. Report artifacts
-  validate and extract `report_markdown` from that native text and record the
-  native entry reference in provenance. Factory-generated verification reports
-  keep their own content.
+  entry id from the assistant entry for the request subtree. Reports validate and extract `report_markdown` from native text. Factory-generated verification reports keep their own content.
 - [x] **Accounting.** Task usage/cost derives from native session stats and is
   reconciled idempotently (`FinalizeAgentInvocation` sets the absolute cost and
   adjusts the task total by the delta). `accounting_complete` and its

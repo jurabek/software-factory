@@ -86,7 +86,7 @@ func (s service) Verify(ctx context.Context, input stage.Input, plan stage.PlanR
 			passed = false
 		}
 	}
-	return s.publishVerification(ctx, task, phase, phaseChecks, phaseComparisons, report, passed)
+	return s.publishVerification(ctx, phase, phaseChecks, phaseComparisons, report, passed)
 }
 
 // Report renders the deterministic verification report from phase checks.
@@ -145,7 +145,7 @@ func (s service) runCheck(ctx context.Context, task store.Task, phase store.Phas
 		StartedAt:          started.Format(time.RFC3339Nano),
 	}
 	logPath := filepath.Join(task.WorkspacePath, "attempts", fmt.Sprintf("%d-%s", phase.Attempt, phase.ID), "checks", checkPhase, safeFileName(declared.ID)+".log")
-	check.ArtifactPath = logPath
+	check.OutputPath = logPath
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
 		return check, err
 	}

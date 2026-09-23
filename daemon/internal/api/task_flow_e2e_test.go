@@ -39,10 +39,10 @@ import (
 )
 
 const (
-	flowTaskRequest = "Create the build artifact"
-	flowPlan        = `{"status":"success","summary":"Create the requested artifact","artifacts":[],"notes_for_next_agent":"","report_markdown":"# Plan\n\nCreate built.txt.","steps":[{"id":"build-artifact","description":"Create built.txt","expected_files":["built.txt"],"acceptance_criteria":["deterministic check passes"]}],"questions":[]}`
-	flowBuild       = `{"status":"success","summary":"Created the build artifact","artifacts":[],"notes_for_next_agent":"","report_markdown":"# Build\n\nCreated built.txt.","changed_files":["built.txt"],"commit_message":"Create build artifact","test_changes":[]}`
-	flowReview      = `{"status":"success","summary":"Implementation satisfies the plan","artifacts":[],"notes_for_next_agent":"","report_markdown":"# Review\n\nApproved.","approved":true,"findings":[],"blocking":[]}`
+	flowTaskRequest = "Create the build output"
+	flowPlan        = `{"status":"success","summary":"Create the requested output","notes_for_next_agent":"","report_markdown":"# Plan\n\nCreate built.txt.","steps":[{"id":"build-output","description":"Create built.txt","expected_files":["built.txt"],"acceptance_criteria":["deterministic check passes"]}],"questions":[]}`
+	flowBuild       = `{"status":"success","summary":"Created the build output","notes_for_next_agent":"","report_markdown":"# Build\n\nCreated built.txt.","changed_files":["built.txt"],"commit_message":"Create build output","test_changes":[]}`
+	flowReview      = `{"status":"success","summary":"Implementation satisfies the plan","notes_for_next_agent":"","report_markdown":"# Review\n\nApproved.","approved":true,"findings":[],"blocking":[]}`
 	flowMessage     = "Keep the public API stable."
 )
 
@@ -84,7 +84,7 @@ func (s *taskFlowSession) Prompt(_ context.Context, prompt harness.Prompt, _ har
 		}
 		result.Text = flowPlan
 	case 2:
-		if !strings.Contains(s.spec.SystemPrompt, "Build the approved plan") || !strings.Contains(prompt.Text, flowTaskRequest) || !strings.Contains(prompt.Text, "Create the requested artifact") {
+		if !strings.Contains(s.spec.SystemPrompt, "Build the approved plan") || !strings.Contains(prompt.Text, flowTaskRequest) || !strings.Contains(prompt.Text, "Create the requested output") {
 			return result, fmt.Errorf("builder prompt missing approved plan handoff: system=%q user=%q", s.spec.SystemPrompt, prompt.Text)
 		}
 		if err := os.WriteFile(filepath.Join(s.spec.CWD, "built.txt"), []byte("built\n"), 0o600); err != nil {
@@ -109,7 +109,7 @@ func (s *taskFlowSession) Prompt(_ context.Context, prompt harness.Prompt, _ har
 		}
 		result.Text = flowBuild
 	case 4:
-		if !strings.Contains(s.spec.SystemPrompt, "Review the implementation") || !strings.Contains(prompt.Text, "Create the requested artifact") {
+		if !strings.Contains(s.spec.SystemPrompt, "Review the implementation") || !strings.Contains(prompt.Text, "Create the requested output") {
 			return result, fmt.Errorf("reviewer prompt missing evidence handoff: system=%q user=%q", s.spec.SystemPrompt, prompt.Text)
 		}
 		result.Text = flowReview
@@ -346,14 +346,6 @@ func (s *taskFlowSuite) TestCreateApproveBuildAndCheck() {
 	s.Require().NotEmpty(replay.Events)
 	s.Greater(replay.Events[0].Sequence, history.Events[0].Sequence)
 	s.Equal(history.Events[len(history.Events)-1].Sequence, replay.Cursor)
-	var artifacts []store.Artifact
-	s.request(http.MethodGet, "/api/v1/tasks/"+created.ID+"/artifacts", nil, http.StatusOK, &artifacts)
-	s.Require().Len(artifacts, 4)
-	for _, artifact := range artifacts {
-		body := s.requestText("/api/v1/tasks/"+created.ID+"/artifacts/"+artifact.ID, http.StatusOK)
-		s.NotEmpty(body)
-		s.Contains(body, "#")
-	}
 	s.Len(s.harness.Requests(), 4)
 }
 

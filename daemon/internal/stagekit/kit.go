@@ -25,7 +25,7 @@ type TaskConfig struct {
 }
 
 // Kit is the shared lifecycle support injected into every stage module. It
-// owns durable mechanics: task locks, phase attempts, transitions, artifacts,
+// owns durable mechanics: task locks, phase attempts, transitions,
 // lineage, config resolution, events, and message draining.
 type Kit struct {
 	db         *store.DB

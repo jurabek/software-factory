@@ -160,14 +160,8 @@ func (s service) publishReview(ctx context.Context, task store.Task, phase store
 			lock.Unlock()
 			return stage.ReviewResult{}, readonlyErr
 		}
-		artifact, artifactErr := s.kit.AgentReportArtifact(task, phase, "review", turn, validate)
-		if artifactErr != nil {
-			s.kit.Fail(ctx, phase, artifactErr)
-			lock.Unlock()
-			return stage.ReviewResult{}, artifactErr
-		}
 		err = s.kit.Complete(ctx, stagekit.Completion{
-			Phase: phase, From: stagekit.Reviewing, To: stagekit.Completed, Status: "success", Artifact: &artifact,
+			Phase: phase, From: stagekit.Reviewing, To: stagekit.Completed, Status: "success",
 		})
 		if err != nil {
 			s.kit.Fail(ctx, phase, err)

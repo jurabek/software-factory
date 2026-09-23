@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"strings"
@@ -18,7 +17,6 @@ type Message struct {
 	IdempotencyKey string         `json:"idempotency_key"`
 	TargetType     string         `json:"-"`
 	TargetID       string         `json:"-"`
-	Anchor         string         `json:"-"`
 	Target         *MessageTarget `json:"target,omitempty"`
 	StageID        string         `json:"stage_id,omitempty"`
 	RecipientRole  string         `json:"recipient_role"`
@@ -30,14 +28,12 @@ type Message struct {
 	FailedAt       string         `json:"failed_at,omitempty"`
 }
 type MessageTarget struct {
-	AttemptID  string          `json:"attempt_id,omitempty"`
-	EventID    string          `json:"event_id,omitempty"`
-	ArtifactID string          `json:"artifact_id,omitempty"`
-	Anchor     json.RawMessage `json:"anchor,omitempty"`
+	AttemptID string `json:"attempt_id,omitempty"`
+	EventID   string `json:"event_id,omitempty"`
 }
 
 func (db *DB) SaveMessage(ctx context.Context, value Message) (Message, bool, error) {
-	result, err := db.ExecContext(ctx, `insert into messages(id,task_id,actor,text,idempotency_key,target_type,target_id,anchor_json,stage_id,recipient_role,agent_session_id,delivery_status,created_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?) on conflict(task_id,idempotency_key) do nothing`, value.ID, value.TaskID, value.Actor, value.Text, value.IdempotencyKey, nullIfEmpty(value.TargetType), nullIfEmpty(value.TargetID), nullIfEmpty(value.Anchor), nullIfEmpty(value.StageID), value.RecipientRole, value.AgentSessionID, value.DeliveryStatus, value.CreatedAt)
+	result, err := db.ExecContext(ctx, `insert into messages(id,task_id,actor,text,idempotency_key,target_type,target_id,stage_id,recipient_role,agent_session_id,delivery_status,created_at) values(?,?,?,?,?,?,?,?,?,?,?,?) on conflict(task_id,idempotency_key) do nothing`, value.ID, value.TaskID, value.Actor, value.Text, value.IdempotencyKey, nullIfEmpty(value.TargetType), nullIfEmpty(value.TargetID), nullIfEmpty(value.StageID), value.RecipientRole, value.AgentSessionID, value.DeliveryStatus, value.CreatedAt)
 	if err != nil {
 		return Message{}, false, wrap("save message", err)
 	}
@@ -58,7 +54,7 @@ func (db *DB) AcceptMessageWithEvent(ctx context.Context, value Message, event E
 		return Message{}, false, wrap("begin message acceptance", err)
 	}
 	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, `insert into messages(id,task_id,actor,text,idempotency_key,target_type,target_id,anchor_json,stage_id,recipient_role,agent_session_id,delivery_status,created_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?) on conflict(task_id,idempotency_key) do nothing`, value.ID, value.TaskID, value.Actor, value.Text, value.IdempotencyKey, nullIfEmpty(value.TargetType), nullIfEmpty(value.TargetID), nullIfEmpty(value.Anchor), nullIfEmpty(value.StageID), value.RecipientRole, value.AgentSessionID, value.DeliveryStatus, value.CreatedAt)
+	result, err := tx.ExecContext(ctx, `insert into messages(id,task_id,actor,text,idempotency_key,target_type,target_id,stage_id,recipient_role,agent_session_id,delivery_status,created_at) values(?,?,?,?,?,?,?,?,?,?,?,?) on conflict(task_id,idempotency_key) do nothing`, value.ID, value.TaskID, value.Actor, value.Text, value.IdempotencyKey, nullIfEmpty(value.TargetType), nullIfEmpty(value.TargetID), nullIfEmpty(value.StageID), value.RecipientRole, value.AgentSessionID, value.DeliveryStatus, value.CreatedAt)
 	if err != nil {
 		return Message{}, false, wrap("accept message", err)
 	}
@@ -66,7 +62,7 @@ func (db *DB) AcceptMessageWithEvent(ctx context.Context, value Message, event E
 	if err != nil {
 		return Message{}, false, wrap("read message acceptance result", err)
 	}
-	stored, err := scanMessage(tx.QueryRowContext(ctx, `select sequence,id,task_id,actor,text,idempotency_key,coalesce(target_type,''),coalesce(target_id,''),coalesce(anchor_json,''),coalesce(stage_id,''),recipient_role,agent_session_id,delivery_status,coalesce(failure_reason,''),created_at,coalesce(delivered_at,''),coalesce(failed_at,'') from messages where task_id=? and idempotency_key=?`, value.TaskID, value.IdempotencyKey))
+	stored, err := scanMessage(tx.QueryRowContext(ctx, `select sequence,id,task_id,actor,text,idempotency_key,coalesce(target_type,''),coalesce(target_id,''),coalesce(stage_id,''),recipient_role,agent_session_id,delivery_status,coalesce(failure_reason,''),created_at,coalesce(delivered_at,''),coalesce(failed_at,'') from messages where task_id=? and idempotency_key=?`, value.TaskID, value.IdempotencyKey))
 	if err != nil {
 		return Message{}, false, err
 	}
@@ -105,35 +101,30 @@ func (db *DB) AcceptMessageWithEvent(ctx context.Context, value Message, event E
 	return stored, true, nil
 }
 func (db *DB) messageByKey(ctx context.Context, taskID, key string) (Message, error) {
-	return scanMessage(db.QueryRowContext(ctx, `select sequence,id,task_id,actor,text,idempotency_key,coalesce(target_type,''),coalesce(target_id,''),coalesce(anchor_json,''),coalesce(stage_id,''),recipient_role,agent_session_id,delivery_status,coalesce(failure_reason,''),created_at,coalesce(delivered_at,''),coalesce(failed_at,'') from messages where task_id=? and idempotency_key=?`, taskID, key))
+	return scanMessage(db.QueryRowContext(ctx, `select sequence,id,task_id,actor,text,idempotency_key,coalesce(target_type,''),coalesce(target_id,''),coalesce(stage_id,''),recipient_role,agent_session_id,delivery_status,coalesce(failure_reason,''),created_at,coalesce(delivered_at,''),coalesce(failed_at,'') from messages where task_id=? and idempotency_key=?`, taskID, key))
 }
 func (db *DB) MessageByIdempotencyKey(ctx context.Context, taskID, key string) (Message, error) {
 	return db.messageByKey(ctx, taskID, key)
 }
 func scanMessage(scanner interface{ Scan(...any) error }) (Message, error) {
 	var value Message
-	err := scanner.Scan(&value.Sequence, &value.ID, &value.TaskID, &value.Actor, &value.Text, &value.IdempotencyKey, &value.TargetType, &value.TargetID, &value.Anchor, &value.StageID, &value.RecipientRole, &value.AgentSessionID, &value.DeliveryStatus, &value.FailureReason, &value.CreatedAt, &value.DeliveredAt, &value.FailedAt)
+	err := scanner.Scan(&value.Sequence, &value.ID, &value.TaskID, &value.Actor, &value.Text, &value.IdempotencyKey, &value.TargetType, &value.TargetID, &value.StageID, &value.RecipientRole, &value.AgentSessionID, &value.DeliveryStatus, &value.FailureReason, &value.CreatedAt, &value.DeliveredAt, &value.FailedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Message{}, ErrNotFound
 	}
 	if err == nil && value.TargetType != "" {
-		value.Target = &MessageTarget{Anchor: json.RawMessage(value.Anchor)}
+		value.Target = &MessageTarget{}
 		switch value.TargetType {
 		case "attempt":
 			value.Target.AttemptID = value.TargetID
 		case "event":
 			value.Target.EventID = value.TargetID
-		case "artifact":
-			value.Target.ArtifactID = value.TargetID
-		}
-		if value.Anchor == "" {
-			value.Target.Anchor = nil
 		}
 	}
 	return value, wrap("read message", err)
 }
 func (db *DB) Messages(ctx context.Context, taskID string) ([]Message, error) {
-	rows, err := db.QueryContext(ctx, `select sequence,id,task_id,actor,text,idempotency_key,coalesce(target_type,''),coalesce(target_id,''),coalesce(anchor_json,''),coalesce(stage_id,''),recipient_role,agent_session_id,delivery_status,coalesce(failure_reason,''),created_at,coalesce(delivered_at,''),coalesce(failed_at,'') from messages where task_id=? order by sequence`, taskID)
+	rows, err := db.QueryContext(ctx, `select sequence,id,task_id,actor,text,idempotency_key,coalesce(target_type,''),coalesce(target_id,''),coalesce(stage_id,''),recipient_role,agent_session_id,delivery_status,coalesce(failure_reason,''),created_at,coalesce(delivered_at,''),coalesce(failed_at,'') from messages where task_id=? order by sequence`, taskID)
 	if err != nil {
 		return nil, wrap("list messages", err)
 	}
@@ -149,10 +140,10 @@ func (db *DB) Messages(ctx context.Context, taskID string) ([]Message, error) {
 	return values, rows.Err()
 }
 func (db *DB) NextQueuedMessage(ctx context.Context, taskID, role string) (Message, error) {
-	return scanMessage(db.QueryRowContext(ctx, `select sequence,id,task_id,actor,text,idempotency_key,coalesce(target_type,''),coalesce(target_id,''),coalesce(anchor_json,''),coalesce(stage_id,''),recipient_role,agent_session_id,delivery_status,coalesce(failure_reason,''),created_at,coalesce(delivered_at,''),coalesce(failed_at,'') from messages where task_id=? and stage_id=? and delivery_status='queued' order by sequence limit 1`, taskID, role))
+	return scanMessage(db.QueryRowContext(ctx, `select sequence,id,task_id,actor,text,idempotency_key,coalesce(target_type,''),coalesce(target_id,''),coalesce(stage_id,''),recipient_role,agent_session_id,delivery_status,coalesce(failure_reason,''),created_at,coalesce(delivered_at,''),coalesce(failed_at,'') from messages where task_id=? and stage_id=? and delivery_status='queued' order by sequence limit 1`, taskID, role))
 }
 func (db *DB) NextQueuedTaskMessage(ctx context.Context, taskID string) (Message, error) {
-	return scanMessage(db.QueryRowContext(ctx, `select sequence,id,task_id,actor,text,idempotency_key,coalesce(target_type,''),coalesce(target_id,''),coalesce(anchor_json,''),coalesce(stage_id,''),recipient_role,agent_session_id,delivery_status,coalesce(failure_reason,''),created_at,coalesce(delivered_at,''),coalesce(failed_at,'') from messages where task_id=? and delivery_status='queued' order by sequence limit 1`, taskID))
+	return scanMessage(db.QueryRowContext(ctx, `select sequence,id,task_id,actor,text,idempotency_key,coalesce(target_type,''),coalesce(target_id,''),coalesce(stage_id,''),recipient_role,agent_session_id,delivery_status,coalesce(failure_reason,''),created_at,coalesce(delivered_at,''),coalesce(failed_at,'') from messages where task_id=? and delivery_status='queued' order by sequence limit 1`, taskID))
 }
 
 // QueuedMessageForStages reports whether a queued message is routed to any of
@@ -293,7 +284,7 @@ func (db *DB) AbortTask(ctx context.Context, taskID, from, activePhase string) (
 		return nil, wrap("begin abort", err)
 	}
 	defer tx.Rollback()
-	rows, err := tx.QueryContext(ctx, `select sequence,id,task_id,actor,text,idempotency_key,coalesce(target_type,''),coalesce(target_id,''),coalesce(anchor_json,''),coalesce(stage_id,''),recipient_role,agent_session_id,delivery_status,coalesce(failure_reason,''),created_at,coalesce(delivered_at,''),coalesce(failed_at,'') from messages where task_id=? and delivery_status='queued' order by sequence`, taskID)
+	rows, err := tx.QueryContext(ctx, `select sequence,id,task_id,actor,text,idempotency_key,coalesce(target_type,''),coalesce(target_id,''),coalesce(stage_id,''),recipient_role,agent_session_id,delivery_status,coalesce(failure_reason,''),created_at,coalesce(delivered_at,''),coalesce(failed_at,'') from messages where task_id=? and delivery_status='queued' order by sequence`, taskID)
 	if err != nil {
 		return nil, wrap("read abort messages", err)
 	}

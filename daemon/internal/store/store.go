@@ -49,7 +49,6 @@ var (
 	ErrNotFound          = errors.New("not found")
 	ErrConflict          = errors.New("conflict")
 	ErrStaleBranch       = errors.New("stale_branch")
-	ErrStaleAnchor       = errors.New("stale_anchor")
 	ErrStateIncompatible = errors.New("state_incompatible: delete the configured Software Factory directory before starting this clean-break version")
 )
 

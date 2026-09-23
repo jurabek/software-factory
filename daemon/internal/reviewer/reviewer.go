@@ -141,7 +141,7 @@ func (s service) Review(ctx context.Context, input stage.Input, plan stage.PlanR
 	return s.publishReview(ctx, task, phase, turn, before)
 }
 
-// evidence assembles the review prompt payload from upstream artifacts.
+// evidence assembles the review prompt payload from upstream results.
 func (s service) evidence(ctx context.Context, task store.Task, plan stage.PlanResult) (map[string]any, error) {
 	checks, err := s.kit.DB().Checks(ctx, task.ID)
 	if err != nil {

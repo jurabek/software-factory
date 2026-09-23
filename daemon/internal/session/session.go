@@ -93,7 +93,6 @@ type TaskMessagePayload struct {
 	AgentSessionID string `json:"agent_session_id"`
 	TargetType     string `json:"target_type,omitempty"`
 	TargetID       string `json:"target_id,omitempty"`
-	Anchor         string `json:"anchor_json,omitempty"`
 	DeliveryStatus string `json:"delivery_status"`
 	FailureReason  string `json:"failure_reason,omitempty"`
 }
