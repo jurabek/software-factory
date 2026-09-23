@@ -5,13 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"time"
 
-	"uuid"
-
-	"github.com/jurabek/software-factory/daemon/internal/agentexec"
-	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
 	"github.com/jurabek/software-factory/daemon/internal/harness"
 	"github.com/jurabek/software-factory/daemon/internal/session"
 	"github.com/jurabek/software-factory/daemon/internal/store"
@@ -32,134 +27,83 @@ type DrainSpec struct {
 }
 
 // Drain delivers queued messages to a running stage's agent session until the
-// queue is empty, returning the latest valid payload.
-func (k *Kit) Drain(ctx context.Context, spec DrainSpec) (string, error) {
+// queue is empty, returning the latest valid turn. Execution mechanics are
+// owned by the harness turn loop; Drain owns only message bookkeeping.
+func (k *Kit) Drain(ctx context.Context, spec DrainSpec) (harness.TurnResult, error) {
 	task := spec.Task
 	phase := spec.Phase
 	configured, err := k.resolveConfig(task)
 	if err != nil {
-		return "", err
+		return harness.TurnResult{}, err
 	}
 	agent, ok := configured.Agent(spec.AgentName)
 	if !ok {
-		return "", fmt.Errorf("agent %s not configured", spec.AgentName)
-	}
-	adapter, ok := k.harnesses.Get(configured.Defaults.CodingAgent)
-	if !ok {
-		return "", fmt.Errorf("harness %s unavailable", configured.Defaults.CodingAgent)
+		return harness.TurnResult{}, fmt.Errorf("agent %s not configured", spec.AgentName)
 	}
 	storedSession, err := k.db.AgentSession(ctx, task.ID, spec.StageID)
 	if err != nil {
-		return "", err
+		return harness.TurnResult{}, err
 	}
-	var latest string
+	var latest harness.TurnResult
 	for {
 		message, nextErr := k.db.NextQueuedMessage(ctx, task.ID, spec.StageID)
 		if errors.Is(nextErr, store.ErrNotFound) {
 			return latest, nil
 		}
 		if nextErr != nil {
-			return "", nextErr
+			return harness.TurnResult{}, nextErr
 		}
 		if message.AgentSessionID != storedSession.HarnessSessionID {
 			err = fmt.Errorf("message agent session identity is stale")
 			k.failMessage(ctx, message, phase, "session_unavailable")
-			return "", err
+			return harness.TurnResult{}, err
 		}
 		systemPrompt, promptErr := k.messageSystemPrompt(ctx, message, spec.Role, spec.Instructions)
 		if promptErr != nil {
 			k.failMessage(ctx, message, phase, "context_unavailable")
-			return "", promptErr
+			return harness.TurnResult{}, promptErr
 		}
-		request := harness.Request{
-			CWD: task.RepositoryPath, Prompt: message.Text, SystemPrompt: systemPrompt,
-			Model: agent.Model, Thinking: agent.Thinking, SessionID: storedSession.HarnessSessionID,
-			SessionDirectory: storedSession.SessionDirectory, RawOutputPath: filepath.Join(storedSession.SessionDirectory, "raw-output.jsonl"),
-			DeadlineMS: configured.Runtime.AgentDeadlineMS, Resume: true,
+		delivered := false
+		onDispatch := func(dispatchCtx context.Context, _ string) error {
+			if delivered {
+				return nil
+			}
+			delivered = true
+			message.DeliveryStatus = "delivered"
+			message.DeliveredAt = time.Now().UTC().Format(time.RFC3339Nano)
+			event, eventErr := MessageEvent(dispatchCtx, k.db, message, &phase)
+			if eventErr != nil {
+				return eventErr
+			}
+			return k.db.DeliverMessageWithEvent(dispatchCtx, task.ID, message.ID, event, k.TaskDir(task.ID))
 		}
-		for correction := 0; correction <= configured.Runtime.JSONFixAttempts; correction++ {
-			var before string
-			if spec.ReadOnly {
-				before, err = fingerprint(ctx, k.git, task)
-				if err != nil {
-					return "", err
-				}
+		turner := k.AgentExec()
+		turner.AgentDeadlineMS = configured.Runtime.AgentDeadlineMS
+		turner.JSONFixAttempts = configured.Runtime.JSONFixAttempts
+		turn, runErr := harness.RunTurn(ctx, turner, harness.TurnInput{
+			TaskID: task.ID, RequestID: RandomID(), Phase: phase, Role: spec.Role,
+			HarnessName: configured.Defaults.CodingAgent, Model: agent.Model, Thinking: agent.Thinking, Color: agent.Color,
+			RepoPath: task.RepositoryPath, SessionDir: storedSession.SessionDirectory,
+			SystemPrompt: systemPrompt, UserPrompt: message.Text,
+			ReadOnly: spec.ReadOnly, EnvelopeKind: phaseEnvelopeKind(phase, spec.Role),
+			CorrectionSuffix: spec.Instructions, Validate: spec.Validate,
+			Sink: k.Sink(task.ID, phase.ID, storedSession.Harness), OnDispatch: onDispatch,
+		})
+		if runErr != nil {
+			reason := "harness_error"
+			if errors.Is(runErr, context.Canceled) {
+				reason = "invocation_cancelled"
 			}
-			invocationID := uuid.New().String()
-			if correction == 0 {
-				message.DeliveryStatus = "delivered"
-				message.DeliveredAt = time.Now().UTC().Format(time.RFC3339Nano)
-				event, eventErr := MessageEvent(ctx, k.db, message, &phase)
-				if eventErr != nil {
-					return "", eventErr
-				}
-				if err = k.db.BeginMessageInvocationWithEvent(ctx, task.ID, spec.StageID, invocationID, message.ID, event, k.TaskDir(task.ID)); err != nil {
-					return "", err
-				}
-			} else if err = k.db.BeginAgentInvocation(ctx, task.ID, spec.StageID, invocationID); err != nil {
-				return "", err
-			}
-			result, runErr := agentexec.Invoke(ctx, adapter, request, k.Sink(task.ID, phase.ID, storedSession.Harness))
-			if spec.ReadOnly {
-				after, fingerprintErr := fingerprint(ctx, k.git, task)
-				if fingerprintErr != nil {
-					runErr = errors.Join(runErr, fingerprintErr)
-				} else if before != after {
-					runErr = errors.Join(runErr, fmt.Errorf("%s modified repository", spec.StageID))
-				}
-			}
-			if result.SessionID == "" {
-				result.SessionID = storedSession.HarnessSessionID
-			}
-			sessionMismatch := result.SessionID != storedSession.HarnessSessionID
-			if sessionMismatch {
-				runErr = errors.Join(runErr, fmt.Errorf("harness session identity changed from %s to %s", storedSession.HarnessSessionID, result.SessionID))
-			}
-			storedSession.SessionReady = storedSession.SessionReady || result.SessionReady
-			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-			finalizeErr := k.db.FinalizeAgentInvocation(cleanupCtx, task.ID, spec.StageID, invocationID, store.AgentSession{
-				StageID: spec.StageID, AgentName: spec.AgentName, Role: spec.AgentName, Harness: storedSession.Harness, Provider: result.Provider, Model: result.Model, Thinking: agent.Thinking, Color: agent.Color,
-				HarnessSessionID: storedSession.HarnessSessionID, SessionDirectory: storedSession.SessionDirectory, SessionReady: storedSession.SessionReady,
-				NativeTranscriptPath: result.NativeTranscriptPath, ContextTokens: result.ContextTokens, ContextWindow: result.ContextWindow,
-				Usage: persistedUsage(result.Usage), Cost: result.Usage.Cost, AccountingComplete: result.AccountingComplete,
-			})
-			cancel()
-			if finalizeErr != nil {
-				k.failMessage(ctx, message, phase, "delivery_failed")
-				return "", finalizeErr
-			}
-			if runErr != nil {
-				reason := "harness_error"
-				if sessionMismatch {
-					reason = "session_identity_changed"
-				} else if errors.Is(runErr, context.Canceled) {
-					reason = "invocation_cancelled"
-				}
-				k.failMessage(ctx, message, phase, reason)
-				return "", runErr
-			}
-			_, validationErr := spec.Validate(result.Text)
-			envelopeRole := phaseEnvelopeKind(phase, spec.Role)
-			if err = k.db.SaveEnvelope(ctx, RandomID(), task.ID, phase.ID, spec.StageID, envelopeRole, result.Text, validationErr == nil, correction+1); err != nil {
-				k.failMessage(ctx, message, phase, "delivery_failed")
-				return "", err
-			}
-			if validationErr == nil {
-				if spec.OnValid != nil {
-					if evidenceErr := spec.OnValid(ctx, result.Text); evidenceErr != nil {
-						k.failMessage(ctx, message, phase, "evidence_persistence_failed")
-						return "", evidenceErr
-					}
-				}
-				latest = result.Text
-				break
-			}
-			if correction == configured.Runtime.JSONFixAttempts {
-				k.failMessage(ctx, message, phase, "invalid_agent_response")
-				return "", fmt.Errorf("%s envelope invalid after corrections: %w", spec.StageID, validationErr)
-			}
-			request.Prompt = "Your previous final response was invalid: " + validationErr.Error() + "\n" + spec.Instructions
+			k.failMessage(ctx, message, phase, reason)
+			return harness.TurnResult{}, runErr
 		}
+		if spec.OnValid != nil {
+			if evidenceErr := spec.OnValid(ctx, turn.Payload); evidenceErr != nil {
+				k.failMessage(ctx, message, phase, "evidence_persistence_failed")
+				return harness.TurnResult{}, evidenceErr
+			}
+		}
+		latest = turn
 	}
 }
 
@@ -230,15 +174,4 @@ func phaseEnvelopeKind(phase store.Phase, role string) string {
 		return phase.Kind
 	}
 	return role
-}
-
-func fingerprint(ctx context.Context, runner factorygit.Runner, task store.Task) (string, error) {
-	if task.RepositoryPath == "" {
-		return "", nil
-	}
-	return factorygit.Fingerprint(ctx, runner, task.RepositoryPath)
-}
-
-func persistedUsage(value harness.Usage) session.Usage {
-	return session.Usage{Input: value.Input, Output: value.Output, CacheRead: value.CacheRead, CacheWrite: value.CacheWrite, Reasoning: value.Reasoning, TotalTokens: value.TotalTokens}
 }

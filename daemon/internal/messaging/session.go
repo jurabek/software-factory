@@ -43,6 +43,6 @@ func (s *Service) ensureAgentSession(ctx context.Context, task store.Task, role 
 	}
 	return s.deps.Store.ReserveAgentSession(ctx, task.ID, store.AgentSession{
 		StageID: role, AgentName: agentName, Role: agentName, Harness: harnessName, Model: agent.Model, Thinking: agent.Thinking, Color: agent.Color,
-		HarnessSessionID: uuid.New().String(), SessionDirectory: filepath.Join(s.taskDir(task.ID), "sessions", role, harnessName), AccountingComplete: true,
+		HarnessSessionID: uuid.New().String(), SessionDirectory: filepath.Join(s.taskDir(task.ID), "sessions", role, harnessName),
 	})
 }

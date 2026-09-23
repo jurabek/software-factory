@@ -38,10 +38,6 @@ func Open(path string) (*DB, error) {
 		return nil, err
 	}
 	wrapped := &DB{DB: db}
-	if err = wrapped.RecoverPendingAgentSessions(context.Background()); err != nil {
-		db.Close()
-		return nil, err
-	}
 	if err := os.Chmod(path, 0o600); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("secure database: %w", err)

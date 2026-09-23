@@ -81,9 +81,8 @@ type Observability struct {
 	PollMS int `yaml:"poll_ms" json:"poll_ms"`
 }
 type Runtime struct {
-	AgentDeadlineMS  int `yaml:"agent_deadline_ms" json:"agent_deadline_ms"`
-	EmptyTurnRetries int `yaml:"empty_turn_retries" json:"empty_turn_retries"`
-	JSONFixAttempts  int `yaml:"json_fix_attempts" json:"json_fix_attempts"`
+	AgentDeadlineMS int `yaml:"agent_deadline_ms" json:"agent_deadline_ms"`
+	JSONFixAttempts int `yaml:"json_fix_attempts" json:"json_fix_attempts"`
 }
 type Agent struct {
 	Name              string            `yaml:"name" json:"name"`

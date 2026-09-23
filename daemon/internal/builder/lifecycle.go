@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/jurabek/software-factory/daemon/internal/harness"
 	"github.com/jurabek/software-factory/daemon/internal/stage"
 	"github.com/jurabek/software-factory/daemon/internal/stagekit"
 	"github.com/jurabek/software-factory/daemon/internal/store"
@@ -90,7 +91,7 @@ func (s service) beginBuild(ctx context.Context, taskID, planAttemptID string) (
 
 // publishBuild drains message turns, enforces protected paths, persists test
 // evidence, and transitions to Checking.
-func (s service) publishBuild(ctx context.Context, task store.Task, phase store.Phase, payload string, profile workspace.Materialization) (stage.BuildResult, error) {
+func (s service) publishBuild(ctx context.Context, task store.Task, phase store.Phase, turn harness.TurnResult, profile workspace.Materialization) (stage.BuildResult, error) {
 	validate := func(text string) (any, error) {
 		return ValidateWithEvidence(ctx, s.kit.Git(), task.RepositoryPath, workspace.ReviewBase(task), profile.Tests, text)
 	}
@@ -107,8 +108,8 @@ func (s service) publishBuild(ctx context.Context, task store.Task, phase store.
 			s.kit.Fail(ctx, phase, err)
 			return stage.BuildResult{}, err
 		}
-		if continued != "" {
-			payload = continued
+		if continued.Payload != "" {
+			turn = continued
 		}
 		lock := s.kit.Lock(task.ID)
 		lock.Lock()
@@ -127,12 +128,12 @@ func (s service) publishBuild(ctx context.Context, task store.Task, phase store.
 			lock.Unlock()
 			return stage.BuildResult{}, err
 		}
-		if err = PersistEvidence(ctx, s.kit.Git(), s.kit.DB(), task, phase, payload); err != nil {
+		if err = PersistEvidence(ctx, s.kit.Git(), s.kit.DB(), task, phase, turn.Payload); err != nil {
 			s.kit.Fail(ctx, phase, err)
 			lock.Unlock()
 			return stage.BuildResult{}, err
 		}
-		artifact, artifactErr := s.kit.AgentReportArtifact(task, phase, "build", payload, validate)
+		artifact, artifactErr := s.kit.AgentReportArtifact(task, phase, "build", turn, validate)
 		if artifactErr != nil {
 			s.kit.Fail(ctx, phase, artifactErr)
 			lock.Unlock()

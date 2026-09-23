@@ -11,6 +11,7 @@ import (
 	"time"
 	"uuid"
 
+	"github.com/jurabek/software-factory/daemon/internal/harness"
 	"github.com/jurabek/software-factory/daemon/internal/session"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 )
@@ -257,40 +258,51 @@ func (k *Kit) PhaseEnvelope(ctx context.Context, taskID, phaseID string) (string
 	return "", store.ErrNotFound
 }
 
-// ReportArtifact builds a report artifact for a phase.
-func (k *Kit) ReportArtifact(task store.Task, phase store.Phase, kind, content, producer string) store.Artifact {
+// ReportArtifact builds a report artifact for a phase. nativeEntryID, when set,
+// records the authoritative native entry the report was resolved from.
+func (k *Kit) ReportArtifact(task store.Task, phase store.Phase, kind, content, producer, nativeEntryID string) store.Artifact {
 	if kind == "planner" {
 		kind = "plan"
 	}
 	digest := fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(content)))
-	provenance, _ := json.Marshal(map[string]string{
+	provenance := map[string]string{
 		"task_id": task.ID, "stage_id": phase.Name, "attempt_id": phase.ID, "producer": producer,
-	})
+	}
+	if nativeEntryID != "" {
+		provenance["native_entry_id"] = nativeEntryID
+	}
+	encoded, _ := json.Marshal(provenance)
 	return store.Artifact{
 		ID: RandomID(), TaskID: task.ID, AttemptID: phase.ID, Type: kind + "_report", Digest: digest,
-		Content: content, MediaType: "text/markdown", Producer: producer, Provenance: string(provenance),
+		Content: content, MediaType: "text/markdown", Producer: producer, Provenance: string(encoded),
 		CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
 	}
 }
 
-// AgentReportArtifact validates a payload, extracts its report, and builds an
+// AgentReportArtifact resolves an agent report from the turn's native assistant
+// entry when present, validates it, extracts report_markdown, and builds an
 // artifact. Small custom validators may fall back to the raw payload.
-func (k *Kit) AgentReportArtifact(task store.Task, phase store.Phase, kind, payload string, validate func(string) (any, error)) (store.Artifact, error) {
-	validated, err := validate(payload)
+func (k *Kit) AgentReportArtifact(task store.Task, phase store.Phase, kind string, turn harness.TurnResult, validate func(string) (any, error)) (store.Artifact, error) {
+	payload := turn.Payload
+	source := payload
+	if trimSpace(turn.ReportText) != "" {
+		source = turn.ReportText
+	}
+	validated, err := validate(source)
 	if err != nil {
 		if trimSpace(payload) == "" {
 			return store.Artifact{}, err
 		}
-		return k.ReportArtifact(task, phase, kind, payload, kind), nil
+		return k.ReportArtifact(task, phase, kind, source, kind, turn.ReportEntryID), nil
 	}
 	report, err := ReportMarkdown(validated)
 	if err != nil {
 		if trimSpace(payload) == "" {
 			return store.Artifact{}, err
 		}
-		report = payload
+		report = source
 	}
-	return k.ReportArtifact(task, phase, kind, report, kind), nil
+	return k.ReportArtifact(task, phase, kind, report, kind, turn.ReportEntryID), nil
 }
 
 // ReportMarkdown extracts report_markdown from a validated envelope.

@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/jurabek/software-factory/daemon/internal/config"
-	"github.com/jurabek/software-factory/daemon/internal/intervention"
 	"github.com/jurabek/software-factory/daemon/internal/messaging"
 	"github.com/jurabek/software-factory/daemon/internal/orchestrator"
 	"github.com/jurabek/software-factory/daemon/internal/planner"
@@ -34,17 +33,21 @@ type Creator interface {
 }
 
 type Communicators struct {
-	Creator      Creator
-	Events       *orchestrator.Events
-	Planner      planner.Service
-	Messages     *messaging.Service
-	Intervention *intervention.Service
-	Projection   interface {
+	Creator    Creator
+	Events     *orchestrator.Events
+	Planner    planner.Service
+	Messages   *messaging.Service
+	Projection interface {
 		StageProjection(context.Context, store.Task) ([]store.StageProjection, error)
 	}
 	Tasks interface {
 		Delete(context.Context, string) error
 		Diff(context.Context, string) (task.Diff, error)
+	}
+	// Timeline hydrates agent-derived events from the native session. It is
+	// optional: when absent, stored payloads are served as-is.
+	Timeline interface {
+		Resolve(context.Context, []store.Event) []store.Event
 	}
 }
 

@@ -6,7 +6,6 @@ observability:
   poll_ms: 500
 runtime:
   agent_deadline_ms: 1800000
-  empty_turn_retries: 2
   json_fix_attempts: 2
 agents:
   - name: planner

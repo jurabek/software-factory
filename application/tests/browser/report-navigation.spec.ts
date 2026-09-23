@@ -104,7 +104,7 @@ function startMockDaemon(): Promise<Server> {
 		}
 		if (path.endsWith("/events")) return json(response, { events: [], cursor: 0 });
 		if (path.endsWith("/diff")) return json(response, { files: [], patch: "" });
-		if (/\/(attempts|branches|checks|results|sessions|messages|interventions)$/.test(path)) return json(response, []);
+		if (/\/(attempts|branches|checks|results|sessions|messages)$/.test(path)) return json(response, []);
 		response.statusCode = 404;
 		response.end();
 	});

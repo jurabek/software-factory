@@ -376,9 +376,6 @@ export function TaskOverview({
 									(session.agent_sessions[0].cost ?? 0) > 0 ? (
 										<span className="text-muted-foreground ml-2 text-xs">
 											${session.agent_sessions[0].cost.toFixed(2)}
-											{session.agent_sessions[0].accounting_complete
-												? ""
-												: " (est.)"}
 										</span>
 									) : null}
 								</TableCell>

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/jurabek/software-factory/daemon/internal/harness"
 	"github.com/jurabek/software-factory/daemon/internal/stage"
 	"github.com/jurabek/software-factory/daemon/internal/stagekit"
 	"github.com/jurabek/software-factory/daemon/internal/store"
@@ -102,7 +103,7 @@ func (s service) beginReview(ctx context.Context, taskID, planAttemptID, buildAt
 
 // publishReview drains message turns, validates the verdict, enforces
 // read-only observation, and applies the terminal transition.
-func (s service) publishReview(ctx context.Context, task store.Task, phase store.Phase, payload, before string) (stage.ReviewResult, error) {
+func (s service) publishReview(ctx context.Context, task store.Task, phase store.Phase, turn harness.TurnResult, before string) (stage.ReviewResult, error) {
 	validate := func(text string) (any, error) { return Validate(text) }
 	drain := stagekit.DrainSpec{
 		Task: task, Phase: phase, StageID: phase.Name, AgentName: phase.Owner, Role: "review",
@@ -114,9 +115,10 @@ func (s service) publishReview(ctx context.Context, task store.Task, phase store
 			s.kit.Fail(ctx, phase, err)
 			return stage.ReviewResult{}, err
 		}
-		if continued != "" {
-			payload = continued
+		if continued.Payload != "" {
+			turn = continued
 		}
+		payload := turn.Payload
 		lock := s.kit.Lock(task.ID)
 		lock.Lock()
 		_, err = s.kit.DB().NextQueuedMessage(ctx, task.ID, phase.Name)
@@ -158,7 +160,7 @@ func (s service) publishReview(ctx context.Context, task store.Task, phase store
 			lock.Unlock()
 			return stage.ReviewResult{}, readonlyErr
 		}
-		artifact, artifactErr := s.kit.AgentReportArtifact(task, phase, "review", payload, validate)
+		artifact, artifactErr := s.kit.AgentReportArtifact(task, phase, "review", turn, validate)
 		if artifactErr != nil {
 			s.kit.Fail(ctx, phase, artifactErr)
 			lock.Unlock()

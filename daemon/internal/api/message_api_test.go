@@ -28,10 +28,9 @@ func TestLegacyWritesAreRemovedAndNewWritesRejectOrchestrationFields(t *testing.
 		body string
 		want int
 	}{
-		{path: "/api/v1/tasks/task/interventions", body: `{}`, want: http.StatusMethodNotAllowed},
 		{path: "/api/v1/tasks/task/feedback", body: `{}`, want: http.StatusNotFound},
 		{path: "/api/v1/tasks/task/messages", body: `{"text":"change","idempotency_key":"one","intent":"repair"}`, want: http.StatusUnprocessableEntity},
-		{path: "/api/v1/tasks/task/attempts/attempt/retry", body: `{"idempotency_key":"one","text":"change it"}`, want: http.StatusUnprocessableEntity},
+		{path: "/api/v1/tasks/task/attempts/attempt/retry", body: `{"idempotency_key":"one","text":"change it"}`, want: http.StatusNotFound},
 		{path: "/api/v1/tasks/task/pause", body: `{"text":"pause"}`, want: http.StatusUnprocessableEntity},
 	}
 	for _, test := range tests {
@@ -80,7 +79,7 @@ func TestTaskReadsExposeAuthoritativeAvailableActions(t *testing.T) {
 	authorize(request)
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(`"available_actions":["retry"]`)) {
+	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte(`"available_actions":[]`)) {
 		t.Fatalf("completed task = %d %s", response.Code, response.Body.String())
 	}
 }

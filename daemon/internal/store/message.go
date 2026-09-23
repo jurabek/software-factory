@@ -184,6 +184,14 @@ func (db *DB) BeginMessageInvocationWithEvent(ctx context.Context, taskID, role,
 	return db.beginMessageInvocation(ctx, taskID, role, invocationID, messageID, &event, taskDir)
 }
 
+// DeliverMessageWithEvent marks a queued message delivered and records its
+// delivery event without touching the agent-session invocation marker. The
+// caller records that marker separately, so a message dispatch and an agent
+// invocation that share a transaction window stay distinct.
+func (db *DB) DeliverMessageWithEvent(ctx context.Context, taskID, messageID string, event Event, taskDir string) error {
+	return db.beginMessageInvocation(ctx, taskID, "", "", messageID, &event, taskDir)
+}
+
 func (db *DB) beginMessageInvocation(ctx context.Context, taskID, role, invocationID, messageID string, event *Event, taskDir string) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -197,14 +205,16 @@ func (db *DB) beginMessageInvocation(ctx context.Context, taskID, role, invocati
 	if state == "aborted" {
 		return ErrConflict
 	}
-	result, err := tx.ExecContext(ctx, `update agent_sessions set pending_invocation_id=?,last_used_at=? where task_id=? and stage_id=? and pending_invocation_id is null`, invocationID, now(), taskID, role)
-	if err != nil {
-		return wrap("begin message invocation", err)
+	if role != "" {
+		result, err := tx.ExecContext(ctx, `update agent_sessions set pending_invocation_id=?,pending_request_id=null,pending_phase_id=null,last_used_at=? where task_id=? and stage_id=? and pending_invocation_id is null`, invocationID, now(), taskID, role)
+		if err != nil {
+			return wrap("begin message invocation", err)
+		}
+		if count, _ := result.RowsAffected(); count != 1 {
+			return ErrConflict
+		}
 	}
-	if count, _ := result.RowsAffected(); count != 1 {
-		return ErrConflict
-	}
-	result, err = tx.ExecContext(ctx, `update messages set delivery_status='delivered',delivered_at=?,failure_reason=null,failed_at=null where task_id=? and id=? and delivery_status='queued'`, now(), taskID, messageID)
+	result, err := tx.ExecContext(ctx, `update messages set delivery_status='delivered',delivered_at=?,failure_reason=null,failed_at=null where task_id=? and id=? and delivery_status='queued'`, now(), taskID, messageID)
 	if err != nil {
 		return wrap("deliver message", err)
 	}

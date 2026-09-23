@@ -8,40 +8,36 @@ flowchart TD
     API --> DB[(store: SQLite)]
     O --> T[task: creation, sessions, deletion, diff]
     O --> M[messaging: intake and recipient resolution]
-    O --> I[intervention: targets and exact retry]
     O --> V[projection: stage progress]
     O --> P[pipeline: fixed order and typed results]
     P --> S[planner / builder / verifier / reviewer]
-    S --> K[stagekit: lifecycle support and message draining]
-    S --> E[agentexec: prompts, turns and envelope repair]
-    K --> E
-    E --> H[harness / pi: process and session adapter]
+    S --> K[stagekit: lifecycle support, prompts, message draining]
+    K --> H[harness: session-oriented turn loop]
+    H --> E[harness / pi: native session adapter and extension]
     K --> W[workspace: snapshots and repository state]
     K --> B[sandbox: repository materialization]
     B --> G[git]
     W --> G
     T --> W
-    M --> I
-    I --> W
     T --> C[config: frozen task configuration]
     V --> C
     K --> C
     K --> DB
-    E --> DB
+    H --> DB
     T --> DB
     M --> DB
-    I --> DB
     V --> DB
 ```
 
 The diagram highlights responsibility boundaries; it is not an exhaustive import graph.
 
-- **orchestrator** owns control intake, approval, task locks, workers, cancellation, and shutdown. It delegates task, message, retry, and projection mechanics to their modules.
+- **orchestrator** owns control intake, approval, task locks, workers, cancellation, and shutdown. It delegates task, message, and projection mechanics to their modules.
 - **pipeline** calls Planner, Builder, Verifier, then Reviewer through small interfaces using the value types in `stage`. It returns waiting, blocked, or completed outcomes; it has no persistence or transition logic.
 - **stages** own saved-result reuse, attempt lifecycle, validation, evidence, and transitions. Planner prepares the repository and waits for human approval. Builder enforces protected paths. Verifier runs checks and advisory comparisons. Reviewer enforces its verdict. Planner and Reviewer enforce read-only repository access.
-- **stagekit** provides shared journal, snapshots, configuration resolution, message draining, locks, and event persistence. Stage locks cover begin and drain/publication boundaries rather than entire agent invocations.
-- **agentexec** renders prompts, invokes the harness, validates envelopes, and handles repair turns. **harness/pi** owns Pi process interaction and session event normalization.
-- **task**, **messaging**, **intervention**, and **projection** own task allocation/deletion/diffs, durable message intake, retry materialization, and selected-branch stage views respectively.
+- **stagekit** provides shared journal, snapshots, configuration resolution, prompt rendering, message draining, locks, and event persistence. Stage locks cover begin and drain/publication boundaries rather than entire agent invocations.
+- **harness** owns the single agent turn loop: session open, session identity, read-only enforcement, native-session reconciliation, accounting from native stats, startup reconciliation of in-flight turns, event-to-native correlation, native report resolution, and envelope correction retries. **harness/pi** owns the persistent Pi RPC process pool, native session entries and stats, and the factory extension that correlates each request with its native subtree and branches exact retries at the attempt checkpoint. Envelope helpers live in **stage**.
+- **timeline** resolves agent-derived events from the native session at read time; the store keeps ordering, ownership, and native entry references.
+- **task**, **messaging**, and **projection** own task allocation/deletion/diffs, durable message intake, and selected-branch stage views respectively.
 
 Approval, resume, messages that require execution, and exact retry return to the same pipeline. Each stage resolves reusable results from durable history. The worker records otherwise unhandled execution failures as blocked and coordinates cancellation for pause, abort, and shutdown.
 

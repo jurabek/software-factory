@@ -6,7 +6,6 @@ export type SessionKind =
 	| "phase_start"
 	| "phase_end"
 	| "task_message"
-	| "intervention"
 	| "plan_feedback"
 	| "custom";
 
@@ -74,16 +73,6 @@ export type PhasePayload = {
 	output_snapshot?: string;
 };
 
-export type InterventionPayload = {
-	actor: string;
-	intent: string;
-	text: string;
-	delivery: string;
-	intervention_id?: string;
-	target_type?: string;
-	target_id?: string;
-};
-
 export type PlanFeedbackPayload = {
 	feedback: string;
 	actor?: string;
@@ -103,7 +92,6 @@ export type SessionPayloadByKind = {
 	phase_start: PhasePayload;
 	phase_end: PhasePayload;
 	task_message: TaskMessagePayload;
-	intervention: InterventionPayload;
 	plan_feedback: PlanFeedbackPayload;
 	custom: CustomPayload;
 };
@@ -129,6 +117,7 @@ type SessionEventEnvelope = {
 	branch_id?: string;
 	parent_event_id?: string;
 	name?: string;
+	native_entry_id?: string;
 	display: SessionDisplay;
 	available_actions?: string[];
 	token_count?: number;

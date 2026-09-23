@@ -29,8 +29,14 @@ type Phase struct {
 	InputSnapshot  string `json:"input_snapshot,omitempty"`
 	OutputSnapshot string `json:"output_snapshot,omitempty"`
 	Superseded     bool   `json:"superseded,omitempty"`
-	StartedAt      string `json:"started_at"`
-	EndedAt        string `json:"ended_at,omitempty"`
+	// NativeBaseEntryID is the native session leaf immediately before this
+	// attempt's first invocation. It is the checkpoint an exact retry forks at.
+	NativeBaseEntryID string `json:"native_base_entry_id,omitempty"`
+	// ForkNative records that this attempt must branch the native session at
+	// NativeBaseEntryID instead of continuing the current leaf.
+	ForkNative bool   `json:"fork_native,omitempty"`
+	StartedAt  string `json:"started_at"`
+	EndedAt    string `json:"ended_at,omitempty"`
 }
 
 // StartPhaseWithEvent creates a running phase, updates its Task's active phase
@@ -45,7 +51,7 @@ func (db *DB) StartPhaseWithEvent(ctx context.Context, taskDir string, phase Pha
 	if started == "" {
 		started = now()
 	}
-	if _, err = tx.ExecContext(ctx, `insert into phases(id,task_id,sequence,name,kind,owner,description,status,attempt,retries,started_at,branch_id,definition_id,input_snapshot,output_snapshot,superseded) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, phase.ID, phase.TaskID, phase.Sequence, phase.Name, phase.Kind, phase.Owner, phase.Description, "running", phase.Attempt, phase.Retries, started, nullIfEmpty(phase.BranchID), nullIfEmpty(phase.DefinitionID), nullIfEmpty(phase.InputSnapshot), nullIfEmpty(phase.OutputSnapshot), boolToInt(phase.Superseded)); err != nil {
+	if _, err = tx.ExecContext(ctx, `insert into phases(id,task_id,sequence,name,kind,owner,description,status,attempt,retries,started_at,branch_id,definition_id,input_snapshot,output_snapshot,superseded,native_base_entry_id,fork_native) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, phase.ID, phase.TaskID, phase.Sequence, phase.Name, phase.Kind, phase.Owner, phase.Description, "running", phase.Attempt, phase.Retries, started, nullIfEmpty(phase.BranchID), nullIfEmpty(phase.DefinitionID), nullIfEmpty(phase.InputSnapshot), nullIfEmpty(phase.OutputSnapshot), boolToInt(phase.Superseded), nullIfEmpty(phase.NativeBaseEntryID), boolToInt(phase.ForkNative)); err != nil {
 		return wrap("insert phase", err)
 	}
 	if phase.BranchID != "" {
@@ -104,7 +110,7 @@ func (db *DB) EndPhaseWithEvent(ctx context.Context, taskDir string, phaseID, st
 }
 
 func (db *DB) AddPhase(ctx context.Context, phase Phase) error {
-	_, err := db.ExecContext(ctx, `insert into phases(id,task_id,sequence,name,kind,owner,description,status,attempt,retries,started_at,branch_id,definition_id,input_snapshot,output_snapshot,superseded) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, phase.ID, phase.TaskID, phase.Sequence, phase.Name, phase.Kind, phase.Owner, phase.Description, phase.Status, phase.Attempt, phase.Retries, now(), nullIfEmpty(phase.BranchID), nullIfEmpty(phase.DefinitionID), nullIfEmpty(phase.InputSnapshot), nullIfEmpty(phase.OutputSnapshot), boolToInt(phase.Superseded))
+	_, err := db.ExecContext(ctx, `insert into phases(id,task_id,sequence,name,kind,owner,description,status,attempt,retries,started_at,branch_id,definition_id,input_snapshot,output_snapshot,superseded,native_base_entry_id,fork_native) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, phase.ID, phase.TaskID, phase.Sequence, phase.Name, phase.Kind, phase.Owner, phase.Description, phase.Status, phase.Attempt, phase.Retries, now(), nullIfEmpty(phase.BranchID), nullIfEmpty(phase.DefinitionID), nullIfEmpty(phase.InputSnapshot), nullIfEmpty(phase.OutputSnapshot), boolToInt(phase.Superseded), nullIfEmpty(phase.NativeBaseEntryID), boolToInt(phase.ForkNative))
 	return wrap("start phase", err)
 }
 
@@ -246,7 +252,7 @@ func (db *DB) StartQueuedPhase(ctx context.Context, taskID, phaseID string) erro
 }
 
 func (db *DB) Phases(ctx context.Context, taskID string) ([]Phase, error) {
-	rows, err := db.QueryContext(ctx, `select id,task_id,sequence,name,kind,owner,coalesce(description,''),status,attempt,retries,coalesce(error,''),started_at,coalesce(ended_at,''),coalesce(branch_id,''),coalesce(definition_id,''),coalesce(input_snapshot,''),coalesce(output_snapshot,''),coalesce(superseded,0) from phases where task_id=? order by sequence`, taskID)
+	rows, err := db.QueryContext(ctx, `select id,task_id,sequence,name,kind,owner,coalesce(description,''),status,attempt,retries,coalesce(error,''),started_at,coalesce(ended_at,''),coalesce(branch_id,''),coalesce(definition_id,''),coalesce(input_snapshot,''),coalesce(output_snapshot,''),coalesce(superseded,0),coalesce(native_base_entry_id,''),coalesce(fork_native,0) from phases where task_id=? order by sequence`, taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -254,11 +260,12 @@ func (db *DB) Phases(ctx context.Context, taskID string) ([]Phase, error) {
 	values := make([]Phase, 0)
 	for rows.Next() {
 		var value Phase
-		var superseded int
-		if err := rows.Scan(&value.ID, &value.TaskID, &value.Sequence, &value.Name, &value.Kind, &value.Owner, &value.Description, &value.Status, &value.Attempt, &value.Retries, &value.Error, &value.StartedAt, &value.EndedAt, &value.BranchID, &value.DefinitionID, &value.InputSnapshot, &value.OutputSnapshot, &superseded); err != nil {
+		var superseded, forkNative int
+		if err := rows.Scan(&value.ID, &value.TaskID, &value.Sequence, &value.Name, &value.Kind, &value.Owner, &value.Description, &value.Status, &value.Attempt, &value.Retries, &value.Error, &value.StartedAt, &value.EndedAt, &value.BranchID, &value.DefinitionID, &value.InputSnapshot, &value.OutputSnapshot, &superseded, &value.NativeBaseEntryID, &forkNative); err != nil {
 			return nil, err
 		}
 		value.Superseded = superseded != 0
+		value.ForkNative = forkNative != 0
 		values = append(values, value)
 	}
 	return values, rows.Err()
@@ -266,13 +273,25 @@ func (db *DB) Phases(ctx context.Context, taskID string) ([]Phase, error) {
 
 func (db *DB) PhaseByID(ctx context.Context, taskID, phaseID string) (Phase, error) {
 	var value Phase
-	var superseded int
-	err := db.QueryRowContext(ctx, `select id,task_id,sequence,name,kind,owner,coalesce(description,''),status,attempt,retries,coalesce(error,''),started_at,coalesce(ended_at,''),coalesce(branch_id,''),coalesce(definition_id,''),coalesce(input_snapshot,''),coalesce(output_snapshot,''),coalesce(superseded,0) from phases where task_id=? and id=?`, taskID, phaseID).Scan(&value.ID, &value.TaskID, &value.Sequence, &value.Name, &value.Kind, &value.Owner, &value.Description, &value.Status, &value.Attempt, &value.Retries, &value.Error, &value.StartedAt, &value.EndedAt, &value.BranchID, &value.DefinitionID, &value.InputSnapshot, &value.OutputSnapshot, &superseded)
+	var superseded, forkNative int
+	err := db.QueryRowContext(ctx, `select id,task_id,sequence,name,kind,owner,coalesce(description,''),status,attempt,retries,coalesce(error,''),started_at,coalesce(ended_at,''),coalesce(branch_id,''),coalesce(definition_id,''),coalesce(input_snapshot,''),coalesce(output_snapshot,''),coalesce(superseded,0),coalesce(native_base_entry_id,''),coalesce(fork_native,0) from phases where task_id=? and id=?`, taskID, phaseID).Scan(&value.ID, &value.TaskID, &value.Sequence, &value.Name, &value.Kind, &value.Owner, &value.Description, &value.Status, &value.Attempt, &value.Retries, &value.Error, &value.StartedAt, &value.EndedAt, &value.BranchID, &value.DefinitionID, &value.InputSnapshot, &value.OutputSnapshot, &superseded, &value.NativeBaseEntryID, &forkNative)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Phase{}, ErrNotFound
 	}
 	value.Superseded = superseded != 0
+	value.ForkNative = forkNative != 0
 	return value, wrap("read phase", err)
+}
+
+// SetPhaseNativeBase records the native session checkpoint an attempt started
+// from. It only fills an empty checkpoint so a forked retry keeps the source
+// attempt's recorded boundary.
+func (db *DB) SetPhaseNativeBase(ctx context.Context, taskID, phaseID, entryID string) error {
+	if entryID == "" {
+		return nil
+	}
+	_, err := db.ExecContext(ctx, `update phases set native_base_entry_id=? where task_id=? and id=? and coalesce(native_base_entry_id,'')=''`, entryID, taskID, phaseID)
+	return wrap("set phase native base", err)
 }
 
 func (db *DB) MarkSuperseded(ctx context.Context, taskID, branchID string, keepID string) error {

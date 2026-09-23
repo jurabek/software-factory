@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/jurabek/software-factory/daemon/internal/intervention"
 	"github.com/jurabek/software-factory/daemon/internal/planner"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 )
@@ -81,8 +80,6 @@ func storeError(w http.ResponseWriter, err error) {
 		fail(w, http.StatusConflict, "invalid_state", "task state does not allow this operation")
 	case errors.Is(err, planner.ErrStalePlan):
 		fail(w, http.StatusConflict, "stale_plan", err.Error())
-	case errors.Is(err, intervention.ErrInvalidFeedback):
-		fail(w, http.StatusUnprocessableEntity, "invalid_feedback", err.Error())
 	default:
 		if err != nil && containsInvalid(err.Error()) {
 			fail(w, http.StatusUnprocessableEntity, "invalid_request", err.Error())

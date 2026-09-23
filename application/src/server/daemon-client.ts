@@ -109,8 +109,6 @@ export type MessageInput = {
 	target?: MessageTarget;
 	idempotency_key: string;
 };
-export type RetryInput = { idempotency_key: string };
-
 export const daemonCommands: readonly DaemonCommand[] = [
 	"approve",
 	"pause",
@@ -774,20 +772,6 @@ export function createDaemonClient(fetcher: typeof fetch = fetch) {
 				options,
 			);
 		},
-		async interventions(
-			endpoint: string,
-			credential: string,
-			taskId: string,
-			options: DaemonRequestOptions = {},
-		): Promise<unknown> {
-			return requestJSON(
-				fetcher,
-				endpoint,
-				credential,
-				`/api/v1/tasks/${encodeURIComponent(taskId)}/interventions`,
-				options,
-			);
-		},
 		async remove(
 			endpoint: string,
 			credential: string,
@@ -829,22 +813,6 @@ export function createDaemonClient(fetcher: typeof fetch = fetch) {
 				credential,
 				`/api/v1/tasks/${encodeURIComponent(taskId)}/attempts/${encodeURIComponent(attemptId)}`,
 				options,
-			);
-		},
-		async retryAttempt(
-			endpoint: string,
-			credential: string,
-			taskId: string,
-			attemptId: string,
-			input: RetryInput,
-			options: DaemonRequestOptions = {},
-		): Promise<unknown> {
-			return requestJSON(
-				fetcher,
-				endpoint,
-				credential,
-				`/api/v1/tasks/${encodeURIComponent(taskId)}/attempts/${encodeURIComponent(attemptId)}/retry`,
-				{ ...options, method: "POST", body: input },
 			);
 		},
 		async branches(

@@ -4,10 +4,8 @@ import { createHealthHandler } from "@/server/health.ts";
 import { GET as creationOptions } from "../app/api/daemons/[daemonId]/creation-options/route.ts";
 import { DELETE as daemonDelete } from "../app/api/daemons/[daemonId]/route.ts";
 import { POST as daemonCommand } from "../app/api/daemons/[daemonId]/tasks/[taskId]/[command]/route.ts";
-import { POST as daemonRetry } from "../app/api/daemons/[daemonId]/tasks/[taskId]/attempts/[attemptId]/retry/route.ts";
 import { GET as daemonEvents } from "../app/api/daemons/[daemonId]/tasks/[taskId]/events/route.ts";
 import { GET as daemonStream } from "../app/api/daemons/[daemonId]/tasks/[taskId]/events/stream/route.ts";
-import { GET as daemonLegacyInterventions } from "../app/api/daemons/[daemonId]/tasks/[taskId]/interventions/route.ts";
 import {
 	POST as daemonMessageMutation,
 	GET as daemonMessages,
@@ -125,12 +123,6 @@ test("every daemon read rejects a missing session before registry access", async
 			),
 			{ params: Promise.resolve({ ...taskParams }) },
 		),
-		await daemonLegacyInterventions(
-			new Request(
-				"http://localhost:3000/api/daemons/daemon-a/tasks/task-1/interventions",
-			),
-			{ params: Promise.resolve({ ...taskParams }) },
-		),
 		await daemonMessages(
 			new Request(
 				"http://localhost:3000/api/daemons/daemon-a/tasks/task-1/messages",
@@ -180,16 +172,6 @@ test("every daemon mutation rejects foreign origins before session access", asyn
 		{ params: Promise.resolve({ ...taskParams }) },
 	);
 	assert.equal(resourceResponse.status, 403);
-	const retryResponse = await daemonRetry(
-		new Request(
-			"http://localhost:3000/api/daemons/daemon-a/tasks/task-1/attempts/attempt-1/retry",
-			{ method: "POST", headers: foreign, body: "{}" },
-		),
-		{
-			params: Promise.resolve({ ...taskParams, attemptId: "attempt-1" }),
-		},
-	);
-	assert.equal(retryResponse.status, 403);
 	const deleteResponse = await daemonTaskDelete(
 		new Request("http://localhost:3000/api/daemons/daemon-a/tasks/task-1", {
 			method: "DELETE",
@@ -210,7 +192,6 @@ test("every daemon mutation rejects foreign origins before session access", asyn
 		createResponse,
 		commandResponse,
 		resourceResponse,
-		retryResponse,
 		deleteResponse,
 		daemonDeleteResponse,
 	]) {

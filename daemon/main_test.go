@@ -45,27 +45,25 @@ func TestSwaggerSpecDocumentsAPIRoutes(t *testing.T) {
 	}
 
 	routes := map[string][]string{
-		"/identity":                              {"get"},
-		"/health":                                {"get"},
-		"/config":                                {"get"},
-		"/harnesses":                             {"get"},
-		"/models":                                {"get"},
-		"/tasks":                                 {"get", "post"},
-		"/tasks/{id}":                            {"get", "delete"},
-		"/tasks/{id}/sessions":                   {"get", "post"},
-		"/tasks/{id}/approve":                    {"post"},
-		"/tasks/{id}/messages":                   {"get", "post"},
-		"/tasks/{id}/interventions":              {"get"},
-		"/tasks/{id}/pause":                      {"post"},
-		"/tasks/{id}/resume":                     {"post"},
-		"/tasks/{id}/abort":                      {"post"},
-		"/tasks/{id}/attempts":                   {"get"},
-		"/tasks/{id}/attempts/{attemptID}/retry": {"post"},
-		"/tasks/{id}/events":                     {"get"},
-		"/tasks/{id}/events/stream":              {"get"},
-		"/tasks/{id}/results":                    {"get"},
-		"/tasks/{id}/checks":                     {"get"},
-		"/tasks/{id}/diff":                       {"get"},
+		"/identity":                 {"get"},
+		"/health":                   {"get"},
+		"/config":                   {"get"},
+		"/harnesses":                {"get"},
+		"/models":                   {"get"},
+		"/tasks":                    {"get", "post"},
+		"/tasks/{id}":               {"get", "delete"},
+		"/tasks/{id}/sessions":      {"get", "post"},
+		"/tasks/{id}/approve":       {"post"},
+		"/tasks/{id}/messages":      {"get", "post"},
+		"/tasks/{id}/pause":         {"post"},
+		"/tasks/{id}/resume":        {"post"},
+		"/tasks/{id}/abort":         {"post"},
+		"/tasks/{id}/attempts":      {"get"},
+		"/tasks/{id}/events":        {"get"},
+		"/tasks/{id}/events/stream": {"get"},
+		"/tasks/{id}/results":       {"get"},
+		"/tasks/{id}/checks":        {"get"},
+		"/tasks/{id}/diff":          {"get"},
 	}
 	for path, methods := range routes {
 		operations, ok := spec.Paths[path]
@@ -82,10 +80,7 @@ func TestSwaggerSpecDocumentsAPIRoutes(t *testing.T) {
 	if _, exists := spec.Paths["/tasks/{id}/feedback"]; exists {
 		t.Fatal("feedback write remains documented")
 	}
-	if _, exists := spec.Paths["/tasks/{id}/interventions"]["post"]; exists {
-		t.Fatal("intervention write remains documented")
-	}
-	for _, name := range []string{"ApprovalRequest", "MessageTarget", "SendMessageRequest", "RetryRequest"} {
+	for _, name := range []string{"ApprovalRequest", "MessageTarget", "SendMessageRequest"} {
 		definition := spec.Definitions[name]
 		if definition.AdditionalProperties == nil || *definition.AdditionalProperties {
 			t.Errorf("%s must reject unknown properties", name)

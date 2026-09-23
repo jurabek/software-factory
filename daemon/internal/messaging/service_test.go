@@ -8,22 +8,36 @@ import (
 	"time"
 
 	"github.com/jurabek/software-factory/daemon/internal/config"
-	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
 	"github.com/jurabek/software-factory/daemon/internal/harness"
-	"github.com/jurabek/software-factory/daemon/internal/intervention"
 	"github.com/jurabek/software-factory/daemon/internal/orchestrator"
 	"github.com/jurabek/software-factory/daemon/internal/stagekit"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 	"github.com/jurabek/software-factory/daemon/internal/task"
-	"github.com/jurabek/software-factory/daemon/internal/workspace"
 )
 
 type testHarness struct{}
 
 func (testHarness) Models(context.Context) ([]harness.Model, error) { return nil, nil }
-func (testHarness) Run(_ context.Context, request harness.Request, _ harness.EventSink) (harness.Result, error) {
-	return harness.Result{SessionID: request.SessionID, SessionReady: true, AccountingComplete: true}, nil
+
+func (testHarness) Open(_ context.Context, spec harness.SessionSpec) (harness.Session, error) {
+	return testSession{spec: spec}, nil
 }
+
+type testSession struct{ spec harness.SessionSpec }
+
+func (s testSession) Prompt(_ context.Context, _ harness.Prompt, _ harness.EventSink) (harness.Result, error) {
+	return harness.Result{SessionID: s.spec.SessionID, SessionReady: true}, nil
+}
+
+func (testSession) Stats(context.Context) (harness.Stats, error) { return harness.Stats{}, nil }
+
+func (testSession) Entries(context.Context) ([]harness.NativeEntry, error) { return nil, nil }
+
+func (testSession) Report(context.Context, string) (harness.Report, bool, error) {
+	return harness.Report{}, false, nil
+}
+
+func (testSession) Close() error { return nil }
 
 func TestMessagesAreIdempotentFIFOAndAbortFailsQueue(t *testing.T) {
 	root := t.TempDir()
@@ -62,8 +76,7 @@ func TestMessagesAreIdempotentFIFOAndAbortFailsQueue(t *testing.T) {
 		<-eventsDone
 		controller.Shutdown(context.Background())
 	})
-	interventions := intervention.New(intervention.Deps{Store: db, Git: factorygit.OSRunner{}, Snapshots: workspace.New(db, factorygit.OSRunner{}), Config: cfg, ConfigPath: configPath, Root: root, Events: events})
-	messages := New(Deps{Store: db, Config: cfg, ConfigPath: configPath, Harnesses: registry, Root: root, Interventions: interventions, Events: events})
+	messages := New(Deps{Store: db, Config: cfg, ConfigPath: configPath, Harnesses: registry, Root: root, Events: events})
 	tasks := task.New(root, task.Deps{Store: db, Config: cfg, ConfigPath: configPath, Harnesses: registry})
 	created, err := tasks.Create(context.Background(), task.CreateRequest{Request: "change", Repository: task.Repository{Type: "github", Repo: "owner/repository"}})
 	if err != nil {

@@ -10,8 +10,8 @@ import (
 
 	"uuid"
 
-	"github.com/jurabek/software-factory/daemon/internal/agentexec"
 	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
+	"github.com/jurabek/software-factory/daemon/internal/harness"
 	"github.com/jurabek/software-factory/daemon/internal/stage"
 	"github.com/jurabek/software-factory/daemon/internal/stagekit"
 	"github.com/jurabek/software-factory/daemon/internal/store"
@@ -24,7 +24,7 @@ type TestChange struct {
 }
 
 type Result struct {
-	agentexec.Common
+	stage.Common
 	ChangedFiles  []string     `json:"changed_files"`
 	CommitMessage string       `json:"commit_message"`
 	TestChanges   []TestChange `json:"test_changes"`
@@ -32,11 +32,11 @@ type Result struct {
 
 func Validate(text string) (Result, error) {
 	var value Result
-	fields := append(append([]string{}, agentexec.CommonFields...), "changed_files", "commit_message", "test_changes")
-	if err := agentexec.DecodeExact(text, &value, fields, fields); err != nil {
+	fields := append(append([]string{}, stage.CommonFields...), "changed_files", "commit_message", "test_changes")
+	if err := stage.DecodeExact(text, &value, fields, fields); err != nil {
 		return value, err
 	}
-	if err := agentexec.ValidateCommon(value.Common); err != nil {
+	if err := stage.ValidateCommon(value.Common); err != nil {
 		return value, err
 	}
 	if value.ChangedFiles == nil {
@@ -70,7 +70,7 @@ func Validate(text string) (Result, error) {
 }
 
 func Instructions() string {
-	return `Return exactly one JSON object: {` + agentexec.CommonInstructions() + `,"changed_files":[],"commit_message":"...","test_changes":[{"path":"...","reason":"..."}]}. Put the human-readable report in report_markdown.`
+	return `Return exactly one JSON object: {` + stage.CommonInstructions() + `,"changed_files":[],"commit_message":"...","test_changes":[{"path":"...","reason":"..."}]}. Put the human-readable report in report_markdown.`
 }
 
 // EvidenceStore persists builder test evidence.
@@ -116,12 +116,11 @@ func (s service) Build(ctx context.Context, input stage.Input, plan stage.PlanRe
 		return stage.BuildResult{}, err
 	}
 	data := map[string]any{"TaskID": task.ID, "Request": task.Request, "Repository": task.RepositoryPath, "Workspace": task.WorkspacePath, "Plan": plan.Payload}
-	systemPrompt, userPrompt, err := agentexec.RenderPrompts(
+	systemPrompt, userPrompt, err := stagekit.RenderPrompts(
 		agent.Name,
 		agent.PromptEngineering.SystemContent, agent.PromptEngineering.System,
 		agent.PromptEngineering.UserContent, agent.PromptEngineering.User,
 		data, filepath.Dir(configured.ConfigPath),
-		filepath.Join(configured.TaskDir, "prompts", agent.Name),
 		Instructions(),
 	)
 	if err != nil {
@@ -135,8 +134,8 @@ func (s service) Build(ctx context.Context, input stage.Input, plan stage.PlanRe
 	validate := func(text string) (any, error) {
 		return ValidateWithEvidence(ctx, turner.Git, task.RepositoryPath, workspace.ReviewBase(task), profile.Tests, text)
 	}
-	payload, err := agentexec.RunTurn(ctx, turner, agentexec.TurnInput{
-		TaskID: task.ID, Phase: phase, Role: phase.Name,
+	turn, err := harness.RunTurn(ctx, turner, harness.TurnInput{
+		TaskID: task.ID, RequestID: stagekit.RandomID(), Phase: phase, Role: phase.Name,
 		HarnessName: harnessName, Model: agent.Model, Thinking: agent.Thinking, Color: agent.Color,
 		RepoPath:     task.RepositoryPath,
 		SessionDir:   filepath.Join(configured.TaskDir, "sessions", phase.Name, harnessName),
@@ -149,7 +148,7 @@ func (s service) Build(ctx context.Context, input stage.Input, plan stage.PlanRe
 		s.kit.Fail(ctx, phase, err)
 		return stage.BuildResult{}, err
 	}
-	return s.publishBuild(ctx, task, phase, payload, profile)
+	return s.publishBuild(ctx, task, phase, turn, profile)
 }
 
 func readOnly(phase store.Phase) bool {

@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	FormatVersion   = 1
+	FormatVersion   = 2
 	MaxJSONBytes    = 16 << 10
 	maxTargetBytes  = 160
 	maxPreviewBytes = 180
@@ -23,7 +23,6 @@ const (
 	KindProcessEnd   Kind = "process_end"
 	KindPhaseStart   Kind = "phase_start"
 	KindPhaseEnd     Kind = "phase_end"
-	KindIntervention Kind = "intervention"
 	KindPlanFeedback Kind = "plan_feedback"
 	KindTaskMessage  Kind = "task_message"
 	KindCustom       Kind = "custom"
@@ -80,16 +79,6 @@ type PhasePayload struct {
 	OutputSnapshot string `json:"output_snapshot,omitempty"`
 }
 
-type InterventionPayload struct {
-	Actor          string `json:"actor"`
-	Intent         string `json:"intent"`
-	Text           string `json:"text"`
-	Delivery       string `json:"delivery"`
-	InterventionID string `json:"intervention_id,omitempty"`
-	TargetType     string `json:"target_type,omitempty"`
-	TargetID       string `json:"target_id,omitempty"`
-}
-
 type PlanFeedbackPayload struct {
 	Feedback   string `json:"feedback"`
 	Actor      string `json:"actor,omitempty"`
@@ -129,6 +118,12 @@ type Entry struct {
 	Name    string  `json:"name,omitempty"`
 	Payload any     `json:"payload"`
 	Display Display `json:"display"`
+	// NativeEntryID references the authoritative harness session entry this
+	// event was derived from, when the harness exposes one.
+	NativeEntryID string `json:"native_entry_id,omitempty"`
+	// RequestID identifies the factory request whose native subtree produced
+	// this event. It lets the read path resolve the exact native entry.
+	RequestID string `json:"request_id,omitempty"`
 }
 
 func NewMessage(payload MessagePayload) Entry {
@@ -158,10 +153,6 @@ func NewPhaseStart(payload PhasePayload) Entry {
 
 func NewPhaseEnd(payload PhasePayload) Entry {
 	return Entry{Kind: KindPhaseEnd, Name: payload.Name, Payload: payload, Display: Describe(KindPhaseEnd, payload)}
-}
-
-func NewIntervention(payload InterventionPayload) Entry {
-	return Entry{Kind: KindIntervention, Payload: payload, Display: Describe(KindIntervention, payload)}
 }
 
 func NewPlanFeedback(payload PlanFeedbackPayload) Entry {
@@ -232,10 +223,6 @@ func Describe(kind Kind, payload any) Display {
 	case KindPhaseEnd:
 		if value, ok := payloadValue[PhasePayload](payload); ok {
 			return Display{Role: "event", Status: status(value.Status), Title: "Attempt finished", Target: truncate(value.Name, maxTargetBytes), Result: truncate(value.Error, MaxJSONBytes), Preview: firstLine(value.Error, maxPreviewBytes)}
-		}
-	case KindIntervention:
-		if value, ok := payloadValue[InterventionPayload](payload); ok {
-			return withText(Display{Role: "user", Status: "neutral", Title: "Intervention " + displayName(value.Intent)}, value.Text)
 		}
 	case KindPlanFeedback:
 		if value, ok := payloadValue[PlanFeedbackPayload](payload); ok {

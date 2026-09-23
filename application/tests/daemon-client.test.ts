@@ -328,20 +328,6 @@ test("task workflow resources stay on the authenticated daemon connection", asyn
 		"task-1",
 		options,
 	);
-	await client.retryAttempt(
-		"http://127.0.0.1:8080",
-		"credential",
-		"task-1",
-		"attempt-1",
-		{ idempotency_key: "retry-key" },
-		options,
-	);
-	await client.interventions(
-		"http://127.0.0.1:8080",
-		"credential",
-		"task-1",
-		options,
-	);
 	await client.remove("http://127.0.0.1:8080", "credential", "task-1", options);
 	await client.attempts(
 		"http://127.0.0.1:8080",
@@ -379,8 +365,6 @@ test("task workflow resources stay on the authenticated daemon connection", asyn
 			"/api/v1/tasks/task-1/sessions",
 			"/api/v1/tasks/task-1/messages",
 			"/api/v1/tasks/task-1/messages",
-			"/api/v1/tasks/task-1/attempts/attempt-1/retry",
-			"/api/v1/tasks/task-1/interventions",
 			"/api/v1/tasks/task-1",
 			"/api/v1/tasks/task-1/attempts",
 			"/api/v1/tasks/task-1/branches",
@@ -400,9 +384,6 @@ test("task workflow resources stay on the authenticated daemon connection", asyn
 	assert.deepEqual(JSON.parse(String(requests[3].init?.body)), {
 		text: "Revise",
 		idempotency_key: "message-key",
-	});
-	assert.deepEqual(JSON.parse(String(requests[5].init?.body)), {
-		idempotency_key: "retry-key",
 	});
 });
 

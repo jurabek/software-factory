@@ -23,7 +23,6 @@ import (
 	"github.com/jurabek/software-factory/daemon/internal/creation"
 	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
 	"github.com/jurabek/software-factory/daemon/internal/harness"
-	"github.com/jurabek/software-factory/daemon/internal/intervention"
 	"github.com/jurabek/software-factory/daemon/internal/messaging"
 	"github.com/jurabek/software-factory/daemon/internal/orchestrator"
 	"github.com/jurabek/software-factory/daemon/internal/pipeline"
@@ -36,7 +35,6 @@ import (
 	"github.com/jurabek/software-factory/daemon/internal/store"
 	"github.com/jurabek/software-factory/daemon/internal/task"
 	"github.com/jurabek/software-factory/daemon/internal/verifier"
-	"github.com/jurabek/software-factory/daemon/internal/workspace"
 	"github.com/stretchr/testify/suite"
 )
 
@@ -49,36 +47,52 @@ const (
 )
 
 type taskFlowHarness struct {
-	mu           sync.Mutex
-	requests     []harness.Request
-	buildStarted chan struct{}
-	releaseBuild chan struct{}
+	mu             sync.Mutex
+	requests       []harness.Prompt
+	specs          []harness.SessionSpec
+	buildSessionID string
+	buildStarted   chan struct{}
+	releaseBuild   chan struct{}
 }
 
 func (h *taskFlowHarness) Models(context.Context) ([]harness.Model, error) {
 	return []harness.Model{{Provider: "test", ID: "test/model"}}, nil
 }
 
-func (h *taskFlowHarness) Run(_ context.Context, request harness.Request, _ harness.EventSink) (harness.Result, error) {
+func (h *taskFlowHarness) Open(_ context.Context, spec harness.SessionSpec) (harness.Session, error) {
+	return &taskFlowSession{harness: h, spec: spec}, nil
+}
+
+type taskFlowSession struct {
+	harness *taskFlowHarness
+	spec    harness.SessionSpec
+}
+
+func (s *taskFlowSession) Prompt(_ context.Context, prompt harness.Prompt, _ harness.EventSink) (harness.Result, error) {
+	h := s.harness
 	h.mu.Lock()
-	h.requests = append(h.requests, request)
+	h.requests = append(h.requests, prompt)
+	h.specs = append(h.specs, s.spec)
 	invocation := len(h.requests)
 	h.mu.Unlock()
 
-	result := harness.Result{SessionID: request.SessionID, Provider: "test", Model: request.Model, SessionReady: true, AccountingComplete: true}
+	result := harness.Result{SessionID: s.spec.SessionID, Provider: "test", Model: s.spec.Model, SessionReady: true}
 	switch invocation {
 	case 1:
-		if !strings.Contains(request.SystemPrompt, "Plan the task") || !strings.Contains(request.Prompt, flowTaskRequest) {
-			return result, fmt.Errorf("planner prompt missing task handoff: system=%q user=%q", request.SystemPrompt, request.Prompt)
+		if !strings.Contains(s.spec.SystemPrompt, "Plan the task") || !strings.Contains(prompt.Text, flowTaskRequest) {
+			return result, fmt.Errorf("planner prompt missing task handoff: system=%q user=%q", s.spec.SystemPrompt, prompt.Text)
 		}
 		result.Text = flowPlan
 	case 2:
-		if !strings.Contains(request.SystemPrompt, "Build the approved plan") || !strings.Contains(request.Prompt, flowTaskRequest) || !strings.Contains(request.Prompt, "Create the requested artifact") {
-			return result, fmt.Errorf("builder prompt missing approved plan handoff: system=%q user=%q", request.SystemPrompt, request.Prompt)
+		if !strings.Contains(s.spec.SystemPrompt, "Build the approved plan") || !strings.Contains(prompt.Text, flowTaskRequest) || !strings.Contains(prompt.Text, "Create the requested artifact") {
+			return result, fmt.Errorf("builder prompt missing approved plan handoff: system=%q user=%q", s.spec.SystemPrompt, prompt.Text)
 		}
-		if err := os.WriteFile(filepath.Join(request.CWD, "built.txt"), []byte("built\n"), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(s.spec.CWD, "built.txt"), []byte("built\n"), 0o600); err != nil {
 			return result, err
 		}
+		h.mu.Lock()
+		h.buildSessionID = s.spec.SessionID
+		h.mu.Unlock()
 		close(h.buildStarted)
 		select {
 		case <-h.releaseBuild:
@@ -87,13 +101,16 @@ func (h *taskFlowHarness) Run(_ context.Context, request harness.Request, _ harn
 		}
 		result.Text = flowBuild
 	case 3:
-		if !request.Resume || request.Prompt != flowMessage {
-			return result, fmt.Errorf("message continuation = %+v", request)
+		h.mu.Lock()
+		buildSessionID := h.buildSessionID
+		h.mu.Unlock()
+		if s.spec.SessionID != buildSessionID || prompt.Text != flowMessage {
+			return result, fmt.Errorf("message continuation = %+v spec=%+v", prompt, s.spec)
 		}
 		result.Text = flowBuild
 	case 4:
-		if !strings.Contains(request.SystemPrompt, "Review the implementation") || !strings.Contains(request.Prompt, "Create the requested artifact") {
-			return result, fmt.Errorf("reviewer prompt missing evidence handoff: system=%q user=%q", request.SystemPrompt, request.Prompt)
+		if !strings.Contains(s.spec.SystemPrompt, "Review the implementation") || !strings.Contains(prompt.Text, "Create the requested artifact") {
+			return result, fmt.Errorf("reviewer prompt missing evidence handoff: system=%q user=%q", s.spec.SystemPrompt, prompt.Text)
 		}
 		result.Text = flowReview
 	default:
@@ -102,10 +119,22 @@ func (h *taskFlowHarness) Run(_ context.Context, request harness.Request, _ harn
 	return result, nil
 }
 
-func (h *taskFlowHarness) Requests() []harness.Request {
+func (s *taskFlowSession) Stats(context.Context) (harness.Stats, error) { return harness.Stats{}, nil }
+
+func (s *taskFlowSession) Entries(context.Context) ([]harness.NativeEntry, error) {
+	return nil, nil
+}
+
+func (s *taskFlowSession) Report(context.Context, string) (harness.Report, bool, error) {
+	return harness.Report{}, false, nil
+}
+
+func (s *taskFlowSession) Close() error { return nil }
+
+func (h *taskFlowHarness) Requests() []harness.Prompt {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return append([]harness.Request(nil), h.requests...)
+	return append([]harness.Prompt(nil), h.requests...)
 }
 
 type taskFlowSuite struct {
@@ -181,9 +210,8 @@ func (s *taskFlowSuite) SetupSuite() {
 		defer close(s.eventsDone)
 		s.service.HandleEvents(eventCtx)
 	}()
-	interventions := intervention.New(intervention.Deps{Store: s.db, Git: factorygit.OSRunner{}, Snapshots: workspace.New(s.db, factorygit.OSRunner{}), Config: cfg, ConfigPath: configPath, Root: taskRoot, Events: events})
-	messages := messaging.New(messaging.Deps{Store: s.db, Config: cfg, ConfigPath: configPath, Harnesses: registry, Root: taskRoot, Interventions: interventions, Events: events})
-	handler, err := New(s.db, Communicators{Creator: creationStage, Events: events, Planner: plannerStage, Messages: messages, Intervention: interventions, Projection: projection.New(projection.Deps{Store: s.db, Config: cfg, ConfigPath: configPath}), Tasks: taskService}, cfg, nil, nil, []string{"pi"}, nil, newTestAccess())
+	messages := messaging.New(messaging.Deps{Store: s.db, Config: cfg, ConfigPath: configPath, Harnesses: registry, Root: taskRoot, Events: events})
+	handler, err := New(s.db, Communicators{Creator: creationStage, Events: events, Planner: plannerStage, Messages: messages, Projection: projection.New(projection.Deps{Store: s.db, Config: cfg, ConfigPath: configPath}), Tasks: taskService}, cfg, nil, nil, []string{"pi"}, nil, newTestAccess())
 	s.Require().NoError(err)
 	s.server = httptest.NewServer(handler)
 	s.client = &http.Client{Timeout: 2 * time.Second}

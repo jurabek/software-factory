@@ -1,4 +1,4 @@
-package intervention
+package messaging
 
 import (
 	"bytes"
@@ -12,6 +12,26 @@ import (
 
 	"github.com/jurabek/software-factory/daemon/internal/store"
 )
+
+// Anchor is a canonical artifact coordinate. Rendered DOM paths and pixel
+// positions are never persisted.
+type Anchor struct {
+	Kind      string `json:"kind"`
+	Start     *int   `json:"start,omitempty"`
+	End       *int   `json:"end,omitempty"`
+	Quote     string `json:"quote,omitempty"`
+	Pointer   string `json:"pointer,omitempty"`
+	ValueHash string `json:"value_digest,omitempty"`
+	Block     string `json:"block,omitempty"`
+}
+
+// Target accepts exactly one of event, artifact, or attempt.
+type Target struct {
+	EventID    string  `json:"event_id,omitempty"`
+	ArtifactID string  `json:"artifact_id,omitempty"`
+	AttemptID  string  `json:"attempt_id,omitempty"`
+	Anchor     *Anchor `json:"anchor,omitempty"`
+}
 
 // Resolve maps a target to its storage coordinates and owning attempt. It
 // accepts at most one of event, artifact, or attempt; an empty target resolves
@@ -87,8 +107,7 @@ func (s *Service) Resolve(ctx context.Context, taskID string, target Target) (st
 	return "task", taskID, &latest, nil
 }
 
-// ValidateAnchor checks that an anchor still matches the artifact it points at
-// before an intervention is applied.
+// ValidateAnchor checks that an anchor still matches the artifact it points at.
 func (s *Service) ValidateAnchor(ctx context.Context, taskID string, target Target) error {
 	if target.ArtifactID == "" || target.Anchor == nil {
 		return nil

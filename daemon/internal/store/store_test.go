@@ -65,7 +65,7 @@ func TestReserveAgentSessionConcurrentCallersShareWinner(t *testing.T) {
 		wait.Add(1)
 		go func(index int) {
 			defer wait.Done()
-			results[index], errorsFound[index] = db.ReserveAgentSession(ctx, "task", AgentSession{Role: "planner", Harness: "pi", HarnessSessionID: fmt.Sprintf("session-%d", index), SessionDirectory: "/tmp/session", AccountingComplete: true})
+			results[index], errorsFound[index] = db.ReserveAgentSession(ctx, "task", AgentSession{Role: "planner", Harness: "pi", HarnessSessionID: fmt.Sprintf("session-%d", index), SessionDirectory: "/tmp/session"})
 		}(index)
 	}
 	wait.Wait()
@@ -357,7 +357,7 @@ func TestMessageDeliveryAndEventRollbackTogether(t *testing.T) {
 	if err = db.CreateTask(ctx, Task{ID: "task-1", Request: "Task", WorkspacePath: taskDir, State: "building", CreatedAt: now()}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = db.ReserveAgentSession(ctx, "task-1", AgentSession{StageID: "builder", Role: "builder", Harness: "test", HarnessSessionID: "session-1", SessionDirectory: taskDir, AccountingComplete: true}); err != nil {
+	if _, err = db.ReserveAgentSession(ctx, "task-1", AgentSession{StageID: "builder", Role: "builder", Harness: "test", HarnessSessionID: "session-1", SessionDirectory: taskDir}); err != nil {
 		t.Fatal(err)
 	}
 	message, created, err := db.SaveMessage(ctx, Message{ID: "message-1", TaskID: "task-1", Actor: "user", Text: "continue", IdempotencyKey: "key-1", StageID: "builder", RecipientRole: "builder", AgentSessionID: "session-1", DeliveryStatus: "queued", CreatedAt: now()})
@@ -615,24 +615,24 @@ func TestAgentInvocationFinalizationIsIdempotent(t *testing.T) {
 	if err := db.CreateTask(ctx, Task{ID: "task-1", Request: "Task", WorkspacePath: t.TempDir(), State: "preparing", CreatedAt: "2026-09-08T00:00:00Z"}); err != nil {
 		t.Fatal(err)
 	}
-	reserved, err := db.ReserveAgentSession(ctx, "task-1", AgentSession{Role: "builder", Harness: "pi", HarnessSessionID: "018f0f79-9f0a-7d02-8c44-214f711a6c47", SessionDirectory: "/tmp/session", AccountingComplete: true})
+	reserved, err := db.ReserveAgentSession(ctx, "task-1", AgentSession{Role: "builder", Harness: "pi", HarnessSessionID: "018f0f79-9f0a-7d02-8c44-214f711a6c47", SessionDirectory: "/tmp/session"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if reserved.SessionReady {
 		t.Fatal("reserved session must not be ready")
 	}
-	if err := db.BeginAgentInvocation(ctx, "task-1", "builder", "invocation-1"); err != nil {
+	if err := db.BeginAgentInvocation(ctx, "task-1", "builder", "invocation-1", "req-1", "phase-1"); err != nil {
 		t.Fatal(err)
 	}
 	pending, err := db.AgentSession(ctx, "task-1", "builder")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pending.AccountingComplete {
-		t.Fatal("pending invocation must expose incomplete accounting")
+	if pending.PendingInvocationID != "invocation-1" {
+		t.Fatalf("pending invocation = %q, want invocation-1", pending.PendingInvocationID)
 	}
-	update := AgentSession{HarnessSessionID: reserved.HarnessSessionID, Provider: "github-copilot", Model: "model", SessionReady: true, Usage: session.Usage{Input: 10, Output: 5, TotalTokens: 15}, Cost: 1.25, AccountingComplete: true}
+	update := AgentSession{HarnessSessionID: reserved.HarnessSessionID, Provider: "github-copilot", Model: "model", SessionReady: true, Usage: session.Usage{Input: 10, Output: 5, TotalTokens: 15}, Cost: 1.25}
 	if err := db.FinalizeAgentInvocation(ctx, "task-1", "builder", "invocation-1", update); err != nil {
 		t.Fatal(err)
 	}
@@ -643,7 +643,7 @@ func TestAgentInvocationFinalizationIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !stored.SessionReady || !stored.AccountingComplete || stored.Cost != 1.25 || stored.Usage.TotalTokens != 15 {
+	if !stored.SessionReady || stored.Cost != 1.25 || stored.Usage.TotalTokens != 15 {
 		t.Fatalf("session = %#v", stored)
 	}
 	task, err := db.Task(ctx, "task-1")
@@ -655,7 +655,7 @@ func TestAgentInvocationFinalizationIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestOpenRecoversPendingAgentInvocation(t *testing.T) {
+func TestOpenPreservesPendingAgentInvocationForReconciliation(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "factory.db")
 	db, err := Open(path)
@@ -665,10 +665,10 @@ func TestOpenRecoversPendingAgentInvocation(t *testing.T) {
 	if err := db.CreateTask(ctx, Task{ID: "task-1", Request: "Task", WorkspacePath: t.TempDir(), State: "preparing", CreatedAt: "2026-09-08T00:00:00Z"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ReserveAgentSession(ctx, "task-1", AgentSession{Role: "planner", Harness: "pi", HarnessSessionID: "018f0f79-9f0a-7d02-8c44-214f711a6c48", SessionDirectory: "/tmp/session", AccountingComplete: true}); err != nil {
+	if _, err := db.ReserveAgentSession(ctx, "task-1", AgentSession{Role: "planner", Harness: "pi", HarnessSessionID: "018f0f79-9f0a-7d02-8c44-214f711a6c48", SessionDirectory: "/tmp/session"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.BeginAgentInvocation(ctx, "task-1", "planner", "lost-invocation"); err != nil {
+	if err := db.BeginAgentInvocation(ctx, "task-1", "planner", "lost-invocation", "req-lost", "phase-lost"); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Close(); err != nil {
@@ -683,8 +683,51 @@ func TestOpenRecoversPendingAgentInvocation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored.AccountingComplete || stored.PendingInvocationID != "" {
-		t.Fatalf("recovered session = %#v", stored)
+	if stored.PendingInvocationID != "lost-invocation" || stored.PendingRequestID != "req-lost" || stored.PendingPhaseID != "phase-lost" {
+		t.Fatalf("pending session = %#v, want preserved marker for reconciliation", stored)
+	}
+	pending, err := db.PendingAgentSessions(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 || pending[0].PendingInvocationID != "lost-invocation" {
+		t.Fatalf("pending sessions = %#v", pending)
+	}
+}
+
+func TestApplyRetryPreservesNativeCheckpoint(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "factory.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	created := time.Now().UTC().Format(time.RFC3339Nano)
+	if err = db.CreateTask(ctx, Task{ID: "task-1", Request: "r", WorkspacePath: t.TempDir(), State: "blocked", CreatedAt: created}); err != nil {
+		t.Fatal(err)
+	}
+	branch := Branch{ID: "branch-1", TaskID: "task-1", ForkAttemptID: "phase-0", Status: "active", CreatedAt: created}
+	retry := Phase{ID: "phase-1", TaskID: "task-1", Sequence: 2, Name: "build", Kind: "build", Owner: "builder", Status: "queued", Attempt: 2, BranchID: "branch-1", NativeBaseEntryID: "base-1", ForkNative: true}
+	_, fresh, err := db.ApplyRetry(ctx, "key-1", branch, retry, "building")
+	if err != nil || !fresh {
+		t.Fatalf("apply retry created=%v err=%v", fresh, err)
+	}
+	stored, err := db.PhaseByID(ctx, "task-1", "phase-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stored.ForkNative || stored.NativeBaseEntryID != "base-1" {
+		t.Fatalf("retry phase = %#v, want fork at base-1", stored)
+	}
+	if err = db.SetPhaseNativeBase(ctx, "task-1", "phase-1", "other"); err != nil {
+		t.Fatal(err)
+	}
+	stored, err = db.PhaseByID(ctx, "task-1", "phase-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.NativeBaseEntryID != "base-1" {
+		t.Fatalf("native base = %q, want preserved base-1", stored.NativeBaseEntryID)
 	}
 }
 

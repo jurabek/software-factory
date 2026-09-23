@@ -18,7 +18,6 @@ import type {
 	DaemonTask,
 	EventQuery,
 	MessageInput,
-	RetryInput,
 } from "./daemon-client.ts";
 import {
 	createDaemonClient,
@@ -744,35 +743,6 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
 				throw remapIdentityMismatch(error);
 			}
 		},
-		async interventions(
-			id: string,
-			taskId: string,
-			signal?: AbortSignal,
-		): Promise<{
-			connection: DaemonConnection;
-			taskId: string;
-			interventions: unknown;
-		}> {
-			const validatedTask = validatedTaskID(taskId);
-			const resolved = await resolve(id);
-			try {
-				const interventions = await options.client.interventions(
-					resolved.endpoint,
-					resolved.credential,
-					validatedTask,
-					{
-						signal,
-					},
-				);
-				return {
-					connection: resolved.connection,
-					taskId: validatedTask,
-					interventions,
-				};
-			} catch (error) {
-				throw remapIdentityMismatch(error);
-			}
-		},
 		async remove(
 			id: string,
 			taskId: string,
@@ -1078,53 +1048,6 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
 					connection: resolved.connection,
 					taskId: validatedTask,
 					accepted: result.accepted,
-				};
-			} catch (error) {
-				throw remapIdentityMismatch(error);
-			}
-		},
-		async retryAttempt(
-			id: string,
-			taskId: string,
-			attemptId: string,
-			actor: string,
-			input: RetryInput,
-			signal?: AbortSignal,
-		): Promise<{
-			connection: DaemonConnection;
-			taskId: string;
-			attemptId: string;
-			result: unknown;
-		}> {
-			const validatedTask = validatedTaskID(taskId);
-			const validatedAttempt = validatedTaskID(attemptId);
-			if (
-				!actor ||
-				actor.length > 64 ||
-				!input ||
-				typeof input.idempotency_key !== "string" ||
-				!input.idempotency_key.trim()
-			)
-				throw new DaemonRegistryError(
-					400,
-					"invalid_request",
-					"Retry actor and idempotency key are required.",
-				);
-			const resolved = await resolve(id);
-			try {
-				const result = await options.client.retryAttempt(
-					resolved.endpoint,
-					resolved.credential,
-					validatedTask,
-					validatedAttempt,
-					input,
-					{ actor, signal },
-				);
-				return {
-					connection: resolved.connection,
-					taskId: validatedTask,
-					attemptId: validatedAttempt,
-					result,
 				};
 			} catch (error) {
 				throw remapIdentityMismatch(error);

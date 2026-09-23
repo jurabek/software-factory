@@ -11,7 +11,6 @@ export type TaskResource =
 	| "branches"
 	| "artifacts"
 	| "messages"
-	| "interventions"
 	| "checks"
 	| "results"
 	| "diff";

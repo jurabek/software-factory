@@ -34,11 +34,9 @@ import {
 	daemonCommand,
 	daemonDiff,
 	daemonEvents,
-	daemonInterventions,
 	daemonMessages,
 	daemonRemoveTask,
 	daemonResults,
-	daemonRetryAttempt,
 	daemonSendMessage,
 	daemonSessions,
 	daemonTask,
@@ -51,7 +49,6 @@ import {
 	type TaskCheck,
 	type TaskDetails,
 	type TaskDiff,
-	type TaskIntervention,
 	type TaskMessage,
 	type TaskResult,
 } from "@/client/daemon-api.ts";
@@ -197,7 +194,6 @@ type ChatItem = {
 	errored?: boolean;
 	deliveryStatus?: TaskMessage["delivery_status"];
 	failureReason?: string;
-	legacy?: boolean;
 	message?: TaskMessage;
 	event?: SessionEvent;
 };
@@ -215,7 +211,6 @@ function buildTimeline(
 	createdAt: string,
 	author: string,
 	messages: TaskMessage[],
-	interventions: TaskIntervention[],
 	events: SessionEvent[],
 ): ChatItem[] {
 	const items: ChatItem[] = [];
@@ -240,18 +235,6 @@ function buildTimeline(
 			deliveryStatus: message.delivery_status,
 			failureReason: message.failure_reason,
 			message,
-		});
-	}
-	for (const intervention of interventions) {
-		if (!intervention.text?.trim()) continue;
-		items.push({
-			key: `iv-${intervention.id}`,
-			role: "user",
-			author: intervention.actor,
-			text: intervention.text,
-			at: new Date(intervention.created_at).getTime() || 0,
-			iso: intervention.created_at,
-			legacy: true,
 		});
 	}
 	const messageIDs = new Set(messages.map((message) => message.id));
@@ -374,7 +357,6 @@ export function TaskDetail({
 	const [diff, setDiff] = useState<TaskDiff>({ files: [], patch: "" });
 	const [sessions, setSessions] = useState<TaskDetails[]>([]);
 	const [messages, setMessages] = useState<TaskMessage[]>([]);
-	const [interventions, setInterventions] = useState<TaskIntervention[]>([]);
 	const [artifacts, setArtifacts] = useState<TaskArtifact[]>([]);
 	const [artifactContent, setArtifactContent] = useState<
 		Record<string, string>
@@ -404,7 +386,6 @@ export function TaskDetail({
 	const submittedMessage = useRef<{ payload: string; key: string } | null>(
 		null,
 	);
-	const retryKeys = useRef(new Map<string, string>());
 
 	const currentTask = details ?? task;
 	const rootTaskId = currentTask.parent_task_id ?? currentTask.id;
@@ -463,7 +444,6 @@ export function TaskDetail({
 		currentTask.created_at,
 		login,
 		messages,
-		interventions,
 		visibleEvents,
 	);
 	const timelineBlocks = groupTimeline(timeline);
@@ -474,7 +454,6 @@ export function TaskDetail({
 	const controls = availableActions.filter((action): action is Command =>
 		commands.includes(action as Command),
 	);
-	const canRetry = availableActions.includes("retry");
 	const messageTarget: MessageTarget | undefined = selectedAttempt
 		? { attempt_id: selectedAttempt }
 		: undefined;
@@ -510,7 +489,6 @@ export function TaskDetail({
 				diffResult,
 				sessionsResult,
 				messagesResult,
-				interventionsResult,
 			] = await Promise.all([
 				daemonTask(daemonId, task.id, signal),
 				daemonAttempts(daemonId, task.id, signal),
@@ -521,7 +499,6 @@ export function TaskDetail({
 				daemonDiff(daemonId, task.id, signal),
 				daemonSessions(daemonId, rootTaskId, signal),
 				daemonMessages(daemonId, task.id, signal),
-				daemonInterventions(daemonId, task.id, signal),
 			]);
 			setDetails(taskResult.task);
 			setAttempts(attemptResult.attempts ?? []);
@@ -532,7 +509,6 @@ export function TaskDetail({
 			setDiff(diffResult.diff ?? { files: [], patch: "" });
 			setSessions(sessionsResult.sessions ?? []);
 			setMessages(messagesResult.messages ?? []);
-			setInterventions(interventionsResult.interventions ?? []);
 			setAvailableActions(taskResult.task.available_actions ?? []);
 			setSelectedBranchId((current) =>
 				current &&
@@ -559,7 +535,6 @@ export function TaskDetail({
 		setDiff({ files: [], patch: "" });
 		setSessions([]);
 		setMessages([]);
-		setInterventions([]);
 		setSelectedAttempt(null);
 		setSelectedBranchId(null);
 		setSelectedArtifact(null);
@@ -612,13 +587,9 @@ export function TaskDetail({
 	}, [artifacts, daemonId, selectedArtifact, task.id]);
 
 	useEffect(() => {
-		if (
-			autoScroll &&
-			(events.length > 0 || messages.length > 0 || interventions.length > 0) &&
-			chatScroll.current
-		)
+		if (autoScroll && (events.length > 0 || messages.length > 0) && chatScroll.current)
 			chatScroll.current.scrollTop = chatScroll.current.scrollHeight;
-	}, [autoScroll, events, messages, interventions]);
+	}, [autoScroll, events, messages]);
 
 	useEffect(() => {
 		const current = scope.current.next();
@@ -805,37 +776,6 @@ export function TaskDetail({
 		}
 	}
 
-	async function retryAttempt() {
-		if (submitting.current || !canRetry || !selectedAttempt) return;
-		submitting.current = true;
-		const { generation, controller } = beginMutation();
-		setPendingCommand("retry");
-		setError(null);
-		try {
-			const idempotencyKey =
-				retryKeys.current.get(selectedAttempt) ?? crypto.randomUUID();
-			retryKeys.current.set(selectedAttempt, idempotencyKey);
-			await daemonRetryAttempt(
-				daemonId,
-				task.id,
-				selectedAttempt,
-				idempotencyKey,
-				controller.signal,
-			);
-			retryKeys.current.delete(selectedAttempt);
-			await refreshDetails(controller.signal);
-			if (mutationIsCurrent(generation, controller)) await onChanged();
-		} catch (failure) {
-			if (!mutationIsCurrent(generation, controller)) return;
-			setError(
-				failure instanceof Error ? failure.message : "Could not retry attempt.",
-			);
-		} finally {
-			submitting.current = false;
-			if (mutationIsCurrent(generation, controller)) setPendingCommand(null);
-		}
-	}
-
 	async function removeTask() {
 		if (pending || pendingCommand !== null) return;
 		if (!window.confirm("Delete this task and its daemon-owned files?")) return;
@@ -991,7 +931,7 @@ export function TaskDetail({
 					</Alert>
 				) : null}
 
-				{controls.length > 0 || canRetry ? (
+				{controls.length > 0 ? (
 					<fieldset
 						className="flex flex-wrap gap-2 border-b px-4 py-2.5"
 						aria-label="Task commands"
@@ -1014,18 +954,6 @@ export function TaskDetail({
 								{pendingCommand === command ? `${command}…` : command}
 							</Button>
 						))}
-						{canRetry ? (
-							<Button
-								type="button"
-								variant="outline"
-								size="sm"
-								className="uppercase"
-								disabled={offline || pending || !selectedAttempt}
-								onClick={() => void retryAttempt()}
-							>
-								{pendingCommand === "retry" ? "retrying…" : "retry exact"}
-							</Button>
-						) : null}
 					</fieldset>
 				) : null}
 				{(["completed", "aborted"] as string[]).includes(currentTask.state) ? (
@@ -1091,11 +1019,9 @@ export function TaskDetail({
 										<p className="whitespace-pre-wrap break-words">
 											{block.item.text}
 										</p>
-										{block.item.deliveryStatus || block.item.legacy ? (
+										{block.item.deliveryStatus ? (
 											<p className="text-muted-foreground text-[0.68rem] uppercase tracking-[0.06em]">
-												{block.item.legacy
-													? "legacy intervention"
-													: block.item.deliveryStatus}
+												{block.item.deliveryStatus}
 												{block.item.failureReason
 													? ` · ${block.item.failureReason}`
 													: ""}

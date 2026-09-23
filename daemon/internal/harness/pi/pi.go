@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -25,7 +24,10 @@ const (
 	maxEventText = 16 << 10
 )
 
-type Harness struct{ Path string }
+type Harness struct {
+	Path          string
+	ExtensionPath string
+}
 
 func (h Harness) Models(ctx context.Context) ([]harness.Model, error) {
 	output, err := exec.CommandContext(ctx, h.Path, "--list-models").Output()
@@ -48,107 +50,6 @@ func (h Harness) Models(ctx context.Context) ([]harness.Model, error) {
 		models = append(models, harness.Model{Provider: parts[0], ID: parts[1], ContextWindow: window})
 	}
 	return models, nil
-}
-
-func (h Harness) Run(parent context.Context, request harness.Request, sink harness.EventSink) (harness.Result, error) {
-	ctx := parent
-	if request.DeadlineMS > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(parent, time.Duration(request.DeadlineMS)*time.Millisecond)
-		defer cancel()
-	}
-	provider, model := splitModel(request.Model)
-	args := []string{"-p", "--mode", "json", "--provider", provider, "--model", model, "--thinking", request.Thinking, "--session-id", request.SessionID, "--session-dir", request.SessionDirectory, "--system-prompt", request.SystemPrompt, "--approve"}
-	args = append(args, request.Prompt)
-
-	// Pi receives an explicit session ID and directory, so a started process
-	// owns an initialized session. Failures before Start leave the reserved
-	// session untouched.
-	notStarted := harness.Result{SessionID: request.SessionID, Provider: provider, Model: model}
-	cmd := exec.Command(h.Path, args...)
-	cmd.Dir = request.CWD
-	cmd.Stdin = nil
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return notStarted, fmt.Errorf("pi stdout: %w", err)
-	}
-	stderr := &tailWriter{limit: maxStderr}
-	cmd.Stderr = stderr
-	if err := ensureOutputPaths(request); err != nil {
-		return notStarted, err
-	}
-	raw, err := openRaw(request.RawOutputPath)
-	if err != nil {
-		return notStarted, err
-	}
-	if raw != nil {
-		defer raw.Close()
-	}
-	if err := cmd.Start(); err != nil {
-		return notStarted, fmt.Errorf("start pi: %w", err)
-	}
-	started := time.Now()
-	result := harness.Result{
-		SessionID:          request.SessionID,
-		Provider:           provider,
-		Model:              model,
-		SessionReady:       true,
-		AccountingComplete: true,
-	}
-	if err := emit(parent, sink, session.NewProcessStart(session.ProcessStartPayload{PID: cmd.Process.Pid, Command: displayCommand(h.Path, args)})); err != nil {
-		terminateGroup(cmd.Process.Pid)
-		_ = cmd.Wait()
-		return result, fmt.Errorf("emit pi process start: %w", err)
-	}
-
-	terminated := make(chan struct{})
-	go func() {
-		select {
-		case <-ctx.Done():
-			terminateGroup(cmd.Process.Pid)
-		case <-terminated:
-		}
-	}()
-
-	consumed, scanErr := consume(stdout, raw, sink, parent)
-	consumed.SessionID = result.SessionID
-	consumed.Provider = result.Provider
-	consumed.Model = result.Model
-	consumed.SessionReady = result.SessionReady
-	consumed.AccountingComplete = result.AccountingComplete
-	result = consumed
-	waitErr := cmd.Wait()
-	close(terminated)
-	result.ExitCode = exitCode(waitErr)
-	if err := emit(parent, sink, session.NewProcessEnd(session.ProcessEndPayload{PID: cmd.Process.Pid, ExitCode: result.ExitCode, DurationMS: time.Since(started).Milliseconds()})); err != nil && scanErr == nil {
-		scanErr = fmt.Errorf("emit process end: %w", err)
-	}
-	if scanErr != nil {
-		result.AccountingComplete = false
-		return result, fmt.Errorf("read pi output: %w", scanErr)
-	}
-	if ctx.Err() != nil {
-		result.AccountingComplete = false
-		return result, fmt.Errorf("pi interrupted: %w", ctx.Err())
-	}
-	if waitErr != nil && strings.TrimSpace(result.Text) == "" {
-		result.AccountingComplete = false
-		return result, fmt.Errorf("pi exited %d: %s", result.ExitCode, stderr.String())
-	}
-	return result, nil
-}
-
-func ensureOutputPaths(request harness.Request) error {
-	for _, path := range []string{request.SessionDirectory, filepath.Dir(request.RawOutputPath)} {
-		if path == "" || path == "." {
-			continue
-		}
-		if err := os.MkdirAll(path, 0o700); err != nil {
-			return fmt.Errorf("create pi output directory: %w", err)
-		}
-	}
-	return nil
 }
 
 func consume(stdout io.Reader, raw *os.File, sink harness.EventSink, ctx context.Context) (harness.Result, error) {
@@ -333,13 +234,6 @@ func accumulateUsage(event map[string]any, result *harness.Result) {
 	}
 }
 
-func openRaw(path string) (*os.File, error) {
-	if path == "" {
-		return nil, nil
-	}
-	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-}
-
 func terminateGroup(pid int) {
 	_ = syscall.Kill(-pid, syscall.SIGTERM)
 	time.Sleep(500 * time.Millisecond)
@@ -361,6 +255,18 @@ func emit(ctx context.Context, sink harness.EventSink, event harness.Event) erro
 		return sink(ctx, event)
 	}
 	return nil
+}
+
+// withRequest stamps every streamed event with the factory request that
+// produced it, so the timeline can correlate events with native entries.
+func withRequest(sink harness.EventSink, requestID string) harness.EventSink {
+	if sink == nil || requestID == "" {
+		return sink
+	}
+	return func(ctx context.Context, event harness.Event) error {
+		event.RequestID = requestID
+		return sink(ctx, event)
+	}
 }
 
 func splitModel(value string) (string, string) {

@@ -1,5 +1,4 @@
-// Package agentexec owns shared agent invocation and envelope mechanics.
-package agentexec
+package stage
 
 import (
 	"bytes"
@@ -8,6 +7,7 @@ import (
 	"strings"
 )
 
+// Common is the envelope shape every agent-authored stage payload shares.
 type Common struct {
 	Status    string   `json:"status"`
 	Summary   string   `json:"summary"`
@@ -16,8 +16,10 @@ type Common struct {
 	Report    string   `json:"report_markdown"`
 }
 
+// CommonFields lists the shared envelope fields accepted by every stage.
 var CommonFields = []string{"status", "summary", "artifacts", "notes_for_next_agent", "report_markdown"}
 
+// DecodeExact decodes a JSON envelope, rejecting unknown and missing fields.
 func DecodeExact(text string, target any, required, allowed []string) error {
 	body, err := object(text)
 	if err != nil {
@@ -49,6 +51,7 @@ func DecodeExact(text string, target any, required, allowed []string) error {
 	return nil
 }
 
+// ValidateCommon enforces the invariants shared by all stage envelopes.
 func ValidateCommon(value Common) error {
 	if value.Status != "success" {
 		return fmt.Errorf("envelope status must be success")
@@ -68,6 +71,7 @@ func ValidateCommon(value Common) error {
 	return nil
 }
 
+// CommonInstructions renders the shared field example used in prompts.
 func CommonInstructions() string {
 	return `"status":"success","summary":"...","artifacts":[],"notes_for_next_agent":"","report_markdown":"# Report\n\n..."`
 }

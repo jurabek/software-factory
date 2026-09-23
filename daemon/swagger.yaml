@@ -280,19 +280,6 @@ paths:
           $ref: "#/responses/Conflict"
         "422":
           $ref: "#/responses/UnprocessableEntity"
-  /tasks/{id}/interventions:
-    parameters:
-      - $ref: "#/parameters/TaskID"
-    get:
-      tags: [Tasks]
-      operationId: listTaskInterventions
-      responses:
-        "200":
-          description: Persisted Task interventions
-          schema:
-            type: array
-            items:
-              $ref: "#/definitions/Intervention"
   /tasks/{id}/messages:
     parameters:
       - $ref: "#/parameters/TaskID"
@@ -404,36 +391,6 @@ paths:
               $ref: "#/definitions/Phase"
         "404":
           $ref: "#/responses/NotFound"
-        "500":
-          $ref: "#/responses/InternalError"
-  /tasks/{id}/attempts/{attemptID}/retry:
-    parameters:
-      - $ref: "#/parameters/TaskID"
-      - in: path
-        name: attemptID
-        type: string
-        required: true
-    post:
-      tags: [Tasks]
-      operationId: retryTaskAttempt
-      summary: Queue and execute an Attempt from its exact phase definition and input snapshot
-      parameters:
-        - in: body
-          name: retry
-          required: true
-          schema:
-            $ref: "#/definitions/RetryRequest"
-      responses:
-        "202":
-          description: One child branch and queued Attempt created
-          schema:
-            $ref: "#/definitions/RetryResult"
-        "404":
-          $ref: "#/responses/NotFound"
-        "409":
-          $ref: "#/responses/Conflict"
-        "422":
-          $ref: "#/responses/UnprocessableEntity"
         "500":
           $ref: "#/responses/InternalError"
   /tasks/{id}/events:
@@ -705,14 +662,11 @@ definitions:
         minimum: 1
   Runtime:
     type: object
-    required: [agent_deadline_ms, empty_turn_retries, json_fix_attempts]
+    required: [agent_deadline_ms, json_fix_attempts]
     properties:
       agent_deadline_ms:
         type: integer
         minimum: 1
-      empty_turn_retries:
-        type: integer
-        minimum: 0
       json_fix_attempts:
         type: integer
         minimum: 0
@@ -873,7 +827,7 @@ definitions:
         description: Authoritative deterministic controls currently available for this Task
         items:
           type: string
-          enum: [approve, pause, resume, abort, retry]
+          enum: [approve, pause, resume, abort]
       created_at:
         type: string
         format: date-time
@@ -938,12 +892,15 @@ definitions:
         type: string
       kind:
         type: string
-        enum: [message, task_message, tool_call, process_start, process_end, phase_start, phase_end, intervention, plan_feedback, custom]
+        enum: [message, task_message, tool_call, process_start, process_end, phase_start, phase_end, plan_feedback, custom]
       format_version:
         type: integer
         minimum: 1
       name:
         type: string
+      native_entry_id:
+        type: string
+        description: Authoritative harness session entry this event was derived from, when available
       payload:
         type: object
       display:
@@ -999,7 +956,7 @@ definitions:
         type: integer
   AgentSession:
     type: object
-    required: [role, harness, harness_session_id, session_directory, session_ready, usage, cost, accounting_complete, created_at, last_used_at]
+    required: [role, harness, harness_session_id, session_directory, session_ready, usage, cost, created_at, last_used_at]
     properties:
       role:
         type: string
@@ -1022,6 +979,9 @@ definitions:
         type: boolean
       native_transcript_path:
         type: string
+      last_entry_id:
+        type: string
+        description: Native session entry cursor for the latest settled turn
       context_tokens:
         type: integer
       context_window:
@@ -1031,9 +991,6 @@ definitions:
       cost:
         type: number
         format: double
-      accounting_complete:
-        type: boolean
-        description: False while an invocation is pending, after crash recovery with unrecorded spend, or when terminal accounting was incomplete
       created_at:
         type: string
         format: date-time
@@ -1188,34 +1145,6 @@ definitions:
       created_at: {type: string, format: date-time}
       delivered_at: {type: string, format: date-time}
       failed_at: {type: string, format: date-time}
-  RetryRequest:
-    type: object
-    required: [idempotency_key]
-    additionalProperties: false
-    properties:
-      idempotency_key: {type: string, minLength: 1}
-  RetryResult:
-    type: object
-    required: [source_attempt_id, branch_id, attempt_id, created_at]
-    properties:
-      source_attempt_id: {type: string}
-      branch_id: {type: string}
-      attempt_id: {type: string}
-      created_at: {type: string, format: date-time}
-  Intervention:
-    type: object
-    required: [id, task_id, target_type, target_id, actor, intent, text, delivery, idempotency_key, created_at]
-    properties:
-      id: {type: string}
-      task_id: {type: string}
-      target_type: {type: string}
-      target_id: {type: string}
-      actor: {type: string}
-      intent: {type: string}
-      text: {type: string}
-      delivery: {type: string}
-      idempotency_key: {type: string}
-      created_at: {type: string, format: date-time}
   AcceptedResponse:
     type: object
     required: [accepted]

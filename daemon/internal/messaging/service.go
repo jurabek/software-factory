@@ -14,16 +14,15 @@ import (
 
 	"github.com/jurabek/software-factory/daemon/internal/config"
 	"github.com/jurabek/software-factory/daemon/internal/harness"
-	"github.com/jurabek/software-factory/daemon/internal/intervention"
 	"github.com/jurabek/software-factory/daemon/internal/stagekit"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 )
 
 // Request is the control-plane request to send a message to a task.
 type Request struct {
-	Text           string              `json:"text"`
-	Target         intervention.Target `json:"target"`
-	IdempotencyKey string              `json:"idempotency_key"`
+	Text           string `json:"text"`
+	Target         Target `json:"target"`
+	IdempotencyKey string `json:"idempotency_key"`
 }
 
 type EventPublisher interface {
@@ -32,13 +31,12 @@ type EventPublisher interface {
 
 // Deps are the collaborators a messaging service needs.
 type Deps struct {
-	Store         *store.DB
-	Config        config.Config
-	ConfigPath    string
-	Harnesses     harness.Registry
-	Root          string
-	Interventions *intervention.Service
-	Events        EventPublisher
+	Store      *store.DB
+	Config     config.Config
+	ConfigPath string
+	Harnesses  harness.Registry
+	Root       string
+	Events     EventPublisher
 }
 
 // Service accepts and routes task messages.
@@ -75,14 +73,14 @@ func (s *Service) Send(ctx context.Context, taskID, actor string, request Reques
 		return store.Message{}, false, store.ErrConflict
 	}
 	target := request.Target
-	targetType, targetID, targetPhase, err := s.deps.Interventions.Resolve(ctx, taskID, target)
+	targetType, targetID, targetPhase, err := s.Resolve(ctx, taskID, target)
 	if err != nil {
 		return store.Message{}, false, err
 	}
 	if request.Target.Anchor != nil && request.Target.ArtifactID == "" {
 		return store.Message{}, false, fmt.Errorf("anchor requires artifact_id")
 	}
-	if err = s.deps.Interventions.ValidateAnchor(ctx, taskID, target); err != nil {
+	if err = s.ValidateAnchor(ctx, taskID, target); err != nil {
 		return store.Message{}, false, err
 	}
 	role, phase, err := s.messageRecipient(ctx, task, targetPhase)

@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/jurabek/software-factory/daemon/internal/agentexec"
+	"github.com/jurabek/software-factory/daemon/internal/harness"
 	"github.com/jurabek/software-factory/daemon/internal/orchestrator"
 	"github.com/jurabek/software-factory/daemon/internal/stage"
 	"github.com/jurabek/software-factory/daemon/internal/stagekit"
@@ -22,18 +22,18 @@ type PlanStep struct {
 }
 
 type Result struct {
-	agentexec.Common
+	stage.Common
 	Steps     []PlanStep `json:"steps"`
 	Questions []string   `json:"questions"`
 }
 
 func Validate(text string) (Result, error) {
 	var value Result
-	fields := append(append([]string{}, agentexec.CommonFields...), "steps", "questions")
-	if err := agentexec.DecodeExact(text, &value, fields, fields); err != nil {
+	fields := append(append([]string{}, stage.CommonFields...), "steps", "questions")
+	if err := stage.DecodeExact(text, &value, fields, fields); err != nil {
 		return value, err
 	}
-	if err := agentexec.ValidateCommon(value.Common); err != nil {
+	if err := stage.ValidateCommon(value.Common); err != nil {
 		return value, err
 	}
 	if len(value.Steps) == 0 {
@@ -58,7 +58,7 @@ func Validate(text string) (Result, error) {
 }
 
 func Instructions() string {
-	return `Return exactly one JSON object: {` + agentexec.CommonInstructions() + `,"steps":[{"id":"...","description":"...","expected_files":[],"acceptance_criteria":[]}],"questions":[]}. Put the human-readable report in report_markdown.`
+	return `Return exactly one JSON object: {` + stage.CommonInstructions() + `,"steps":[{"id":"...","description":"...","expected_files":[],"acceptance_criteria":[]}],"questions":[]}. Put the human-readable report in report_markdown.`
 }
 
 // Service is the planning stage's public surface. Lifecycle, resume, and
@@ -100,12 +100,11 @@ func (s service) Plan(ctx context.Context, input stage.Input) (stage.PlanResult,
 		return stage.PlanResult{}, err
 	}
 	data := map[string]any{"TaskID": task.ID, "Request": task.Request, "Repository": task.RepositoryPath, "Workspace": task.WorkspacePath}
-	systemPrompt, userPrompt, err := agentexec.RenderPrompts(
+	systemPrompt, userPrompt, err := stagekit.RenderPrompts(
 		agent.Name,
 		agent.PromptEngineering.SystemContent, agent.PromptEngineering.System,
 		agent.PromptEngineering.UserContent, agent.PromptEngineering.User,
 		data, filepath.Dir(configured.ConfigPath),
-		filepath.Join(configured.TaskDir, "prompts", agent.Name),
 		Instructions(),
 	)
 	if err != nil {
@@ -116,8 +115,8 @@ func (s service) Plan(ctx context.Context, input stage.Input) (stage.PlanResult,
 	turner := s.kit.AgentExec()
 	turner.AgentDeadlineMS = configured.Config.Runtime.AgentDeadlineMS
 	turner.JSONFixAttempts = configured.Config.Runtime.JSONFixAttempts
-	payload, err := agentexec.RunTurn(ctx, turner, agentexec.TurnInput{
-		TaskID: task.ID, Phase: phase, Role: phase.Owner,
+	turn, err := harness.RunTurn(ctx, turner, harness.TurnInput{
+		TaskID: task.ID, RequestID: stagekit.RandomID(), Phase: phase, Role: phase.Owner,
 		HarnessName: harnessName, Model: agent.Model, Thinking: agent.Thinking, Color: agent.Color,
 		RepoPath:     task.RepositoryPath,
 		SessionDir:   filepath.Join(configured.TaskDir, "sessions", phase.Name, harnessName),
@@ -130,5 +129,5 @@ func (s service) Plan(ctx context.Context, input stage.Input) (stage.PlanResult,
 		s.kit.Fail(ctx, phase, err)
 		return stage.PlanResult{}, err
 	}
-	return s.publishPlan(ctx, task, phase, payload)
+	return s.publishPlan(ctx, task, phase, turn)
 }
