@@ -381,9 +381,8 @@ func (w *tailWriter) String() string { return strings.TrimSpace(string(w.data)) 
 func (h Harness) Entries(_ context.Context, ref harness.SessionRef) ([]harness.NativeEntry, error) {
 	records,
 
-		err :=
-		readSession(ref.Directory,
-			ref.ID)
+		err := readSession(ref.Directory,
+		ref.ID)
 	if err != nil {
 		return nil,
 			err
@@ -404,9 +403,7 @@ func (h Harness) Stats(_ context.Context, ref harness.SessionRef) (harness.Stats
 	var stats harness.Stats
 	for _, record := range records {
 		if record.ID != "" && record.Type != "session" {
-			stats.LeafID =
-
-				record.ID
+			stats.LeafID = record.ID
 		}
 		usage := record.Usage
 		if record.Message != nil && record.Message.
@@ -417,9 +414,7 @@ func (h Harness) Stats(_ context.Context, ref harness.SessionRef) (harness.Stats
 			nil {
 			continue
 		}
-		stats.Usage.Input +=
-
-			usage.Input
+		stats.Usage.Input += usage.Input
 		stats.Usage.Output += usage.Output
 		stats.Usage.CacheRead += usage.
 			CacheRead
@@ -439,7 +434,8 @@ func (h Harness) Stats(_ context.Context, ref harness.SessionRef) (harness.Stats
 
 func (h Harness) Report(_ context.Context, ref harness.
 	SessionRef, requestID string) (
-	harness.Report, bool, error) {
+	harness.Report, bool, error,
+) {
 	if requestID == "" {
 		return harness.Report{}, false,
 
@@ -451,5 +447,4 @@ func (h Harness) Report(_ context.Context, ref harness.
 	}
 	report, ok := reportFromRecords(records, requestID)
 	return report, ok, nil
-
 }

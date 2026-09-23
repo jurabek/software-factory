@@ -265,7 +265,8 @@ func PhaseReadOnly(phase store.Phase, role string) bool {
 }
 
 func (k *Kit) DeliverAndFinalize[T any](ctx context.
-	Context, spec Delivery, turn harness.TurnResult, finalize func(harness.TurnResult) (T, error)) (T, error) {
+	Context, spec Delivery, turn harness.TurnResult, finalize func(harness.TurnResult) (T, error),
+) (T, error) {
 	var zero T
 	for {
 		latest, err := k.deliver(ctx, spec)
@@ -343,15 +344,16 @@ func (k *Kit) deliver(ctx context.Context, spec Delivery) (harness.TurnResult, e
 				TurnResult{}, promptErr
 		}
 		turner := k.AgentExec()
-		turner.AgentDeadlineMS =
-			configured.Runtime.AgentDeadlineMS
+		turner.AgentDeadlineMS = configured.Runtime.AgentDeadlineMS
 		turner.JSONFixAttempts = configured.Runtime.
 			JSONFixAttempts
-		turn, runErr := harness.RunTurn(ctx, turner, harness.TurnInput{TaskID: task.ID, RequestID: RandomID(), Phase: phase, Role: spec.Role,
+		turn, runErr := harness.RunTurn(ctx, turner, harness.TurnInput{
+			TaskID: task.ID, RequestID: RandomID(), Phase: phase, Role: spec.Role,
 			HarnessName: configured.Defaults.CodingAgent, Model: agent.Model, Thinking: agent.
 					Thinking, Color:                agent.Color, RepoPath: task.RepositoryPath, SessionDir: storedSession.
 					SessionDirectory, SystemPrompt: systemPrompt, UserPrompt: message.Text,
-			ReadOnly: spec.ReadOnly, EnvelopeKind: phaseEnvelopeKind(phase, spec.Role), CorrectionSuffix: spec.Instructions, Validate: spec.Validate, Sink: k.Sink(task.ID, phase.ID, storedSession.Harness), OnDispatch: k.markDelivered(message, &phase)})
+			ReadOnly: spec.ReadOnly, EnvelopeKind: phaseEnvelopeKind(phase, spec.Role), CorrectionSuffix: spec.Instructions, Validate: spec.Validate, Sink: k.Sink(task.ID, phase.ID, storedSession.Harness), OnDispatch: k.markDelivered(message, &phase),
+		})
 		if runErr != nil {
 			reason := "harness_error"
 			if errors.Is(runErr, context.Canceled) {
@@ -382,8 +384,7 @@ func (k *Kit) markDelivered(message store.Message, phase *store.Phase) func(cont
 		}
 		delivered = true
 		message.DeliveryStatus = "delivered"
-		message.DeliveredAt =
-			time.Now().UTC().Format(time.RFC3339Nano)
+		message.DeliveredAt = time.Now().UTC().Format(time.RFC3339Nano)
 		event,
 			err := MessageEvent(dispatchCtx,
 			k.db, message,
@@ -396,9 +397,11 @@ func (k *Kit) markDelivered(message store.Message, phase *store.Phase) func(cont
 			k.TaskDir(message.TaskID))
 	}
 }
+
 func (k *Kit) messageSystemPrompt(ctx context.
 	Context,
-	message store.Message, role, instructions string) (string, error) {
+	message store.Message, role, instructions string,
+) (string, error) {
 	contextValue := map[string]any{}
 	if message.Target != nil {
 		contextValue["target"] = message.Target
@@ -434,9 +437,11 @@ func (k *Kit) messageSystemPrompt(ctx context.
 	return instructions +
 		"\n\nFactory context for this turn: " + string(encoded), nil
 }
+
 func (k *Kit) failMessage(ctx context.Context, message store.Message,
 
-	phase store.Phase, reason string) {
+	phase store.Phase, reason string,
+) {
 	cleanupCtx, cancel := context.
 		WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
@@ -451,14 +456,16 @@ func (k *Kit) failMessage(ctx context.Context, message store.Message,
 }
 
 func (k *Kit) PhaseByID(ctx context.
-	Context, taskID, phaseID string) (store.Phase, error) {
+	Context, taskID, phaseID string,
+) (store.Phase, error) {
 	return k.
 		db.PhaseByID(ctx, taskID, phaseID)
 }
 
 func (
 	k *Kit) BeginPhase(ctx context.Context, taskID, name, kind, owner,
-	description string) (store.Phase, error) {
+	description string,
+) (store.Phase, error) {
 	phases, err := k.
 		db.Phases(ctx, taskID)
 	if err != nil {
@@ -480,14 +487,17 @@ func (
 			inputSnapshot = snapshot.Digest
 		}
 	}
-	phase :=
-		store.Phase{ID: RandomID(), TaskID: taskID, Sequence: len(phases) + 1, Name: name, Kind: kind, Owner: owner, Description: description,
+	phase := store.Phase{
+		ID: RandomID(), TaskID: taskID, Sequence: len(phases) + 1, Name: name, Kind: kind, Owner: owner, Description: description,
 
-			Status: "running", Attempt: 1, BranchID: task.SelectedBranchID, DefinitionID: definitionID, InputSnapshot: inputSnapshot}
+		Status: "running", Attempt: 1, BranchID: task.SelectedBranchID, DefinitionID: definitionID, InputSnapshot: inputSnapshot,
+	}
 	event := session.NewPhaseStart(session.PhasePayload{Phase: phase.ID, Name: name, Owner: owner, Kind: kind, InputSnapshot: inputSnapshot})
-	eventValue := store.Event{ID: RandomID(), TaskID: taskID, PhaseID: phase.ID, AttemptID: phase.ID, BranchID: phase.BranchID,
+	eventValue := store.Event{
+		ID: RandomID(), TaskID: taskID, PhaseID: phase.ID, AttemptID: phase.ID, BranchID: phase.BranchID,
 		Kind: event.Kind, Name: event.Name, Payload: event.Payload, Display: event.Display,
-		AvailableActions: AvailableActions(&phase, task.State), StartedAt: time.Now().UTC()}
+		AvailableActions: AvailableActions(&phase, task.State), StartedAt: time.Now().UTC(),
+	}
 	if err = k.db.StartPhaseWithEvent(ctx, k.TaskDir(taskID), phase, task.
 		State, eventValue); err != nil {
 		return store.Phase{}, err
@@ -497,7 +507,8 @@ func (
 }
 
 func (k *Kit) BeginOrReusePhase(ctx context.Context, taskID, name, kind,
-	owner, description string) (store.Phase, error) {
+	owner, description string,
+) (store.Phase, error) {
 	if phase,
 		ok,
 
@@ -525,8 +536,10 @@ func (k *Kit) BeginOrReusePhase(ctx context.Context, taskID, name, kind,
 
 		name, kind, owner, description)
 }
+
 func (k *Kit) pendingStagePhase(ctx context.Context, taskID,
-	name string) (store.Phase, bool, error) {
+	name string,
+) (store.Phase, bool, error) {
 	phases, err := k.db.Phases(ctx,
 		taskID)
 	if err != nil {
@@ -547,16 +560,19 @@ func (k *Kit) pendingStagePhase(ctx context.Context, taskID,
 	}
 	return store.Phase{}, false, nil
 }
+
 func (k *Kit) ensureDefinition(ctx context.Context, taskID,
 	key,
 	executor,
 
-	owner string) string {
+	owner string,
+) string {
 	existing, err := k.db.LatestDefinition(ctx, taskID, key)
 	if err == nil {
 		return existing.ID
 	}
-	definition := store.PhaseDefinition{ID: RandomID(), TaskID: taskID,
+	definition := store.PhaseDefinition{
+		ID: RandomID(), TaskID: taskID,
 
 		PhaseKey: key, Revision: 1, Executor: executor, Owner: owner, Spec: "{}",
 	}
@@ -570,13 +586,13 @@ func (k *Kit) ensureDefinition(ctx context.Context, taskID,
 }
 
 func (k *Kit) EndPhase(ctx context.Context, phase store.
-	Phase, status string, cause error) error {
+	Phase, status string, cause error,
+) error {
 	message := ""
 	if cause != nil {
 		message = cause.Error()
 	}
-	outputSnapshot :=
-		phase.InputSnapshot
+	outputSnapshot := phase.InputSnapshot
 	if status != "success" || !IsReadOnlyOwner(phase.Owner) {
 		if task, taskErr := k.db.Task(ctx, phase.TaskID); taskErr == nil {
 			if snapshot, captureErr := k.snapshots.CaptureSnapshot(ctx, task); captureErr ==
@@ -587,8 +603,7 @@ func (k *Kit) EndPhase(ctx context.Context, phase store.
 					"review" || phase.Kind ==
 					"check" || phase.
 					Kind == "git") {
-					outputSnapshot =
-						snapshot.Digest
+					outputSnapshot = snapshot.Digest
 				} else if status !=
 					"success" {
 					outputSnapshot = snapshot.Digest
@@ -608,8 +623,10 @@ func (k *Kit) EndPhase(ctx context.Context, phase store.
 			phase.InputSnapshot, phase.ID)
 		phase.OutputSnapshot = phase.InputSnapshot
 	}
-	event := session.NewPhaseEnd(session.PhasePayload{Phase: phase.ID, Name: phase.Name,
-		Owner: phase.Owner, Kind: phase.Kind, Status: status, Error: message, InputSnapshot: phase.InputSnapshot, OutputSnapshot: phase.OutputSnapshot})
+	event := session.NewPhaseEnd(session.PhasePayload{
+		Phase: phase.ID, Name: phase.Name,
+		Owner: phase.Owner, Kind: phase.Kind, Status: status, Error: message, InputSnapshot: phase.InputSnapshot, OutputSnapshot: phase.OutputSnapshot,
+	})
 	return k.db.
 		EndPhaseWithEvent(ctx, k.TaskDir(phase.TaskID), phase.ID, status, message, phase.
 			OutputSnapshot, store.Event{ID: RandomID(), TaskID: phase.TaskID, PhaseID: phase.
@@ -618,7 +635,8 @@ func (k *Kit) EndPhase(ctx context.Context, phase store.
 }
 
 func (k *Kit) Fail(
-	ctx context.Context, phase store.Phase, cause error) {
+	ctx context.Context, phase store.Phase, cause error,
+) {
 	_ = k.EndPhase(context.Background(), phase, "failed", cause)
 }
 
@@ -645,15 +663,18 @@ func (k *Kit) Complete(ctx context.Context, c Completion) error {
 			OutputSnapshot = c.Phase.
 			InputSnapshot
 	}
-	event := session.NewPhaseEnd(session.PhasePayload{Phase: c.Phase.
-		ID, Name:    c.Phase.Name, Owner: c.Phase.
-		Owner, Kind: c.Phase.Kind, Status: c.Status, Error: message, InputSnapshot: c.Phase.InputSnapshot, OutputSnapshot: c.Phase.OutputSnapshot,
+	event := session.NewPhaseEnd(session.PhasePayload{
+		Phase: c.Phase.
+			ID, Name:    c.Phase.Name, Owner: c.Phase.
+			Owner, Kind: c.Phase.Kind, Status: c.Status, Error: message, InputSnapshot: c.Phase.InputSnapshot, OutputSnapshot: c.Phase.OutputSnapshot,
 	})
-	eventValue := store.Event{ID: RandomID(), TaskID: c.Phase.TaskID,
+	eventValue := store.Event{
+		ID: RandomID(), TaskID: c.Phase.TaskID,
 		PhaseID: c.Phase.ID, AttemptID: c.Phase.ID, BranchID: c.Phase.BranchID,
 		Kind: event.Kind, Name: event.Name, Payload: event.Payload, Display: event.Display,
 		AvailableActions: AvailableActions(&c.Phase, task.State),
-		StartedAt:        time.Now().UTC()}
+		StartedAt:        time.Now().UTC(),
+	}
 	dir := k.TaskDir(c.Phase.TaskID)
 	if c.Planner {
 		return k.db.CompletePlannerPhaseWithApproval(ctx, dir, c.Phase.ID, c.Phase.TaskID,
@@ -670,7 +691,8 @@ func (k *Kit) Complete(ctx context.Context, c Completion) error {
 }
 
 func (k *Kit) LatestStageAttempt(ctx context.Context, taskID,
-	stageID string) (store.Phase, bool, error) {
+	stageID string,
+) (store.Phase, bool, error) {
 	phases, err := k.db.Phases(ctx, taskID)
 	if err != nil {
 		return store.Phase{}, false, err
@@ -695,7 +717,8 @@ func (k *Kit) SuccessfulPhase(ctx context.Context, taskID, name string) (store.P
 }
 
 func (k *Kit) RequireAttempt(ctx context.Context, taskID,
-	name, attemptID string) error {
+	name, attemptID string,
+) error {
 	phase, ok, err := k.SuccessfulPhase(ctx, taskID, name)
 	if err != nil {
 		return err
@@ -708,7 +731,8 @@ func (k *Kit) RequireAttempt(ctx context.Context, taskID,
 }
 
 func (k *Kit) AttemptAfter(ctx context.Context, taskID, attemptID,
-	upstreamID string) (bool, error) {
+	upstreamID string,
+) (bool, error) {
 	attempt, err := k.
 		db.PhaseByID(ctx, taskID, attemptID)
 	if err != nil {

@@ -71,9 +71,9 @@ type Service struct {
 func New(root string, deps Deps) *Service {
 	return &Service{root: root, deps: deps}
 }
+
 func (s *Service) ensureBranch(ctx context.Context, taskID, parent string) error {
-	task, err :=
-		s.deps.Store.Task(ctx, taskID)
+	task, err := s.deps.Store.Task(ctx, taskID)
 	if err != nil {
 		return err
 	}
@@ -100,7 +100,8 @@ func (s *Service) ensureBranch(ctx context.Context, taskID, parent string) error
 
 func (s *Service) Create(ctx context.Context, request CreateRequest) (store.Task,
 
-	error) {
+	error,
+) {
 	task, err := s.create(ctx, request, "")
 	if err != nil {
 		return store.Task{}, err
@@ -139,27 +140,30 @@ func (s *Service) CreateSession(ctx context.Context, taskID string, request Crea
 	} else {
 		repository.Repo = task.RepositorySource
 	}
-	created, err := s.create(ctx, CreateRequest{Request: request.Request,
+	created, err := s.create(ctx, CreateRequest{
+		Request:    request.Request,
 		Repository: repository, CodingAgent: task.CodingAgent, Model: task.Model,
 
-		Thinking: task.Thinking, Pipeline: task.Pipeline},
+		Thinking: task.Thinking, Pipeline: task.Pipeline,
+	},
 		task.ID)
 	if err !=
 		nil {
 		return store.Task{}, err
 	}
-	if err =
-		s.ensureBranch(ctx,
-			created.
-				ID,
-			""); err != nil {
+	if err = s.ensureBranch(ctx,
+		created.
+			ID,
+		""); err != nil {
 		return store.Task{}, err
 	}
 	return created, nil
 }
+
 func (s *Service) create(ctx context.
 	Context, request CreateRequest, parentTaskID string) (store.
-	Task, error) {
+	Task, error,
+) {
 	request.Request = strings.TrimSpace(request.Request)
 	if request.Request == "" {
 		return store.Task{}, fmt.Errorf("task description is required")
@@ -188,9 +192,8 @@ func (s *Service) create(ctx context.
 	if request.
 		Thinking !=
 		"" {
-		harnessForThinking :=
-			request.
-				CodingAgent
+		harnessForThinking := request.
+			CodingAgent
 		if harnessForThinking ==
 			"" {
 			harnessForThinking = s.deps.Config.Defaults.CodingAgent
@@ -225,15 +228,17 @@ func (s *Service) create(ctx context.
 		return store.Task{}, err
 	}
 	workspace := filepath.Join(s.root, "tasks", id)
-	for _, directory := range []string{workspace, filepath.
-		Join(workspace, "workspace",
-			"repository"), filepath.Join(workspace, "attempts"),
+	for _, directory := range []string{
+		workspace, filepath.
+			Join(workspace, "workspace",
+				"repository"), filepath.Join(workspace, "attempts"),
 		filepath.Join(workspace,
 			"snapshots"), filepath.
 			Join(workspace, "sessions"), filepath.Join(workspace, "workspace",
 			"snapshots"), filepath.Join(workspace, "workspace", "branches"), filepath.
 			Join(
-				workspace, "workspace", "attempts")} {
+				workspace, "workspace", "attempts"),
+	} {
 		if err = os.MkdirAll(directory, 0o700); err != nil {
 			_ = os.RemoveAll(workspace)
 			return store.Task{}, fmt.
@@ -245,24 +250,25 @@ func (s *Service) create(ctx context.
 		request.Model,
 		request.Thinking,
 	)
-	configSnapshot, err :=
-		config.Snapshot(configured)
+	configSnapshot, err := config.Snapshot(configured)
 	if err != nil {
 		_ = os.RemoveAll(workspace)
 		return store.
-			Task{}, fmt.Errorf("encode task config: %w",
+				Task{}, fmt.Errorf("encode task config: %w",
 
-			err)
+				err)
 	}
 	if len(configured.Agents) == 0 {
 		configSnapshot = ""
 	}
-	task := store.Task{ID: id, ParentTaskID: parentTaskID, Request: request.Request,
+	task := store.Task{
+		ID: id, ParentTaskID: parentTaskID, Request: request.Request,
 		WorkspacePath:  workspace,
 		RepositoryType: request.Repository.Type, RepositorySource: source,
 
 		SubmittedRepositoryPath: submitted, State: string(stagekit.Preparing), Pipeline: selectedPipeline.Name, ConfigSnapshot: configSnapshot, CreatedAt: createdAt, StartedAt: createdAt, CodingAgent: request.CodingAgent, Model: request.
-						Model, Thinking: request.Thinking}
+						Model, Thinking: request.Thinking,
+	}
 	metadata, err := json.MarshalIndent(task, "",
 		"  ")
 	if err != nil {
@@ -308,8 +314,7 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	}
 	for _, session := range tasks {
 		if s.deps.Sandbox != nil {
-			_ =
-				s.deps.Sandbox.Cleanup(ctx, workspace.CleanupRequest{TaskID: session.ID, WorkspaceRoot: session.WorkspacePath, SourceType: session.RepositoryType, CanonicalPath: session.CanonicalRepositoryPath, WorkingPath: session.RepositoryPath})
+			_ = s.deps.Sandbox.Cleanup(ctx, workspace.CleanupRequest{TaskID: session.ID, WorkspaceRoot: session.WorkspacePath, SourceType: session.RepositoryType, CanonicalPath: session.CanonicalRepositoryPath, WorkingPath: session.RepositoryPath})
 		}
 
 		if err := os.RemoveAll(filepath.Join(s.root, "tasks", session.ID)); err !=
@@ -328,7 +333,8 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 }
 
 func (s *Service) Diff(ctx context.
-	Context, id string) (Diff, error) {
+	Context, id string,
+) (Diff, error) {
 	task, err := s.deps.Store.
 		Task(ctx, id)
 	if err != nil {
@@ -337,14 +343,15 @@ func (s *Service) Diff(ctx context.
 	return s.diffRepository(task,
 		false)
 }
+
 func (s *Service) diffRepository(
-	task store.Task, reviewBase bool) (Diff, error) {
+	task store.Task, reviewBase bool,
+) (Diff, error) {
 	base := task.
 		BaseSHA
 	if reviewBase && task.ReviewBaseSHA != "" {
-		base =
-			task.
-				ReviewBaseSHA
+		base = task.
+			ReviewBaseSHA
 	}
 	files, err := factorygit.ChangedFiles(task.RepositoryPath, base)
 	if err != nil {

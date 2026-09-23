@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
 	"uuid"
 
 	"github.com/jurabek/software-factory/daemon/internal/session"

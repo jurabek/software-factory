@@ -155,16 +155,15 @@ func (s *Service) HandleEvents(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case id :=
-			<-s.events.ids:
+		case id := <-s.events.ids:
 			if ctx.Err() != nil {
 				return
 			}
 			s.handleQueuedEvent(ctx, id)
 		}
-
 	}
 }
+
 func (s *Service) handleQueuedEvent(ctx context.Context, id string) {
 	err := s.handleEvent(ctx,
 		id)
@@ -172,6 +171,7 @@ func (s *Service) handleQueuedEvent(ctx context.Context, id string) {
 		s.events.complete(id, err)
 	}
 }
+
 func (s *Service) handleEvent(ctx context.Context, id string) error {
 	event, err := s.db.OrchestrationEvent(ctx, id)
 	if err != nil {
@@ -232,14 +232,11 @@ func (s *Service) handleEvent(ctx context.Context, id string) error {
 		} else if task.State != string(stagekit.
 			Building,
 		) {
-			err =
-				store.ErrConflict
+			err = store.ErrConflict
 		}
-	case store.
-		TaskPaused:
+	case store.TaskPaused:
 		err = s.pause(ctx, event.TaskID)
-	case
-		store.TaskCancelled:
+	case store.TaskCancelled:
 		err = s.abort(ctx, event.
 			TaskID,
 		)
@@ -248,15 +245,17 @@ func (s *Service) handleEvent(ctx context.Context, id string) error {
 	}
 	return err
 }
+
 func (s *Service) progress(ctx context.
-	Context, taskID string) error {
+	Context, taskID string,
+) error {
 	if s.workflow == nil {
 		return nil
 	}
 	_, err := s.workflow.Run(ctx, taskID)
 	return err
-
 }
+
 func (s *Service) launch(id string, run func(context.Context, string) error) {
 	s.mu.Lock()
 	if active := s.cancel[id]; active != nil {
@@ -274,8 +273,10 @@ func (s *Service) launch(id string, run func(context.Context, string) error) {
 
 	s.runExecution(ctx, id, active, run)
 }
+
 func (s *Service) runExecution(ctx context.Context, id string, active *execution, run func(context.
-	Context, string) error) {
+	Context, string) error,
+) {
 	go func() {
 		var runErr error
 		defer func() {
@@ -332,7 +333,8 @@ func (s *Service) runExecution(ctx context.Context, id string, active *execution
 }
 
 func (s *Service) Shutdown(ctx context.
-	Context) {
+	Context,
+) {
 	s.mu.Lock()
 	workers := make(map[string]*execution,
 
@@ -360,6 +362,7 @@ func (s *Service) Shutdown(ctx context.
 		}
 	}
 }
+
 func (s *Service) stopAndWait(ctx context.Context, id string) error {
 	for {
 		s.mu.Lock()
@@ -380,9 +383,9 @@ func (s *Service) stopAndWait(ctx context.Context, id string) error {
 		}
 	}
 }
+
 func (s *Service) scheduleMessage(ctx context.Context, task store.Task, role string) error {
-	_ =
-		role
+	_ = role
 	switch stagekit.State(task.State) {
 	case stagekit.AwaitingApproval,
 
@@ -392,15 +395,15 @@ func (s *Service) scheduleMessage(ctx context.Context, task store.Task, role str
 	}
 	return nil
 }
+
 func (s *Service) kickQueuedMessage(taskID string) {
 	ctx := context.Background()
 	lock := s.taskLock(taskID)
 	lock.Lock()
 	defer lock.Unlock()
-	task, err :=
-		s.
-			db.
-			Task(ctx, taskID)
+	task, err := s.
+		db.
+		Task(ctx, taskID)
 	if err != nil {
 		return
 	}
@@ -416,6 +419,7 @@ func (s *Service) kickQueuedMessage(taskID string) {
 	}
 	_ = s.scheduleMessage(ctx, task, message.StageID)
 }
+
 func (s *Service) traceMessage(ctx context.Context, message store.Message, phase *store.Phase) error {
 	event, err := stagekit.MessageEvent(ctx, s.db, message,
 

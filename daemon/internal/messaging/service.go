@@ -133,9 +133,11 @@ func (s *Service) Send(ctx context.Context, taskID, actor string, request Reques
 func (s *Service) taskDir(id string) string {
 	return filepath.Join(s.deps.Root, "tasks", id)
 }
+
 func (s *Service) messageRecipient(ctx context.
 	Context, task store.Task, target *store.Phase) (string,
-	*store.Phase, error) {
+	*store.Phase, error,
+) {
 	if target != nil && target.Kind == "agent" {
 		return target.Owner, target, nil
 	}
@@ -155,16 +157,14 @@ func (s *Service) messageRecipient(ctx context.
 			return active.Name, &active, nil
 		}
 	}
-	phases, err :=
-		s.deps.Store.Phases(ctx, task.ID)
+	phases, err := s.deps.Store.Phases(ctx, task.ID)
 	if err != nil {
 		return "", nil, err
 	}
 	var latest *store.Phase
 	if len(phases) > 0 {
 		value := phases[len(phases)-1]
-		latest =
-			&value
+		latest = &value
 	}
 	state := stagekit.State(task.
 		State,
@@ -240,8 +240,7 @@ func (s *Service) messageRecipient(ctx context.
 			nil
 	case stagekit.Completed:
 		return "builder", latest, nil
-	case
-		stagekit.Blocked:
+	case stagekit.Blocked:
 		if latest !=
 			nil && latest.Kind == "agent" {
 			return latest.Owner,
@@ -254,6 +253,7 @@ func (s *Service) messageRecipient(ctx context.
 			store.ErrConflict
 	}
 }
+
 func (s *Service) ensureAgentSession(ctx context.Context, task store.Task, role string) (store.AgentSession, error) {
 	configured, err := config.Resolve(s.deps.Config,
 		s.deps.ConfigPath, task.ConfigSnapshot)
@@ -305,7 +305,8 @@ func (s *Service) ensureAgentSession(ctx context.Context, task store.Task, role 
 
 func (s *Service) Resolve(ctx context.Context,
 
-	taskID string, target Target) (string, string, *store.Phase, error) {
+	taskID string, target Target,
+) (string, string, *store.Phase, error) {
 	count := 0
 	if target.EventID != "" {
 		count++

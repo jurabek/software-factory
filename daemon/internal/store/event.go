@@ -110,6 +110,7 @@ func eventLimit(limit int) int {
 	}
 	return limit
 }
+
 func scanEvents(rows *sql.Rows) ([]Event, error) {
 	values := make([]Event, 0)
 	for rows.Next() {

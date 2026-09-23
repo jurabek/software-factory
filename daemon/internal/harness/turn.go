@@ -8,7 +8,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
 	"uuid"
 
 	factorygit "github.com/jurabek/software-factory/daemon/internal/git"

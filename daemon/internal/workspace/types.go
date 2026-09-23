@@ -22,8 +22,10 @@ type MaterializationRequest struct {
 
 // Materialization and Check are the repository profile types owned by the git
 // adapter; workspace re-exports them so task orchestration stays git-agnostic.
-type Materialization = factorygit.Profile
-type Check = factorygit.Check
+type (
+	Materialization = factorygit.Profile
+	Check           = factorygit.Check
+)
 
 type CleanupRequest struct {
 	TaskID        string

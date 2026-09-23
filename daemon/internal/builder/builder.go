@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
 	"uuid"
 
 	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
@@ -269,7 +268,8 @@ func CheckProtectedPaths(repoPath, base string, protected []string) error {
 func (
 	s service) savedBuild(ctx context.
 	Context, taskID,
-	planAttemptID string) (stage.BuildResult, bool, error) {
+	planAttemptID string,
+) (stage.BuildResult, bool, error) {
 	task, err := s.kit.Task(ctx, taskID)
 	if err != nil {
 		return stage.BuildResult{}, false, err
@@ -328,7 +328,8 @@ func (
 func (s service) beginBuild(ctx context.
 	Context, taskID,
 	planAttemptID string) (store.
-	Task, store.Phase, error) {
+	Task, store.Phase, error,
+) {
 	task, err := s.kit.Task(ctx, taskID)
 	if err != nil {
 		return store.Task{}, store.Phase{}, err
@@ -375,18 +376,21 @@ func (s service) beginBuild(ctx context.
 }
 
 func (s service) publishBuild(ctx context.
-	Context, task store.Task, phase store.Phase, turn harness.TurnResult, profile workspace.Materialization) (stage.BuildResult, error) {
+	Context, task store.Task, phase store.Phase, turn harness.TurnResult, profile workspace.Materialization,
+) (stage.BuildResult, error) {
 	return s.kit.DeliverAndFinalize(ctx, stagekit.Delivery{Task: task, Phase: phase, Role: "build", ReadOnly: readOnly(
 		phase), Instructions: Instructions(), Validate: func(text string) (any, error) {
 		return ValidateWithEvidence(task.RepositoryPath,
 
 			workspace.ReviewBase(task), profile.Tests, text)
 	}, OnValid: func(ctx context.
-		Context, text string) error {
+		Context, text string,
+	) error {
 		return PersistEvidence(ctx, s.kit.DB(), task, phase,
 			text)
 	}}, turn, func(turn harness.TurnResult) (
-		stage.BuildResult, error) {
+		stage.BuildResult, error,
+	) {
 		if err := s.validatePaths(task, profile); err != nil {
 			s.kit.Fail(ctx, phase, err)
 			return stage.BuildResult{}, err
@@ -396,11 +400,11 @@ func (s service) publishBuild(ctx context.
 			return stage.BuildResult{},
 				err
 		}
-		if err :=
-			s.
-				kit.Complete(ctx, stagekit.Completion{Phase: phase, From: stagekit.Building,
-				To: stagekit.Checking, Status: "success",
-			}); err != nil {
+		if err := s.
+			kit.Complete(ctx, stagekit.Completion{
+			Phase: phase, From: stagekit.Building,
+			To: stagekit.Checking, Status: "success",
+		}); err != nil {
 			s.kit.Fail(ctx, phase, err)
 			return stage.
 				BuildResult{}, err
@@ -421,6 +425,7 @@ func (s service) publishBuild(ctx context.
 			OutputSnapshot}, nil
 	})
 }
+
 func (s service) validatePaths(task store.Task, profile workspace.Materialization) error {
 	return CheckProtectedPaths(task.RepositoryPath,
 		workspace.

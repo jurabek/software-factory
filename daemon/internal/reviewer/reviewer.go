@@ -184,8 +184,7 @@ func (s service) savedReview(ctx context.Context, taskID, verificationAttemptID 
 		return stage.ReviewResult{}, false,
 			err
 	}
-	queued, err :=
-		s.kit.DB().QueuedMessageForStages(ctx, taskID, stageDef.ID, stageDef.Agent)
+	queued, err := s.kit.DB().QueuedMessageForStages(ctx, taskID, stageDef.ID, stageDef.Agent)
 	if err != nil {
 		return stage.ReviewResult{},
 			false, err
@@ -209,7 +208,6 @@ func (s service) savedReview(ctx context.Context, taskID, verificationAttemptID 
 	review, err := Validate(payload)
 	if err != nil {
 		return stage.ReviewResult{}, false, err
-
 	}
 	eligible, err := s.kit.AttemptAfter(ctx, task.ID, phase.ID, verificationAttemptID)
 	if err !=
@@ -260,14 +258,12 @@ func (s service) beginReview(ctx context.Context, taskID, planAttemptID, buildAt
 		kit.RequireAttempt(ctx, task.ID, verifyStage.ID, verificationAttemptID); err != nil {
 		return store.Task{}, store.Phase{}, err
 	}
-	stageDef, err :=
-		s.kit.StageByKind(task, "review")
+	stageDef, err := s.kit.StageByKind(task, "review")
 	if err !=
 		nil {
 		return store.Task{}, store.Phase{}, err
 	}
-	if err =
-		s.kit.SetActiveStage(ctx, task.ID, stageDef.ID); err != nil {
+	if err = s.kit.SetActiveStage(ctx, task.ID, stageDef.ID); err != nil {
 		return store.Task{}, store.Phase{}, err
 	}
 	task,
@@ -293,31 +289,33 @@ func (s service) beginReview(ctx context.Context, taskID, planAttemptID, buildAt
 
 func (s service) publishReview(ctx context.Context, task store.Task, phase store.Phase,
 	turn harness.TurnResult, before string) (stage.ReviewResult,
-	error) {
+	error,
+) {
 	return s.kit.DeliverAndFinalize(ctx, stagekit.Delivery{
-
 		Task: task, Phase: phase, Role: "review", ReadOnly: true, Instructions: Instructions(), Validate: func(text string) (any, error) {
 			return Validate(text)
 		}}, turn, func(turn harness.TurnResult) (stage.ReviewResult, error) {
 		payload := turn.Payload
 		review,
-			validationErr :=
-			Validate(payload)
+			validationErr := Validate(payload)
 		if validationErr != nil {
 			s.kit.Fail(ctx, phase, validationErr)
 			return stage.ReviewResult{}, validationErr
 		}
 		if !review.Approved {
 			rejected := fmt.Errorf("reviewer rejected implementation")
-			if err := s.kit.Complete(ctx, stagekit.Completion{Phase: phase, From: stagekit.
-				Reviewing,
+			if err := s.kit.Complete(ctx, stagekit.Completion{
+				Phase: phase, From: stagekit.
+					Reviewing,
 				To: stagekit.Blocked, Status: "failed", Cause: rejected,
 			}); err != nil {
 				return stage.ReviewResult{}, err
 			}
-			return stage.ReviewResult{Payload: payload, AttemptID: phase.
-				ID,
-				SnapshotID: phase.OutputSnapshot, Approved: false}, nil
+			return stage.ReviewResult{
+				Payload: payload, AttemptID: phase.
+						ID,
+				SnapshotID: phase.OutputSnapshot, Approved: false,
+			}, nil
 		}
 		after, fingerprintErr := workspace.Fingerprint(task)
 		if fingerprintErr !=
@@ -334,8 +332,7 @@ func (s service) publishReview(ctx context.Context, task store.Task, phase store
 			return stage.
 				ReviewResult{}, readonlyErr
 		}
-		if err :=
-			s.kit.Complete(ctx, stagekit.Completion{Phase: phase, From: stagekit.Reviewing, To: stagekit.Completed, Status: "success"}); err !=
+		if err := s.kit.Complete(ctx, stagekit.Completion{Phase: phase, From: stagekit.Reviewing, To: stagekit.Completed, Status: "success"}); err !=
 
 			nil {
 			s.kit.Fail(ctx, phase, err)

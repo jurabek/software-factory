@@ -143,8 +143,7 @@ func (s service) Approve(ctx context.Context, taskID, actor, expectedDigest stri
 		"" {
 		return fmt.Errorf("plan_digest is required")
 	}
-	task, err :=
-		s.kit.Task(ctx, taskID)
+	task, err := s.kit.Task(ctx, taskID)
 	if err != nil {
 		return err
 	}
@@ -166,20 +165,25 @@ func (s service) Approve(ctx context.Context, taskID, actor, expectedDigest stri
 		nil || len(plan.Questions) > 0 {
 		return store.ErrConflict
 	}
-	currentDigest :=
-		stagekit.
-			PlanApprovalDigest(payload)
+	currentDigest := stagekit.
+		PlanApprovalDigest(payload)
 	if expectedDigest !=
 		currentDigest {
 		return ErrStalePlan
 	}
-	event := store.Event{ID: stagekit.RandomID(), TaskID: taskID, Kind: session.KindCustom,
+	event := store.Event{
+		ID: stagekit.RandomID(), TaskID: taskID, Kind: session.KindCustom,
 
-		Name: "task_approved", Payload: session.CustomPayload{CustomType: "task_approved",
+		Name: "task_approved", Payload: session.CustomPayload{
+			CustomType: "task_approved",
 			Data: session.
-				BoundedJSON(map[string]any{"task_id": taskID, "plan_digest": currentDigest, "actor": actor})}, Display: session.
-			Display{Role: "system",
-			Status: "success", Title: "Plan approved"}, AvailableActions: []string{"pause", "abort"}, StartedAt: time.Now().UTC()}
+				BoundedJSON(map[string]any{"task_id": taskID, "plan_digest": currentDigest, "actor": actor}),
+		}, Display: session.
+			Display{
+			Role:   "system",
+			Status: "success", Title: "Plan approved",
+		}, AvailableActions: []string{"pause", "abort"}, StartedAt: time.Now().UTC(),
+	}
 	if err = s.kit.DB().SetApproval(ctx, taskID, currentDigest, actor); err != nil {
 		return err
 	}
@@ -193,10 +197,9 @@ func (s service) Approve(ctx context.Context, taskID, actor, expectedDigest stri
 }
 
 func (s service) savedPlan(ctx context.Context, taskID string) (stage.PlanResult, bool, error) {
-	task, err :=
-		s.
-			kit.
-			Task(ctx, taskID)
+	task, err := s.
+		kit.
+		Task(ctx, taskID)
 	if err != nil {
 		return stage.PlanResult{}, false, err
 	}
@@ -204,8 +207,7 @@ func (s service) savedPlan(ctx context.Context, taskID string) (stage.PlanResult
 	if err != nil {
 		return stage.PlanResult{}, false, err
 	}
-	queued, err :=
-		s.kit.DB().QueuedMessageForStages(ctx, taskID, stageDef.ID, stageDef.Agent)
+	queued, err := s.kit.DB().QueuedMessageForStages(ctx, taskID, stageDef.ID, stageDef.Agent)
 	if err != nil {
 		return stage.PlanResult{}, false, err
 	}
@@ -226,10 +228,12 @@ func (s service) savedPlan(ctx context.Context, taskID string) (stage.PlanResult
 		return stage.PlanResult{}, false, err
 	}
 	return stage.
-		PlanResult{Payload: payload, AttemptID: phase.ID, SnapshotID: phase.
-		OutputSnapshot,
+		PlanResult{
+		Payload: payload, AttemptID: phase.ID, SnapshotID: phase.
+				OutputSnapshot,
 		Approved: task.
-			ApprovalActor != ""}, true, nil
+			ApprovalActor != "",
+	}, true, nil
 }
 
 func (s service) beginPlan(ctx context.Context, taskID string) (store.Task, store.Phase, error) {
@@ -276,10 +280,12 @@ func (s service) publishPlan(ctx context.Context, task store.Task, phase store.P
 		return stage.PlanResult{}, err
 	}
 	return s.
-		kit.DeliverAndFinalize(ctx, stagekit.Delivery{Task: task, Phase: phase,
+		kit.DeliverAndFinalize(ctx, stagekit.Delivery{
+		Task: task, Phase: phase,
 		Role: "planner", ReadOnly: true, Instructions: Instructions(), Validate: func(text string) (any, error) {
 			return Validate(text)
-		}}, turn,
+		},
+	}, turn,
 		func(turn harness.TurnResult) (stage.PlanResult, error) {
 			after, changedErr := workspace.Fingerprint(task)
 			if changedErr !=
@@ -298,7 +304,8 @@ func (s service) publishPlan(ctx context.Context, task store.Task, phase store.P
 			if completeErr := s.kit.
 				Complete(ctx, stagekit.Completion{
 					Phase: phase, From: stagekit.Planning, To: stagekit.AwaitingApproval,
-					Status: "success", Approval: stagekit.PlanApprovalDigest(turn.Payload), Planner: true}); completeErr != nil {
+					Status: "success", Approval: stagekit.PlanApprovalDigest(turn.Payload), Planner: true,
+				}); completeErr != nil {
 
 				s.kit.Fail(ctx, phase,
 					completeErr)
@@ -321,5 +328,7 @@ func (s service) publishPlan(ctx context.Context, task store.Task, phase store.P
 		})
 }
 
-var ErrStalePlan = errors.New("plan digest is stale")
-var errNoDurableResult = errors.New("planner completed without a durable result")
+var (
+	ErrStalePlan       = errors.New("plan digest is stale")
+	errNoDurableResult = errors.New("planner completed without a durable result")
+)

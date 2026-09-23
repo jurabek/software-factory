@@ -115,13 +115,31 @@ func incompatibleSchema(ctx context.Context, db *sql.DB) (bool, error) {
 
 func ensureRetriableColumns(ctx context.Context, db *sql.DB) error {
 	adds := [][2]string{
-		{"tasks", "parent_task_id text references tasks(id) on delete cascade"}, {"tasks", "selected_branch_id text"}, {"tasks", "pipeline text"}, {"tasks", "active_stage text"},
-		{"tasks", "coding_agent text not null default ''"}, {"tasks", "model text not null default ''"}, {"tasks", "thinking text not null default ''"},
-		{"phases", "branch_id text"}, {"phases", "definition_id text"}, {"phases", "input_snapshot text"}, {"phases", "output_snapshot text"}, {"phases", "superseded integer not null default 0"},
-		{"phases", "native_base_entry_id text"}, {"phases", "fork_native integer not null default 0"},
-		{"events", "attempt_id text"}, {"events", "branch_id text"}, {"events", "actions_json text"}, {"events", "request_id text"},
-		{"phases", "stage_id text"}, {"envelopes", "stage_id text"}, {"messages", "stage_id text"},
-		{"checks", "stage_id text"}, {"checks", "check_phase text not null default 'primary'"}, {"checks", "comparison_baseline text"}, {"checks", "output_path text"},
+		{"tasks", "parent_task_id text references tasks(id) on delete cascade"},
+		{"tasks", "selected_branch_id text"},
+		{"tasks", "pipeline text"},
+		{"tasks", "active_stage text"},
+		{"tasks", "coding_agent text not null default ''"},
+		{"tasks", "model text not null default ''"},
+		{"tasks", "thinking text not null default ''"},
+		{"phases", "branch_id text"},
+		{"phases", "definition_id text"},
+		{"phases", "input_snapshot text"},
+		{"phases", "output_snapshot text"},
+		{"phases", "superseded integer not null default 0"},
+		{"phases", "native_base_entry_id text"},
+		{"phases", "fork_native integer not null default 0"},
+		{"events", "attempt_id text"},
+		{"events", "branch_id text"},
+		{"events", "actions_json text"},
+		{"events", "request_id text"},
+		{"phases", "stage_id text"},
+		{"envelopes", "stage_id text"},
+		{"messages", "stage_id text"},
+		{"checks", "stage_id text"},
+		{"checks", "check_phase text not null default 'primary'"},
+		{"checks", "comparison_baseline text"},
+		{"checks", "output_path text"},
 	}
 	for _, add := range adds {
 		if _, err := db.ExecContext(ctx, `alter table `+add[0]+` add column `+add[1]); err != nil && !isDuplicateColumn(err) {

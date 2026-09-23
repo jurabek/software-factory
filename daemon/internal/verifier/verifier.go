@@ -481,7 +481,6 @@ func (s service) comparisonBaseline(ctx context.Context, task store.Task, curren
 		}
 	}
 	for _, candidate := range slices.Backward(phases) {
-
 		if candidate.Kind == "build" && candidate.InputSnapshot != "" && !candidate.Superseded {
 			return candidate.InputSnapshot, nil
 		}
@@ -536,7 +535,8 @@ func CopyOverlayPath(sourceRoot, destinationRoot, relative string) error {
 func (s service) savedVerification(ctx context.Context,
 	taskID, buildAttemptID string) (stage.VerificationResult, bool,
 
-	error) {
+	error,
+) {
 	task, err := s.kit.Task(ctx, taskID)
 	if err != nil {
 		return stage.
@@ -638,17 +638,20 @@ func (s service) beginVerification(ctx context.Context, taskID, planAttemptID, b
 
 func (s service) publishVerification(ctx context.Context, phase store.Phase, checks []store.Check,
 
-	comparisons []store.Comparison, report string, passed bool) (stage.VerificationResult, error) {
+	comparisons []store.Comparison, report string, passed bool,
+) (stage.VerificationResult, error) {
 	status, to := "success", stagekit.Reviewing
 	if !passed {
 		status, to = "failed", stagekit.Blocked
 	}
 	if err := s.kit.Complete(
-		ctx, stagekit.Completion{Phase: phase,
+		ctx, stagekit.Completion{
+			Phase: phase,
 			From: stagekit.
 				Checking, To: to, Status: status, Checks: checks,
 
-			Comparisons: comparisons}); err != nil {
+			Comparisons: comparisons,
+		}); err != nil {
 		s.kit.
 			Fail(ctx, phase,
 				err)

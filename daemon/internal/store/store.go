@@ -78,8 +78,10 @@ func wrap(action string, err error) error {
 	}
 	return fmt.Errorf("%s: %w", action, err)
 }
+
 func (db *DB) ReserveAgentSession(ctx context.
-	Context, taskID string, value AgentSession) (AgentSession, error) {
+	Context, taskID string, value AgentSession,
+) (AgentSession, error) {
 	timestamp := now()
 	stageID := value.StageID
 	if stageID ==
@@ -112,6 +114,7 @@ func (db *DB) ReserveAgentSession(ctx context.
 	}
 	return stored, nil
 }
+
 func (db *DB) AgentSession(ctx context.Context, taskID, role string) (AgentSession, error) {
 	var value AgentSession
 	var usage string
@@ -142,6 +145,7 @@ func (db *DB) AgentSession(ctx context.Context, taskID, role string) (AgentSessi
 	}
 	return value, nil
 }
+
 func (db *DB) AgentSessions(ctx context.Context, taskID string) ([]AgentSession, error) {
 	rows, err := db.QueryContext(ctx, `select stage_id from agent_sessions where task_id=? order by stage_id`,
 
@@ -171,12 +175,14 @@ func (db *DB) AgentSessions(ctx context.Context, taskID string) ([]AgentSession,
 	}
 	return values, nil
 }
+
 func (db *DB) BeginAgentInvocation(ctx context.
 	Context, taskID,
 	role,
 	invocationID,
 
-	requestID, phaseID string) error {
+	requestID, phaseID string,
+) error {
 	result, err := db.ExecContext(ctx, `update agent_sessions set pending_invocation_id=?,pending_request_id=?,pending_phase_id=?,last_used_at=? where task_id=? and stage_id=? and pending_invocation_id is null`,
 
 		invocationID,
@@ -195,9 +201,11 @@ func (db *DB) BeginAgentInvocation(ctx context.
 	}
 	return nil
 }
+
 func (db *DB) FinalizeAgentInvocation(ctx context.Context,
 	taskID, role,
-	invocationID string, value AgentSession) error {
+	invocationID string, value AgentSession,
+) error {
 	usage, err := json.
 		Marshal(value.Usage)
 	if err !=
@@ -343,7 +351,8 @@ func (db *DB) ReconcileAgentStats(ctx context.Context, taskID, stageID string, v
 // usable native turn, leaving the session settled and ready to re-drive.
 
 func (db *DB) ClearAgentInvocation(ctx context.Context, taskID, stageID,
-	invocationID string) error {
+	invocationID string,
+) error {
 	result, err := db.ExecContext(ctx, `update agent_sessions set pending_invocation_id=null,pending_request_id=null,pending_phase_id=null,last_used_at=? where task_id=? and stage_id=? and pending_invocation_id=?`,
 
 		now(), taskID, stageID, invocationID)
@@ -376,7 +385,8 @@ func (db *DB) RequeueInterruptedPhase(ctx context.Context, taskID, phaseID strin
 // recorded native checkpoint to fork from. A pending invocation blocks it.
 
 func (db *DB) ResetAgentSession(ctx context.
-	Context, taskID, stageID, newSessionID string) error {
+	Context, taskID, stageID, newSessionID string,
+) error {
 	result, err := db.ExecContext(ctx, `update agent_sessions set harness_session_id=?,session_ready=0,native_transcript_path=null,last_entry_id=null,pending_invocation_id=null,pending_request_id=null,pending_phase_id=null,last_used_at=? where task_id=? and stage_id=? and pending_invocation_id is null`,
 
 		newSessionID,
@@ -404,12 +414,14 @@ func (db *DB) ResetAgentSession(ctx context.
 	}
 	return nil
 }
+
 func (db *DB) ReplaceAgentSession(ctx context.
 	Context, taskID,
 	role,
 	newSessionID,
 
-	newDirectory string) (priorID string, err error) {
+	newDirectory string,
+) (priorID string, err error) {
 	var current AgentSession
 	current,
 		err = db.AgentSession(ctx, taskID, role)
@@ -439,6 +451,7 @@ func (db *DB) ReplaceAgentSession(ctx context.
 	}
 	return current.HarnessSessionID, nil
 }
+
 func (db *DB) CreateBranch(ctx context.Context, branch Branch) error {
 	_,
 		err := db.ExecContext(ctx, `insert into branches(id,task_id,parent_branch_id,fork_attempt_id,head_attempt_id,status,created_at,updated_at) values(?,?,?,?,?,?,?,?)`,
@@ -448,6 +461,7 @@ func (db *DB) CreateBranch(ctx context.Context, branch Branch) error {
 	return wrap("create branch",
 		err)
 }
+
 func (db *DB) Branches(ctx context.Context, taskID string) ([]Branch, error) {
 	rows, err := db.QueryContext(ctx, `select id,task_id,coalesce(parent_branch_id,''),coalesce(fork_attempt_id,''),coalesce(head_attempt_id,''),status,created_at,updated_at from branches where task_id=? order by created_at`,
 
@@ -460,21 +474,22 @@ func (db *DB) Branches(ctx context.Context, taskID string) ([]Branch, error) {
 		0)
 	for rows.Next() {
 		var value Branch
-		if err =
-			rows.Scan(&value.ID, &value.TaskID, &value.ParentBranchID, &value.
-				ForkAttemptID, &value.HeadAttemptID, &value.Status, &value.
-				CreatedAt, &value.UpdatedAt); err != nil {
+		if err = rows.Scan(&value.ID, &value.TaskID, &value.ParentBranchID, &value.
+			ForkAttemptID, &value.HeadAttemptID, &value.Status, &value.
+			CreatedAt, &value.UpdatedAt); err != nil {
 			return nil, err
 		}
 		values = append(values, value)
 	}
 	return values, rows.Err()
 }
+
 func (db *DB) Branch(ctx context.Context,
 	taskID, branchID string) (
 	Branch,
 
-	error) {
+	error,
+) {
 	var value Branch
 	err := db.QueryRowContext(ctx, `select id,task_id,coalesce(parent_branch_id,''),coalesce(fork_attempt_id,''),coalesce(head_attempt_id,''),status,created_at,updated_at from branches where task_id=? and id=?`,
 
@@ -488,14 +503,17 @@ func (db *DB) Branch(ctx context.Context,
 	return value, wrap("read branch",
 		err)
 }
+
 func (db *DB) SetBranchHead(ctx context.Context, taskID, branchID,
-	headAttemptID string) error {
+	headAttemptID string,
+) error {
 	_, err := db.ExecContext(ctx, `update branches set head_attempt_id=?,updated_at=? where task_id=? and id=?`,
 
 		nullIfEmpty(headAttemptID), now(), taskID, branchID)
 	return wrap("move branch head",
 		err)
 }
+
 func (db *DB) SelectBranch(ctx context.Context, taskID, branchID string) error {
 	_, err := db.ExecContext(ctx, `update tasks set selected_branch_id=? where id=?`,
 
@@ -503,9 +521,10 @@ func (db *DB) SelectBranch(ctx context.Context, taskID, branchID string) error {
 	return wrap("select branch",
 		err)
 }
-func (db *DB) TaskHeadAttempt(ctx context.
-	Context, taskID string) string {
 
+func (db *DB) TaskHeadAttempt(ctx context.
+	Context, taskID string,
+) string {
 	var selected string
 	_ = db.QueryRowContext(ctx, `select coalesce(selected_branch_id,'') from tasks where id=?`,
 
@@ -519,23 +538,23 @@ func (db *DB) TaskHeadAttempt(ctx context.
 		taskID, selected).Scan(&head)
 	return head
 }
+
 func (db *DB) SaveCheck(ctx context.Context, check Check) error {
 	_,
-		err :=
+		err := db.ExecContext(ctx, `insert or replace into checks(id,task_id,phase_id,stage_id,check_phase,comparison_baseline,name,command,attempt,status,exit_code,output,output_path,duration_ms,started_at,ended_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 
-		db.ExecContext(ctx, `insert or replace into checks(id,task_id,phase_id,stage_id,check_phase,comparison_baseline,name,command,attempt,status,exit_code,output,output_path,duration_ms,started_at,ended_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-
-			check.ID, check.TaskID,
-			nullIfEmpty(check.PhaseID), nullIfEmpty(check.StageID), check.Phase, nullIfEmpty(check.ComparisonBaseline), check.Name, check.Command, check.Attempt, check.Status,
-			check.ExitCode, check.Output, check.OutputPath, check.DurationMS,
-			check.StartedAt, check.EndedAt)
+		check.ID, check.TaskID,
+		nullIfEmpty(check.PhaseID), nullIfEmpty(check.StageID), check.Phase, nullIfEmpty(check.ComparisonBaseline), check.Name, check.Command, check.Attempt, check.Status,
+		check.ExitCode, check.Output, check.OutputPath, check.DurationMS,
+		check.StartedAt, check.EndedAt)
 	return wrap("save check",
 		err)
 }
+
 func (db *DB) Checks(ctx context.Context,
 	taskID string) (
-	[]Check, error) {
-
+	[]Check, error,
+) {
 	rows, err := db.QueryContext(ctx, `select id,task_id,coalesce(phase_id,''),coalesce(stage_id,''),coalesce(check_phase,'primary'),coalesce(comparison_baseline,''),name,command,attempt,status,coalesce(exit_code,-1),coalesce(output,''),coalesce(output_path,''),coalesce(duration_ms,0),coalesce(started_at,''),coalesce(ended_at,'') from checks where task_id=? order by rowid`,
 
 		taskID)
@@ -558,8 +577,10 @@ func (db *DB) Checks(ctx context.Context,
 	return values, rows.
 		Err()
 }
+
 func (db *DB) CreateDefinition(ctx context.
-	Context, definition PhaseDefinition) error {
+	Context, definition PhaseDefinition,
+) error {
 	_, err := db.ExecContext(ctx, `insert into phase_definitions(id,task_id,phase_key,revision,executor,owner,spec_json,digest,parent_revision,created_at) values(?,?,?,?,?,?,?,?,?,?)`,
 
 		definition.
@@ -570,42 +591,45 @@ func (db *DB) CreateDefinition(ctx context.
 	return wrap("create phase definition",
 		err)
 }
+
 func (db *DB) LatestDefinition(ctx context.
 	Context, taskID,
-	phaseKey string) (PhaseDefinition, error) {
+	phaseKey string,
+) (PhaseDefinition, error) {
 	var value PhaseDefinition
-	err :=
-		db.
-			QueryRowContext(ctx, `select id,task_id,phase_key,revision,coalesce(executor,''),coalesce(owner,''),coalesce(spec_json,'{}'),coalesce(digest,''),coalesce(parent_revision,0),created_at from phase_definitions where task_id=? and phase_key=? order by revision desc limit 1`,
+	err := db.
+		QueryRowContext(ctx, `select id,task_id,phase_key,revision,coalesce(executor,''),coalesce(owner,''),coalesce(spec_json,'{}'),coalesce(digest,''),coalesce(parent_revision,0),created_at from phase_definitions where task_id=? and phase_key=? order by revision desc limit 1`,
 
-				taskID, phaseKey).Scan(&value.ID,
-			&value.TaskID, &value.PhaseKey, &value.Revision, &value.Executor,
-			&value.Owner, &value.Spec, &value.Digest, &value.ParentRevision,
-			&value.CreatedAt)
+			taskID, phaseKey).Scan(&value.ID,
+		&value.TaskID, &value.PhaseKey, &value.Revision, &value.Executor,
+		&value.Owner, &value.Spec, &value.Digest, &value.ParentRevision,
+		&value.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return PhaseDefinition{}, ErrNotFound
 	}
 	return value, wrap("read phase definition", err)
 }
+
 func (db *DB) SaveEnvelope(ctx context.Context, id, taskID,
 	phaseID,
 	role,
 	outputType,
-	payload string, valid bool, attempt int) error {
+	payload string, valid bool, attempt int,
+) error {
 	_,
 		err := db.ExecContext(ctx, `insert into envelopes(id,task_id,phase_id,stage_id,agent_role,output_type,payload_json,valid,attempt,created_at) values(?,?,?,?,?,?,?,?,?,?)`,
 
 		id, taskID, phaseID, role, role,
 		outputType, payload, valid, attempt, now())
 	if err == nil && valid && role == "planner" {
-		digest :=
-			fmt.Sprintf("%x", sha256.Sum256([]byte(payload)))
+		digest := fmt.Sprintf("%x", sha256.Sum256([]byte(payload)))
 		_, err = db.
 			ExecContext(ctx, `update tasks set plan_digest=?,approval_actor=null,approval_at=null where id=?`,
 				digest, taskID)
 	}
 	return wrap("save envelope", err)
 }
+
 func (db *DB) Envelopes(ctx context.Context, taskID string) ([]Envelope, error) {
 	rows, err := db.QueryContext(ctx, `select id,task_id,coalesce(phase_id,''),coalesce(stage_id,''),agent_role,output_type,payload_json,valid,attempt,created_at from envelopes where task_id=? order by created_at`,
 
@@ -628,6 +652,7 @@ func (db *DB) Envelopes(ctx context.Context, taskID string) ([]Envelope, error) 
 	return values,
 		rows.Err()
 }
+
 func (db *DB) ValidEnvelope(ctx context.Context, taskID, role string) (string, error) {
 	var payload string
 	err := db.QueryRowContext(ctx,
@@ -639,6 +664,7 @@ func (db *DB) ValidEnvelope(ctx context.Context, taskID, role string) (string, e
 	}
 	return payload, wrap("read envelope", err)
 }
+
 func (db *DB) AppendEvent(ctx context.Context, taskDir string, event Event) (int64, error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -660,23 +686,25 @@ func (db *DB) AppendEvent(ctx context.Context, taskDir string, event Event) (int
 	}
 	return sequence, nil
 }
+
 func (db *DB) Events(ctx context.Context,
-	taskID string, after int64, limit int) ([]Event, error) {
+	taskID string, after int64, limit int,
+) ([]Event, error) {
 	limit = eventLimit(limit)
-	rows, err :=
+	rows, err := db.
+		QueryContext(ctx, `select sequence,id,task_id,coalesce(phase_id,''),coalesce(parent_event_id,''),kind,format_version,coalesce(name,''),coalesce(native_entry_id,''),coalesce(request_id,''),payload_json,display_json,token_count,started_at,ended_at,coalesce(attempt_id,''),coalesce(branch_id,''),coalesce(actions_json,'[]') from events where task_id=? and sequence>? order by sequence limit ?`,
 
-		db.
-			QueryContext(ctx, `select sequence,id,task_id,coalesce(phase_id,''),coalesce(parent_event_id,''),kind,format_version,coalesce(name,''),coalesce(native_entry_id,''),coalesce(request_id,''),payload_json,display_json,token_count,started_at,ended_at,coalesce(attempt_id,''),coalesce(branch_id,''),coalesce(actions_json,'[]') from events where task_id=? and sequence>? order by sequence limit ?`,
-
-				taskID, after, limit)
+			taskID, after, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	return scanEvents(rows)
 }
+
 func (db *DB) RecentEvents(ctx context.Context, taskID string, limit int) (
-	[]Event, error) {
+	[]Event, error,
+) {
 	limit = eventLimit(limit)
 	rows, err := db.QueryContext(ctx, `select sequence,id,task_id,phase_id,parent_event_id,kind,format_version,name,native_entry_id,request_id,payload_json,display_json,token_count,started_at,ended_at,attempt_id,branch_id,actions_json from (select sequence,id,task_id,coalesce(phase_id,'') as phase_id,coalesce(parent_event_id,'') as parent_event_id,kind,format_version,coalesce(name,'') as name,coalesce(native_entry_id,'') as native_entry_id,coalesce(request_id,'') as request_id,payload_json,display_json,token_count,started_at,ended_at,coalesce(attempt_id,'') as attempt_id,coalesce(branch_id,'') as branch_id,coalesce(actions_json,'[]') as actions_json from events where task_id=? order by sequence desc limit ?) order by sequence`,
 
@@ -688,9 +716,11 @@ func (db *DB) RecentEvents(ctx context.Context, taskID string, limit int) (
 	defer rows.Close()
 	return scanEvents(rows)
 }
+
 func (db *DB) EventByID(ctx context.Context, taskID, eventID string) (Event,
 
-	error) {
+	error,
+) {
 	var event Event
 	var payload, display, started, actions string
 	var ended sql.NullString
@@ -731,7 +761,8 @@ func (db *DB) EventByID(ctx context.Context, taskID, eventID string) (Event,
 
 // request in append order.
 func (db *DB) EventsByRequest(ctx context.
-	Context, taskID, requestID string) ([]Event, error) {
+	Context, taskID, requestID string,
+) ([]Event, error) {
 	rows, err := db.QueryContext(ctx, `select sequence,id,task_id,coalesce(phase_id,''),coalesce(parent_event_id,''),kind,format_version,coalesce(name,''),coalesce(native_entry_id,''),coalesce(request_id,''),payload_json,display_json,token_count,started_at,ended_at,coalesce(attempt_id,''),coalesce(branch_id,''),coalesce(actions_json,'[]') from events where task_id=? and request_id=? order by sequence`,
 
 		taskID, requestID)
@@ -771,8 +802,10 @@ func (db *DB) SetEventNativeEntries(ctx context.Context, taskID string, links []
 	}
 	return wrap("commit native links", tx.Commit())
 }
+
 func (db *DB) SaveTestChanges(ctx context.
-	Context, changes []TestChange) error {
+	Context, changes []TestChange,
+) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return wrap("begin test-change evidence",
@@ -791,9 +824,11 @@ func (db *DB) SaveTestChanges(ctx context.
 	return wrap("commit test-change evidence",
 		tx.Commit())
 }
+
 func (db *DB) TestChanges(ctx context.Context, taskID string) ([]TestChange,
 
-	error) {
+	error,
+) {
 	rows, err := db.QueryContext(ctx, `select id,task_id,phase_id,attempt,path,reason,change_kind,coalesce(rename_from,''),coalesce(rename_to,''),created_at from test_changes where task_id=? order by created_at,rowid`,
 
 		taskID)
@@ -816,9 +851,10 @@ func (db *DB) TestChanges(ctx context.Context, taskID string) ([]TestChange,
 	}
 	return values, rows.Err()
 }
-func (db *DB) SaveComparison(ctx context.
-	Context, value Comparison) error {
 
+func (db *DB) SaveComparison(ctx context.
+	Context, value Comparison,
+) error {
 	overlay, err := json.Marshal(value.OverlayPaths)
 	if err != nil {
 		return wrap("encode comparison overlay paths",
@@ -830,9 +866,11 @@ func (db *DB) SaveComparison(ctx context.
 		value.Status, value.Reason, nullIfEmpty(value.BaselineSnapshot), string(overlay), value.CreatedAt, value.DurationMS)
 	return wrap("save comparison", err)
 }
+
 func (db *DB) Comparisons(ctx context.Context, taskID string) ([]Comparison,
 
-	error) {
+	error,
+) {
 	rows, err := db.QueryContext(ctx, `select id,task_id,phase_id,attempt,status,reason,coalesce(baseline_snapshot,''),overlay_paths_json,created_at,duration_ms from comparisons where task_id=? order by created_at,rowid`,
 
 		taskID)
@@ -861,6 +899,7 @@ func (db *DB) Comparisons(ctx context.Context, taskID string) ([]Comparison,
 	}
 	return values, rows.Err()
 }
+
 func (db *DB) SaveMessage(ctx context.Context, value Message) (Message, bool, error) {
 	result, err := db.ExecContext(ctx, `insert into messages(id,task_id,actor,text,idempotency_key,target_type,target_id,stage_id,recipient_role,agent_session_id,delivery_status,created_at) values(?,?,?,?,?,?,?,?,?,?,?,?) on conflict(task_id,idempotency_key) do nothing`,
 
@@ -889,7 +928,8 @@ func (db *DB) SaveMessage(ctx context.Context, value Message) (Message, bool, er
 // event trace is derived output and is written only after the commit.
 
 func (db *DB) AcceptMessageWithEvent(ctx context.Context, value Message, event Event, invalidateApproval, reopen bool,
-	reopenState, taskDir string) (Message, bool, error) {
+	reopenState, taskDir string,
+) (Message, bool, error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return Message{}, false, wrap("begin message acceptance", err)
@@ -966,15 +1006,19 @@ func (db *DB) AcceptMessageWithEvent(ctx context.Context, value Message, event E
 	}
 	return stored, true, nil
 }
+
 func (db *DB) messageByKey(ctx context.Context, taskID, key string) (Message, error) {
 	return scanMessage(db.QueryRowContext(ctx, `select sequence,id,task_id,actor,text,idempotency_key,coalesce(target_type,''),coalesce(target_id,''),coalesce(stage_id,''),recipient_role,agent_session_id,delivery_status,coalesce(failure_reason,''),created_at,coalesce(delivered_at,''),coalesce(failed_at,'') from messages where task_id=? and idempotency_key=?`,
 
 		taskID, key))
 }
+
 func (db *DB) MessageByIdempotencyKey(ctx context.Context,
-	taskID, key string) (Message, error) {
+	taskID, key string,
+) (Message, error) {
 	return db.messageByKey(ctx, taskID, key)
 }
+
 func (db *DB) Messages(ctx context.Context, taskID string) ([]Message, error) {
 	rows, err := db.QueryContext(ctx, `select sequence,id,task_id,actor,text,idempotency_key,coalesce(target_type,''),coalesce(target_id,''),coalesce(stage_id,''),recipient_role,agent_session_id,delivery_status,coalesce(failure_reason,''),created_at,coalesce(delivered_at,''),coalesce(failed_at,'') from messages where task_id=? order by sequence`,
 
@@ -995,17 +1039,21 @@ func (db *DB) Messages(ctx context.Context, taskID string) ([]Message, error) {
 	}
 	return values, rows.Err()
 }
+
 func (db *DB) NextQueuedMessage(ctx context.
 	Context, taskID,
 	role string) (
-	Message, error) {
+	Message, error,
+) {
 	return scanMessage(db.QueryRowContext(ctx, `select sequence,id,task_id,actor,text,idempotency_key,coalesce(target_type,''),coalesce(target_id,''),coalesce(stage_id,''),recipient_role,agent_session_id,delivery_status,coalesce(failure_reason,''),created_at,coalesce(delivered_at,''),coalesce(failed_at,'') from messages where task_id=? and stage_id=? and delivery_status='queued' order by sequence limit 1`,
 
 		taskID, role,
 	))
 }
+
 func (db *DB) NextQueuedTaskMessage(ctx context.
-	Context, taskID string) (Message, error) {
+	Context, taskID string,
+) (Message, error) {
 	return scanMessage(db.QueryRowContext(ctx, `select sequence,id,task_id,actor,text,idempotency_key,coalesce(target_type,''),coalesce(target_id,''),coalesce(stage_id,''),recipient_role,agent_session_id,delivery_status,coalesce(failure_reason,''),created_at,coalesce(delivered_at,''),coalesce(failed_at,'') from messages where task_id=? and delivery_status='queued' order by sequence limit 1`,
 
 		taskID))
@@ -1015,7 +1063,8 @@ func (db *DB) NextQueuedTaskMessage(ctx context.
 
 // the given stage identifiers.
 func (db *DB) QueuedMessageForStages(ctx context.Context,
-	taskID string, stages ...string) (bool, error) {
+	taskID string, stages ...string,
+) (bool, error) {
 	if len(stages) == 0 {
 		return false, nil
 	}
@@ -1034,11 +1083,13 @@ func (db *DB) QueuedMessageForStages(ctx context.Context,
 	}
 	return count > 0, nil
 }
+
 func (db *DB) BeginMessageInvocation(ctx context.Context,
 	taskID, role,
 	invocationID,
 
-	messageID string) error {
+	messageID string,
+) error {
 	return db.beginMessageInvocation(ctx, taskID, role, invocationID,
 		messageID, nil, "")
 }
@@ -1050,7 +1101,8 @@ func (db *DB) BeginMessageInvocation(ctx context.Context,
 // output and is written only after the transaction commits.
 func (
 	db *DB) BeginMessageInvocationWithEvent(ctx context.Context, taskID, role, invocationID, messageID string, event Event,
-	taskDir string) error {
+	taskDir string,
+) error {
 	return db.beginMessageInvocation(ctx, taskID, role, invocationID, messageID, &event, taskDir)
 }
 
@@ -1064,12 +1116,13 @@ func (
 func (db *DB) DeliverMessageWithEvent(ctx context.Context, taskID, messageID string, event Event, taskDir string) error {
 	return db.beginMessageInvocation(ctx, taskID, "", "", messageID, &event, taskDir)
 }
+
 func (db *DB) beginMessageInvocation(ctx context.Context,
 	taskID, role,
 	invocationID,
 
-	messageID string, event *Event, taskDir string) error {
-
+	messageID string, event *Event, taskDir string,
+) error {
 	tx, err := db.BeginTx(ctx,
 		nil)
 	if err != nil {
@@ -1123,8 +1176,7 @@ func (db *DB) beginMessageInvocation(ctx context.Context,
 			err)
 	}
 	if event != nil {
-		if err =
-			writeEventTrace(taskDir, *event, event.Sequence); err != nil {
+		if err = writeEventTrace(taskDir, *event, event.Sequence); err != nil {
 			slog.Error("write derived event trace", "task_id",
 				taskID, "event_id",
 				event.ID, "error", err)
@@ -1132,8 +1184,10 @@ func (db *DB) beginMessageInvocation(ctx context.Context,
 	}
 	return nil
 }
+
 func (db *DB) FailMessage(ctx context.Context, taskID, messageID,
-	reason string) (Message, error) {
+	reason string,
+) (Message, error) {
 	return db.failMessage(ctx, taskID, messageID,
 
 		reason, nil, "")
@@ -1147,11 +1201,11 @@ func (db *DB) FailMessage(ctx context.Context, taskID, messageID,
 func (db *DB) FailMessageWithEvent(ctx context.Context, taskID, messageID, reason string, event Event, taskDir string) (Message, error) {
 	return db.failMessage(ctx, taskID, messageID, reason, &event, taskDir)
 }
-func (db *DB) failMessage(ctx context.Context, taskID, messageID,
-	reason string, event *Event, taskDir string) (Message, error) {
-	tx, err :=
 
-		db.BeginTx(ctx, nil)
+func (db *DB) failMessage(ctx context.Context, taskID, messageID,
+	reason string, event *Event, taskDir string,
+) (Message, error) {
+	tx, err := db.BeginTx(ctx, nil)
 	if err !=
 		nil {
 		return Message{}, wrap("begin fail message",
@@ -1198,8 +1252,10 @@ func (db *DB) failMessage(ctx context.Context, taskID, messageID,
 	}
 	return stored, nil
 }
+
 func (db *DB) AbortTask(ctx context.Context, taskID, from,
-	activePhase string) ([]Message, error) {
+	activePhase string,
+) ([]Message, error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err !=
 		nil {
@@ -1253,8 +1309,7 @@ func (db *DB) AbortTask(ctx context.Context, taskID, from,
 			err)
 	}
 	for index := range messages {
-		messages[index].DeliveryStatus =
-			"failed"
+		messages[index].DeliveryStatus = "failed"
 		messages[index].FailureReason = "task_aborted"
 		messages[index].FailedAt = timestamp
 	}
@@ -1265,15 +1320,18 @@ func (db *DB) AbortTask(ctx context.Context, taskID, from,
 
 func (db *DB) EnqueueOrchestrationEvent(ctx context.Context,
 
-	event OrchestrationEvent) error {
+	event OrchestrationEvent,
+) error {
 	_, err := db.ExecContext(ctx, `insert into orchestration_events(id,task_id,type,created_at) values(?,?,?,?)`,
 
 		event.ID, event.TaskID, event.Type, now())
 	return wrap(
 		"enqueue orchestration event", err)
 }
+
 func (db *DB) OrchestrationEvent(ctx context.
-	Context, id string) (OrchestrationEvent, error) {
+	Context, id string,
+) (OrchestrationEvent, error) {
 	var event OrchestrationEvent
 	err := db.QueryRowContext(ctx, `select id,task_id,type from orchestration_events where id=?`,
 		id,
@@ -1284,8 +1342,10 @@ func (db *DB) OrchestrationEvent(ctx context.
 	}
 	return event, wrap("read orchestration event", err)
 }
+
 func (db *DB) PendingOrchestrationEvents(
-	ctx context.Context) ([]OrchestrationEvent, error) {
+	ctx context.Context,
+) ([]OrchestrationEvent, error) {
 	rows, err := db.QueryContext(ctx, `select id,task_id,type from orchestration_events where status='pending' order by created_at,id`)
 	if err != nil {
 		return nil, wrap("list pending orchestration events",
@@ -1302,8 +1362,10 @@ func (db *DB) PendingOrchestrationEvents(
 	}
 	return values, rows.Err()
 }
+
 func (db *DB) CompleteOrchestrationEvent(
-	ctx context.Context, id string, cause error) error {
+	ctx context.Context, id string, cause error,
+) error {
 	status, message := "handled", ""
 	if cause !=
 
@@ -1384,7 +1446,8 @@ func (db *DB) StartPhaseWithEvent(ctx context.Context, taskDir string, phase Pha
 // atomically. Task progression, when needed, uses the transition variant.
 
 func (db *DB) EndPhaseWithEvent(ctx context.Context, taskDir string, phaseID,
-	status, message, outputSnapshot string, event Event) error {
+	status, message, outputSnapshot string, event Event,
+) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return wrap("begin phase completion", err)
@@ -1416,20 +1479,20 @@ func (db *DB) EndPhaseWithEvent(ctx context.Context, taskDir string, phaseID,
 	}
 	return nil
 }
+
 func (db *DB) AddPhase(ctx context.Context, phase Phase) error {
 	_,
-		err :=
+		err := db.ExecContext(ctx, `insert into phases(id,task_id,sequence,name,kind,owner,description,status,attempt,retries,started_at,branch_id,definition_id,input_snapshot,output_snapshot,superseded,native_base_entry_id,fork_native) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 
-		db.ExecContext(ctx, `insert into phases(id,task_id,sequence,name,kind,owner,description,status,attempt,retries,started_at,branch_id,definition_id,input_snapshot,output_snapshot,superseded,native_base_entry_id,fork_native) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-
-			phase.ID, phase.TaskID, phase.Sequence, phase.Name,
-			phase.Kind, phase.Owner, phase.Description, phase.
-				Status, phase.Attempt, phase.Retries, now(), nullIfEmpty(phase.
-				BranchID), nullIfEmpty(phase.DefinitionID), nullIfEmpty(phase.
-				InputSnapshot), nullIfEmpty(phase.OutputSnapshot), boolToInt(phase.
-				Superseded), nullIfEmpty(phase.NativeBaseEntryID), boolToInt(phase.ForkNative))
+		phase.ID, phase.TaskID, phase.Sequence, phase.Name,
+		phase.Kind, phase.Owner, phase.Description, phase.
+			Status, phase.Attempt, phase.Retries, now(), nullIfEmpty(phase.
+			BranchID), nullIfEmpty(phase.DefinitionID), nullIfEmpty(phase.
+			InputSnapshot), nullIfEmpty(phase.OutputSnapshot), boolToInt(phase.
+			Superseded), nullIfEmpty(phase.NativeBaseEntryID), boolToInt(phase.ForkNative))
 	return wrap("start phase", err)
 }
+
 func (db *DB) EndPhase(ctx context.Context, id, status, message string) error {
 	_, err := db.ExecContext(ctx, `update phases set status=?,error=?,ended_at=? where id=?`,
 
@@ -1444,7 +1507,8 @@ func (db *DB) EndPhase(ctx context.Context, id, status, message string) error {
 // trace is derived output and is written only after the database commit.
 
 func (db *DB) CompletePhaseWithTransitionAndEvent(ctx context.Context, taskDir string, phaseID, taskID, from, to, status,
-	message, outputSnapshot string, event Event) error {
+	message, outputSnapshot string, event Event,
+) error {
 	return db.completePhaseWithEvidenceAndTransitionAndEvent(ctx, taskDir, phaseID, taskID, from, to, status, message,
 		outputSnapshot, nil, nil, event)
 }
@@ -1455,7 +1519,8 @@ func (db *DB) CompletePhaseWithTransitionAndEvent(ctx context.Context, taskDir s
 func (
 	db *DB) CompletePlannerPhaseWithApproval(ctx context.Context, taskDir string, phaseID,
 	taskID, from, to, status, message, outputSnapshot,
-	approval string, event Event) error {
+	approval string, event Event,
+) error {
 	return db.completePhaseWithEvidenceAndTransitionAndEvent(ctx, taskDir, phaseID,
 		taskID, from, to, status, message, outputSnapshot,
 		nil, nil, event, approval)
@@ -1469,12 +1534,15 @@ func (
 
 // final publication is the authoritative successful verification boundary.
 func (db *DB) CompleteVerificationPhaseWithEvidenceAndEvent(ctx context.Context, taskDir string, phaseID, taskID, from, to, status, message,
-	outputSnapshot string, checks []Check, comparisons []Comparison, event Event) error {
+	outputSnapshot string, checks []Check, comparisons []Comparison, event Event,
+) error {
 	return db.completePhaseWithEvidenceAndTransitionAndEvent(ctx, taskDir, phaseID, taskID, from, to, status,
 		message, outputSnapshot, checks, comparisons, event)
 }
+
 func (db *DB) completePhaseWithEvidenceAndTransitionAndEvent(ctx context.
-	Context, taskDir, phaseID, taskID, from, to, status, message, outputSnapshot string, checks []Check, comparisons []Comparison, event Event, approval ...string) error {
+	Context, taskDir, phaseID, taskID, from, to, status, message, outputSnapshot string, checks []Check, comparisons []Comparison, event Event, approval ...string,
+) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return wrap("begin phase completion", err)
@@ -1507,8 +1575,7 @@ func (db *DB) completePhaseWithEvidenceAndTransitionAndEvent(ctx context.
 			)
 		}
 	}
-	ended :=
-		now()
+	ended := now()
 	result, err := tx.
 		ExecContext(ctx, `update phases set status=?,error=?,output_snapshot=?,ended_at=? where id=? and task_id=? and status='running'`,
 
@@ -1552,9 +1619,11 @@ func (db *DB) completePhaseWithEvidenceAndTransitionAndEvent(ctx context.
 	}
 	return nil
 }
+
 func (db *DB) StartQueuedPhase(ctx context.
 	Context, taskID,
-	phaseID string) error {
+	phaseID string,
+) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return wrap("begin queued phase start",
@@ -1587,10 +1656,11 @@ func (db *DB) StartQueuedPhase(ctx context.
 	}
 	return nil
 }
+
 func (db *DB) Phases(ctx context.Context,
 	taskID string) (
-	[]Phase, error) {
-
+	[]Phase, error,
+) {
 	rows, err := db.QueryContext(ctx, `select id,task_id,sequence,name,kind,owner,coalesce(description,''),status,attempt,retries,coalesce(error,''),started_at,coalesce(ended_at,''),coalesce(branch_id,''),coalesce(definition_id,''),coalesce(input_snapshot,''),coalesce(output_snapshot,''),coalesce(superseded,0),coalesce(native_base_entry_id,''),coalesce(fork_native,0) from phases where task_id=? order by sequence`,
 
 		taskID)
@@ -1620,19 +1690,19 @@ func (db *DB) Phases(ctx context.Context,
 	return values,
 		rows.Err()
 }
+
 func (db *DB) PhaseByID(ctx context.Context, taskID, phaseID string) (Phase,
 
-	error) {
+	error,
+) {
 	var value Phase
 	var superseded, forkNative int
-	err :=
+	err := db.QueryRowContext(ctx, `select id,task_id,sequence,name,kind,owner,coalesce(description,''),status,attempt,retries,coalesce(error,''),started_at,coalesce(ended_at,''),coalesce(branch_id,''),coalesce(definition_id,''),coalesce(input_snapshot,''),coalesce(output_snapshot,''),coalesce(superseded,0),coalesce(native_base_entry_id,''),coalesce(fork_native,0) from phases where task_id=? and id=?`,
 
-		db.QueryRowContext(ctx, `select id,task_id,sequence,name,kind,owner,coalesce(description,''),status,attempt,retries,coalesce(error,''),started_at,coalesce(ended_at,''),coalesce(branch_id,''),coalesce(definition_id,''),coalesce(input_snapshot,''),coalesce(output_snapshot,''),coalesce(superseded,0),coalesce(native_base_entry_id,''),coalesce(fork_native,0) from phases where task_id=? and id=?`,
-
-			taskID, phaseID).Scan(&value.ID,
-			&value.TaskID, &value.Sequence, &value.Name, &value.Kind, &value.
-				Owner, &value.Description, &value.Status, &value.Attempt, &value.Retries, &value.Error, &value.StartedAt, &value.EndedAt, &value.BranchID, &value.DefinitionID, &value.InputSnapshot, &value.
-				OutputSnapshot, &superseded, &value.NativeBaseEntryID, &forkNative)
+		taskID, phaseID).Scan(&value.ID,
+		&value.TaskID, &value.Sequence, &value.Name, &value.Kind, &value.
+			Owner, &value.Description, &value.Status, &value.Attempt, &value.Retries, &value.Error, &value.StartedAt, &value.EndedAt, &value.BranchID, &value.DefinitionID, &value.InputSnapshot, &value.
+			OutputSnapshot, &superseded, &value.NativeBaseEntryID, &forkNative)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Phase{}, ErrNotFound
 	}
@@ -1647,7 +1717,8 @@ func (db *DB) PhaseByID(ctx context.Context, taskID, phaseID string) (Phase,
 
 // attempt's recorded boundary.
 func (db *DB) SetPhaseNativeBase(
-	ctx context.Context, taskID, phaseID, entryID string) error {
+	ctx context.Context, taskID, phaseID, entryID string,
+) error {
 	if entryID == "" {
 		return nil
 	}
@@ -1657,11 +1728,13 @@ func (db *DB) SetPhaseNativeBase(
 	return wrap("set phase native base",
 		err)
 }
+
 func (db *DB) MarkSuperseded(ctx context.
 	Context, taskID,
 	branchID string,
 
-	keepID string) error {
+	keepID string,
+) error {
 	_, err := db.ExecContext(ctx, `update phases set superseded=1 where task_id=? and coalesce(branch_id,'')=? and id<>?`,
 
 		taskID,
@@ -1669,29 +1742,32 @@ func (db *DB) MarkSuperseded(ctx context.
 	return wrap("mark superseded",
 		err)
 }
+
 func (db *DB) StartProcess(ctx context.Context, taskID, phaseID,
 	kind,
-	name string, pid int, command string) (int64, error) {
-	result, err :=
+	name string, pid int, command string,
+) (int64, error) {
+	result, err := db.ExecContext(ctx, `insert into processes(task_id,phase_id,kind,name,pid,display_command,status,started_at) values(?,?,?,?,?,?,?,?)`,
 
-		db.ExecContext(ctx, `insert into processes(task_id,phase_id,kind,name,pid,display_command,status,started_at) values(?,?,?,?,?,?,?,?)`,
-
-			taskID, nullIfEmpty(phaseID), kind, name, pid, command, "running",
-			now())
+		taskID, nullIfEmpty(phaseID), kind, name, pid, command, "running",
+		now())
 	if err != nil {
 		return 0, fmt.Errorf("start process: %w",
 			err)
 	}
 	return result.LastInsertId()
 }
+
 func (db *DB) EndProcess(
-	ctx context.Context, taskID string, pid, exitCode int) error {
+	ctx context.Context, taskID string, pid, exitCode int,
+) error {
 	_, err := db.ExecContext(ctx, `update processes set status=case when ?=0 then 'ended' else 'failed' end,exit_code=?,ended_at=? where task_id=? and pid=? and status='running'`,
 
 		exitCode, exitCode,
 		now(), taskID, pid)
 	return wrap("end process", err)
 }
+
 func (db *DB) Recover(ctx context.Context) error {
 	tx, err := db.BeginTx(ctx,
 
@@ -1725,9 +1801,11 @@ func (db *DB) Recover(ctx context.Context) error {
 	}
 	return tx.Commit()
 }
+
 func (db *DB) ApplyRetry(
 	ctx context.Context, key string,
-	branch Branch, phase Phase, nextState string) (RetryResult, bool, error) {
+	branch Branch, phase Phase, nextState string,
+) (RetryResult, bool, error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return RetryResult{}, false, err
@@ -1747,11 +1825,10 @@ func (db *DB) ApplyRetry(
 	if !errors.Is(err, sql.ErrNoRows) {
 		return RetryResult{}, false, wrap("read retry request", err)
 	}
-	if _, err =
-		tx.ExecContext(ctx, `insert into branches(id,task_id,parent_branch_id,fork_attempt_id,head_attempt_id,status,created_at,updated_at) values(?,?,?,?,?,?,?,?)`,
+	if _, err = tx.ExecContext(ctx, `insert into branches(id,task_id,parent_branch_id,fork_attempt_id,head_attempt_id,status,created_at,updated_at) values(?,?,?,?,?,?,?,?)`,
 
-			branch.ID, branch.TaskID, nullIfEmpty(branch.ParentBranchID), branch.ForkAttemptID, phase.ID, branch.Status,
-			branch.CreatedAt, branch.CreatedAt); err !=
+		branch.ID, branch.TaskID, nullIfEmpty(branch.ParentBranchID), branch.ForkAttemptID, phase.ID, branch.Status,
+		branch.CreatedAt, branch.CreatedAt); err !=
 		nil {
 		return RetryResult{}, false, wrap("create retry branch",
 			err)
@@ -1781,14 +1858,18 @@ func (db *DB) ApplyRetry(
 	if err = tx.Commit(); err != nil {
 		return RetryResult{}, false, wrap("commit retry", err)
 	}
-	return RetryResult{SourceAttemptID: branch.ForkAttemptID,
+	return RetryResult{
+		SourceAttemptID: branch.ForkAttemptID,
 		BranchID: branch.
 			ID, AttemptID: phase.ID,
-		CreatedAt: createdAt}, true, nil
+		CreatedAt: createdAt,
+	}, true, nil
 }
+
 func (db *DB) RetryByIdempotencyKey(ctx context.
 	Context, taskID,
-	key string) (RetryResult, error) {
+	key string,
+) (RetryResult, error) {
 	var value RetryResult
 	err := db.QueryRowContext(ctx, `select source_attempt_id,branch_id,attempt_id,created_at from retry_requests where task_id=? and idempotency_key=?`,
 
@@ -1800,6 +1881,7 @@ func (db *DB) RetryByIdempotencyKey(ctx context.
 	}
 	return value, wrap("read retry request", err)
 }
+
 func (db *DB) SaveSnapshot(ctx context.Context, snapshot WorkspaceSnapshot) error {
 	manifest := snapshot.Manifest
 	if manifest == "" {
@@ -1813,6 +1895,7 @@ func (db *DB) SaveSnapshot(ctx context.Context, snapshot WorkspaceSnapshot) erro
 				CreatedAt)
 	return wrap("save snapshot", err)
 }
+
 func (db *DB) Snapshot(ctx context.Context, digest string) (WorkspaceSnapshot, error) {
 	var value WorkspaceSnapshot
 	err := db.QueryRowContext(ctx, `select digest,task_id,coalesce(path,''),coalesce(size_bytes,0),coalesce(manifest_json,'{}'),created_at from workspace_snapshots where digest=?`,
@@ -1826,20 +1909,25 @@ func (db *DB) Snapshot(ctx context.Context, digest string) (WorkspaceSnapshot, e
 	return value, wrap("read snapshot",
 		err)
 }
+
 func (db *DB) CreateTask(
-	ctx context.Context, task Task) error {
+	ctx context.Context, task Task,
+) error {
 	return db.
 		createTask(ctx, task, false)
 }
+
 func (db *DB) CreateActiveTask(ctx context.
-	Context, task Task) error {
+	Context, task Task,
+) error {
 	return db.createTask(ctx, task, true)
 }
+
 func (db *DB) createTask(
-	ctx context.Context, task Task, requireAvailableSlot bool) error {
+	ctx context.Context, task Task, requireAvailableSlot bool,
+) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-
 		return fmt.Errorf("begin create task: %w",
 			err)
 	}
@@ -1848,7 +1936,6 @@ func (db *DB) createTask(
 
 	if requireAvailableSlot {
 		query = `insert into tasks(id,parent_task_id,request,workspace_path,repository_type,repository_source,submitted_repository_path,state,pipeline,active_stage,config_snapshot,created_at,started_at,coding_agent,model,thinking) select ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? where not exists(select 1 from tasks where state in ('preparing','planning','awaiting_plan_approval','building','checking','reviewing'))`
-
 	}
 	result, err := tx.ExecContext(ctx, query, task.
 		ID, nullIfEmpty(task.ParentTaskID), task.Request,
@@ -1871,9 +1958,11 @@ func (db *DB) createTask(
 	}
 	return wrap("commit task", tx.Commit())
 }
+
 func (db *DB) Task(ctx context.
 	Context, id string) (Task,
-	error) {
+	error,
+) {
 	value,
 		err := scanTask(db.QueryRowContext(ctx, `select `+taskColumns+` from tasks where id=?`,
 
@@ -1887,8 +1976,10 @@ func (db *DB) Task(ctx context.
 	}
 	return value, nil
 }
+
 func (db *DB) Tasks(ctx context.
-	Context) ([]Task, error) {
+	Context,
+) ([]Task, error) {
 	rows, err := db.
 		QueryContext(ctx, `select `+taskColumns+` from tasks order by created_at desc`)
 	if err != nil {
@@ -1905,6 +1996,7 @@ func (db *DB) Tasks(ctx context.
 	}
 	return values, rows.Err()
 }
+
 func (db *DB) TaskSessions(ctx context.Context, taskID string) ([]Task, error) {
 	var parentTaskID string
 	err := db.QueryRowContext(ctx, `select coalesce(parent_task_id,'') from tasks where id=?`,
@@ -1940,10 +2032,11 @@ func (db *DB) TaskSessions(ctx context.Context, taskID string) ([]Task, error) {
 	}
 	return values, rows.Err()
 }
-func (db *DB) TaskSessionsWithAgents(ctx context.Context,
-	taskID string) ([]TaskSession, error) {
-	tasks, err := db.TaskSessions(ctx, taskID)
 
+func (db *DB) TaskSessionsWithAgents(ctx context.Context,
+	taskID string,
+) ([]TaskSession, error) {
+	tasks, err := db.TaskSessions(ctx, taskID)
 	if err != nil {
 		return nil,
 			err
@@ -1958,10 +2051,12 @@ func (db *DB) TaskSessionsWithAgents(ctx context.Context,
 	}
 	return values, nil
 }
+
 func (db *DB) Transition(
 	ctx context.Context, id, from, to,
 	activePhase,
-	message string) error {
+	message string,
+) error {
 	ended := any(nil)
 	if to == "completed" ||
 
@@ -1983,15 +2078,19 @@ func (db *DB) Transition(
 	}
 	return nil
 }
+
 func (db *DB) SetPrepared(ctx context.Context, id, repositoryPath,
-	snapshot string) error {
+	snapshot string,
+) error {
 	_, err := db.ExecContext(ctx, `update tasks set repository_path=?,config_snapshot=? where id=?`,
 
 		repositoryPath, snapshot, id)
 	return wrap("save task workspace", err)
 }
+
 func (db *DB) SetApproval(ctx context.Context, id, digest,
-	actor string) error {
+	actor string,
+) error {
 	_, err := db.ExecContext(ctx, `update tasks set plan_digest=?,approval_actor=?,approval_at=? where id=?`,
 
 		digest, actor, now(), id)
@@ -2002,7 +2101,8 @@ func (db *DB) SetApproval(ctx context.Context, id, digest,
 
 // and its lifecycle event in one transaction.
 func (db *DB) ApproveWithEvent(ctx context.
-	Context, taskDir, id, digest, actor string, event Event) error {
+	Context, taskDir, id, digest, actor string, event Event,
+) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err !=
 		nil {
@@ -2026,8 +2126,7 @@ func (db *DB) ApproveWithEvent(ctx context.
 	if event.StartedAt.IsZero() {
 		event.StartedAt = time.Now().UTC()
 	}
-	sequence, err :=
-		appendEventTx(ctx, tx, event)
+	sequence, err := appendEventTx(ctx, tx, event)
 	if err != nil {
 		return err
 	}
@@ -2042,26 +2141,32 @@ func (db *DB) ApproveWithEvent(ctx context.
 	}
 	return nil
 }
+
 func (db *DB) SetApprovalCandidate(ctx context.
 	Context, id,
-	digest string) error {
+	digest string,
+) error {
 	_, err := db.ExecContext(ctx, `update tasks set plan_digest=?,approval_actor=null,approval_at=null where id=?`,
 
 		digest, id)
 	return wrap("save approval candidate",
 		err)
 }
+
 func (db *DB) SetActiveStage(ctx context.
 	Context, taskID,
-	stageID string) error {
+	stageID string,
+) error {
 	_, err := db.ExecContext(ctx, `update tasks set active_stage=? where id=?`,
 
 		nullIfEmpty(stageID), taskID)
 	return wrap("save active stage",
 		err)
 }
+
 func (db *DB) InvalidateApproval(ctx context.
-	Context, id string) error {
+	Context, id string,
+) error {
 	_,
 
 		err := db.ExecContext(ctx, `update tasks set plan_digest=null,approval_actor=null,approval_at=null where id=?`,
@@ -2070,17 +2175,20 @@ func (db *DB) InvalidateApproval(ctx context.
 	return wrap("invalidate approval",
 		err)
 }
-func (db *DB) ReopenTask(
-	ctx context.Context, taskID, state string) error {
 
+func (db *DB) ReopenTask(
+	ctx context.Context, taskID, state string,
+) error {
 	_, err := db.ExecContext(ctx, `update tasks set previous_state=state,state=?,ended_at=null,error=null where id=?`,
 
 		state, taskID)
 	return wrap("reopen task",
 		err)
 }
+
 func (db *DB) DeleteTask(
-	ctx context.Context, id string) error {
+	ctx context.Context, id string,
+) error {
 	result,
 		err := db.ExecContext(ctx, `delete from tasks where id=?`, id)
 	if err !=
