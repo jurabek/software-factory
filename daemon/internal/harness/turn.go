@@ -37,7 +37,6 @@ type DB interface {
 type Deps struct {
 	DB              DB
 	Harnesses       Registry
-	Git             factorygit.Runner
 	NativeReader    NativeReader
 	AgentDeadlineMS int
 	JSONFixAttempts int
@@ -138,7 +137,7 @@ func RunTurn(ctx context.Context, deps Deps, input TurnInput) (TurnResult, error
 		}
 		var before string
 		if input.ReadOnly {
-			before, err = fingerprint(ctx, deps.Git, input.RepoPath)
+			before, err = fingerprint(input.RepoPath)
 			if err != nil {
 				return TurnResult{}, err
 			}
@@ -154,7 +153,7 @@ func RunTurn(ctx context.Context, deps Deps, input TurnInput) (TurnResult, error
 		}
 		result, runErr := invoke(ctx, native, prompt, input.Sink)
 		if input.ReadOnly {
-			after, fingerprintErr := fingerprint(ctx, deps.Git, input.RepoPath)
+			after, fingerprintErr := fingerprint(input.RepoPath)
 			if fingerprintErr != nil {
 				runErr = errors.Join(runErr, fingerprintErr)
 			} else if before != after {
@@ -454,11 +453,11 @@ func invoke(ctx context.Context, native Session, prompt Prompt, sink EventSink) 
 	return result, runErr
 }
 
-func fingerprint(ctx context.Context, runner factorygit.Runner, repoPath string) (string, error) {
+func fingerprint(repoPath string) (string, error) {
 	if repoPath == "" {
 		return "", nil
 	}
-	return factorygit.Fingerprint(ctx, runner, repoPath)
+	return factorygit.Fingerprint(repoPath)
 }
 
 func persistedUsage(value Usage) session.Usage {

@@ -12,9 +12,13 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
+
+	gogit "github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/plumbing/object"
 
 	"github.com/jurabek/software-factory/daemon/internal/store"
 )
@@ -25,19 +29,13 @@ type Store interface {
 	Snapshot(context.Context, string) (store.WorkspaceSnapshot, error)
 }
 
-// GitRunner executes git commands for scratch materialization.
-type GitRunner interface {
-	Run(context.Context, string, ...string) ([]byte, error)
-}
-
 // Service captures and restores workspace snapshots.
 type Service struct {
-	db  Store
-	git GitRunner
+	db Store
 }
 
-func New(db Store, git GitRunner) *Service {
-	return &Service{db: db, git: git}
+func New(db Store) *Service {
+	return &Service{db: db}
 }
 
 type fileEntry struct {
@@ -172,16 +170,21 @@ func (s *Service) MaterializeScratch(ctx context.Context, task store.Task, diges
 	if err = copyDirSafe(snapshot.Path, destination); err != nil {
 		return fmt.Errorf("materialize comparison snapshot: %w", err)
 	}
-	if s.git == nil {
-		return fmt.Errorf("git runner is required")
-	}
-	if _, err = s.git.Run(ctx, "git", "-C", destination, "init"); err != nil {
+	repository, err := gogit.PlainInit(destination, false)
+	if err != nil {
 		return fmt.Errorf("initialize scratch repository: %w", err)
 	}
-	if _, err = s.git.Run(ctx, "git", "-C", destination, "add", "--all"); err != nil {
+	worktree, err := repository.Worktree()
+	if err != nil {
+		return fmt.Errorf("open scratch worktree: %w", err)
+	}
+	if err = worktree.AddWithOptions(&gogit.AddOptions{All: true}); err != nil {
 		return fmt.Errorf("stage scratch repository: %w", err)
 	}
-	if _, err = s.git.Run(ctx, "git", "-C", destination, "-c", "user.name=Software Factory", "-c", "user.email=software-factory@localhost", "commit", "--allow-empty", "-m", "comparison snapshot"); err != nil {
+	if _, err = worktree.Commit("comparison snapshot", &gogit.CommitOptions{
+		AllowEmptyCommits: true,
+		Author:            &object.Signature{Name: "Software Factory", Email: "software-factory@localhost", When: time.Now()},
+	}); err != nil {
 		return fmt.Errorf("commit scratch repository: %w", err)
 	}
 	return nil
@@ -301,12 +304,7 @@ func copyDirChecked(source, destination string, rejectEscapingSymlinks bool) err
 }
 
 func isGitMetadataPath(path string) bool {
-	for _, segment := range strings.Split(filepath.ToSlash(path), "/") {
-		if segment == ".git" {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(strings.Split(filepath.ToSlash(path), "/"), ".git")
 }
 
 func withinPath(root, candidate string) bool {

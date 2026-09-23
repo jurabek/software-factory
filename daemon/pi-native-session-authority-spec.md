@@ -47,7 +47,7 @@ Treat Pi's native sessions as the authoritative record of agent history, usage, 
 - **Restart.** Keep the "blocked, resume explicitly" model; drop `accounting_complete` flagging; reconcile in-flight Turns from native sessions on resume.
 - **Config.** `config_snapshot` is retained; the factory prompt audit (`system.md`/`user.md`) is dropped in favor of native prompt history. The dead `empty_turn_retries` config is removed.
 - **Rollout.** Clean break: bump the session format version and require deleting the factory home; no migration.
-- **Versioning.** Target Pi 0.86.1. No version gate is enforced; correct operation relies on operational discipline.
+- **Versioning.** Target Pi 0.87.0. No version gate is enforced; correct operation relies on operational discipline.
 
 ## Testing Decisions
 

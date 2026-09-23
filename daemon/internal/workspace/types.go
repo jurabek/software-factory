@@ -2,7 +2,11 @@
 // orchestration and stage implementations.
 package workspace
 
-import "context"
+import (
+	"context"
+
+	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
+)
 
 type Sandbox interface {
 	Materialize(context.Context, MaterializationRequest) (Materialization, error)
@@ -16,24 +20,10 @@ type MaterializationRequest struct {
 	Destination string
 }
 
-type Materialization struct {
-	Root                  string   `json:"root"`
-	SourceType            string   `json:"source_type"`
-	Source                string   `json:"source"`
-	BaseSHA               string   `json:"base_sha"`
-	BranchName            string   `json:"branch_name"`
-	Checks                []Check  `json:"checks"`
-	Generated             []string `json:"generated"`
-	Protected             []string `json:"protected"`
-	Tests                 []string `json:"tests"`
-	PreChangeVerification bool     `json:"pre_change_verification"`
-	Instructions          []string `json:"instructions"`
-}
-
-type Check struct {
-	ID      string `json:"id"`
-	Command string `json:"command"`
-}
+// Materialization and Check are the repository profile types owned by the git
+// adapter; workspace re-exports them so task orchestration stays git-agnostic.
+type Materialization = factorygit.Profile
+type Check = factorygit.Check
 
 type CleanupRequest struct {
 	TaskID        string

@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/jurabek/software-factory/daemon/internal/config"
-	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
 	"github.com/jurabek/software-factory/daemon/internal/harness"
 	"github.com/jurabek/software-factory/daemon/internal/session"
 	"github.com/jurabek/software-factory/daemon/internal/store"
@@ -29,7 +28,6 @@ type TaskConfig struct {
 // lineage, config resolution, events, and message draining.
 type Kit struct {
 	db         *store.DB
-	git        factorygit.Runner
 	harnesses  harness.Registry
 	sandbox    workspace.Sandbox
 	snapshots  *workspace.Service
@@ -40,13 +38,12 @@ type Kit struct {
 }
 
 // New constructs the shared stage kit.
-func New(db *store.DB, git factorygit.Runner, harnesses harness.Registry, sandbox workspace.Sandbox, config config.Config, configPath, root string) *Kit {
+func New(db *store.DB, harnesses harness.Registry, sandbox workspace.Sandbox, config config.Config, configPath, root string) *Kit {
 	return &Kit{
 		db:         db,
-		git:        git,
 		harnesses:  harnesses,
 		sandbox:    sandbox,
-		snapshots:  workspace.New(db, git),
+		snapshots:  workspace.New(db),
 		config:     config,
 		configPath: configPath,
 		root:       root,
@@ -71,7 +68,7 @@ func (k *Kit) DB() *store.DB { return k.db }
 // a registered harness exposes a native session reader, it is attached so
 // native entries remain authoritative for usage and reports.
 func (k *Kit) AgentExec() harness.Deps {
-	return harness.Deps{DB: k.db, Harnesses: k.harnesses, Git: k.git, NativeReader: k.nativeReader()}
+	return harness.Deps{DB: k.db, Harnesses: k.harnesses, NativeReader: k.nativeReader()}
 }
 
 func (k *Kit) nativeReader() harness.NativeReader {
@@ -84,9 +81,6 @@ func (k *Kit) nativeReader() harness.NativeReader {
 	}
 	return reader
 }
-
-// Git exposes the git runner for stage-owned reads.
-func (k *Kit) Git() factorygit.Runner { return k.git }
 
 // MaterializeScratch materializes a snapshot digest into a scratch directory.
 func (k *Kit) MaterializeScratch(ctx context.Context, task store.Task, digest, destination string) error {

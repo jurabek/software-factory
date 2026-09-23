@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -164,8 +165,8 @@ func reportFromRecords(records []sessionRecord, requestID string) (harness.Repor
 }
 
 func findRequest(records []sessionRecord, requestID string) (factoryRequestGrant, bool) {
-	for index := len(records) - 1; index >= 0; index-- {
-		record := records[index]
+	for _, record := range slices.Backward(records) {
+
 		if record.Type != "custom" || record.CustomType != factoryRequestType {
 			continue
 		}

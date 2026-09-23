@@ -28,7 +28,7 @@ func TestStatsFromRPCMapsTokensCostAndContext(t *testing.T) {
 }
 
 func TestPromptMessageEncodesFactoryRequestWhenExtensionConfigured(t *testing.T) {
-	session := &rpcSession{runner: &Runner{Harness: Harness{ExtensionPath: "/factory.ts"}}}
+	session := &rpcSession{runner: &Runner{ExtensionPath: "/factory.ts"}}
 	message, err := session.promptMessage(harness.Prompt{RequestID: "req-1", Attempt: 2, ForkAtEntryID: "checkpoint-1", Text: "do it"})
 	if err != nil {
 		t.Fatal(err)

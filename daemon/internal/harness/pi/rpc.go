@@ -40,7 +40,7 @@ type Runner struct {
 // New constructs a session-oriented Pi runner that owns a persistent process
 // pool.
 func New(path, extensionPath string) *Runner {
-	return &Runner{Harness: Harness{Path: path, ExtensionPath: extensionPath}, pool: newSessionPool()}
+	return &Runner{Path: path, ExtensionPath: extensionPath, pool: newSessionPool()}
 }
 
 // Open returns a handle to the native session, starting or reusing one Pi

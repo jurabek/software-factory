@@ -293,7 +293,7 @@ func (s service) runComparisons(ctx context.Context, task store.Task, phase stor
 		}
 		return nil
 	}
-	entries, entriesErr := ChangedTestEntries(ctx, s.kit.Git(), task.RepositoryPath, workspace.ReviewBase(task), profile.Tests)
+	entries, entriesErr := ChangedTestEntries(task.RepositoryPath, workspace.ReviewBase(task), profile.Tests)
 	if entriesErr != nil {
 		comparison.Status, comparison.Reason = "inconclusive", entriesErr.Error()
 		comparison.DurationMS = int(time.Since(started).Milliseconds())
@@ -394,8 +394,8 @@ type ExpectedTestChange struct {
 }
 
 // ChangedTestEntries returns Git-derived changed tests for a base.
-func ChangedTestEntries(ctx context.Context, git factorygit.Runner, repoPath, base string, tests []string) ([]ExpectedTestChange, error) {
-	entries, err := factorygit.ChangedEntries(ctx, git, repoPath, base)
+func ChangedTestEntries(repoPath, base string, tests []string) ([]ExpectedTestChange, error) {
+	entries, err := factorygit.ChangedEntries(repoPath, base)
 	if err != nil {
 		return nil, err
 	}

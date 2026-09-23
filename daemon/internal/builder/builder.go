@@ -132,7 +132,7 @@ func (s service) Build(ctx context.Context, input stage.Input, plan stage.PlanRe
 	turner.AgentDeadlineMS = configured.Config.Runtime.AgentDeadlineMS
 	turner.JSONFixAttempts = configured.Config.Runtime.JSONFixAttempts
 	validate := func(text string) (any, error) {
-		return ValidateWithEvidence(ctx, turner.Git, task.RepositoryPath, workspace.ReviewBase(task), profile.Tests, text)
+		return ValidateWithEvidence(task.RepositoryPath, workspace.ReviewBase(task), profile.Tests, text)
 	}
 	turn, err := harness.RunTurn(ctx, turner, harness.TurnInput{
 		TaskID: task.ID, RequestID: stagekit.RandomID(), Phase: phase, Role: phase.Name,
@@ -157,12 +157,12 @@ func readOnly(phase store.Phase) bool {
 
 // ValidateWithEvidence validates the envelope and requires test_changes to
 // match exactly the Git-derived changed tests.
-func ValidateWithEvidence(ctx context.Context, git factorygit.Runner, repoPath, base string, tests []string, text string) (Result, error) {
+func ValidateWithEvidence(repoPath, base string, tests []string, text string) (Result, error) {
 	build, err := Validate(text)
 	if err != nil {
 		return build, err
 	}
-	expected, err := ChangedTestSet(ctx, git, repoPath, base, tests)
+	expected, err := ChangedTestSet(repoPath, base, tests)
 	if err != nil {
 		return build, err
 	}
@@ -173,8 +173,8 @@ func ValidateWithEvidence(ctx context.Context, git factorygit.Runner, repoPath, 
 }
 
 // ChangedTestSet returns the Git-derived changed tests for a base.
-func ChangedTestSet(ctx context.Context, git factorygit.Runner, repoPath, base string, tests []string) (map[string]factorygit.Change, error) {
-	entries, err := factorygit.ChangedEntries(ctx, git, repoPath, base)
+func ChangedTestSet(repoPath, base string, tests []string) (map[string]factorygit.Change, error) {
+	entries, err := factorygit.ChangedEntries(repoPath, base)
 	if err != nil {
 		return nil, fmt.Errorf("read changes: %w", err)
 	}
@@ -217,7 +217,7 @@ func ValidateTestChangeSet(changes []TestChange, expected map[string]factorygit.
 
 // PersistEvidence validates test evidence against Git-derived changes and
 // stores it for the attempt.
-func PersistEvidence(ctx context.Context, git factorygit.Runner, db EvidenceStore, task store.Task, phase store.Phase, payload string) error {
+func PersistEvidence(ctx context.Context, db EvidenceStore, task store.Task, phase store.Phase, payload string) error {
 	build, err := Validate(payload)
 	if err != nil {
 		return err
@@ -226,7 +226,7 @@ func PersistEvidence(ctx context.Context, git factorygit.Runner, db EvidenceStor
 	if err != nil {
 		return err
 	}
-	expected, err := ChangedTestSet(ctx, git, task.RepositoryPath, workspace.ReviewBase(task), profile.Tests)
+	expected, err := ChangedTestSet(task.RepositoryPath, workspace.ReviewBase(task), profile.Tests)
 	if err != nil {
 		return err
 	}
@@ -253,8 +253,8 @@ func PersistEvidence(ctx context.Context, git factorygit.Runner, db EvidenceStor
 }
 
 // CheckProtectedPaths rejects builds touching protected paths.
-func CheckProtectedPaths(ctx context.Context, git factorygit.Runner, repoPath, base string, protected []string) error {
-	files, err := factorygit.ChangedFiles(ctx, git, repoPath, base)
+func CheckProtectedPaths(repoPath, base string, protected []string) error {
+	files, err := factorygit.ChangedFiles(repoPath, base)
 	if err != nil {
 		return err
 	}

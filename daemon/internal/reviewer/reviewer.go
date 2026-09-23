@@ -99,7 +99,7 @@ func (s service) Review(ctx context.Context, input stage.Input, plan stage.PlanR
 		s.kit.Fail(ctx, phase, err)
 		return stage.ReviewResult{}, err
 	}
-	before, err := workspace.Fingerprint(ctx, s.kit.Git(), task)
+	before, err := workspace.Fingerprint(task)
 	if err != nil {
 		s.kit.Fail(ctx, phase, err)
 		return stage.ReviewResult{}, err
@@ -155,15 +155,15 @@ func (s service) evidence(ctx context.Context, task store.Task, plan stage.PlanR
 	if err != nil {
 		return nil, err
 	}
-	changedFiles, err := workspace.ChangedFiles(ctx, s.kit.Git(), task, true)
+	changedFiles, err := workspace.ChangedFiles(task, true)
 	if err != nil {
 		return nil, err
 	}
-	files, err := factorygit.ChangedFiles(ctx, s.kit.Git(), task.RepositoryPath, workspace.ReviewBase(task))
+	files, err := factorygit.ChangedFiles(task.RepositoryPath, workspace.ReviewBase(task))
 	if err != nil {
 		return nil, err
 	}
-	patch, err := factorygit.Diff(ctx, s.kit.Git(), task.RepositoryPath, workspace.ReviewBase(task))
+	patch, err := factorygit.Diff(task.RepositoryPath, workspace.ReviewBase(task))
 	if err != nil {
 		return nil, err
 	}

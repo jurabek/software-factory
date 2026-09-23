@@ -3,27 +3,30 @@ package git
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
+	"github.com/go-git/go-billy/v6/osfs"
+	gogit "github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/go-git/go-git/v6/plumbing/cache"
+	"github.com/go-git/go-git/v6/plumbing/client"
+	"github.com/go-git/go-git/v6/plumbing/filemode"
+	"github.com/go-git/go-git/v6/plumbing/object"
+	githttp "github.com/go-git/go-git/v6/plumbing/transport/http"
+	"github.com/go-git/go-git/v6/storage/filesystem"
+	"github.com/go-git/go-git/v6/utils/merkletrie"
+	xworktree "github.com/go-git/go-git/v6/x/plumbing/worktree"
 	"gopkg.in/yaml.v3"
 )
-
-type Runner interface {
-	Run(context.Context, string, ...string) ([]byte, error)
-}
-type OSRunner struct{}
-
-func (OSRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, name, args...).CombinedOutput()
-}
 
 type Check struct {
 	ID      string `json:"id" yaml:"id"`
@@ -53,7 +56,17 @@ type directives struct {
 	PreChangeVerification bool     `yaml:"pre_change_verification"`
 }
 
-func ResolveRoot(ctx context.Context, runner Runner, path string) (string, string, error) {
+// open resolves a repository from any path inside its working tree.
+func open(root string) (*gogit.Repository, error) {
+	repository, err := gogit.PlainOpenWithOptions(root, &gogit.PlainOpenOptions{DetectDotGit: true})
+	if err != nil {
+		return nil, fmt.Errorf("open git repository: %w", err)
+	}
+	return repository, nil
+}
+
+// resolveRoot returns the canonical repository root and its current HEAD.
+func resolveRoot(path string) (string, string, error) {
 	resolved, err := filepath.EvalSymlinks(path)
 	if err != nil {
 		return "", "", fmt.Errorf("resolve repository path: %w", err)
@@ -62,23 +75,28 @@ func ResolveRoot(ctx context.Context, runner Runner, path string) (string, strin
 	if err != nil || !info.IsDir() {
 		return "", "", fmt.Errorf("repository path is not a directory")
 	}
-	rootOutput, err := runner.Run(ctx, "git", "-C", resolved, "rev-parse", "--show-toplevel")
+	repository, err := open(resolved)
 	if err != nil {
 		return "", "", fmt.Errorf("find git root: %w", err)
 	}
-	root, err := filepath.EvalSymlinks(strings.TrimSpace(string(rootOutput)))
+	worktree, err := repository.Worktree()
+	if err != nil {
+		return "", "", fmt.Errorf("open git worktree: %w", err)
+	}
+	root, err := filepath.EvalSymlinks(worktree.Filesystem().Root())
 	if err != nil {
 		return "", "", fmt.Errorf("canonical git root: %w", err)
 	}
-	head, err := runner.Run(ctx, "git", "-C", root, "rev-parse", "HEAD")
+	head, err := repository.Head()
 	if err != nil {
 		return "", "", fmt.Errorf("read git head: %w", err)
 	}
-	return root, strings.TrimSpace(string(head)), nil
+	return root, head.Hash().String(), nil
 }
 
-func PrepareLocal(ctx context.Context, runner Runner, source, destination string) (Profile, error) {
-	root, sha, err := ResolveRoot(ctx, runner, source)
+// PrepareLocal materializes a linked worktree of the local repository.
+func PrepareLocal(source, destination string) (Profile, error) {
+	root, sha, err := resolveRoot(source)
 	if err != nil {
 		return Profile{}, err
 	}
@@ -89,37 +107,47 @@ func PrepareLocal(ctx context.Context, runner Runner, source, destination string
 	if filepath.Clean(resolved) != filepath.Clean(root) {
 		return Profile{}, fmt.Errorf("local repository path must exactly match the git root")
 	}
-	branch := materializationBranch(destination)
-	if output, runErr := runner.Run(ctx, "git", "-C", root, "worktree", "add", "-b", branch, destination, sha); runErr != nil {
-		return Profile{}, fmt.Errorf("create worktree: %w: %s", runErr, strings.TrimSpace(string(output)))
+	if err = addLinkedWorktree(root, destination, sha); err != nil {
+		return Profile{}, err
 	}
-	profile, err := profile(destination, "local", source, sha)
+	value, err := buildProfile(destination, "local", source, sha)
 	if err != nil {
 		return Profile{}, err
 	}
-	profile.Root = root
-	profile.BranchName = branch
-	return profile, nil
+	value.Root = root
+	value.BranchName = worktreeName(destination)
+	return value, nil
 }
 
 var githubRepository = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
 
-func PrepareGitHub(ctx context.Context, runner Runner, repository, destination string) (Profile, error) {
+// PrepareGitHub clones a GitHub repository and checks out the materialization
+// branch. Authentication uses GITHUB_TOKEN or GH_TOKEN when present.
+func PrepareGitHub(ctx context.Context, repository, destination string) (Profile, error) {
 	if !githubRepository.MatchString(repository) {
 		return Profile{}, fmt.Errorf("github repository must be owner/repository")
 	}
-	if output, err := runner.Run(ctx, "gh", "repo", "clone", repository, destination); err != nil {
-		return Profile{}, fmt.Errorf("clone github repository: %w: %s", err, strings.TrimSpace(string(output)))
+	options := &gogit.CloneOptions{URL: "https://github.com/" + repository + ".git"}
+	if auth := githubToken(); auth != nil {
+		options.ClientOptions = append(options.ClientOptions, client.WithHTTPAuth(auth))
 	}
-	head, err := runner.Run(ctx, "git", "-C", destination, "rev-parse", "HEAD")
+	cloned, err := gogit.PlainCloneContext(ctx, destination, options)
+	if err != nil {
+		return Profile{}, fmt.Errorf("clone github repository: %w", err)
+	}
+	head, err := cloned.Head()
 	if err != nil {
 		return Profile{}, fmt.Errorf("read cloned head: %w", err)
 	}
-	branch := materializationBranch(destination)
-	if output, switchErr := runner.Run(ctx, "git", "-C", destination, "switch", "-c", branch); switchErr != nil {
-		return Profile{}, fmt.Errorf("create github work branch: %w: %s", switchErr, strings.TrimSpace(string(output)))
+	branch := worktreeName(destination)
+	worktree, err := cloned.Worktree()
+	if err != nil {
+		return Profile{}, fmt.Errorf("open cloned worktree: %w", err)
 	}
-	value, err := profile(destination, "github", repository, strings.TrimSpace(string(head)))
+	if err = worktree.Checkout(&gogit.CheckoutOptions{Branch: plumbing.NewBranchReferenceName(branch), Create: true}); err != nil {
+		return Profile{}, fmt.Errorf("create github work branch: %w", err)
+	}
+	value, err := buildProfile(destination, "github", repository, head.Hash().String())
 	if err != nil {
 		return Profile{}, err
 	}
@@ -127,18 +155,59 @@ func PrepareGitHub(ctx context.Context, runner Runner, repository, destination s
 	return value, nil
 }
 
-func profile(workspace, sourceType, source, sha string) (Profile, error) {
+func githubToken() *githttp.BasicAuth {
+	for _, name := range []string{"GITHUB_TOKEN", "GH_TOKEN"} {
+		if token := strings.TrimSpace(os.Getenv(name)); token != "" {
+			return &githttp.BasicAuth{Username: "x-access-token", Password: token}
+		}
+	}
+	return nil
+}
+
+// RemoveWorktree removes a linked worktree and its files. Missing worktrees are
+// ignored so repeated cleanup stays idempotent.
+func RemoveWorktree(canonical, working string) error {
+	manager, err := worktreeManager(canonical)
+	if err != nil {
+		return err
+	}
+	if err = manager.Remove(worktreeName(working)); err != nil && !errors.Is(err, xworktree.ErrWorktreeNotFound) {
+		return fmt.Errorf("remove worktree metadata: %w", err)
+	}
+	return os.RemoveAll(working)
+}
+
+func addLinkedWorktree(canonical, destination, sha string) error {
+	manager, err := worktreeManager(canonical)
+	if err != nil {
+		return err
+	}
+	hash := plumbing.NewHash(sha)
+	if err = os.MkdirAll(destination, 0o700); err != nil {
+		return fmt.Errorf("create worktree directory: %w", err)
+	}
+	if err = manager.Add(osfs.New(destination), worktreeName(destination), xworktree.WithCommit(hash)); err != nil {
+		return fmt.Errorf("create worktree: %w", err)
+	}
+	return nil
+}
+
+func worktreeManager(canonical string) (*xworktree.Worktree, error) {
+	storer := filesystem.NewStorage(osfs.New(filepath.Join(canonical, ".git")), cache.NewObjectLRUDefault())
+	manager, err := xworktree.New(storer)
+	if err != nil {
+		return nil, fmt.Errorf("open worktree manager: %w", err)
+	}
+	return manager, nil
+}
+
+func buildProfile(workspace, sourceType, source, sha string) (Profile, error) {
 	checks, generated, protected, tests, preChangeVerification, err := DetectQualityProfile(workspace)
 	if err != nil {
 		return Profile{}, err
 	}
 	instructions := findAgentInstructions(workspace)
 	return Profile{Root: workspace, SourceType: sourceType, Source: source, BaseSHA: sha, Checks: checks, Generated: generated, Protected: protected, Tests: tests, PreChangeVerification: preChangeVerification, Instructions: instructions}, nil
-}
-
-func ChecksFromAgents(path string) ([]Check, bool, error) {
-	checks, _, _, found, err := directivesFromAgents(path)
-	return checks, found, err
 }
 
 func directivesFromAgents(path string) ([]Check, []string, []string, bool, error) {
@@ -180,14 +249,6 @@ func directivesFromAgents(path string) ([]Check, []string, []string, bool, error
 		}
 	}
 	return value.Checks, value.Generated, value.Protected, true, nil
-}
-
-func DetectProfile(root string) ([]Check, []string, []string, error) {
-	if checks, generated, protected, found, err := directivesFromAgents(filepath.Join(root, "AGENTS.md")); found || err != nil {
-		return checks, generated, protected, err
-	}
-	checks, err := detectChecks(root)
-	return checks, nil, nil, err
 }
 
 func DetectQualityProfile(root string) ([]Check, []string, []string, []string, bool, error) {
@@ -248,11 +309,6 @@ func parseDirectives(body []byte) ([]Check, []string, []string, []string, bool, 
 	return value.Checks, value.Generated, value.Protected, tests, value.PreChangeVerification, nil
 }
 
-func DetectChecks(root string) ([]Check, error) {
-	checks, _, _, err := DetectProfile(root)
-	return checks, err
-}
-
 func detectChecks(root string) ([]Check, error) {
 	var checks []Check
 	if body, err := os.ReadFile(filepath.Join(root, "package.json")); err == nil {
@@ -279,230 +335,210 @@ func detectChecks(root string) ([]Check, error) {
 	return checks, nil
 }
 
-func ChangedFiles(ctx context.Context, runner Runner, root, base string) ([]string, error) {
-	if strings.TrimSpace(base) == "" {
-		return nil, fmt.Errorf("git change base is required")
-	}
-	tracked, err := runner.Run(ctx, "git", "-C", root, "diff", "--name-only", "-z", base, "--")
+// ChangedFiles lists repository-relative paths changed since base, including
+// untracked files.
+func ChangedFiles(root, base string) ([]string, error) {
+	entries, err := ChangedEntries(root, base)
 	if err != nil {
-		return nil, fmt.Errorf("read tracked changes: %w", err)
+		return nil, err
 	}
-	untracked, err := runner.Run(ctx, "git", "-C", root, "ls-files", "--others", "--exclude-standard", "-z")
-	if err != nil {
-		return nil, fmt.Errorf("read untracked changes: %w", err)
+	files := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		files = append(files, entry.Path)
 	}
-	seen := map[string]bool{}
-	files := make([]string, 0)
-	for _, output := range [][]byte{tracked, untracked} {
-		for name := range strings.SplitSeq(string(output), "\x00") {
-			name = filepath.ToSlash(name)
-			if name != "" && !seen[name] {
-				seen[name] = true
-				files = append(files, name)
-			}
-		}
-	}
-	sort.Strings(files)
 	return files, nil
 }
 
-func Diff(ctx context.Context, runner Runner, root, base string) (string, error) {
+// Diff renders the unified patch from base to the current working tree.
+func Diff(root, base string) (string, error) {
 	if strings.TrimSpace(base) == "" {
 		return "", fmt.Errorf("git diff base is required")
 	}
-	output, err := runner.Run(ctx, "git", "-C", root, "diff", "--no-ext-diff", "--binary", base, "--")
+	repository, err := open(root)
 	if err != nil {
-		return "", fmt.Errorf("git diff: %w", err)
+		return "", err
 	}
-	return string(output), nil
+	baseTree, err := baseTreeFor(repository, base)
+	if err != nil {
+		return "", err
+	}
+	entries, err := changedEntries(repository, baseTree)
+	if err != nil {
+		return "", err
+	}
+	changes := make(object.Changes, 0, len(entries))
+	for _, entry := range entries {
+		change, changeErr := worktreeChange(repository, baseTree, root, entry.Path)
+		if changeErr != nil {
+			return "", changeErr
+		}
+		if change != nil {
+			changes = append(changes, change)
+		}
+	}
+	patch, err := changes.PatchContext(context.Background())
+	if err != nil {
+		return "", fmt.Errorf("encode git diff: %w", err)
+	}
+	return patch.String(), nil
+}
+
+// worktreeChange builds a tree-to-worktree change for one path. The provided
+// tree only supplies the object storer to the patch encoder.
+func worktreeChange(repository *gogit.Repository, baseTree *object.Tree, root, file string) (*object.Change, error) {
+	clean := filepath.ToSlash(filepath.Clean(file))
+	if clean == "." || clean == "" {
+		return nil, nil
+	}
+	change := &object.Change{}
+	from, err := baseTree.FindEntry(clean)
+	if err == nil {
+		change.From = object.ChangeEntry{Name: clean, Tree: baseTree, TreeEntry: *from}
+	} else if !errors.Is(err, object.ErrEntryNotFound) && !errors.Is(err, object.ErrFileNotFound) {
+		return nil, fmt.Errorf("read diff base entry %s: %w", clean, err)
+	}
+	full := filepath.Join(root, filepath.FromSlash(clean))
+	info, err := os.Lstat(full)
+	if err == nil {
+		hash, mode, blobErr := writeBlob(repository, full, info)
+		if blobErr != nil {
+			return nil, blobErr
+		}
+		change.To = object.ChangeEntry{Name: clean, Tree: baseTree, TreeEntry: object.TreeEntry{Name: path.Base(clean), Mode: mode, Hash: hash}}
+	} else if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("read worktree path %s: %w", clean, err)
+	}
+	if change.From.Name == "" && change.To.Name == "" {
+		return nil, nil
+	}
+	return change, nil
+}
+
+func writeBlob(repository *gogit.Repository, file string, info os.FileInfo) (plumbing.Hash, filemode.FileMode, error) {
+	mode := worktreeFileMode(info)
+	content, err := readWorktreeContent(file, info)
+	if err != nil {
+		return plumbing.ZeroHash, mode, err
+	}
+	encoded := repository.Storer.NewEncodedObject()
+	encoded.SetType(plumbing.BlobObject)
+	writer, err := encoded.Writer()
+	if err != nil {
+		return plumbing.ZeroHash, mode, fmt.Errorf("encode worktree blob: %w", err)
+	}
+	if _, err = writer.Write(content); err != nil {
+		writer.Close()
+		return plumbing.ZeroHash, mode, fmt.Errorf("encode worktree blob: %w", err)
+	}
+	if err = writer.Close(); err != nil {
+		return plumbing.ZeroHash, mode, fmt.Errorf("encode worktree blob: %w", err)
+	}
+	hash, err := repository.Storer.SetEncodedObject(encoded)
+	if err != nil {
+		return plumbing.ZeroHash, mode, fmt.Errorf("store worktree blob: %w", err)
+	}
+	return hash, mode, nil
+}
+
+func worktreeFileMode(info os.FileInfo) filemode.FileMode {
+	if info.Mode()&os.ModeSymlink != 0 {
+		return filemode.Symlink
+	}
+	if info.Mode().Perm()&0o111 != 0 {
+		return filemode.Executable
+	}
+	return filemode.Regular
+}
+
+func readWorktreeContent(file string, info os.FileInfo) ([]byte, error) {
+	if info.Mode()&os.ModeSymlink != 0 {
+		target, err := os.Readlink(file)
+		if err != nil {
+			return nil, fmt.Errorf("read worktree symlink %s: %w", file, err)
+		}
+		return []byte(target), nil
+	}
+	content, err := os.ReadFile(file)
+	if err != nil {
+		return nil, fmt.Errorf("read worktree path %s: %w", file, err)
+	}
+	return content, nil
+}
+
+func baseTreeFor(repository *gogit.Repository, base string) (*object.Tree, error) {
+	baseCommit, err := repository.CommitObject(plumbing.NewHash(base))
+	if err != nil {
+		return nil, fmt.Errorf("read change base: %w", err)
+	}
+	tree, err := baseCommit.Tree()
+	if err != nil {
+		return nil, fmt.Errorf("read change base tree: %w", err)
+	}
+	return tree, nil
 }
 
 // Fingerprint captures repository content and Git state relevant to a read-only turn.
-func Fingerprint(ctx context.Context, runner Runner, root string) (string, error) {
-	head, err := runner.Run(ctx, "git", "-C", root, "rev-parse", "HEAD")
+func Fingerprint(root string) (string, error) {
+	repository, err := open(root)
+	if err != nil {
+		return "", err
+	}
+	head, err := repository.Head()
 	if err != nil {
 		return "", fmt.Errorf("read repository head: %w", err)
 	}
-	tracked, err := runner.Run(ctx, "git", "-C", root, "ls-files", "--cached", "-z")
+	index, err := repository.Storer.Index()
 	if err != nil {
-		return "", fmt.Errorf("read tracked files: %w", err)
+		return "", fmt.Errorf("read repository index: %w", err)
 	}
-	untracked, err := runner.Run(ctx, "git", "-C", root, "ls-files", "--others", "--exclude-standard", "-z")
+	worktree, err := repository.Worktree()
 	if err != nil {
-		return "", fmt.Errorf("read untracked files: %w", err)
+		return "", fmt.Errorf("open git worktree: %w", err)
 	}
-	staged, err := runner.Run(ctx, "git", "-C", root, "diff", "--cached", "--no-ext-diff", "--binary")
+	status, err := worktree.Status()
 	if err != nil {
-		return "", fmt.Errorf("read staged content: %w", err)
+		return "", fmt.Errorf("read repository status: %w", err)
 	}
-
-	paths := make(map[string]struct{})
-	for _, output := range [][]byte{tracked, untracked} {
-		for path := range strings.SplitSeq(string(output), "\x00") {
-			if path != "" {
-				paths[filepath.FromSlash(path)] = struct{}{}
-			}
+	paths := make(map[string]struct{}, len(index.Entries))
+	for _, entry := range index.Entries {
+		paths[filepath.ToSlash(entry.Name)] = struct{}{}
+	}
+	for file, state := range status {
+		if state.Worktree == gogit.Untracked {
+			paths[filepath.ToSlash(file)] = struct{}{}
 		}
 	}
 	ordered := make([]string, 0, len(paths))
-	for path := range paths {
-		ordered = append(ordered, path)
+	for file := range paths {
+		ordered = append(ordered, file)
 	}
 	sort.Strings(ordered)
 
 	hasher := fnv.New128a()
-	fmt.Fprintf(hasher, "head\x00%s\x00staged\x00", strings.TrimSpace(string(head)))
-	fmt.Fprintf(hasher, "%x\x00", staged)
-	for _, path := range ordered {
-		info, statErr := os.Lstat(filepath.Join(root, path))
+	fmt.Fprintf(hasher, "head\x00%s\x00", head.Hash().String())
+	for _, entry := range index.Entries {
+		fmt.Fprintf(hasher, "index\x00%s\x00%o\x00%s\x00", filepath.ToSlash(entry.Name), entry.Mode, entry.Hash.String())
+	}
+	for _, file := range ordered {
+		info, statErr := os.Lstat(filepath.Join(root, filepath.FromSlash(file)))
 		if os.IsNotExist(statErr) {
-			fmt.Fprintf(hasher, "path\x00%s\x00missing\x00", filepath.ToSlash(path))
+			fmt.Fprintf(hasher, "path\x00%s\x00missing\x00", file)
 			continue
 		}
 		if statErr != nil {
-			return "", fmt.Errorf("stat repository path %s: %w", path, statErr)
+			return "", fmt.Errorf("stat repository path %s: %w", file, statErr)
 		}
-		fmt.Fprintf(hasher, "path\x00%s\x00mode\x00%o\x00", filepath.ToSlash(path), info.Mode())
-		if info.Mode()&os.ModeSymlink != 0 {
-			target, readErr := os.Readlink(filepath.Join(root, path))
-			if readErr != nil {
-				return "", fmt.Errorf("read symlink %s: %w", path, readErr)
-			}
-			fmt.Fprintf(hasher, "symlink\x00%s\x00", target)
+		fmt.Fprintf(hasher, "path\x00%s\x00mode\x00%o\x00", file, info.Mode())
+		if !info.Mode().IsRegular() && info.Mode()&os.ModeSymlink == 0 {
 			continue
 		}
-		if info.IsDir() || !info.Mode().IsRegular() {
-			continue
-		}
-		body, readErr := os.ReadFile(filepath.Join(root, path))
+		body, readErr := readWorktreeContent(filepath.Join(root, filepath.FromSlash(file)), info)
 		if readErr != nil {
-			return "", fmt.Errorf("read repository path %s: %w", path, readErr)
+			return "", readErr
 		}
 		fmt.Fprintf(hasher, "content\x00%x\x00", body)
 	}
 	return fmt.Sprintf("%x", hasher.Sum(nil)), nil
-}
-
-// Commit stages and commits exactly paths, leaving unrelated index entries alone.
-func Commit(ctx context.Context, runner Runner, root, message string, paths []string) (string, error) {
-	validated := make([]string, 0, len(paths))
-	seen := make(map[string]struct{}, len(paths))
-	for _, path := range paths {
-		if err := validateRelativePath(path); err != nil {
-			return "", err
-		}
-		clean := filepath.ToSlash(filepath.Clean(path))
-		if clean == "." {
-			return "", fmt.Errorf("repository path must name a file: %q", path)
-		}
-		if info, err := os.Stat(filepath.Join(root, filepath.FromSlash(clean))); err == nil && info.IsDir() {
-			return "", fmt.Errorf("repository path must name a file: %q", path)
-		}
-		if _, exists := seen[clean]; !exists {
-			seen[clean] = struct{}{}
-			validated = append(validated, clean)
-		}
-	}
-	if len(validated) == 0 {
-		return currentHead(ctx, runner, root)
-	}
-	sort.Strings(validated)
-	addArgs := []string{"--literal-pathspecs", "-C", root, "add", "--force", "--"}
-	addArgs = append(addArgs, validated...)
-	if output, err := runner.Run(ctx, "git", addArgs...); err != nil {
-		return "", fmt.Errorf("stage factory paths: %w: %s", err, strings.TrimSpace(string(output)))
-	}
-	checkArgs := []string{"--literal-pathspecs", "-C", root, "diff", "--cached", "--name-only", "-z", "HEAD", "--"}
-	checkArgs = append(checkArgs, validated...)
-	output, err := runner.Run(ctx, "git", checkArgs...)
-	if err != nil {
-		return "", fmt.Errorf("check staged factory paths: %w: %s", err, strings.TrimSpace(string(output)))
-	}
-	if len(output) == 0 {
-		return currentHead(ctx, runner, root)
-	}
-	commitArgs := []string{"-C", root, "-c", "user.name=Software Factory", "-c", "user.email=software-factory@localhost", "commit", "--only", "-m", message, "--"}
-	commitArgs = append(commitArgs, validated...)
-	if output, err := runner.Run(ctx, "git", commitArgs...); err != nil {
-		return "", fmt.Errorf("commit factory paths: %w: %s", err, strings.TrimSpace(string(output)))
-	}
-	return currentHead(ctx, runner, root)
-}
-
-func RetainRef(ctx context.Context, runner Runner, root, ref, sha string) error {
-	if !strings.HasPrefix(ref, "refs/software-factory/") || strings.ContainsAny(ref, " \t\r\n") || sha == "" {
-		return fmt.Errorf("invalid retained Git ref")
-	}
-	if output, err := runner.Run(ctx, "git", "-C", root, "update-ref", ref, sha); err != nil {
-		return fmt.Errorf("retain Git ref: %w: %s", err, strings.TrimSpace(string(output)))
-	}
-	return nil
-}
-
-// RestoreForRetry creates a fresh execution branch at the recorded Git input.
-func RestoreForRetry(ctx context.Context, runner Runner, sourceType, canonical, working, head, branch string) error {
-	if head == "" || branch == "" {
-		return fmt.Errorf("retry Git state requires head and branch")
-	}
-	if sourceType == "local" {
-		if output, err := runner.Run(ctx, "git", "-C", canonical, "worktree", "remove", "--force", working); err != nil {
-			return fmt.Errorf("remove retry worktree: %w: %s", err, strings.TrimSpace(string(output)))
-		}
-		if output, err := runner.Run(ctx, "git", "-C", canonical, "worktree", "add", "-b", branch, working, head); err != nil {
-			return fmt.Errorf("create retry worktree: %w: %s", err, strings.TrimSpace(string(output)))
-		}
-		return nil
-	}
-
-	backup := working + ".software-factory-source"
-	if err := os.RemoveAll(backup); err != nil {
-		return fmt.Errorf("clear retry clone backup: %w", err)
-	}
-	if err := os.Rename(working, backup); err != nil {
-		return fmt.Errorf("move retry clone: %w", err)
-	}
-	restore := func() {
-		_ = os.RemoveAll(working)
-		_ = os.Rename(backup, working)
-	}
-	if output, err := runner.Run(ctx, "git", "clone", "--local", backup, working); err != nil {
-		restore()
-		return fmt.Errorf("clone retry repository: %w: %s", err, strings.TrimSpace(string(output)))
-	}
-	if output, err := runner.Run(ctx, "git", "-C", working, "switch", "-c", branch, head); err != nil {
-		restore()
-		return fmt.Errorf("create retry clone branch: %w: %s", err, strings.TrimSpace(string(output)))
-	}
-	if err := os.RemoveAll(backup); err != nil {
-		return fmt.Errorf("remove retry clone backup: %w", err)
-	}
-	return nil
-}
-
-func Head(ctx context.Context, runner Runner, root string) (string, error) {
-	return currentHead(ctx, runner, root)
-}
-
-func Branch(ctx context.Context, runner Runner, root string) (string, error) {
-	output, err := runner.Run(ctx, "git", "-C", root, "symbolic-ref", "--short", "HEAD")
-	if err != nil {
-		return "", fmt.Errorf("read Git branch: %w", err)
-	}
-	return strings.TrimSpace(string(output)), nil
-}
-
-func currentHead(ctx context.Context, runner Runner, root string) (string, error) {
-	output, err := runner.Run(ctx, "git", "-C", root, "rev-parse", "HEAD")
-	if err != nil {
-		return "", fmt.Errorf("read Git head: %w", err)
-	}
-	return strings.TrimSpace(string(output)), nil
-}
-
-func materializationBranch(destination string) string {
-	hash := fnv.New32a()
-	_, _ = hash.Write([]byte(filepath.Clean(destination)))
-	return fmt.Sprintf("software-factory/%08x", hash.Sum32())
 }
 
 func MatchesPath(path string, patterns []string) bool {
@@ -545,15 +581,13 @@ func validateTestPattern(pattern string) error {
 		return fmt.Errorf("test pattern must be relative: %q", pattern)
 	}
 	normalized := filepath.ToSlash(pattern)
-	for _, segment := range strings.Split(normalized, "/") {
-		if segment == ".." {
-			return fmt.Errorf("test pattern escapes root: %q", pattern)
-		}
+	if slices.Contains(strings.Split(normalized, "/"), "..") {
+		return fmt.Errorf("test pattern escapes root: %q", pattern)
 	}
 	if _, err := path.Match("", ""); err != nil {
 		return fmt.Errorf("invalid test pattern %q: %w", pattern, err)
 	}
-	for _, segment := range strings.Split(normalized, "/") {
+	for segment := range strings.SplitSeq(normalized, "/") {
 		if segment != "**" {
 			if _, err := path.Match(segment, ""); err != nil {
 				return fmt.Errorf("invalid test pattern %q: %w", pattern, err)
@@ -570,73 +604,112 @@ type Change struct {
 	RenameTo   string
 }
 
-func ChangedEntries(ctx context.Context, runner Runner, root, base string) ([]Change, error) {
+// ChangedEntries lists committed and uncommitted changes since base. Renames
+// surface as both the previous and resulting path.
+func ChangedEntries(root, base string) ([]Change, error) {
 	if strings.TrimSpace(base) == "" {
 		return nil, fmt.Errorf("git change base is required")
 	}
-	tracked, err := runner.Run(ctx, "git", "-C", root, "diff", "--name-status", "--find-renames", "-z", base, "--")
+	repository, err := open(root)
 	if err != nil {
-		return nil, fmt.Errorf("read tracked change entries: %w", err)
+		return nil, err
 	}
+	baseTree, err := baseTreeFor(repository, base)
+	if err != nil {
+		return nil, err
+	}
+	return changedEntries(repository, baseTree)
+}
+
+func changedEntries(repository *gogit.Repository, baseTree *object.Tree) ([]Change, error) {
+	headRef, err := repository.Head()
+	if err != nil {
+		return nil, fmt.Errorf("read repository head: %w", err)
+	}
+	headCommit, err := repository.CommitObject(headRef.Hash())
+	if err != nil {
+		return nil, fmt.Errorf("read repository head commit: %w", err)
+	}
+	headTree, err := headCommit.Tree()
+	if err != nil {
+		return nil, fmt.Errorf("read repository head tree: %w", err)
+	}
+	committed, err := object.DiffTreeWithOptions(context.Background(), baseTree, headTree, object.DefaultDiffTreeOptions)
+	if err != nil {
+		return nil, fmt.Errorf("diff committed changes: %w", err)
+	}
+
 	changes := make([]Change, 0)
 	seen := map[string]bool{}
-	fields := strings.Split(string(tracked), "\x00")
-	for index := 0; index < len(fields); {
-		if fields[index] == "" {
-			index++
+	add := func(file, kind, from, to string) {
+		file = filepath.ToSlash(file)
+		if file == "" || seen[file] {
+			return
+		}
+		seen[file] = true
+		changes = append(changes, Change{Path: file, Kind: kind, RenameFrom: from, RenameTo: to})
+	}
+	for _, change := range committed {
+		action, actionErr := change.Action()
+		if actionErr != nil {
+			return nil, actionErr
+		}
+		if change.From.Name != "" && change.To.Name != "" && change.From.Name != change.To.Name {
+			add(change.To.Name, "renamed", change.From.Name, change.To.Name)
+			add(change.From.Name, "renamed", change.From.Name, change.To.Name)
 			continue
 		}
-		status := fields[index]
-		index++
-		if index >= len(fields) {
-			break
-		}
-		first := filepath.ToSlash(fields[index])
-		index++
-		change := Change{Path: first, Kind: changeKind(status)}
-		if strings.HasPrefix(status, "R") || strings.HasPrefix(status, "C") {
-			if index >= len(fields) {
-				break
-			}
-			change.RenameFrom = first
-			change.Path = filepath.ToSlash(fields[index])
-			index++
-			if !seen[change.RenameFrom] {
-				changes = append(changes, Change{Path: change.RenameFrom, Kind: "renamed", RenameFrom: change.RenameFrom, RenameTo: change.Path})
-				seen[change.RenameFrom] = true
-			}
-		}
-		if !seen[change.Path] {
-			changes = append(changes, change)
-			seen[change.Path] = true
+		switch action {
+		case merkletrie.Insert:
+			add(change.To.Name, "added", "", "")
+		case merkletrie.Delete:
+			add(change.From.Name, "deleted", "", "")
+		default:
+			add(change.To.Name, "modified", "", "")
 		}
 	}
-	untracked, err := runner.Run(ctx, "git", "-C", root, "ls-files", "--others", "--exclude-standard", "-z")
+
+	worktree, err := repository.Worktree()
 	if err != nil {
-		return nil, fmt.Errorf("read untracked change entries: %w", err)
+		return nil, fmt.Errorf("open git worktree: %w", err)
 	}
-	for _, file := range strings.Split(string(untracked), "\x00") {
-		file = filepath.ToSlash(file)
-		if file != "" && !seen[file] {
-			changes = append(changes, Change{Path: file, Kind: "added"})
-			seen[file] = true
+	status, err := worktree.Status()
+	if err != nil {
+		return nil, fmt.Errorf("read repository status: %w", err)
+	}
+	for file, state := range status {
+		if state.Staging == gogit.Unmodified && state.Worktree == gogit.Unmodified {
+			continue
 		}
+		if state.Worktree == gogit.Untracked && state.Staging == gogit.Untracked {
+			add(file, "added", "", "")
+			continue
+		}
+		if state.Staging == gogit.Renamed && state.Extra != "" {
+			add(file, "renamed", filepath.ToSlash(state.Extra), filepath.ToSlash(file))
+			add(state.Extra, "renamed", filepath.ToSlash(state.Extra), filepath.ToSlash(file))
+			continue
+		}
+		kind := "modified"
+		switch {
+		case state.Staging == gogit.Deleted || state.Worktree == gogit.Deleted:
+			kind = "deleted"
+		case state.Staging == gogit.Added:
+			kind = "added"
+		}
+		add(file, kind, "", "")
 	}
+
 	sort.Slice(changes, func(left, right int) bool { return changes[left].Path < changes[right].Path })
 	return changes, nil
 }
 
-func changeKind(status string) string {
-	switch status[0] {
-	case 'A':
-		return "added"
-	case 'D':
-		return "deleted"
-	case 'R':
-		return "renamed"
-	default:
-		return "modified"
-	}
+// worktreeName derives a worktree and branch name that satisfies go-git's name
+// grammar while staying unique per materialization target.
+func worktreeName(destination string) string {
+	hash := fnv.New32a()
+	_, _ = hash.Write([]byte(filepath.Clean(destination)))
+	return fmt.Sprintf("software-factory-%08x", hash.Sum32())
 }
 
 func validateRelativePath(path string) error {

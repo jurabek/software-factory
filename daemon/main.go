@@ -25,7 +25,6 @@ import (
 	"github.com/jurabek/software-factory/daemon/internal/builder"
 	"github.com/jurabek/software-factory/daemon/internal/config"
 	"github.com/jurabek/software-factory/daemon/internal/creation"
-	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
 	"github.com/jurabek/software-factory/daemon/internal/harness"
 	piharness "github.com/jurabek/software-factory/daemon/internal/harness/pi"
 	"github.com/jurabek/software-factory/daemon/internal/messaging"
@@ -34,13 +33,13 @@ import (
 	"github.com/jurabek/software-factory/daemon/internal/planner"
 	"github.com/jurabek/software-factory/daemon/internal/projection"
 	"github.com/jurabek/software-factory/daemon/internal/reviewer"
-	sandboxgit "github.com/jurabek/software-factory/daemon/internal/sandbox"
 	"github.com/jurabek/software-factory/daemon/internal/stagekit"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 	"github.com/jurabek/software-factory/daemon/internal/task"
 	"github.com/jurabek/software-factory/daemon/internal/timeline"
 	"github.com/jurabek/software-factory/daemon/internal/token"
 	"github.com/jurabek/software-factory/daemon/internal/verifier"
+	"github.com/jurabek/software-factory/daemon/internal/workspace"
 )
 
 //go:embed templates
@@ -231,10 +230,10 @@ func run(rootCtx context.Context) error {
 			}
 		}
 	}
-	sandbox := sandboxgit.Git{Runner: factorygit.OSRunner{}}
-	kit := stagekit.New(db, factorygit.OSRunner{}, registry, sandbox, configured, configPath, root)
+	sandbox := workspace.Git{}
+	kit := stagekit.New(db, registry, sandbox, configured, configPath, root)
 	events := orchestrator.NewEvents(db)
-	taskService := task.New(root, task.Deps{Store: db, Config: configured, ConfigPath: configPath, Harnesses: registry, Git: factorygit.OSRunner{}, Sandbox: sandbox})
+	taskService := task.New(root, task.Deps{Store: db, Config: configured, ConfigPath: configPath, Harnesses: registry, Sandbox: sandbox})
 	creationStage := creation.New(taskService, kit, events)
 	plannerStage := planner.New(kit, events)
 	messages := messaging.New(messaging.Deps{Store: db, Config: configured, ConfigPath: configPath, Harnesses: registry, Root: root, Events: events})

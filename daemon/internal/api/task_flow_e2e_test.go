@@ -21,7 +21,6 @@ import (
 	"github.com/jurabek/software-factory/daemon/internal/builder"
 	"github.com/jurabek/software-factory/daemon/internal/config"
 	"github.com/jurabek/software-factory/daemon/internal/creation"
-	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
 	"github.com/jurabek/software-factory/daemon/internal/harness"
 	"github.com/jurabek/software-factory/daemon/internal/messaging"
 	"github.com/jurabek/software-factory/daemon/internal/orchestrator"
@@ -29,12 +28,12 @@ import (
 	"github.com/jurabek/software-factory/daemon/internal/planner"
 	"github.com/jurabek/software-factory/daemon/internal/projection"
 	"github.com/jurabek/software-factory/daemon/internal/reviewer"
-	"github.com/jurabek/software-factory/daemon/internal/sandbox"
 	"github.com/jurabek/software-factory/daemon/internal/session"
 	"github.com/jurabek/software-factory/daemon/internal/stagekit"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 	"github.com/jurabek/software-factory/daemon/internal/task"
 	"github.com/jurabek/software-factory/daemon/internal/verifier"
+	"github.com/jurabek/software-factory/daemon/internal/workspace"
 	"github.com/stretchr/testify/suite"
 )
 
@@ -188,10 +187,10 @@ func (s *taskFlowSuite) SetupSuite() {
 	taskRoot := filepath.Join(root, "tasks")
 	configPath := filepath.Join(configRoot, "config.yaml")
 	registry := harness.Registry{"pi": s.harness}
-	sandboxRunner := sandbox.Git{Runner: factorygit.OSRunner{}}
-	kit := stagekit.New(s.db, factorygit.OSRunner{}, registry, sandboxRunner, cfg, configPath, taskRoot)
+	sandboxRunner := workspace.Git{}
+	kit := stagekit.New(s.db, registry, sandboxRunner, cfg, configPath, taskRoot)
 	events := orchestrator.NewEvents(s.db)
-	taskService := task.New(taskRoot, task.Deps{Store: s.db, Config: cfg, ConfigPath: configPath, Harnesses: registry, Git: factorygit.OSRunner{}, Sandbox: sandboxRunner})
+	taskService := task.New(taskRoot, task.Deps{Store: s.db, Config: cfg, ConfigPath: configPath, Harnesses: registry, Sandbox: sandboxRunner})
 	creationStage := creation.New(taskService, kit, events)
 	plannerStage := planner.New(kit, events)
 	s.service = orchestrator.New(taskRoot, orchestrator.Dependencies{
