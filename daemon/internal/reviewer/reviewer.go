@@ -294,7 +294,8 @@ func (s service) publishReview(ctx context.Context, task store.Task, phase store
 	return s.kit.DeliverAndFinalize(ctx, stagekit.Delivery{
 		Task: task, Phase: phase, Role: "review", ReadOnly: true, Instructions: Instructions(), Validate: func(text string) (any, error) {
 			return Validate(text)
-		}}, turn, func(turn harness.TurnResult) (stage.ReviewResult, error) {
+		},
+	}, turn, func(turn harness.TurnResult) (stage.ReviewResult, error) {
 		payload := turn.Payload
 		review,
 			validationErr := Validate(payload)
