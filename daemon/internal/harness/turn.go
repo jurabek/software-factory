@@ -103,21 +103,8 @@ func RunTurn(ctx context.Context, deps Deps, input TurnInput) (TurnResult, error
 	}
 	defer native.Close()
 	sessionReady := storedSession.SessionReady
-	forkAt := ""
-	if input.Phase.ForkNative {
-		forkAt = input.Phase.NativeBaseEntryID
-	} else if input.Phase.NativeBaseEntryID == "" {
-		// Record the attempt's input checkpoint so a later exact retry can fork
-		// the native session back to it.
-		if err = deps.DB.Phases.SetNativeBase(ctx, input.TaskID, input.Phase.ID, storedSession.LastEntryID); err != nil {
-			return TurnResult{}, err
-		}
-	}
 	for attempt := 0; attempt <= deps.JSONFixAttempts; attempt++ {
 		prompt := Prompt{RequestID: input.RequestID, Attempt: attempt + 1, Text: input.UserPrompt, DeadlineMS: deps.AgentDeadlineMS}
-		if attempt == 0 {
-			prompt.ForkAtEntryID = forkAt
-		}
 		if attempt > 0 {
 			prompt.Text = "Your previous final response was invalid: " + err.Error() + "\n" + input.CorrectionSuffix
 		}

@@ -50,7 +50,6 @@ func (h tasksHandler) registerRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /api/v1/tasks/{id}/abort", h.control(h.abort))
 	mux.HandleFunc("DELETE /api/v1/tasks/{id}", h.delete)
 	mux.HandleFunc("GET /api/v1/tasks/{id}/attempts", h.attempts)
-	mux.HandleFunc("GET /api/v1/tasks/{id}/branches", h.branches)
 	mux.HandleFunc("GET /api/v1/tasks/{id}/events", h.events)
 	mux.HandleFunc("GET /api/v1/tasks/{id}/events/stream", h.stream)
 	mux.HandleFunc("GET /api/v1/tasks/{id}/results", h.results)
@@ -296,18 +295,6 @@ func (h tasksHandler) attempts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	values, err := h.db.Phases.List(r.Context(), r.PathValue("id"))
-	if err != nil {
-		internal(w, err)
-		return
-	}
-	write(w, http.StatusOK, values)
-}
-
-func (h tasksHandler) branches(w http.ResponseWriter, r *http.Request) {
-	if !h.exists(w, r) {
-		return
-	}
-	values, err := h.db.Branches.List(r.Context(), r.PathValue("id"))
 	if err != nil {
 		internal(w, err)
 		return

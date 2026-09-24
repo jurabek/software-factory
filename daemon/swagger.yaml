@@ -814,8 +814,6 @@ definitions:
         type: string
       attempt_id:
         type: string
-      branch_id:
-        type: string
       parent_event_id:
         type: string
       kind:

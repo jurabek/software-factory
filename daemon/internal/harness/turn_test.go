@@ -259,29 +259,6 @@ func TestRunTurnPreservesReadyWhenFailedResultOmitsReadiness(t *testing.T) {
 	}
 }
 
-func TestRunTurnForksOnlyOnFirstCorrectionAttempt(t *testing.T) {
-	agent := &scriptedHarness{
-		results: []Result{
-			{Text: "invalid", SessionReady: true},
-			{Text: `{"ok":true}`, SessionReady: true},
-		},
-	}
-	deps, db, task := testTurnDeps(t, agent, 1)
-	phase := store.Phase{ID: "phase-1", Attempt: 2, ForkNative: true, NativeBaseEntryID: "checkpoint-1"}
-	if _, err := runTurn(t, deps, db, task, phase, "builder", validBuild); err != nil {
-		t.Fatal(err)
-	}
-	if len(agent.requests) != 2 {
-		t.Fatalf("requests = %d, want 2", len(agent.requests))
-	}
-	if agent.requests[0].ForkAtEntryID != "checkpoint-1" {
-		t.Fatalf("first ForkAtEntryID = %q, want checkpoint-1", agent.requests[0].ForkAtEntryID)
-	}
-	if agent.requests[1].ForkAtEntryID != "" {
-		t.Fatalf("correction ForkAtEntryID = %q, want empty", agent.requests[1].ForkAtEntryID)
-	}
-}
-
 func TestRunTurnSessionMismatchErrorsEvenWithRunError(t *testing.T) {
 	agent := &scriptedHarness{
 		results: []Result{{SessionID: "00000000-0000-0000-0000-000000000000", Text: "boom", SessionReady: true}},

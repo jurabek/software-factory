@@ -39,7 +39,6 @@ type Task struct {
 	StartedAt               string            `db:"started_at" json:"started_at,omitempty"`
 	EndedAt                 string            `db:"ended_at" json:"ended_at,omitempty"`
 	TotalCost               float64           `db:"total_cost" json:"total_cost"`
-	SelectedBranchID        string            `db:"selected_branch_id" json:"selected_branch_id,omitempty"`
 	CodingAgent             string            `db:"coding_agent" json:"coding_agent,omitempty"`
 	Model                   string            `db:"model" json:"model,omitempty"`
 	Thinking                string            `db:"thinking" json:"thinking,omitempty"`
@@ -60,11 +59,11 @@ type StageProjection struct {
 	BlockingReason string `json:"blocking_reason,omitempty"`
 }
 
-const taskColumns = `id,coalesce(parent_task_id,''),request,workspace_path,repository_type,repository_source,coalesce(submitted_repository_path,''),coalesce(canonical_repository_path,''),coalesce(repository_path,''),coalesce(base_sha,''),coalesce(review_base_sha,''),coalesce(branch_name,''),state,coalesce(previous_state,''),coalesce(active_phase,''),coalesce(active_stage,''),coalesce(pipeline,''),coalesce(error,''),coalesce(config_snapshot,''),coalesce(plan_digest,''),coalesce(approval_actor,''),coalesce(approval_at,''),total_cost,created_at,coalesce(started_at,''),coalesce(ended_at,''),coalesce(selected_branch_id,''),coalesce(coding_agent,''),coalesce(model,''),coalesce(thinking,'')`
+const taskColumns = `id,coalesce(parent_task_id,''),request,workspace_path,repository_type,repository_source,coalesce(submitted_repository_path,''),coalesce(canonical_repository_path,''),coalesce(repository_path,''),coalesce(base_sha,''),coalesce(review_base_sha,''),coalesce(branch_name,''),state,coalesce(previous_state,''),coalesce(active_phase,''),coalesce(active_stage,''),coalesce(pipeline,''),coalesce(error,''),coalesce(config_snapshot,''),coalesce(plan_digest,''),coalesce(approval_actor,''),coalesce(approval_at,''),total_cost,created_at,coalesce(started_at,''),coalesce(ended_at,''),coalesce(coding_agent,''),coalesce(model,''),coalesce(thinking,'')`
 
 func scanTask(scanner interface{ Scan(...any) error }) (Task, error) {
 	var value Task
-	err := scanner.Scan(&value.ID, &value.ParentTaskID, &value.Request, &value.WorkspacePath, &value.RepositoryType, &value.RepositorySource, &value.SubmittedRepositoryPath, &value.CanonicalRepositoryPath, &value.RepositoryPath, &value.BaseSHA, &value.ReviewBaseSHA, &value.BranchName, &value.State, &value.PreviousState, &value.ActivePhase, &value.ActiveStage, &value.Pipeline, &value.Error, &value.ConfigSnapshot, &value.PlanDigest, &value.ApprovalActor, &value.ApprovalAt, &value.TotalCost, &value.CreatedAt, &value.StartedAt, &value.EndedAt, &value.SelectedBranchID, &value.CodingAgent, &value.Model, &value.Thinking)
+	err := scanner.Scan(&value.ID, &value.ParentTaskID, &value.Request, &value.WorkspacePath, &value.RepositoryType, &value.RepositorySource, &value.SubmittedRepositoryPath, &value.CanonicalRepositoryPath, &value.RepositoryPath, &value.BaseSHA, &value.ReviewBaseSHA, &value.BranchName, &value.State, &value.PreviousState, &value.ActivePhase, &value.ActiveStage, &value.Pipeline, &value.Error, &value.ConfigSnapshot, &value.PlanDigest, &value.ApprovalActor, &value.ApprovalAt, &value.TotalCost, &value.CreatedAt, &value.StartedAt, &value.EndedAt, &value.CodingAgent, &value.Model, &value.Thinking)
 	return value, err
 }
 

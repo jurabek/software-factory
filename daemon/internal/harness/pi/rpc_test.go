@@ -29,7 +29,7 @@ func TestStatsFromRPCMapsTokensCostAndContext(t *testing.T) {
 
 func TestPromptMessageEncodesFactoryRequestWhenExtensionConfigured(t *testing.T) {
 	session := &rpcSession{runner: &Runner{ExtensionPath: "/factory.ts"}}
-	message, err := session.promptMessage(harness.Prompt{RequestID: "req-1", Attempt: 2, ForkAtEntryID: "checkpoint-1", Text: "do it"})
+	message, err := session.promptMessage(harness.Prompt{RequestID: "req-1", Attempt: 2, Text: "do it"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestPromptMessageEncodesFactoryRequestWhenExtensionConfigured(t *testing.T)
 	if err = json.Unmarshal(decoded, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload["requestId"] != "req-1" || payload["forkAt"] != "checkpoint-1" || payload["prompt"] != "do it" {
+	if payload["requestId"] != "req-1" || payload["prompt"] != "do it" {
 		t.Fatalf("payload = %#v", payload)
 	}
 }

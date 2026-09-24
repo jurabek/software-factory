@@ -801,35 +801,6 @@ export function createDaemonRegistry(options: DaemonRegistryOptions) {
 				throw remapIdentityMismatch(error);
 			}
 		},
-		async branches(
-			id: string,
-			taskId: string,
-			signal?: AbortSignal,
-		): Promise<{
-			connection: DaemonConnection;
-			taskId: string;
-			branches: unknown;
-		}> {
-			const validatedTask = validatedTaskID(taskId);
-			const resolved = await resolve(id);
-			try {
-				const branches = await options.client.branches(
-					resolved.endpoint,
-					resolved.credential,
-					validatedTask,
-					{
-						signal,
-					},
-				);
-				return {
-					connection: resolved.connection,
-					taskId: validatedTask,
-					branches,
-				};
-			} catch (error) {
-				throw remapIdentityMismatch(error);
-			}
-		},
 		async checks(
 			id: string,
 			taskId: string,

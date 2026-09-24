@@ -54,12 +54,8 @@ func (r *ProcessRepository) Recover(ctx context.Context) error {
 	if _, err = tx.NamedExecContext(ctx, query2, params); err != nil {
 		return err
 	}
-	query3 := `update branches set status='blocked',updated_at=:ended_at where task_id in (select id from tasks where state in ('preparing','planning','building','checking','reviewing')) and status='active'`
+	query3 := `update tasks set previous_state=state,state='blocked',error='server restarted during active phase',ended_at=:ended_at where state in ('preparing','planning','building','checking','reviewing')`
 	if _, err = tx.NamedExecContext(ctx, query3, params); err != nil {
-		return err
-	}
-	query4 := `update tasks set previous_state=state,state='blocked',error='server restarted during active phase',ended_at=:ended_at where state in ('preparing','planning','building','checking','reviewing')`
-	if _, err = tx.NamedExecContext(ctx, query4, params); err != nil {
 		return err
 	}
 	return tx.Commit()

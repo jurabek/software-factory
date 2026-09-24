@@ -21,7 +21,6 @@ type Event struct {
 	TaskID           string          `db:"task_id" json:"task_id"`
 	PhaseID          string          `db:"phase_id" json:"phase_id,omitempty"`
 	AttemptID        string          `db:"attempt_id" json:"attempt_id,omitempty"`
-	BranchID         string          `db:"branch_id" json:"branch_id,omitempty"`
 	ParentEventID    string          `db:"parent_event_id" json:"parent_event_id,omitempty"`
 	Kind             session.Kind    `db:"kind" json:"kind"`
 	FormatVersion    int             `db:"format_version" json:"format_version"`
@@ -72,7 +71,7 @@ func appendEventTx(ctx context.Context, inserter eventInserter, event Event) (in
 	if string(actions) == "null" {
 		actions = []byte("[]")
 	}
-	query := `insert into events (id,task_id,phase_id,parent_event_id,kind,format_version,name,payload_json,display_json,native_entry_id,request_id,token_count,started_at,ended_at,attempt_id,branch_id,actions_json) values (:id,:task_id,nullif(:phase_id,''),nullif(:parent_event_id,''),:kind,:format_version,nullif(:name,''),:payload_json,:display_json,nullif(:native_entry_id,''),nullif(:request_id,''),:token_count,:started_at,:ended_at,nullif(:attempt_id,''),nullif(:branch_id,''),:actions_json)`
+	query := `insert into events (id,task_id,phase_id,parent_event_id,kind,format_version,name,payload_json,display_json,native_entry_id,request_id,token_count,started_at,ended_at,attempt_id,actions_json) values (:id,:task_id,nullif(:phase_id,''),nullif(:parent_event_id,''),:kind,:format_version,nullif(:name,''),:payload_json,:display_json,nullif(:native_entry_id,''),nullif(:request_id,''),:token_count,:started_at,:ended_at,nullif(:attempt_id,''),:actions_json)`
 	result, err := inserter.NamedExecContext(ctx, query, eventRecord{Event: event, PayloadJSON: string(payload), DisplayJSON: string(display), StartedAt: started, EndedAt: ended, ActionsJSON: string(actions)})
 	if err != nil {
 		return 0, fmt.Errorf("insert event: %w", err)
@@ -130,7 +129,7 @@ func scanEvents(rows *sql.Rows) ([]Event, error) {
 		var event Event
 		var payload, display, started, actions string
 		var ended sql.NullString
-		if err := rows.Scan(&event.Sequence, &event.ID, &event.TaskID, &event.PhaseID, &event.ParentEventID, &event.Kind, &event.FormatVersion, &event.Name, &event.NativeEntryID, &event.RequestID, &payload, &display, &event.TokenCount, &started, &ended, &event.AttemptID, &event.BranchID, &actions); err != nil {
+		if err := rows.Scan(&event.Sequence, &event.ID, &event.TaskID, &event.PhaseID, &event.ParentEventID, &event.Kind, &event.FormatVersion, &event.Name, &event.NativeEntryID, &event.RequestID, &payload, &display, &event.TokenCount, &started, &ended, &event.AttemptID, &actions); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(payload), &event.Payload); err != nil {
@@ -175,7 +174,7 @@ func (r *EventRepository) Append(ctx context.Context, taskDir string, event Even
 
 func (r *EventRepository) List(ctx context.Context, taskID string, after int64, limit int) ([]Event, error) {
 	limit = eventLimit(limit)
-	query := `select sequence,id,task_id,coalesce(phase_id,''),coalesce(parent_event_id,''),kind,format_version,coalesce(name,''),coalesce(native_entry_id,''),coalesce(request_id,''),payload_json,display_json,token_count,started_at,ended_at,coalesce(attempt_id,''),coalesce(branch_id,''),coalesce(actions_json,'[]') from events where task_id=? and sequence>? order by sequence limit ?`
+	query := `select sequence,id,task_id,coalesce(phase_id,''),coalesce(parent_event_id,''),kind,format_version,coalesce(name,''),coalesce(native_entry_id,''),coalesce(request_id,''),payload_json,display_json,token_count,started_at,ended_at,coalesce(attempt_id,''),coalesce(actions_json,'[]') from events where task_id=? and sequence>? order by sequence limit ?`
 	rows, err := r.db.QueryContext(ctx, query, taskID, after, limit)
 	if err != nil {
 		return nil, err
@@ -186,7 +185,7 @@ func (r *EventRepository) List(ctx context.Context, taskID string, after int64, 
 
 func (r *EventRepository) Recent(ctx context.Context, taskID string, limit int) ([]Event, error) {
 	limit = eventLimit(limit)
-	query := `select sequence,id,task_id,phase_id,parent_event_id,kind,format_version,name,native_entry_id,request_id,payload_json,display_json,token_count,started_at,ended_at,attempt_id,branch_id,actions_json from (select sequence,id,task_id,coalesce(phase_id,'') as phase_id,coalesce(parent_event_id,'') as parent_event_id,kind,format_version,coalesce(name,'') as name,coalesce(native_entry_id,'') as native_entry_id,coalesce(request_id,'') as request_id,payload_json,display_json,token_count,started_at,ended_at,coalesce(attempt_id,'') as attempt_id,coalesce(branch_id,'') as branch_id,coalesce(actions_json,'[]') as actions_json from events where task_id=? order by sequence desc limit ?) order by sequence`
+	query := `select sequence,id,task_id,phase_id,parent_event_id,kind,format_version,name,native_entry_id,request_id,payload_json,display_json,token_count,started_at,ended_at,attempt_id,actions_json from (select sequence,id,task_id,coalesce(phase_id,'') as phase_id,coalesce(parent_event_id,'') as parent_event_id,kind,format_version,coalesce(name,'') as name,coalesce(native_entry_id,'') as native_entry_id,coalesce(request_id,'') as request_id,payload_json,display_json,token_count,started_at,ended_at,coalesce(attempt_id,'') as attempt_id,coalesce(actions_json,'[]') as actions_json from events where task_id=? order by sequence desc limit ?) order by sequence`
 	rows, err := r.db.QueryContext(ctx, query, taskID, limit)
 	if err != nil {
 		return nil, err
@@ -199,8 +198,8 @@ func (r *EventRepository) ByID(ctx context.Context, taskID, eventID string) (Eve
 	var event Event
 	var payload, display, started, actions string
 	var ended sql.NullString
-	query := `select sequence,id,task_id,coalesce(phase_id,''),coalesce(parent_event_id,''),kind,format_version,coalesce(name,''),coalesce(native_entry_id,''),coalesce(request_id,''),payload_json,display_json,token_count,started_at,ended_at,coalesce(attempt_id,''),coalesce(branch_id,''),coalesce(actions_json,'[]') from events where task_id=? and id=?`
-	err := r.db.QueryRowContext(ctx, query, taskID, eventID).Scan(&event.Sequence, &event.ID, &event.TaskID, &event.PhaseID, &event.ParentEventID, &event.Kind, &event.FormatVersion, &event.Name, &event.NativeEntryID, &event.RequestID, &payload, &display, &event.TokenCount, &started, &ended, &event.AttemptID, &event.BranchID, &actions)
+	query := `select sequence,id,task_id,coalesce(phase_id,''),coalesce(parent_event_id,''),kind,format_version,coalesce(name,''),coalesce(native_entry_id,''),coalesce(request_id,''),payload_json,display_json,token_count,started_at,ended_at,coalesce(attempt_id,''),coalesce(actions_json,'[]') from events where task_id=? and id=?`
+	err := r.db.QueryRowContext(ctx, query, taskID, eventID).Scan(&event.Sequence, &event.ID, &event.TaskID, &event.PhaseID, &event.ParentEventID, &event.Kind, &event.FormatVersion, &event.Name, &event.NativeEntryID, &event.RequestID, &payload, &display, &event.TokenCount, &started, &ended, &event.AttemptID, &actions)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Event{}, ErrNotFound
 	}
@@ -231,7 +230,7 @@ func (r *EventRepository) ByID(ctx context.Context, taskID, eventID string) (Eve
 // request in append order.
 
 func (r *EventRepository) ByRequest(ctx context.Context, taskID, requestID string) ([]Event, error) {
-	query := `select sequence,id,task_id,coalesce(phase_id,''),coalesce(parent_event_id,''),kind,format_version,coalesce(name,''),coalesce(native_entry_id,''),coalesce(request_id,''),payload_json,display_json,token_count,started_at,ended_at,coalesce(attempt_id,''),coalesce(branch_id,''),coalesce(actions_json,'[]') from events where task_id=? and request_id=? order by sequence`
+	query := `select sequence,id,task_id,coalesce(phase_id,''),coalesce(parent_event_id,''),kind,format_version,coalesce(name,''),coalesce(native_entry_id,''),coalesce(request_id,''),payload_json,display_json,token_count,started_at,ended_at,coalesce(attempt_id,''),coalesce(actions_json,'[]') from events where task_id=? and request_id=? order by sequence`
 	rows, err := r.db.QueryContext(ctx, query, taskID, requestID)
 	if err != nil {
 		return nil, err

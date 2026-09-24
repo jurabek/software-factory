@@ -84,11 +84,11 @@ func TestComparisonFailureIsPersistedAsAdvisoryObservation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = db.Phases.Add(context.Background(), store.Phase{ID: "build-attempt", TaskID: task.ID, Sequence: 1, Name: "build", Kind: "build", Status: "success", Attempt: 1, BranchID: "branch", InputSnapshot: digest}); err != nil {
+	if err = db.Phases.Add(context.Background(), store.Phase{ID: "build-attempt", TaskID: task.ID, Sequence: 1, Name: "build", Kind: "build", Status: "success", Attempt: 1, InputSnapshot: digest}); err != nil {
 		t.Fatal(err)
 	}
 	verifierWrite(t, filepath.Join(repositoryPath, "changed_test.go"), "changed\n")
-	verify := store.Phase{ID: "verify-attempt", TaskID: task.ID, Sequence: 2, Name: "check", Kind: "verify", Status: "running", Attempt: 1, BranchID: "branch"}
+	verify := store.Phase{ID: "verify-attempt", TaskID: task.ID, Sequence: 2, Name: "check", Kind: "verify", Status: "running", Attempt: 1}
 	profile := workspace.Materialization{
 		Tests:                 []string{"**/*_test.go"},
 		Checks:                []workspace.Check{{ID: "behavior", Command: `test "$(cat changed_test.go)" = "base"`}},

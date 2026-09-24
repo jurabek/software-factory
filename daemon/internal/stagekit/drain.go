@@ -55,9 +55,9 @@ type Delivery struct {
 
 // MessageEvent builds the history event recorded for a task message.
 func MessageEvent(ctx context.Context, db *store.Store, message store.Message, phase *store.Phase) (store.Event, error) {
-	phaseID, branchID := "", ""
+	phaseID := ""
 	if phase != nil {
-		phaseID, branchID = phase.ID, phase.BranchID
+		phaseID = phase.ID
 	}
 	entry := session.NewTaskMessage(session.TaskMessagePayload{
 		MessageID: message.ID, TaskID: message.TaskID, Text: message.Text, RecipientRole: message.RecipientRole,
@@ -69,7 +69,7 @@ func MessageEvent(ctx context.Context, db *store.Store, message store.Message, p
 		taskState = task.State
 	}
 	return store.Event{
-		ID: RandomID(), TaskID: message.TaskID, PhaseID: phaseID, AttemptID: phaseID, BranchID: branchID,
+		ID: RandomID(), TaskID: message.TaskID, PhaseID: phaseID, AttemptID: phaseID,
 		Kind: entry.Kind, Name: entry.Name, Payload: entry.Payload, Display: entry.Display,
 		AvailableActions: AvailableActions(phase, taskState), StartedAt: time.Now().UTC(),
 	}, nil

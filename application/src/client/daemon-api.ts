@@ -185,19 +185,9 @@ export type TaskAttempt = {
 	description?: string;
 	attempt?: number;
 	error?: string;
-	branch_id?: string;
 	superseded?: boolean;
 	started_at?: string;
 	ended_at?: string;
-};
-export type TaskBranch = {
-	id: string;
-	parent_branch_id?: string;
-	fork_attempt_id?: string;
-	head_attempt_id?: string;
-	status: string;
-	created_at: string;
-	updated_at: string;
 };
 export type TaskCheck = {
 	id: string;
@@ -265,7 +255,6 @@ export type MessageInput = {
 
 export type TaskDetails = QualifiedTask & {
 	workspace_path?: string;
-	selected_branch_id?: string;
 	repository_type?: string;
 	repository_source?: string;
 	plan_digest?: string;
@@ -384,13 +373,6 @@ export function daemonAttempts(
 		"attempts",
 		signal,
 	);
-}
-export function daemonBranches(
-	daemonId: string,
-	taskId: string,
-	signal?: AbortSignal,
-) {
-	return daemonTaskResource<TaskBranch[]>(daemonId, taskId, "branches", signal);
 }
 export function daemonChecks(
 	daemonId: string,

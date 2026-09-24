@@ -151,37 +151,24 @@ test("selection recovers invalid records and preserves session deep links", () =
 	);
 });
 
-test("attempts are ordered by attempt number within the selected branch", () => {
+test("attempts are ordered by attempt number", () => {
 	assert.deepEqual(
-		orderedAttempts(
-			[
-				{
-					id: "b2",
-					name: "two",
-					status: "done",
-					owner: "agent",
-					attempt: 2,
-					branch_id: "b",
-				},
-				{
-					id: "b1",
-					name: "one",
-					status: "done",
-					owner: "agent",
-					attempt: 1,
-					branch_id: "b",
-				},
-				{
-					id: "other",
-					name: "other",
-					status: "done",
-					owner: "agent",
-					attempt: 1,
-					branch_id: "other",
-				},
-			],
-			"b",
-		).map((attempt) => attempt.id),
-		["b1", "b2"],
+		orderedAttempts([
+			{
+				id: "second",
+				name: "two",
+				status: "done",
+				owner: "agent",
+				attempt: 2,
+			},
+			{
+				id: "first",
+				name: "one",
+				status: "done",
+				owner: "agent",
+				attempt: 1,
+			},
+		]).map((attempt) => attempt.id),
+		["first", "second"],
 	);
 });

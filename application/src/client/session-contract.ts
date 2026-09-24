@@ -112,7 +112,6 @@ type SessionEventEnvelope = {
 	task_id: string;
 	phase_id?: string;
 	attempt_id?: string;
-	branch_id?: string;
 	parent_event_id?: string;
 	name?: string;
 	native_entry_id?: string;

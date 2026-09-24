@@ -1,6 +1,6 @@
 // Package task owns task identity and lifecycle at the data layer: creation,
-// filesystem layout, metadata, repository normalization, branch selection,
-// deletion, and diffs. The orchestrator delegates task CRUD here.
+// filesystem layout, metadata, repository normalization, deletion, and diffs.
+// The orchestrator delegates task CRUD here.
 package task
 
 import (
@@ -72,41 +72,8 @@ func New(root string, deps Deps) *Service {
 	return &Service{root: root, deps: deps}
 }
 
-func (s *Service) ensureBranch(ctx context.Context, taskID, parent string) error {
-	task, err := s.deps.Store.Tasks.Get(ctx, taskID)
-	if err != nil {
-		return err
-	}
-
-	if task.SelectedBranchID != "" {
-		return nil
-	}
-	branches, err := s.deps.Store.Branches.List(ctx, taskID)
-	if err != nil {
-		return err
-	}
-	if len(branches) > 0 {
-		return s.deps.Store.Branches.Select(
-			ctx, taskID,
-			branches[0].ID)
-	}
-	branch := store.Branch{ID: stagekit.RandomID(), TaskID: taskID, ParentBranchID: parent, Status: "active", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
-	if err = s.deps.Store.Branches.Create(ctx, branch); err != nil {
-		return err
-	}
-	return s.deps.Store.Branches.Select(ctx, taskID, branch.ID)
-}
-
 func (s *Service) Create(ctx context.Context, request CreateRequest) (store.Task, error) {
-	task, err := s.create(ctx, request, "")
-	if err != nil {
-		return store.Task{}, err
-	}
-	if err = s.ensureBranch(ctx, task.ID, ""); err != nil {
-		return store.Task{}, err
-	}
-	return task,
-		nil
+	return s.create(ctx, request, "")
 }
 
 func (s *Service) CreateSession(ctx context.Context, taskID string, request CreateSessionRequest) (store.Task, error) {
@@ -133,11 +100,6 @@ func (s *Service) CreateSession(ctx context.Context, taskID string, request Crea
 	},
 		task.ID)
 	if err != nil {
-		return store.Task{}, err
-	}
-	if err = s.ensureBranch(ctx,
-		created.ID,
-		""); err != nil {
 		return store.Task{}, err
 	}
 	return created, nil
@@ -197,8 +159,7 @@ func (s *Service) create(ctx context.Context, request CreateRequest, parentTaskI
 			"repository"), filepath.Join(workspace, "attempts"),
 		filepath.Join(workspace,
 			"snapshots"), filepath.Join(workspace, "sessions"), filepath.Join(workspace, "workspace",
-			"snapshots"), filepath.Join(workspace, "workspace", "branches"), filepath.Join(
-			workspace, "workspace", "attempts"),
+			"snapshots"), filepath.Join(workspace, "workspace", "attempts"),
 	} {
 		if err = os.MkdirAll(directory, 0o700); err != nil {
 			_ = os.RemoveAll(workspace)

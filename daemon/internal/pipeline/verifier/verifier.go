@@ -306,7 +306,7 @@ func safeFileName(value string) string {
 }
 
 func (s service) runComparisons(ctx context.Context, task store.Task, phase store.Phase, profile workspace.Materialization) error {
-	baseline, err := s.comparisonBaseline(ctx, task, phase)
+	baseline, err := s.comparisonBaseline(ctx, task)
 	if err != nil {
 		return err
 	}
@@ -460,19 +460,10 @@ func ComparisonPaths(entries []ExpectedTestChange) []string {
 	return paths
 }
 
-func (s service) comparisonBaseline(ctx context.Context, task store.Task, current store.Phase) (string, error) {
+func (s service) comparisonBaseline(ctx context.Context, task store.Task) (string, error) {
 	phases, err := s.kit.DB().Phases.List(ctx, task.ID)
 	if err != nil {
 		return "", err
-	}
-	for _, candidate := range slices.Backward(phases) {
-
-		if candidate.Kind != "build" || candidate.InputSnapshot == "" || candidate.Superseded {
-			continue
-		}
-		if current.BranchID == "" || candidate.BranchID == current.BranchID {
-			return candidate.InputSnapshot, nil
-		}
 	}
 	for _, candidate := range slices.Backward(phases) {
 		if candidate.Kind == "build" && candidate.InputSnapshot != "" && !candidate.Superseded {

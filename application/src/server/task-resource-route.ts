@@ -8,7 +8,6 @@ import { getRequestSession } from "./session.ts";
 export type TaskResource =
 	| "sessions"
 	| "attempts"
-	| "branches"
 	| "messages"
 	| "checks"
 	| "results"

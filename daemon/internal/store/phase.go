@@ -23,24 +23,17 @@ type Phase struct {
 	Sequence       int    `db:"sequence" json:"sequence"`
 	Attempt        int    `db:"attempt" json:"attempt"`
 	Retries        int    `db:"retries" json:"retries"`
-	BranchID       string `db:"branch_id" json:"branch_id,omitempty"`
 	DefinitionID   string `db:"definition_id" json:"definition_id,omitempty"`
 	DefinitionRev  int    `db:"definition_revision" json:"definition_revision,omitempty"`
 	InputSnapshot  string `db:"input_snapshot" json:"input_snapshot,omitempty"`
 	OutputSnapshot string `db:"output_snapshot" json:"output_snapshot,omitempty"`
 	Superseded     bool   `db:"superseded" json:"superseded,omitempty"`
-	// NativeBaseEntryID is the native session leaf immediately before this
-	// attempt's first invocation. It is the checkpoint an exact retry forks at.
-	NativeBaseEntryID string `db:"native_base_entry_id" json:"native_base_entry_id,omitempty"`
-	// ForkNative records that this attempt must branch the native session at
-	// NativeBaseEntryID instead of continuing the current leaf.
-	ForkNative bool   `db:"fork_native" json:"fork_native,omitempty"`
-	StartedAt  string `db:"started_at" json:"started_at"`
-	EndedAt    string `db:"ended_at" json:"ended_at,omitempty"`
+	StartedAt      string `db:"started_at" json:"started_at"`
+	EndedAt        string `db:"ended_at" json:"ended_at,omitempty"`
 }
 
-// StartPhaseWithEvent creates a running phase, updates its Task's active phase
-// and branch head, and records the phase-start event atomically.
+// StartPhaseWithEvent creates a running phase, updates its Task's active phase,
+// and records the phase-start event atomically.
 
 // EndPhaseWithEvent publishes a phase result and its lifecycle event
 // atomically. Task progression, when needed, uses the transition variant.
@@ -64,10 +57,6 @@ func nullIfTerminalState(state string, ended string) any {
 	return nil
 }
 
-// SetPhaseNativeBase records the native session checkpoint an attempt started
-// from. It only fills an empty checkpoint so a forked retry keeps the source
-// attempt's recorded boundary.
-
 type PhaseRepository struct{ db *sqlx.DB }
 
 func (r *PhaseRepository) RequeueInterrupted(ctx context.Context, taskID, phaseID string) error {
@@ -75,12 +64,6 @@ func (r *PhaseRepository) RequeueInterrupted(ctx context.Context, taskID, phaseI
 	_, err := r.db.NamedExecContext(ctx, query, Phase{ID: phaseID, TaskID: taskID})
 	return wrap("requeue interrupted phase", err)
 }
-
-// ResetAgentSession starts a fresh native session for a stage, discarding the
-
-// prior conversation. An exact retry uses it when the source attempt had no
-
-// recorded native checkpoint to fork from. A pending invocation blocks it.
 
 func (r *PhaseRepository) StartWithEvent(ctx context.Context, taskDir string, phase Phase, taskState string, event Event) error {
 	tx, err := r.db.BeginTxx(ctx, nil)
@@ -95,18 +78,12 @@ func (r *PhaseRepository) StartWithEvent(ctx context.Context, taskDir string, ph
 	}
 	phase.Status = "running"
 	phase.StartedAt = started
-	query := `insert into phases(id,task_id,sequence,name,kind,owner,description,status,attempt,retries,started_at,branch_id,definition_id,input_snapshot,output_snapshot,superseded,native_base_entry_id,fork_native) values(:id,:task_id,:sequence,:name,:kind,:owner,:description,:status,:attempt,:retries,:started_at,nullif(:branch_id,''),nullif(:definition_id,''),nullif(:input_snapshot,''),nullif(:output_snapshot,''),:superseded,nullif(:native_base_entry_id,''),:fork_native)`
+	query := `insert into phases(id,task_id,sequence,name,kind,owner,description,status,attempt,retries,started_at,definition_id,input_snapshot,output_snapshot,superseded) values(:id,:task_id,:sequence,:name,:kind,:owner,:description,:status,:attempt,:retries,:started_at,nullif(:definition_id,''),nullif(:input_snapshot,''),nullif(:output_snapshot,''),:superseded)`
 	if _, err = tx.NamedExecContext(ctx, query, phase); err != nil {
 		return wrap("insert phase", err)
 	}
-	if phase.BranchID != "" {
-		query2 := `update branches set head_attempt_id=:head_attempt_id,updated_at=:updated_at where task_id=:task_id and id=:id`
-		if _, err = tx.NamedExecContext(ctx, query2, Branch{ID: phase.BranchID, TaskID: phase.TaskID, HeadAttemptID: phase.ID, UpdatedAt: now()}); err != nil {
-			return wrap("update phase branch head", err)
-		}
-	}
-	query3 := `update tasks set active_phase=:active_phase where id=:id and state=:state`
-	result, err := tx.NamedExecContext(ctx, query3, Task{ID: phase.TaskID, ActivePhase: phase.ID, State: taskState})
+	query2 := `update tasks set active_phase=:active_phase where id=:id and state=:state`
+	result, err := tx.NamedExecContext(ctx, query2, Task{ID: phase.TaskID, ActivePhase: phase.ID, State: taskState})
 	if err != nil {
 		return wrap("set active phase", err)
 	}
@@ -163,7 +140,7 @@ func (r *PhaseRepository) EndWithEvent(ctx context.Context, taskDir string, phas
 
 func (r *PhaseRepository) Add(ctx context.Context, phase Phase) error {
 	phase.StartedAt = now()
-	query := `insert into phases(id,task_id,sequence,name,kind,owner,description,status,attempt,retries,started_at,branch_id,definition_id,input_snapshot,output_snapshot,superseded,native_base_entry_id,fork_native) values(:id,:task_id,:sequence,:name,:kind,:owner,:description,:status,:attempt,:retries,:started_at,nullif(:branch_id,''),nullif(:definition_id,''),nullif(:input_snapshot,''),nullif(:output_snapshot,''),:superseded,nullif(:native_base_entry_id,''),:fork_native)`
+	query := `insert into phases(id,task_id,sequence,name,kind,owner,description,status,attempt,retries,started_at,definition_id,input_snapshot,output_snapshot,superseded) values(:id,:task_id,:sequence,:name,:kind,:owner,:description,:status,:attempt,:retries,:started_at,nullif(:definition_id,''),nullif(:input_snapshot,''),nullif(:output_snapshot,''),:superseded)`
 	_, err := r.db.NamedExecContext(ctx, query, phase)
 	return wrap("start phase", err)
 }
@@ -304,7 +281,7 @@ func (r *PhaseRepository) StartQueued(ctx context.Context, taskID, phaseID strin
 }
 
 func (r *PhaseRepository) List(ctx context.Context, taskID string) ([]Phase, error) {
-	query := `select id,task_id,sequence,name,kind,owner,coalesce(description,''),status,attempt,retries,coalesce(error,''),started_at,coalesce(ended_at,''),coalesce(branch_id,''),coalesce(definition_id,''),coalesce(input_snapshot,''),coalesce(output_snapshot,''),coalesce(superseded,0),coalesce(native_base_entry_id,''),coalesce(fork_native,0) from phases where task_id=? order by sequence`
+	query := `select id,task_id,sequence,name,kind,owner,coalesce(description,''),status,attempt,retries,coalesce(error,''),started_at,coalesce(ended_at,''),coalesce(definition_id,''),coalesce(input_snapshot,''),coalesce(output_snapshot,''),coalesce(superseded,0) from phases where task_id=? order by sequence`
 	rows, err := r.db.QueryContext(ctx, query, taskID)
 	if err != nil {
 		return nil, err
@@ -313,13 +290,11 @@ func (r *PhaseRepository) List(ctx context.Context, taskID string) ([]Phase, err
 	values := make([]Phase, 0)
 	for rows.Next() {
 		var value Phase
-		var superseded,
-			forkNative int
-		if err := rows.Scan(&value.ID, &value.TaskID, &value.Sequence, &value.Name, &value.Kind, &value.Owner, &value.Description, &value.Status, &value.Attempt, &value.Retries, &value.Error, &value.StartedAt, &value.EndedAt, &value.BranchID, &value.DefinitionID, &value.InputSnapshot, &value.OutputSnapshot, &superseded, &value.NativeBaseEntryID, &forkNative); err != nil {
+		var superseded int
+		if err := rows.Scan(&value.ID, &value.TaskID, &value.Sequence, &value.Name, &value.Kind, &value.Owner, &value.Description, &value.Status, &value.Attempt, &value.Retries, &value.Error, &value.StartedAt, &value.EndedAt, &value.DefinitionID, &value.InputSnapshot, &value.OutputSnapshot, &superseded); err != nil {
 			return nil, err
 		}
 		value.Superseded = superseded != 0
-		value.ForkNative = forkNative != 0
 		values = append(values, value)
 	}
 	return values,
@@ -328,31 +303,14 @@ func (r *PhaseRepository) List(ctx context.Context, taskID string) ([]Phase, err
 
 func (r *PhaseRepository) ByID(ctx context.Context, taskID, phaseID string) (Phase, error) {
 	var value Phase
-	var superseded, forkNative int
-	query := `select id,task_id,sequence,name,kind,owner,coalesce(description,''),status,attempt,retries,coalesce(error,''),started_at,coalesce(ended_at,''),coalesce(branch_id,''),coalesce(definition_id,''),coalesce(input_snapshot,''),coalesce(output_snapshot,''),coalesce(superseded,0),coalesce(native_base_entry_id,''),coalesce(fork_native,0) from phases where task_id=? and id=?`
-	err := r.db.QueryRowContext(ctx, query, taskID, phaseID).Scan(&value.ID, &value.TaskID, &value.Sequence, &value.Name, &value.Kind, &value.Owner, &value.Description, &value.Status, &value.Attempt, &value.Retries, &value.Error, &value.StartedAt, &value.EndedAt, &value.BranchID, &value.DefinitionID, &value.InputSnapshot, &value.OutputSnapshot, &superseded, &value.NativeBaseEntryID, &forkNative)
+	var superseded int
+	query := `select id,task_id,sequence,name,kind,owner,coalesce(description,''),status,attempt,retries,coalesce(error,''),started_at,coalesce(ended_at,''),coalesce(definition_id,''),coalesce(input_snapshot,''),coalesce(output_snapshot,''),coalesce(superseded,0) from phases where task_id=? and id=?`
+	err := r.db.QueryRowContext(ctx, query, taskID, phaseID).Scan(&value.ID, &value.TaskID, &value.Sequence, &value.Name, &value.Kind, &value.Owner, &value.Description, &value.Status, &value.Attempt, &value.Retries, &value.Error, &value.StartedAt, &value.EndedAt, &value.DefinitionID, &value.InputSnapshot, &value.OutputSnapshot, &superseded)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Phase{}, ErrNotFound
 	}
 	value.Superseded = superseded != 0
-	value.ForkNative = forkNative != 0
 	return value, wrap("read phase", err)
-}
-
-// SetPhaseNativeBase records the native session checkpoint an attempt started
-
-// from. It only fills an empty checkpoint so a forked retry keeps the source
-
-// attempt's recorded boundary.
-
-func (r *PhaseRepository) SetNativeBase(ctx context.Context, taskID, phaseID, entryID string) error {
-	if entryID == "" {
-		return nil
-	}
-	query := `update phases set native_base_entry_id=:native_base_entry_id where task_id=:task_id and id=:id and coalesce(native_base_entry_id,'')=''`
-	_, err := r.db.NamedExecContext(ctx, query, Phase{ID: phaseID, TaskID: taskID, NativeBaseEntryID: entryID})
-	return wrap("set phase native base",
-		err)
 }
 
 // SetOutputSnapshot records the workspace snapshot a phase produced.

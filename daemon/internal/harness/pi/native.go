@@ -56,8 +56,7 @@ type rawCost struct {
 	Total float64 `json:"total"`
 }
 
-// Entries reads the full native session tree, including abandoned branches and
-// pre-compaction history. It is the authoritative record, not get_messages.
+// Entries reads the full native session history, including pre-compaction entries. It is the authoritative record, not get_messages.
 
 // nativeEntries projects native session records into the harness entry shape.
 func nativeEntries(records []sessionRecord) []harness.NativeEntry {

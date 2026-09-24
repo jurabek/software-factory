@@ -33,15 +33,12 @@ type SessionSpec struct {
 	AdditionalDirectories []string
 }
 
-// Prompt is one user message sent to an open session. ForkAtEntryID, when set,
-// branches the native session at the given entry before sending the message so
-// exact retry rejoins the attempt's recorded input checkpoint.
+// Prompt is one user message sent to an open session.
 type Prompt struct {
-	RequestID     string
-	Attempt       int
-	Text          string
-	ForkAtEntryID string
-	DeadlineMS    int
+	RequestID  string
+	Attempt    int
+	Text       string
+	DeadlineMS int
 }
 
 type Event = session.Entry

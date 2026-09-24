@@ -79,6 +79,5 @@ func (r *OrchestrationRepository) Complete(ctx context.Context, id string, cause
 	return wrap("complete orchestration event", err)
 }
 
-// StartPhaseWithEvent creates a running phase, updates its Task's active phase
-
-// and branch head, and records the phase-start event atomically.
+// StartPhaseWithEvent creates a running phase, updates its Task's active phase,
+// and records the phase-start event atomically.

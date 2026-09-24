@@ -210,7 +210,6 @@ func TestEventContractRoundTrip(t *testing.T) {
 		TaskID:           "task-1",
 		PhaseID:          "phase-1",
 		AttemptID:        "attempt-1",
-		BranchID:         "branch-1",
 		ParentEventID:    "parent-1",
 		Kind:             session.KindToolCall,
 		Name:             "Read",
@@ -314,10 +313,7 @@ func TestPhaseStartAndEventRollbackTogether(t *testing.T) {
 	if err = db.Tasks.Create(ctx, Task{ID: "task-1", Request: "Task", State: "building", CreatedAt: now()}); err != nil {
 		t.Fatal(err)
 	}
-	if err = db.Branches.Create(ctx, Branch{ID: "branch-1", TaskID: "task-1", Status: "active", CreatedAt: now()}); err != nil {
-		t.Fatal(err)
-	}
-	phase := Phase{ID: "phase-1", TaskID: "task-1", Sequence: 1, Name: "build", Kind: "build", Owner: "builder", Attempt: 1, BranchID: "branch-1"}
+	phase := Phase{ID: "phase-1", TaskID: "task-1", Sequence: 1, Name: "build", Kind: "build", Owner: "builder", Attempt: 1}
 	if _, err = db.Events.Append(ctx, taskDir, Event{ID: "duplicate", TaskID: "task-1", Kind: session.KindCustom, Payload: map[string]string{"value": "existing"}, StartedAt: time.Now().UTC()}); err != nil {
 		t.Fatal(err)
 	}
@@ -334,13 +330,6 @@ func TestPhaseStartAndEventRollbackTogether(t *testing.T) {
 	}
 	if task.ActivePhase != "" {
 		t.Fatalf("active phase = %q, want empty", task.ActivePhase)
-	}
-	branch, err := db.Branches.Get(ctx, "task-1", "branch-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if branch.HeadAttemptID != "" {
-		t.Fatalf("branch head = %q, want empty", branch.HeadAttemptID)
 	}
 }
 
@@ -685,42 +674,6 @@ func TestOpenPreservesPendingAgentInvocationForReconciliation(t *testing.T) {
 	}
 	if len(pending) != 1 || pending[0].PendingInvocationID != "lost-invocation" {
 		t.Fatalf("pending sessions = %#v", pending)
-	}
-}
-
-func TestApplyRetryPreservesNativeCheckpoint(t *testing.T) {
-	ctx := context.Background()
-	db, err := Open(filepath.Join(t.TempDir(), "factory.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	created := time.Now().UTC().Format(time.RFC3339Nano)
-	if err = db.Tasks.Create(ctx, Task{ID: "task-1", Request: "r", WorkspacePath: t.TempDir(), State: "blocked", CreatedAt: created}); err != nil {
-		t.Fatal(err)
-	}
-	branch := Branch{ID: "branch-1", TaskID: "task-1", ForkAttemptID: "phase-0", Status: "active", CreatedAt: created}
-	retry := Phase{ID: "phase-1", TaskID: "task-1", Sequence: 2, Name: "build", Kind: "build", Owner: "builder", Status: "queued", Attempt: 2, BranchID: "branch-1", NativeBaseEntryID: "base-1", ForkNative: true}
-	_, fresh, err := db.Retries.Apply(ctx, "key-1", branch, retry, "building")
-	if err != nil || !fresh {
-		t.Fatalf("apply retry created=%v err=%v", fresh, err)
-	}
-	stored, err := db.Phases.ByID(ctx, "task-1", "phase-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !stored.ForkNative || stored.NativeBaseEntryID != "base-1" {
-		t.Fatalf("retry phase = %#v, want fork at base-1", stored)
-	}
-	if err = db.Phases.SetNativeBase(ctx, "task-1", "phase-1", "other"); err != nil {
-		t.Fatal(err)
-	}
-	stored, err = db.Phases.ByID(ctx, "task-1", "phase-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stored.NativeBaseEntryID != "base-1" {
-		t.Fatalf("native base = %q, want preserved base-1", stored.NativeBaseEntryID)
 	}
 }
 

@@ -46,7 +46,6 @@ func Open(path string) (*Store, error) {
 var (
 	ErrNotFound          = errors.New("not found")
 	ErrConflict          = errors.New("conflict")
-	ErrStaleBranch       = errors.New("stale_branch")
 	ErrStateIncompatible = errors.New("state_incompatible: delete the configured Software Factory directory before starting this clean-break version")
 )
 
@@ -70,14 +69,12 @@ type Store struct {
 	Events        *EventRepository
 	Messages      *MessageRepository
 	AgentSessions *AgentSessionRepository
-	Branches      *BranchRepository
 	Checks        *CheckRepository
 	Envelopes     *EnvelopeRepository
 	Definitions   *DefinitionRepository
 	Evidence      *EvidenceRepository
 	Orchestration *OrchestrationRepository
 	Snapshots     *SnapshotRepository
-	Retries       *RetryRepository
 	Processes     *ProcessRepository
 }
 
@@ -90,14 +87,12 @@ func New(db *sql.DB) *Store {
 	s.Events = &EventRepository{db: dbx}
 	s.Messages = &MessageRepository{db: dbx}
 	s.AgentSessions = &AgentSessionRepository{db: dbx}
-	s.Branches = &BranchRepository{db: dbx}
 	s.Checks = &CheckRepository{db: dbx}
 	s.Envelopes = &EnvelopeRepository{db: dbx}
 	s.Definitions = &DefinitionRepository{db: dbx}
 	s.Evidence = &EvidenceRepository{db: dbx}
 	s.Orchestration = &OrchestrationRepository{db: dbx}
 	s.Snapshots = &SnapshotRepository{db: dbx}
-	s.Retries = &RetryRepository{db: dbx}
 	s.Processes = &ProcessRepository{db: dbx}
 	return s
 }

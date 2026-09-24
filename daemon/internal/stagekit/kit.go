@@ -223,12 +223,11 @@ func (k *Kit) Sink(taskID, phaseID, harnessName string) harness.EventSink {
 
 // Trace appends a session entry with available-action metadata.
 func (k *Kit) Trace(ctx context.Context, taskID, phaseID string, entry session.Entry) error {
-	attemptID, branchID := phaseID, ""
+	attemptID := phaseID
 	var actions []string
 	if phaseID != "" {
 		if phase, err := k.db.Phases.ByID(ctx, taskID, phaseID); err == nil {
 			attemptID = phase.ID
-			branchID = phase.BranchID
 			if task, taskErr := k.db.Tasks.Get(ctx, taskID); taskErr == nil {
 				actions = AvailableActions(&phase, task.State)
 			} else {
@@ -236,7 +235,7 @@ func (k *Kit) Trace(ctx context.Context, taskID, phaseID string, entry session.E
 			}
 		}
 	}
-	_, err := k.db.Events.Append(ctx, k.TaskDir(taskID), store.Event{ID: RandomID(), TaskID: taskID, PhaseID: phaseID, AttemptID: attemptID, BranchID: branchID, Kind: entry.Kind, Name: entry.Name, NativeEntryID: entry.NativeEntryID, RequestID: entry.RequestID, Payload: entry.Payload, Display: entry.Display, AvailableActions: actions, StartedAt: time.Now().UTC()})
+	_, err := k.db.Events.Append(ctx, k.TaskDir(taskID), store.Event{ID: RandomID(), TaskID: taskID, PhaseID: phaseID, AttemptID: attemptID, Kind: entry.Kind, Name: entry.Name, NativeEntryID: entry.NativeEntryID, RequestID: entry.RequestID, Payload: entry.Payload, Display: entry.Display, AvailableActions: actions, StartedAt: time.Now().UTC()})
 	return err
 }
 
@@ -437,11 +436,11 @@ func (k *Kit) BeginPhase(ctx context.Context, taskID, name, kind, owner, descrip
 		}
 	}
 	phase := store.Phase{
-		ID: RandomID(), TaskID: taskID, Sequence: len(phases) + 1, Name: name, Kind: kind, Owner: owner, Description: description, Status: "running", Attempt: 1, BranchID: task.SelectedBranchID, DefinitionID: definitionID, InputSnapshot: inputSnapshot,
+		ID: RandomID(), TaskID: taskID, Sequence: len(phases) + 1, Name: name, Kind: kind, Owner: owner, Description: description, Status: "running", Attempt: 1, DefinitionID: definitionID, InputSnapshot: inputSnapshot,
 	}
 	event := session.NewPhaseStart(session.PhasePayload{Phase: phase.ID, Name: name, Owner: owner, Kind: kind, InputSnapshot: inputSnapshot})
 	eventValue := store.Event{
-		ID: RandomID(), TaskID: taskID, PhaseID: phase.ID, AttemptID: phase.ID, BranchID: phase.BranchID,
+		ID: RandomID(), TaskID: taskID, PhaseID: phase.ID, AttemptID: phase.ID,
 		Kind: event.Kind, Name: event.Name, Payload: event.Payload, Display: event.Display,
 		AvailableActions: AvailableActions(&phase, task.State), StartedAt: time.Now().UTC(),
 	}
@@ -535,7 +534,7 @@ func (k *Kit) EndPhase(ctx context.Context, phase store.Phase, status string, ca
 		Phase: phase.ID, Name: phase.Name,
 		Owner: phase.Owner, Kind: phase.Kind, Status: status, Error: message, InputSnapshot: phase.InputSnapshot, OutputSnapshot: phase.OutputSnapshot,
 	})
-	return k.db.Phases.EndWithEvent(ctx, k.TaskDir(phase.TaskID), phase.ID, status, message, phase.OutputSnapshot, store.Event{ID: RandomID(), TaskID: phase.TaskID, PhaseID: phase.ID, AttemptID: phase.ID, BranchID: phase.BranchID, Kind: event.Kind, Name: event.Name, Payload: event.Payload, Display: event.Display, StartedAt: time.Now().UTC()})
+	return k.db.Phases.EndWithEvent(ctx, k.TaskDir(phase.TaskID), phase.ID, status, message, phase.OutputSnapshot, store.Event{ID: RandomID(), TaskID: phase.TaskID, PhaseID: phase.ID, AttemptID: phase.ID, Kind: event.Kind, Name: event.Name, Payload: event.Payload, Display: event.Display, StartedAt: time.Now().UTC()})
 }
 
 func (k *Kit) Fail(ctx context.Context, phase store.Phase, cause error) {
@@ -565,7 +564,7 @@ func (k *Kit) Complete(ctx context.Context, c Completion) error {
 	})
 	eventValue := store.Event{
 		ID: RandomID(), TaskID: c.Phase.TaskID,
-		PhaseID: c.Phase.ID, AttemptID: c.Phase.ID, BranchID: c.Phase.BranchID,
+		PhaseID: c.Phase.ID, AttemptID: c.Phase.ID,
 		Kind: event.Kind, Name: event.Name, Payload: event.Payload, Display: event.Display,
 		AvailableActions: AvailableActions(&c.Phase, task.State),
 		StartedAt:        time.Now().UTC(),
