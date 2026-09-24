@@ -41,7 +41,8 @@ func (r *EvidenceRepository) SaveTestChanges(ctx context.Context, changes []Test
 	}
 	defer tx.Rollback()
 	for _, change := range changes {
-		if _, err = tx.ExecContext(ctx, `insert or replace into test_changes(id,task_id,phase_id,attempt,path,reason,change_kind,rename_from,rename_to,created_at) values(?,?,?,?,?,?,?,?,?,?)`, change.ID, change.TaskID,
+		query := `insert or replace into test_changes(id,task_id,phase_id,attempt,path,reason,change_kind,rename_from,rename_to,created_at) values(?,?,?,?,?,?,?,?,?,?)`
+		if _, err = tx.ExecContext(ctx, query, change.ID, change.TaskID,
 			change.PhaseID, change.Attempt, change.Path, change.Reason,
 			change.ChangeKind, nullIfEmpty(change.RenameFrom), nullIfEmpty(change.RenameTo), change.CreatedAt); err != nil {
 			return wrap("save test-change evidence", err)
@@ -52,7 +53,8 @@ func (r *EvidenceRepository) SaveTestChanges(ctx context.Context, changes []Test
 }
 
 func (r *EvidenceRepository) TestChanges(ctx context.Context, taskID string) ([]TestChange, error) {
-	rows, err := r.db.QueryContext(ctx, `select id,task_id,phase_id,attempt,path,reason,change_kind,coalesce(rename_from,''),coalesce(rename_to,''),created_at from test_changes where task_id=? order by created_at,rowid`, taskID)
+	query := `select id,task_id,phase_id,attempt,path,reason,change_kind,coalesce(rename_from,''),coalesce(rename_to,''),created_at from test_changes where task_id=? order by created_at,rowid`
+	rows, err := r.db.QueryContext(ctx, query, taskID)
 	if err != nil {
 		return nil, wrap("read test-change evidence", err)
 	}
@@ -74,13 +76,15 @@ func (r *EvidenceRepository) SaveComparison(ctx context.Context, value Compariso
 		return wrap("encode comparison overlay paths",
 			err)
 	}
-	_, err = r.db.ExecContext(ctx, `insert or replace into comparisons(id,task_id,phase_id,attempt,status,reason,baseline_snapshot,overlay_paths_json,created_at,duration_ms) values(?,?,?,?,?,?,?,?,?,?)`, value.ID, value.TaskID, value.PhaseID, value.Attempt,
+	query := `insert or replace into comparisons(id,task_id,phase_id,attempt,status,reason,baseline_snapshot,overlay_paths_json,created_at,duration_ms) values(?,?,?,?,?,?,?,?,?,?)`
+	_, err = r.db.ExecContext(ctx, query, value.ID, value.TaskID, value.PhaseID, value.Attempt,
 		value.Status, value.Reason, nullIfEmpty(value.BaselineSnapshot), string(overlay), value.CreatedAt, value.DurationMS)
 	return wrap("save comparison", err)
 }
 
 func (r *EvidenceRepository) Comparisons(ctx context.Context, taskID string) ([]Comparison, error) {
-	rows, err := r.db.QueryContext(ctx, `select id,task_id,phase_id,attempt,status,reason,coalesce(baseline_snapshot,''),overlay_paths_json,created_at,duration_ms from comparisons where task_id=? order by created_at,rowid`, taskID)
+	query := `select id,task_id,phase_id,attempt,status,reason,coalesce(baseline_snapshot,''),overlay_paths_json,created_at,duration_ms from comparisons where task_id=? order by created_at,rowid`
+	rows, err := r.db.QueryContext(ctx, query, taskID)
 	if err != nil {
 		return nil,
 			wrap("read comparisons", err)

@@ -29,14 +29,16 @@ const (
 type OrchestrationRepository struct{ db *sql.DB }
 
 func (r *OrchestrationRepository) Enqueue(ctx context.Context, event OrchestrationEvent) error {
-	_, err := r.db.ExecContext(ctx, `insert into orchestration_events(id,task_id,type,created_at) values(?,?,?,?)`, event.ID, event.TaskID, event.Type, now())
+	query := `insert into orchestration_events(id,task_id,type,created_at) values(?,?,?,?)`
+	_, err := r.db.ExecContext(ctx, query, event.ID, event.TaskID, event.Type, now())
 	return wrap(
 		"enqueue orchestration event", err)
 }
 
 func (r *OrchestrationRepository) Get(ctx context.Context, id string) (OrchestrationEvent, error) {
 	var event OrchestrationEvent
-	err := r.db.QueryRowContext(ctx, `select id,task_id,type from orchestration_events where id=?`,
+	query := `select id,task_id,type from orchestration_events where id=?`
+	err := r.db.QueryRowContext(ctx, query,
 		id,
 	).Scan(&event.ID, &event.TaskID, &event.Type)
 	if err == sql.ErrNoRows {
@@ -46,7 +48,8 @@ func (r *OrchestrationRepository) Get(ctx context.Context, id string) (Orchestra
 }
 
 func (r *OrchestrationRepository) Pending(ctx context.Context) ([]OrchestrationEvent, error) {
-	rows, err := r.db.QueryContext(ctx, `select id,task_id,type from orchestration_events where status='pending' order by created_at,id`)
+	query := `select id,task_id,type from orchestration_events where status='pending' order by created_at,id`
+	rows, err := r.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, wrap("list pending orchestration events",
 			err)
@@ -69,8 +72,9 @@ func (r *OrchestrationRepository) Complete(ctx context.Context, id string, cause
 		status, message = "pending",
 			cause.Error()
 	}
+	query := `update orchestration_events set status=?,error=?,handled_at=? where id=?`
 	_, err := r.db.ExecContext(ctx,
-		`update orchestration_events set status=?,error=?,handled_at=? where id=?`,
+		query,
 		status, nullIfEmpty(message), now(), id)
 	return wrap("complete orchestration event", err)
 }

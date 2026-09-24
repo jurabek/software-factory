@@ -65,7 +65,8 @@ func (r *AgentSessionRepository) Reserve(ctx context.Context, taskID string, val
 	if agentName == "" {
 		agentName = value.Role
 	}
-	_, err := r.db.ExecContext(ctx, `insert into agent_sessions(task_id,stage_id,agent_name,role,harness,provider,model,thinking,color,harness_session_id,session_directory,session_ready,usage_json,cost,created_at,last_used_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) on conflict(task_id,stage_id) do nothing`, taskID, stageID, agentName, agentName, value.Harness, nullIfEmpty(value.Provider), nullIfEmpty(value.Model), nullIfEmpty(value.Thinking), nullIfEmpty(value.Color), value.HarnessSessionID, value.SessionDirectory, boolToInt(value.SessionReady), `{}`, value.Cost, timestamp, timestamp)
+	query := `insert into agent_sessions(task_id,stage_id,agent_name,role,harness,provider,model,thinking,color,harness_session_id,session_directory,session_ready,usage_json,cost,created_at,last_used_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) on conflict(task_id,stage_id) do nothing`
+	_, err := r.db.ExecContext(ctx, query, taskID, stageID, agentName, agentName, value.Harness, nullIfEmpty(value.Provider), nullIfEmpty(value.Model), nullIfEmpty(value.Thinking), nullIfEmpty(value.Color), value.HarnessSessionID, value.SessionDirectory, boolToInt(value.SessionReady), `{}`, value.Cost, timestamp, timestamp)
 	if err != nil {
 		return AgentSession{}, wrap("reserve agent session", err)
 	}
@@ -83,7 +84,8 @@ func (r *AgentSessionRepository) Get(ctx context.Context, taskID, role string) (
 	var value AgentSession
 	var usage string
 	var ready int
-	err := r.db.QueryRowContext(ctx, `select stage_id,agent_name,harness,coalesce(provider,''),coalesce(model,''),coalesce(thinking,''),coalesce(color,''),harness_session_id,session_directory,session_ready,coalesce(native_transcript_path,''),coalesce(pending_invocation_id,''),coalesce(pending_request_id,''),coalesce(pending_phase_id,''),coalesce(context_tokens,0),coalesce(context_window,0),coalesce(usage_json,'{}'),coalesce(cost,0),coalesce(last_entry_id,''),created_at,last_used_at from agent_sessions where task_id=? and stage_id=?`, taskID, role).Scan(&value.StageID, &value.AgentName, &value.Harness, &value.Provider, &value.Model, &value.Thinking, &value.Color, &value.HarnessSessionID, &value.SessionDirectory, &ready, &value.NativeTranscriptPath, &value.PendingInvocationID, &value.PendingRequestID, &value.PendingPhaseID, &value.ContextTokens, &value.ContextWindow, &usage, &value.Cost, &value.LastEntryID, &value.CreatedAt, &value.LastUsedAt)
+	query := `select stage_id,agent_name,harness,coalesce(provider,''),coalesce(model,''),coalesce(thinking,''),coalesce(color,''),harness_session_id,session_directory,session_ready,coalesce(native_transcript_path,''),coalesce(pending_invocation_id,''),coalesce(pending_request_id,''),coalesce(pending_phase_id,''),coalesce(context_tokens,0),coalesce(context_window,0),coalesce(usage_json,'{}'),coalesce(cost,0),coalesce(last_entry_id,''),created_at,last_used_at from agent_sessions where task_id=? and stage_id=?`
+	err := r.db.QueryRowContext(ctx, query, taskID, role).Scan(&value.StageID, &value.AgentName, &value.Harness, &value.Provider, &value.Model, &value.Thinking, &value.Color, &value.HarnessSessionID, &value.SessionDirectory, &ready, &value.NativeTranscriptPath, &value.PendingInvocationID, &value.PendingRequestID, &value.PendingPhaseID, &value.ContextTokens, &value.ContextWindow, &usage, &value.Cost, &value.LastEntryID, &value.CreatedAt, &value.LastUsedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return AgentSession{}, ErrNotFound
 	}
@@ -102,7 +104,8 @@ func (r *AgentSessionRepository) Get(ctx context.Context, taskID, role string) (
 }
 
 func (r *AgentSessionRepository) List(ctx context.Context, taskID string) ([]AgentSession, error) {
-	rows, err := r.db.QueryContext(ctx, `select stage_id from agent_sessions where task_id=? order by stage_id`, taskID)
+	query := `select stage_id from agent_sessions where task_id=? order by stage_id`
+	rows, err := r.db.QueryContext(ctx, query, taskID)
 	if err != nil {
 		return nil, wrap("list agent sessions", err)
 	}
@@ -130,7 +133,8 @@ func (r *AgentSessionRepository) List(ctx context.Context, taskID string) ([]Age
 }
 
 func (r *AgentSessionRepository) BeginInvocation(ctx context.Context, taskID, role, invocationID, requestID, phaseID string) error {
-	result, err := r.db.ExecContext(ctx, `update agent_sessions set pending_invocation_id=?,pending_request_id=?,pending_phase_id=?,last_used_at=? where task_id=? and stage_id=? and pending_invocation_id is null`, invocationID,
+	query := `update agent_sessions set pending_invocation_id=?,pending_request_id=?,pending_phase_id=?,last_used_at=? where task_id=? and stage_id=? and pending_invocation_id is null`
+	result, err := r.db.ExecContext(ctx, query, invocationID,
 		nullIfEmpty(requestID), nullIfEmpty(phaseID), now(), taskID, role)
 	if err != nil {
 		return wrap("begin agent invocation",
@@ -160,10 +164,12 @@ func (r *AgentSessionRepository) FinalizeInvocation(ctx context.Context, taskID,
 	}
 	defer tx.Rollback()
 	var previousCost float64
-	if err = tx.QueryRowContext(ctx, `select coalesce(cost,0) from agent_sessions where task_id=? and stage_id=?`, taskID, role).Scan(&previousCost); err != nil {
+	query := `select coalesce(cost,0) from agent_sessions where task_id=? and stage_id=?`
+	if err = tx.QueryRowContext(ctx, query, taskID, role).Scan(&previousCost); err != nil {
 		return wrap("read agent session cost", err)
 	}
-	result, err := tx.ExecContext(ctx, `update agent_sessions set provider=?,model=?,thinking=?,color=?,session_ready=?,native_transcript_path=?,last_entry_id=?,context_tokens=?,context_window=?,usage_json=?,cost=?,pending_invocation_id=null,pending_request_id=null,pending_phase_id=null,last_used_at=? where task_id=? and stage_id=? and pending_invocation_id=? and harness_session_id=?`, nullIfEmpty(value.Provider), nullIfEmpty(value.Model), nullIfEmpty(value.Thinking), nullIfEmpty(value.Color), boolToInt(value.SessionReady), nullIfEmpty(value.NativeTranscriptPath), nullIfEmpty(value.LastEntryID), value.ContextTokens, value.ContextWindow,
+	query2 := `update agent_sessions set provider=?,model=?,thinking=?,color=?,session_ready=?,native_transcript_path=?,last_entry_id=?,context_tokens=?,context_window=?,usage_json=?,cost=?,pending_invocation_id=null,pending_request_id=null,pending_phase_id=null,last_used_at=? where task_id=? and stage_id=? and pending_invocation_id=? and harness_session_id=?`
+	result, err := tx.ExecContext(ctx, query2, nullIfEmpty(value.Provider), nullIfEmpty(value.Model), nullIfEmpty(value.Thinking), nullIfEmpty(value.Color), boolToInt(value.SessionReady), nullIfEmpty(value.NativeTranscriptPath), nullIfEmpty(value.LastEntryID), value.ContextTokens, value.ContextWindow,
 		string(usage), value.Cost, now(), taskID,
 		role, invocationID, value.HarnessSessionID)
 	if err != nil {
@@ -175,7 +181,8 @@ func (r *AgentSessionRepository) FinalizeInvocation(ctx context.Context, taskID,
 	}
 	if count == 0 {
 		var pending string
-		readErr := tx.QueryRowContext(ctx, `select coalesce(pending_invocation_id,'') from agent_sessions where task_id=? and stage_id=?`, taskID, role).Scan(&pending)
+		query3 := `select coalesce(pending_invocation_id,'') from agent_sessions where task_id=? and stage_id=?`
+		readErr := tx.QueryRowContext(ctx, query3, taskID, role).Scan(&pending)
 		if readErr != nil {
 			return wrap("read pending agent invocation", readErr)
 		}
@@ -185,7 +192,8 @@ func (r *AgentSessionRepository) FinalizeInvocation(ctx context.Context, taskID,
 		return nil
 	}
 	if delta := value.Cost - previousCost; delta != 0 {
-		if _, err = tx.ExecContext(ctx, `update tasks set total_cost=total_cost+? where id=?`, delta, taskID); err != nil {
+		query4 := `update tasks set total_cost=total_cost+? where id=?`
+		if _, err = tx.ExecContext(ctx, query4, delta, taskID); err != nil {
 			return wrap("update task agent cost", err)
 		}
 	}
@@ -197,7 +205,8 @@ func (r *AgentSessionRepository) FinalizeInvocation(ctx context.Context, taskID,
 // reconcile loop resolves each against the native session before settling it.
 
 func (r *AgentSessionRepository) Pending(ctx context.Context) ([]AgentSession, error) {
-	rows, err := r.db.QueryContext(ctx, `select task_id,stage_id from agent_sessions where pending_invocation_id is not null order by task_id,stage_id`)
+	query := `select task_id,stage_id from agent_sessions where pending_invocation_id is not null order by task_id,stage_id`
+	rows, err := r.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, wrap("list pending agent sessions",
 			err)
@@ -247,19 +256,22 @@ func (r *AgentSessionRepository) ReconcileStats(ctx context.Context, taskID, sta
 	}
 	defer tx.Rollback()
 	var previousCost float64
-	if err = tx.QueryRowContext(ctx, `select coalesce(cost,0) from agent_sessions where task_id=? and stage_id=?`,
+	query := `select coalesce(cost,0) from agent_sessions where task_id=? and stage_id=?`
+	if err = tx.QueryRowContext(ctx, query,
 		taskID,
 		stageID).Scan(&previousCost); err != nil {
 		return wrap(
 			"read agent session cost", err)
 	}
+	query2 := `update agent_sessions set provider=?,model=?,native_transcript_path=?,last_entry_id=?,context_tokens=?,context_window=?,usage_json=?,cost=?,last_used_at=? where task_id=? and stage_id=?`
 	if _, err = tx.ExecContext(
-		ctx, `update agent_sessions set provider=?,model=?,native_transcript_path=?,last_entry_id=?,context_tokens=?,context_window=?,usage_json=?,cost=?,last_used_at=? where task_id=? and stage_id=?`, nullIfEmpty(value.Provider), nullIfEmpty(value.Model), nullIfEmpty(value.NativeTranscriptPath), nullIfEmpty(value.LastEntryID), value.ContextTokens, value.ContextWindow, string(usage), value.Cost, now(), taskID, stageID); err != nil {
+		ctx, query2, nullIfEmpty(value.Provider), nullIfEmpty(value.Model), nullIfEmpty(value.NativeTranscriptPath), nullIfEmpty(value.LastEntryID), value.ContextTokens, value.ContextWindow, string(usage), value.Cost, now(), taskID, stageID); err != nil {
 		return wrap("reconcile agent session",
 			err)
 	}
 	if delta := value.Cost - previousCost; delta != 0 {
-		if _, err = tx.ExecContext(ctx, `update tasks set total_cost=total_cost+? where id=?`,
+		query3 := `update tasks set total_cost=total_cost+? where id=?`
+		if _, err = tx.ExecContext(ctx, query3,
 			delta, taskID); err != nil {
 			return wrap("update task agent cost", err)
 		}
@@ -272,7 +284,8 @@ func (r *AgentSessionRepository) ReconcileStats(ctx context.Context, taskID, sta
 // usable native turn, leaving the session settled and ready to re-drive.
 
 func (r *AgentSessionRepository) ClearInvocation(ctx context.Context, taskID, stageID, invocationID string) error {
-	result, err := r.db.ExecContext(ctx, `update agent_sessions set pending_invocation_id=null,pending_request_id=null,pending_phase_id=null,last_used_at=? where task_id=? and stage_id=? and pending_invocation_id=?`, now(), taskID, stageID, invocationID)
+	query := `update agent_sessions set pending_invocation_id=null,pending_request_id=null,pending_phase_id=null,last_used_at=? where task_id=? and stage_id=? and pending_invocation_id=?`
+	result, err := r.db.ExecContext(ctx, query, now(), taskID, stageID, invocationID)
 	if err != nil {
 		return wrap("clear agent invocation", err)
 	}
@@ -287,7 +300,8 @@ func (r *AgentSessionRepository) ClearInvocation(ctx context.Context, taskID, st
 // explicit resume reuses it instead of creating a replacement attempt.
 
 func (r *AgentSessionRepository) Reset(ctx context.Context, taskID, stageID, newSessionID string) error {
-	result, err := r.db.ExecContext(ctx, `update agent_sessions set harness_session_id=?,session_ready=0,native_transcript_path=null,last_entry_id=null,pending_invocation_id=null,pending_request_id=null,pending_phase_id=null,last_used_at=? where task_id=? and stage_id=? and pending_invocation_id is null`, newSessionID,
+	query := `update agent_sessions set harness_session_id=?,session_ready=0,native_transcript_path=null,last_entry_id=null,pending_invocation_id=null,pending_request_id=null,pending_phase_id=null,last_used_at=? where task_id=? and stage_id=? and pending_invocation_id is null`
+	result, err := r.db.ExecContext(ctx, query, newSessionID,
 		now(), taskID, stageID)
 	if err != nil {
 		return wrap("reset agent session", err)
@@ -299,7 +313,8 @@ func (r *AgentSessionRepository) Reset(ctx context.Context, taskID, stageID, new
 	}
 	if count == 0 {
 		var exists int
-		if readErr := r.db.QueryRowContext(ctx, `select count(*) from agent_sessions where task_id=? and stage_id=?`,
+		query2 := `select count(*) from agent_sessions where task_id=? and stage_id=?`
+		if readErr := r.db.QueryRowContext(ctx, query2,
 			taskID, stageID).Scan(&exists); readErr != nil {
 			return wrap("read agent session for reset",
 				readErr)
@@ -321,7 +336,8 @@ func (r *AgentSessionRepository) Replace(ctx context.Context, taskID, role, newS
 	if current.PendingInvocationID != "" {
 		return "", ErrConflict
 	}
-	result, err := r.db.ExecContext(ctx, `update agent_sessions set harness_session_id=?,session_directory=?,session_ready=0,native_transcript_path=null,last_entry_id=null,last_used_at=? where task_id=? and stage_id=? and harness_session_id=? and pending_invocation_id is null`, newSessionID, newDirectory, now(), taskID, role,
+	query := `update agent_sessions set harness_session_id=?,session_directory=?,session_ready=0,native_transcript_path=null,last_entry_id=null,last_used_at=? where task_id=? and stage_id=? and harness_session_id=? and pending_invocation_id is null`
+	result, err := r.db.ExecContext(ctx, query, newSessionID, newDirectory, now(), taskID, role,
 		current.HarnessSessionID)
 	if err != nil {
 		return "",

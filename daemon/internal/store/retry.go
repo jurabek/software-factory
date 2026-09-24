@@ -22,7 +22,8 @@ func (r *RetryRepository) Apply(ctx context.Context, key string, branch Branch, 
 	}
 	defer tx.Rollback()
 	var existing RetryResult
-	err = tx.QueryRowContext(ctx, `select source_attempt_id,branch_id,attempt_id,created_at from retry_requests where task_id=? and idempotency_key=?`, phase.TaskID, key).Scan(&existing.SourceAttemptID, &existing.BranchID, &existing.AttemptID, &existing.CreatedAt)
+	query := `select source_attempt_id,branch_id,attempt_id,created_at from retry_requests where task_id=? and idempotency_key=?`
+	err = tx.QueryRowContext(ctx, query, phase.TaskID, key).Scan(&existing.SourceAttemptID, &existing.BranchID, &existing.AttemptID, &existing.CreatedAt)
 	if err == nil {
 		return existing, false,
 			nil
@@ -30,12 +31,14 @@ func (r *RetryRepository) Apply(ctx context.Context, key string, branch Branch, 
 	if !errors.Is(err, sql.ErrNoRows) {
 		return RetryResult{}, false, wrap("read retry request", err)
 	}
-	if _, err = tx.ExecContext(ctx, `insert into branches(id,task_id,parent_branch_id,fork_attempt_id,head_attempt_id,status,created_at,updated_at) values(?,?,?,?,?,?,?,?)`, branch.ID, branch.TaskID, nullIfEmpty(branch.ParentBranchID), branch.ForkAttemptID, phase.ID, branch.Status,
+	query2 := `insert into branches(id,task_id,parent_branch_id,fork_attempt_id,head_attempt_id,status,created_at,updated_at) values(?,?,?,?,?,?,?,?)`
+	if _, err = tx.ExecContext(ctx, query2, branch.ID, branch.TaskID, nullIfEmpty(branch.ParentBranchID), branch.ForkAttemptID, phase.ID, branch.Status,
 		branch.CreatedAt, branch.CreatedAt); err != nil {
 		return RetryResult{}, false, wrap("create retry branch",
 			err)
 	}
-	if _, err = tx.ExecContext(ctx, `insert into phases(id,task_id,sequence,name,kind,owner,description,status,attempt,retries,started_at,branch_id,definition_id,input_snapshot,output_snapshot,superseded,native_base_entry_id,fork_native) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)`, phase.ID, phase.TaskID, phase.Sequence, phase.Name,
+	query3 := `insert into phases(id,task_id,sequence,name,kind,owner,description,status,attempt,retries,started_at,branch_id,definition_id,input_snapshot,output_snapshot,superseded,native_base_entry_id,fork_native) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)`
+	if _, err = tx.ExecContext(ctx, query3, phase.ID, phase.TaskID, phase.Sequence, phase.Name,
 		phase.Kind, phase.Owner, phase.Description, phase.Status,
 		phase.Attempt, phase.Retries, now(), phase.BranchID,
 		nullIfEmpty(phase.DefinitionID), nullIfEmpty(phase.InputSnapshot), nullIfEmpty(phase.OutputSnapshot), nullIfEmpty(phase.NativeBaseEntryID), boolToInt(phase.ForkNative)); err != nil {
@@ -44,11 +47,13 @@ func (r *RetryRepository) Apply(ctx context.Context, key string, branch Branch, 
 			wrap("queue retry attempt",
 				err)
 	}
-	if _, err = tx.ExecContext(ctx, `update tasks set selected_branch_id=?,previous_state=state,state=?,active_phase=?,ended_at=null,error=null where id=?`, branch.ID, nextState, phase.ID, phase.TaskID); err != nil {
+	query4 := `update tasks set selected_branch_id=?,previous_state=state,state=?,active_phase=?,ended_at=null,error=null where id=?`
+	if _, err = tx.ExecContext(ctx, query4, branch.ID, nextState, phase.ID, phase.TaskID); err != nil {
 		return RetryResult{}, false, wrap("select retry branch", err)
 	}
 	createdAt := now()
-	if _, err = tx.ExecContext(ctx, `insert into retry_requests(task_id,idempotency_key,source_attempt_id,branch_id,attempt_id,created_at) values(?,?,?,?,?,?)`, phase.TaskID, key, branch.ForkAttemptID, branch.ID, phase.ID, createdAt); err != nil {
+	query5 := `insert into retry_requests(task_id,idempotency_key,source_attempt_id,branch_id,attempt_id,created_at) values(?,?,?,?,?,?)`
+	if _, err = tx.ExecContext(ctx, query5, phase.TaskID, key, branch.ForkAttemptID, branch.ID, phase.ID, createdAt); err != nil {
 		return RetryResult{}, false, wrap("save retry request", err)
 	}
 	if err = tx.Commit(); err != nil {
@@ -63,7 +68,8 @@ func (r *RetryRepository) Apply(ctx context.Context, key string, branch Branch, 
 
 func (r *RetryRepository) ByIdempotencyKey(ctx context.Context, taskID, key string) (RetryResult, error) {
 	var value RetryResult
-	err := r.db.QueryRowContext(ctx, `select source_attempt_id,branch_id,attempt_id,created_at from retry_requests where task_id=? and idempotency_key=?`, taskID,
+	query := `select source_attempt_id,branch_id,attempt_id,created_at from retry_requests where task_id=? and idempotency_key=?`
+	err := r.db.QueryRowContext(ctx, query, taskID,
 		key).Scan(&value.SourceAttemptID, &value.BranchID, &value.AttemptID, &value.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return RetryResult{}, ErrNotFound

@@ -143,7 +143,8 @@ func ensureRetriableColumns(ctx context.Context, db *sql.DB) error {
 		{"checks", "output_path text"},
 	}
 	for _, add := range adds {
-		if _, err := db.ExecContext(ctx, `alter table `+add[0]+` add column `+add[1]); err != nil && !isDuplicateColumn(err) {
+		query := `alter table ` + add[0] + ` add column ` + add[1]
+		if _, err := db.ExecContext(ctx, query); err != nil && !isDuplicateColumn(err) {
 			return fmt.Errorf("migrate %s: %w", add[0], err)
 		}
 	}
@@ -160,12 +161,14 @@ func isDuplicateColumn(err error) bool {
 
 func tableExists(ctx context.Context, db *sql.DB, name string) (bool, error) {
 	var count int
-	err := db.QueryRowContext(ctx, `select count(*) from sqlite_master where type='table' and name=?`, name).Scan(&count)
+	query := `select count(*) from sqlite_master where type='table' and name=?`
+	err := db.QueryRowContext(ctx, query, name).Scan(&count)
 	return count > 0, err
 }
 
 func columnExists(ctx context.Context, db *sql.DB, table, column string) (bool, error) {
 	var count int
-	err := db.QueryRowContext(ctx, `select count(*) from pragma_table_info(?) where name=?`, table, column).Scan(&count)
+	query := `select count(*) from pragma_table_info(?) where name=?`
+	err := db.QueryRowContext(ctx, query, table, column).Scan(&count)
 	return count > 0, err
 }
