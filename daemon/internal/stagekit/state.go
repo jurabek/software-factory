@@ -4,12 +4,6 @@
 // It never orchestrates stages and is never used to implement stage logic.
 package stagekit
 
-import (
-	"fmt"
-
-	"github.com/jurabek/software-factory/daemon/internal/store"
-)
-
 const (
 	Preparing        = "preparing"
 	Planning         = "planning"
@@ -46,14 +40,6 @@ func IsActive(state string) bool {
 	return false
 }
 
-// CheckTransition returns an error for an illegal task transition.
-func CheckTransition(from, to string) error {
-	if !CanTransition(from, to) {
-		return fmt.Errorf("invalid task transition %q to %q", from, to)
-	}
-	return nil
-}
-
 // StateForRole maps a stage role to the state a reopened task resumes in.
 // Control-plane operations (reopen on message) use it to seed a stage that
 // then owns its own transition.
@@ -65,22 +51,5 @@ func StateForRole(role string) string {
 		return Reviewing
 	default:
 		return Building
-	}
-}
-
-// StateForPhase maps an attempt to the state a retried task resumes in so the
-// owning stage can begin from a legal transition origin.
-func StateForPhase(phase store.Phase) string {
-	switch phase.Kind {
-	case "plan":
-		return Planning
-	case "verify", "check":
-		return Checking
-	case "review":
-		return Reviewing
-	case "build":
-		return Building
-	default:
-		return StateForRole(phase.Owner)
 	}
 }

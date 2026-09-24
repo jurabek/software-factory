@@ -362,13 +362,6 @@ func (r *PhaseRepository) SetOutputSnapshot(ctx context.Context, phaseID, snapsh
 	return wrap("save phase output snapshot", err)
 }
 
-func (r *PhaseRepository) MarkSuperseded(ctx context.Context, taskID, branchID string, keepID string) error {
-	query := `update phases set superseded=1 where task_id=:task_id and coalesce(branch_id,'')=:branch_id and id<>:keep_id`
-	_, err := r.db.NamedExecContext(ctx, query, map[string]any{"task_id": taskID, "branch_id": branchID, "keep_id": keepID})
-	return wrap("mark superseded",
-		err)
-}
-
 func (r *PhaseRepository) FailedCount(ctx context.Context, taskID, stage string) (int, error) {
 	var count int
 	query := `select count(*) from phases where task_id=? and name=? and status='failed'`

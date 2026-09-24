@@ -68,15 +68,9 @@ type Diff struct {
 	Patch string   `json:"patch"`
 }
 
-// Service is the review stage's public surface. Lifecycle, resume, and state
-// transitions are hidden inside the package.
-type Service interface {
-	Review(context.Context, stage.Input, stage.PlanResult, stage.BuildResult, stage.VerificationResult) (stage.ReviewResult, error)
-}
-
 type service struct{ kit *stagekit.Kit }
 
-func New(kit *stagekit.Kit) Service { return service{kit: kit} }
+func New(kit *stagekit.Kit) service { return service{kit: kit} }
 
 // Review resumes a durable result when present, otherwise assembles upstream
 // evidence, runs the review turn, and publishes the verdict.

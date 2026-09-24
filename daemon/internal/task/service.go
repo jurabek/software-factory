@@ -161,7 +161,7 @@ func (s *Service) create(ctx context.Context, request CreateRequest, parentTaskI
 		return store.Task{}, err
 	}
 	if request.CodingAgent != "" && !config.IsValidHarness(request.CodingAgent) {
-		return store.Task{}, fmt.Errorf("coding_agent must be pi or codex")
+		return store.Task{}, fmt.Errorf("coding_agent must be pi")
 	}
 	if request.Thinking != "" {
 		harnessForThinking := request.CodingAgent

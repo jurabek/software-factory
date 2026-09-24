@@ -22,7 +22,6 @@ import (
 	"time"
 
 	"github.com/jurabek/software-factory/daemon/internal/api"
-	"github.com/jurabek/software-factory/daemon/internal/builder"
 	"github.com/jurabek/software-factory/daemon/internal/config"
 	"github.com/jurabek/software-factory/daemon/internal/creation"
 	"github.com/jurabek/software-factory/daemon/internal/harness"
@@ -30,15 +29,16 @@ import (
 	"github.com/jurabek/software-factory/daemon/internal/messaging"
 	"github.com/jurabek/software-factory/daemon/internal/orchestrator"
 	"github.com/jurabek/software-factory/daemon/internal/pipeline"
-	"github.com/jurabek/software-factory/daemon/internal/planner"
+	"github.com/jurabek/software-factory/daemon/internal/pipeline/builder"
+	"github.com/jurabek/software-factory/daemon/internal/pipeline/planner"
+	"github.com/jurabek/software-factory/daemon/internal/pipeline/reviewer"
+	"github.com/jurabek/software-factory/daemon/internal/pipeline/verifier"
 	"github.com/jurabek/software-factory/daemon/internal/projection"
-	"github.com/jurabek/software-factory/daemon/internal/reviewer"
 	"github.com/jurabek/software-factory/daemon/internal/stagekit"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 	"github.com/jurabek/software-factory/daemon/internal/task"
 	"github.com/jurabek/software-factory/daemon/internal/timeline"
 	"github.com/jurabek/software-factory/daemon/internal/token"
-	"github.com/jurabek/software-factory/daemon/internal/verifier"
 	"github.com/jurabek/software-factory/daemon/internal/workspace"
 )
 

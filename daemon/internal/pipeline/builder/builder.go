@@ -72,15 +72,9 @@ func Instructions() string {
 	return `Return exactly one JSON object: {` + stage.CommonInstructions() + `,"changed_files":[],"commit_message":"...","test_changes":[{"path":"...","reason":"..."}]}. Put the human-readable report in report_markdown.`
 }
 
-// Service is the build stage's public surface. Lifecycle, resume, and state
-// transitions are hidden inside the package.
-type Service interface {
-	Build(context.Context, stage.Input, stage.PlanResult) (stage.BuildResult, error)
-}
-
 type service struct{ kit *stagekit.Kit }
 
-func New(kit *stagekit.Kit) Service { return service{kit: kit} }
+func New(kit *stagekit.Kit) service { return service{kit: kit} }
 
 // Build resumes a durable result when present, otherwise renders
 // implementation prompts from the exact upstream plan, runs the build turn

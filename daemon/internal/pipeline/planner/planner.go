@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/jurabek/software-factory/daemon/internal/harness"
-	"github.com/jurabek/software-factory/daemon/internal/orchestrator"
 	"github.com/jurabek/software-factory/daemon/internal/session"
 	"github.com/jurabek/software-factory/daemon/internal/stage"
 	"github.com/jurabek/software-factory/daemon/internal/stagekit"
@@ -66,20 +65,17 @@ func Instructions() string {
 	return `Return exactly one JSON object: {` + stage.CommonInstructions() + `,"steps":[{"id":"...","description":"...","expected_files":[],"acceptance_criteria":[]}],"questions":[]}. Put the human-readable report in report_markdown.`
 }
 
-// Service is the planning stage's public surface. Lifecycle, resume, and
-// state transitions are hidden inside the package.
-type Service interface {
-	Plan(context.Context, stage.Input) (stage.PlanResult, error)
-	Approve(context.Context, string, string, string) error
+type eventPublisher interface {
+	Publish(context.Context, string, string) error
 }
 
 type service struct {
 	kit    *stagekit.Kit
-	events *orchestrator.Events
+	events eventPublisher
 }
 
 // New constructs the planning stage.
-func New(kit *stagekit.Kit, events *orchestrator.Events) Service {
+func New(kit *stagekit.Kit, events eventPublisher) service {
 	return service{kit: kit, events: events}
 }
 

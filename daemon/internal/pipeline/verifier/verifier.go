@@ -61,15 +61,9 @@ func (capture *tailCapture) String() string {
 	return string(capture.data)
 }
 
-// Service is the verification stage's public surface. Lifecycle, resume, and
-// state transitions are hidden inside the package.
-type Service interface {
-	Verify(context.Context, stage.Input, stage.PlanResult, stage.BuildResult) (stage.VerificationResult, error)
-}
-
 type service struct{ kit *stagekit.Kit }
 
-func New(kit *stagekit.Kit) Service { return service{kit: kit} }
+func New(kit *stagekit.Kit) service { return service{kit: kit} }
 
 // Verify resumes a durable result when present, otherwise runs primary checks
 // and baseline/test-overlay comparisons, then publishes the report.

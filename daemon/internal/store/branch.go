@@ -59,30 +59,9 @@ func (r *BranchRepository) Get(ctx context.Context, taskID, branchID string) (Br
 		err)
 }
 
-func (r *BranchRepository) SetHead(ctx context.Context, taskID, branchID, headAttemptID string) error {
-	query := `update branches set head_attempt_id=nullif(:head_attempt_id,''),updated_at=:updated_at where task_id=:task_id and id=:id`
-	_, err := r.db.NamedExecContext(ctx, query, Branch{ID: branchID, TaskID: taskID, HeadAttemptID: headAttemptID, UpdatedAt: now()})
-	return wrap("move branch head",
-		err)
-}
-
 func (r *BranchRepository) Select(ctx context.Context, taskID, branchID string) error {
 	query := `update tasks set selected_branch_id=nullif(:selected_branch_id,'') where id=:id`
 	_, err := r.db.NamedExecContext(ctx, query, Task{ID: taskID, SelectedBranchID: branchID})
 	return wrap("select branch",
 		err)
-}
-
-func (r *BranchRepository) TaskHeadAttempt(ctx context.Context, taskID string) string {
-	var selected string
-	query := `select coalesce(selected_branch_id,'') from tasks where id=?`
-	_ = r.db.QueryRowContext(ctx, query, taskID).Scan(&selected)
-	if selected == "" {
-		return ""
-	}
-	var head string
-	query2 := `select coalesce(head_attempt_id,'') from branches where task_id=? and id=?`
-	_ = r.db.QueryRowContext(ctx, query2,
-		taskID, selected).Scan(&head)
-	return head
 }

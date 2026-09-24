@@ -81,9 +81,6 @@ type Store struct {
 	Processes     *ProcessRepository
 }
 
-// DB is a compatibility alias for Store.
-type DB = Store
-
 // New wires per-model repositories over db.
 func New(db *sql.DB) *Store {
 	dbx := sqlx.NewDb(db, "sqlite")

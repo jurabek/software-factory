@@ -9,8 +9,6 @@ import (
 
 	"github.com/jurabek/software-factory/daemon/internal/config"
 	"github.com/jurabek/software-factory/daemon/internal/messaging"
-	"github.com/jurabek/software-factory/daemon/internal/orchestrator"
-	"github.com/jurabek/software-factory/daemon/internal/planner"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 	"github.com/jurabek/software-factory/daemon/internal/task"
 )
@@ -33,10 +31,16 @@ type Creator interface {
 }
 
 type Communicators struct {
-	Creator    Creator
-	Events     *orchestrator.Events
-	Planner    planner.Service
-	Messages   *messaging.Service
+	Creator Creator
+	Events  interface {
+		Publish(context.Context, string, string) error
+	}
+	Planner interface {
+		Approve(context.Context, string, string, string) error
+	}
+	Messages interface {
+		Send(context.Context, string, string, messaging.Request) (store.Message, error)
+	}
 	Projection interface {
 		StageProjection(context.Context, store.Task) ([]store.StageProjection, error)
 	}

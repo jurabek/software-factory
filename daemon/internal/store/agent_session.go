@@ -309,37 +309,6 @@ func (r *AgentSessionRepository) ClearInvocation(ctx context.Context, taskID, st
 	return nil
 }
 
-// RequeueInterruptedPhase returns an in-flight phase to the queue so an
-
-// explicit resume reuses it instead of creating a replacement attempt.
-
-func (r *AgentSessionRepository) Reset(ctx context.Context, taskID, stageID, newSessionID string) error {
-	query := `update agent_sessions set harness_session_id=:harness_session_id,session_ready=0,native_transcript_path=null,last_entry_id=null,pending_invocation_id=null,pending_request_id=null,pending_phase_id=null,last_used_at=:last_used_at where task_id=:task_id and stage_id=:stage_id and pending_invocation_id is null`
-	result, err := r.db.NamedExecContext(ctx, query, AgentSession{TaskID: taskID, StageID: stageID, HarnessSessionID: newSessionID, LastUsedAt: now()})
-	if err != nil {
-		return wrap("reset agent session", err)
-	}
-	count, err := result.RowsAffected()
-	if err != nil {
-		return wrap("read agent session reset",
-			err)
-	}
-	if count == 0 {
-		var exists int
-		query2 := `select count(*) from agent_sessions where task_id=? and stage_id=?`
-		if readErr := r.db.QueryRowContext(ctx, query2,
-			taskID, stageID).Scan(&exists); readErr != nil {
-			return wrap("read agent session for reset",
-				readErr)
-		}
-		if exists == 0 {
-			return ErrNotFound
-		}
-		return ErrConflict
-	}
-	return nil
-}
-
 func (r *AgentSessionRepository) Replace(ctx context.Context, taskID, role, newSessionID, newDirectory string) (priorID string, err error) {
 	var current AgentSession
 	current, err = r.Get(ctx, taskID, role)

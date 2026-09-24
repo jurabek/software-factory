@@ -755,21 +755,6 @@ export function createDaemonClient(fetcher: typeof fetch = fetch) {
 				options,
 			);
 		},
-		async attempt(
-			endpoint: string,
-			credential: string,
-			taskId: string,
-			attemptId: string,
-			options: DaemonRequestOptions = {},
-		): Promise<unknown> {
-			return requestJSON(
-				fetcher,
-				endpoint,
-				credential,
-				`/api/v1/tasks/${encodeURIComponent(taskId)}/attempts/${encodeURIComponent(attemptId)}`,
-				options,
-			);
-		},
 		async branches(
 			endpoint: string,
 			credential: string,

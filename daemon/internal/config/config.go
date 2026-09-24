@@ -12,24 +12,13 @@ import (
 
 var validThinking = map[string]bool{"off": true, "minimal": true, "low": true, "medium": true, "high": true, "xhigh": true, "max": true}
 
-// validHarnesses lists registered coding agents. Pi is implemented;
-// codex is reserved so task creation can offer it once its
-// adapter lands.
-var validHarnesses = map[string]bool{"pi": true, "codex": true}
-
-// IsValidThinking reports whether level is an accepted thinking level.
-func IsValidThinking(level string) bool { return validThinking[level] }
-
 // ThinkingLevels returns accepted thinking levels in UI order.
 func ThinkingLevels() []string {
 	return []string{"off", "minimal", "low", "medium", "high", "xhigh", "max"}
 }
 
 // IsValidHarness reports whether name is a known coding agent.
-func IsValidHarness(name string) bool { return validHarnesses[name] }
-
-// HarnessNames returns known coding agents in UI order.
-func HarnessNames() []string { return []string{"pi", "codex"} }
+func IsValidHarness(name string) bool { return name == "pi" }
 
 // ThinkingLevelsFor returns the validated thinking levels a harness supports.
 func ThinkingLevelsFor(harness string) []string {
@@ -162,8 +151,8 @@ func resolve(c Config) Config {
 
 func validate(c Config, base string) []string {
 	var problems []string
-	if !validHarnesses[c.Defaults.CodingAgent] {
-		problems = append(problems, "defaults.coding_agent must be pi or codex")
+	if !IsValidHarness(c.Defaults.CodingAgent) {
+		problems = append(problems, "defaults.coding_agent must be pi")
 	}
 	if !validThinking[c.Defaults.Thinking] {
 		problems = append(problems, "defaults.thinking is invalid")

@@ -2,7 +2,6 @@
 package session
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -157,10 +156,6 @@ func NewPhaseStart(payload PhasePayload) Entry {
 
 func NewPhaseEnd(payload PhasePayload) Entry {
 	return Entry{Kind: KindPhaseEnd, Name: payload.Name, Payload: payload, Display: Describe(KindPhaseEnd, payload)}
-}
-
-func NewPlanFeedback(payload PlanFeedbackPayload) Entry {
-	return Entry{Kind: KindPlanFeedback, Payload: payload, Display: Describe(KindPlanFeedback, payload)}
 }
 
 func NewTaskMessage(payload TaskMessagePayload) Entry {
@@ -459,9 +454,4 @@ func BoundedJSONLimit(value any, limit int) json.RawMessage {
 		return json.RawMessage("{}")
 	}
 	return json.RawMessage("null")
-}
-
-// ValidJSON reports whether data is valid JSON and within the contract bound.
-func ValidJSON(data json.RawMessage) bool {
-	return len(data) <= MaxJSONBytes && json.Valid(bytes.TrimSpace(data))
 }

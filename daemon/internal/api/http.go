@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/jurabek/software-factory/daemon/internal/planner"
+	"github.com/jurabek/software-factory/daemon/internal/pipeline/planner"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 )
 

@@ -260,11 +260,6 @@ func AvailableActions(phase *store.Phase, taskState string) []string {
 // IsReadOnlyOwner reports whether a stage owner must not modify the repository.
 func IsReadOnlyOwner(owner string) bool { return owner == "planner" || owner == "reviewer" }
 
-// PhaseReadOnly reports whether a phase must be read-only.
-func PhaseReadOnly(phase store.Phase, role string) bool {
-	return phase.Kind == "review" || IsReadOnlyOwner(role)
-}
-
 func (k *Kit) DeliverAndFinalize[T any](ctx context.Context, spec Delivery, turn harness.TurnResult, finalize func(harness.TurnResult) (T, error)) (T, error) {
 	var zero T
 	for {
@@ -423,10 +418,6 @@ func (k *Kit) failMessage(ctx context.Context, message store.Message, phase stor
 		return
 	}
 	_, _ = k.db.Messages.FailWithEvent(cleanupCtx, message.TaskID, message.ID, reason, event, k.TaskDir(message.TaskID))
-}
-
-func (k *Kit) PhaseByID(ctx context.Context, taskID, phaseID string) (store.Phase, error) {
-	return k.db.Phases.ByID(ctx, taskID, phaseID)
 }
 
 func (k *Kit) BeginPhase(ctx context.Context, taskID, name, kind, owner, description string) (store.Phase, error) {

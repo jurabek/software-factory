@@ -310,31 +310,10 @@ func (r *TaskRepository) ApproveWithEvent(ctx context.Context, taskDir, id, dige
 	return nil
 }
 
-func (r *TaskRepository) SetApprovalCandidate(ctx context.Context, id, digest string) error {
-	query := `update tasks set plan_digest=:plan_digest,approval_actor=null,approval_at=null where id=:id`
-	_, err := r.db.NamedExecContext(ctx, query, Task{ID: id, PlanDigest: digest})
-	return wrap("save approval candidate",
-		err)
-}
-
 func (r *TaskRepository) SetActiveStage(ctx context.Context, taskID, stageID string) error {
 	query := `update tasks set active_stage=nullif(:active_stage,'') where id=:id`
 	_, err := r.db.NamedExecContext(ctx, query, Task{ID: taskID, ActiveStage: stageID})
 	return wrap("save active stage",
-		err)
-}
-
-func (r *TaskRepository) InvalidateApproval(ctx context.Context, id string) error {
-	query := `update tasks set plan_digest=null,approval_actor=null,approval_at=null where id=:id`
-	_, err := r.db.NamedExecContext(ctx, query, Task{ID: id})
-	return wrap("invalidate approval",
-		err)
-}
-
-func (r *TaskRepository) Reopen(ctx context.Context, taskID, state string) error {
-	query := `update tasks set previous_state=state,state=:state,ended_at=null,error=null where id=:id`
-	_, err := r.db.NamedExecContext(ctx, query, Task{ID: taskID, State: state})
-	return wrap("reopen task",
 		err)
 }
 
