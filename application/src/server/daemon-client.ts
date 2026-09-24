@@ -39,6 +39,8 @@ export type DaemonCommandInput = { plan_digest: string };
 export type DaemonRequestOptions = {
 	signal?: AbortSignal;
 	actor?: string;
+	accept?: string;
+	lastEventID?: string;
 };
 export type EventQuery = { after?: number; limit?: number; tail?: number };
 export type DaemonEvent = {
@@ -163,6 +165,9 @@ function requestHeaders(
 		Authorization: `Bearer ${credential}`,
 	};
 	if (options.actor) headers[daemonActorHeader] = options.actor;
+	if (options.accept) headers.Accept = options.accept;
+	if (options.lastEventID !== undefined)
+		headers["Last-Event-ID"] = options.lastEventID;
 	return { ...headers, ...extra };
 }
 

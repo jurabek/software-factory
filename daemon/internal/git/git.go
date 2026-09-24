@@ -540,10 +540,14 @@ func validateTestPattern(pattern string) error {
 		return fmt.Errorf("test pattern must be relative: %q", pattern)
 	}
 	normalized := filepath.ToSlash(pattern)
-	if slices.Contains(strings.Split(normalized, "/"), "..") {
+	if _, err := path.Match(strings.ReplaceAll(normalized, "**", "*"), ""); err != nil {
+		return fmt.Errorf("invalid test pattern %q: %w", pattern, err)
+	}
+	segments := strings.Split(normalized, "/")
+	if slices.Contains(segments, "..") {
 		return fmt.Errorf("test pattern escapes root: %q", pattern)
 	}
-	for segment := range strings.SplitSeq(normalized, "/") {
+	for _, segment := range segments {
 		if segment != "**" {
 			if _, err := path.Match(segment, ""); err != nil {
 				return fmt.Errorf("invalid test pattern %q: %w", pattern, err)
