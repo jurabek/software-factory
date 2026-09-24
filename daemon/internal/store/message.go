@@ -5,27 +5,28 @@ import (
 	"database/sql"
 	"errors"
 	"log/slog"
-	"strings"
+
+	"github.com/jmoiron/sqlx"
 )
 
 type Message struct {
-	Sequence       int64          `json:"sequence"`
-	ID             string         `json:"id"`
-	TaskID         string         `json:"task_id"`
-	Actor          string         `json:"actor"`
-	Text           string         `json:"text"`
-	IdempotencyKey string         `json:"idempotency_key"`
-	TargetType     string         `json:"-"`
-	TargetID       string         `json:"-"`
-	Target         *MessageTarget `json:"target,omitempty"`
-	StageID        string         `json:"stage_id,omitempty"`
-	RecipientRole  string         `json:"recipient_role"`
-	AgentSessionID string         `json:"agent_session_id"`
-	DeliveryStatus string         `json:"delivery_status"`
-	FailureReason  string         `json:"failure_reason,omitempty"`
-	CreatedAt      string         `json:"created_at"`
-	DeliveredAt    string         `json:"delivered_at,omitempty"`
-	FailedAt       string         `json:"failed_at,omitempty"`
+	Sequence       int64          `db:"sequence" json:"sequence"`
+	ID             string         `db:"id" json:"id"`
+	TaskID         string         `db:"task_id" json:"task_id"`
+	Actor          string         `db:"actor" json:"actor"`
+	Text           string         `db:"text" json:"text"`
+	IdempotencyKey string         `db:"idempotency_key" json:"idempotency_key"`
+	TargetType     string         `db:"target_type" json:"-"`
+	TargetID       string         `db:"target_id" json:"-"`
+	Target         *MessageTarget `db:"-" json:"target,omitempty"`
+	StageID        string         `db:"stage_id" json:"stage_id,omitempty"`
+	RecipientRole  string         `db:"recipient_role" json:"recipient_role"`
+	AgentSessionID string         `db:"agent_session_id" json:"agent_session_id"`
+	DeliveryStatus string         `db:"delivery_status" json:"delivery_status"`
+	FailureReason  string         `db:"failure_reason" json:"failure_reason,omitempty"`
+	CreatedAt      string         `db:"created_at" json:"created_at"`
+	DeliveredAt    string         `db:"delivered_at" json:"delivered_at,omitempty"`
+	FailedAt       string         `db:"failed_at" json:"failed_at,omitempty"`
 }
 type MessageTarget struct {
 	AttemptID string `json:"attempt_id,omitempty"`
@@ -72,13 +73,11 @@ func scanMessage(scanner interface{ Scan(...any) error }) (Message, error) {
 // one transaction. The event trace is derived output and is written only
 // after the database commit.
 
-type MessageRepository struct{ db *sql.DB }
+type MessageRepository struct{ db *sqlx.DB }
 
 func (r *MessageRepository) Save(ctx context.Context, value Message) (Message, bool, error) {
-	query := `insert into messages(id,task_id,actor,text,idempotency_key,target_type,target_id,stage_id,recipient_role,agent_session_id,delivery_status,created_at) values(?,?,?,?,?,?,?,?,?,?,?,?) on conflict(task_id,idempotency_key) do nothing`
-	result, err := r.db.ExecContext(ctx, query, value.ID, value.TaskID, value.Actor,
-		value.Text, value.IdempotencyKey, nullIfEmpty(value.TargetType), nullIfEmpty(value.TargetID), nullIfEmpty(value.StageID), value.RecipientRole, value.AgentSessionID, value.DeliveryStatus,
-		value.CreatedAt)
+	query := `insert into messages(id,task_id,actor,text,idempotency_key,target_type,target_id,stage_id,recipient_role,agent_session_id,delivery_status,created_at) values(:id,:task_id,:actor,:text,:idempotency_key,nullif(:target_type,''),nullif(:target_id,''),nullif(:stage_id,''),:recipient_role,:agent_session_id,:delivery_status,:created_at) on conflict(task_id,idempotency_key) do nothing`
+	result, err := r.db.NamedExecContext(ctx, query, value)
 	if err != nil {
 		return Message{},
 			false, wrap("save message", err)
@@ -100,16 +99,13 @@ func (r *MessageRepository) Save(ctx context.Context, value Message) (Message, b
 // event trace is derived output and is written only after the commit.
 
 func (r *MessageRepository) AcceptWithEvent(ctx context.Context, value Message, event Event, invalidateApproval, reopen bool, reopenState, taskDir string) (Message, bool, error) {
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := r.db.BeginTxx(ctx, nil)
 	if err != nil {
 		return Message{}, false, wrap("begin message acceptance", err)
 	}
 	defer tx.Rollback()
-	query := `insert into messages(id,task_id,actor,text,idempotency_key,target_type,target_id,stage_id,recipient_role,agent_session_id,delivery_status,created_at) values(?,?,?,?,?,?,?,?,?,?,?,?) on conflict(task_id,idempotency_key) do nothing`
-	result, err := tx.ExecContext(ctx,
-		query, value.ID, value.TaskID,
-		value.Actor, value.Text, value.IdempotencyKey, nullIfEmpty(value.TargetType), nullIfEmpty(value.TargetID), nullIfEmpty(value.StageID), value.RecipientRole, value.AgentSessionID,
-		value.DeliveryStatus, value.CreatedAt)
+	query := `insert into messages(id,task_id,actor,text,idempotency_key,target_type,target_id,stage_id,recipient_role,agent_session_id,delivery_status,created_at) values(:id,:task_id,:actor,:text,:idempotency_key,nullif(:target_type,''),nullif(:target_id,''),nullif(:stage_id,''),:recipient_role,:agent_session_id,:delivery_status,:created_at) on conflict(task_id,idempotency_key) do nothing`
+	result, err := tx.NamedExecContext(ctx, query, value)
 	if err != nil {
 		return Message{}, false, wrap("accept message",
 			err)
@@ -128,14 +124,14 @@ func (r *MessageRepository) AcceptWithEvent(ctx context.Context, value Message, 
 		return stored, false, nil
 	}
 	if invalidateApproval {
-		query3 := `update tasks set plan_digest=null,approval_actor=null,approval_at=null where id=?`
-		if _, err = tx.ExecContext(ctx, query3, value.TaskID); err != nil {
+		query3 := `update tasks set plan_digest=null,approval_actor=null,approval_at=null where id=:id`
+		if _, err = tx.NamedExecContext(ctx, query3, Task{ID: value.TaskID}); err != nil {
 			return Message{}, false, wrap("invalidate approval for message", err)
 		}
 	}
 	if reopen {
-		query4 := `update tasks set previous_state=state,state=?,ended_at=null,error=null where id=?`
-		result, err = tx.ExecContext(ctx, query4, reopenState, value.TaskID)
+		query4 := `update tasks set previous_state=state,state=:state,ended_at=null,error=null where id=:id`
+		result, err = tx.NamedExecContext(ctx, query4, Task{ID: value.TaskID, State: reopenState})
 		if err != nil {
 			return Message{}, false, wrap("reopen task for message", err)
 		}
@@ -210,16 +206,16 @@ func (r *MessageRepository) QueuedForStages(ctx context.Context, taskID string, 
 	if len(stages) == 0 {
 		return false, nil
 	}
-	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(stages)), ",")
-	args := make([]any, 0, len(stages)+1)
-	args = append(args, taskID)
-	for _, stage := range stages {
-		args = append(args, stage)
+	query, args, err := sqlx.Named(`select count(*) from messages where task_id=:task_id and delivery_status='queued' and stage_id in (:stages)`, map[string]any{"task_id": taskID, "stages": stages})
+	if err != nil {
+		return false, wrap("bind queued stage messages", err)
+	}
+	query, args, err = sqlx.In(query, args...)
+	if err != nil {
+		return false, wrap("expand queued stage messages", err)
 	}
 	var count int
-	query := `select count(*) from messages where task_id=? and delivery_status='queued' and stage_id in (` + placeholders + `)`
-	if err := r.db.QueryRowContext(ctx, query,
-		args...).Scan(&count); err != nil {
+	if err := r.db.QueryRowContext(ctx, r.db.Rebind(query), args...).Scan(&count); err != nil {
 		return false, wrap("count queued stage messages",
 			err)
 	}
@@ -254,8 +250,7 @@ func (r *MessageRepository) DeliverWithEvent(ctx context.Context, taskID, messag
 }
 
 func (r *MessageRepository) beginMessageInvocation(ctx context.Context, taskID, role, invocationID, messageID string, event *Event, taskDir string) error {
-	tx, err := r.db.BeginTx(ctx,
-		nil)
+	tx, err := r.db.BeginTxx(ctx, nil)
 	if err != nil {
 		return wrap("begin message delivery",
 			err)
@@ -271,8 +266,8 @@ func (r *MessageRepository) beginMessageInvocation(ctx context.Context, taskID, 
 		return ErrConflict
 	}
 	if role != "" {
-		query2 := `update agent_sessions set pending_invocation_id=?,pending_request_id=null,pending_phase_id=null,last_used_at=? where task_id=? and stage_id=? and pending_invocation_id is null`
-		result, err := tx.ExecContext(ctx, query2, invocationID, now(), taskID, role)
+		query2 := `update agent_sessions set pending_invocation_id=:pending_invocation_id,pending_request_id=null,pending_phase_id=null,last_used_at=:last_used_at where task_id=:task_id and stage_id=:stage_id and pending_invocation_id is null`
+		result, err := tx.NamedExecContext(ctx, query2, AgentSession{TaskID: taskID, StageID: role, PendingInvocationID: invocationID, LastUsedAt: now()})
 		if err != nil {
 			return wrap("begin message invocation", err)
 		}
@@ -280,9 +275,8 @@ func (r *MessageRepository) beginMessageInvocation(ctx context.Context, taskID, 
 			return ErrConflict
 		}
 	}
-	query3 := `update messages set delivery_status='delivered',delivered_at=?,failure_reason=null,failed_at=null where task_id=? and id=? and delivery_status='queued'`
-	result, err := tx.ExecContext(ctx, query3, now(),
-		taskID, messageID)
+	query3 := `update messages set delivery_status='delivered',delivered_at=:delivered_at,failure_reason=null,failed_at=null where task_id=:task_id and id=:id and delivery_status='queued'`
+	result, err := tx.NamedExecContext(ctx, query3, Message{ID: messageID, TaskID: taskID, DeliveredAt: now()})
 	if err != nil {
 		return wrap("deliver message",
 			err)
@@ -326,15 +320,14 @@ func (r *MessageRepository) FailWithEvent(ctx context.Context, taskID, messageID
 }
 
 func (r *MessageRepository) failMessage(ctx context.Context, taskID, messageID, reason string, event *Event, taskDir string) (Message, error) {
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := r.db.BeginTxx(ctx, nil)
 	if err != nil {
 		return Message{}, wrap("begin fail message",
 			err)
 	}
 	defer tx.Rollback()
-	query := `update messages set delivery_status='failed',failure_reason=?,failed_at=? where task_id=? and id=? and delivery_status in ('queued','delivered')`
-	result, err := tx.ExecContext(ctx, query, reason,
-		now(), taskID, messageID)
+	query := `update messages set delivery_status='failed',failure_reason=:failure_reason,failed_at=:failed_at where task_id=:task_id and id=:id and delivery_status in ('queued','delivered')`
+	result, err := tx.NamedExecContext(ctx, query, Message{ID: messageID, TaskID: taskID, FailureReason: reason, FailedAt: now()})
 	if err != nil {
 		return Message{},
 			wrap("fail message", err)
@@ -377,13 +370,14 @@ func (r *MessageRepository) FailQueuedForStages(ctx context.Context, taskID, rea
 	if len(stages) == 0 {
 		return nil
 	}
-	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(stages)), ",")
-	args := make([]any, 0, len(stages)+3)
-	args = append(args, reason, now(), taskID)
-	for _, stage := range stages {
-		args = append(args, stage)
+	query, args, err := sqlx.Named(`update messages set delivery_status='failed',failure_reason=:reason,failed_at=:failed_at where task_id=:task_id and delivery_status='queued' and stage_id in (:stages)`, map[string]any{"task_id": taskID, "reason": reason, "failed_at": now(), "stages": stages})
+	if err != nil {
+		return wrap("bind queued stage messages", err)
 	}
-	query := `update messages set delivery_status='failed',failure_reason=?,failed_at=? where task_id=? and delivery_status='queued' and stage_id in (` + placeholders + `)`
-	_, err := r.db.ExecContext(ctx, query, args...)
+	query, args, err = sqlx.In(query, args...)
+	if err != nil {
+		return wrap("expand queued stage messages", err)
+	}
+	_, err = r.db.ExecContext(ctx, r.db.Rebind(query), args...)
 	return wrap("fail queued stage messages", err)
 }

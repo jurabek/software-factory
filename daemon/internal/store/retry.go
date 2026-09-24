@@ -4,19 +4,21 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+
+	"github.com/jmoiron/sqlx"
 )
 
 type RetryResult struct {
-	SourceAttemptID string `json:"source_attempt_id"`
-	BranchID        string `json:"branch_id"`
-	AttemptID       string `json:"attempt_id"`
-	CreatedAt       string `json:"created_at"`
+	SourceAttemptID string `db:"source_attempt_id" json:"source_attempt_id"`
+	BranchID        string `db:"branch_id" json:"branch_id"`
+	AttemptID       string `db:"attempt_id" json:"attempt_id"`
+	CreatedAt       string `db:"created_at" json:"created_at"`
 }
 
-type RetryRepository struct{ db *sql.DB }
+type RetryRepository struct{ db *sqlx.DB }
 
 func (r *RetryRepository) Apply(ctx context.Context, key string, branch Branch, phase Phase, nextState string) (RetryResult, bool, error) {
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := r.db.BeginTxx(ctx, nil)
 	if err != nil {
 		return RetryResult{}, false, err
 	}
@@ -31,29 +33,28 @@ func (r *RetryRepository) Apply(ctx context.Context, key string, branch Branch, 
 	if !errors.Is(err, sql.ErrNoRows) {
 		return RetryResult{}, false, wrap("read retry request", err)
 	}
-	query2 := `insert into branches(id,task_id,parent_branch_id,fork_attempt_id,head_attempt_id,status,created_at,updated_at) values(?,?,?,?,?,?,?,?)`
-	if _, err = tx.ExecContext(ctx, query2, branch.ID, branch.TaskID, nullIfEmpty(branch.ParentBranchID), branch.ForkAttemptID, phase.ID, branch.Status,
-		branch.CreatedAt, branch.CreatedAt); err != nil {
+	branch.HeadAttemptID = phase.ID
+	branch.UpdatedAt = branch.CreatedAt
+	query2 := `insert into branches(id,task_id,parent_branch_id,fork_attempt_id,head_attempt_id,status,created_at,updated_at) values(:id,:task_id,nullif(:parent_branch_id,''),:fork_attempt_id,:head_attempt_id,:status,:created_at,:updated_at)`
+	if _, err = tx.NamedExecContext(ctx, query2, branch); err != nil {
 		return RetryResult{}, false, wrap("create retry branch",
 			err)
 	}
-	query3 := `insert into phases(id,task_id,sequence,name,kind,owner,description,status,attempt,retries,started_at,branch_id,definition_id,input_snapshot,output_snapshot,superseded,native_base_entry_id,fork_native) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)`
-	if _, err = tx.ExecContext(ctx, query3, phase.ID, phase.TaskID, phase.Sequence, phase.Name,
-		phase.Kind, phase.Owner, phase.Description, phase.Status,
-		phase.Attempt, phase.Retries, now(), phase.BranchID,
-		nullIfEmpty(phase.DefinitionID), nullIfEmpty(phase.InputSnapshot), nullIfEmpty(phase.OutputSnapshot), nullIfEmpty(phase.NativeBaseEntryID), boolToInt(phase.ForkNative)); err != nil {
+	phase.StartedAt = now()
+	query3 := `insert into phases(id,task_id,sequence,name,kind,owner,description,status,attempt,retries,started_at,branch_id,definition_id,input_snapshot,output_snapshot,superseded,native_base_entry_id,fork_native) values(:id,:task_id,:sequence,:name,:kind,:owner,:description,:status,:attempt,:retries,:started_at,:branch_id,nullif(:definition_id,''),nullif(:input_snapshot,''),nullif(:output_snapshot,''),0,nullif(:native_base_entry_id,''),:fork_native)`
+	if _, err = tx.NamedExecContext(ctx, query3, phase); err != nil {
 		return RetryResult{},
 			false,
 			wrap("queue retry attempt",
 				err)
 	}
-	query4 := `update tasks set selected_branch_id=?,previous_state=state,state=?,active_phase=?,ended_at=null,error=null where id=?`
-	if _, err = tx.ExecContext(ctx, query4, branch.ID, nextState, phase.ID, phase.TaskID); err != nil {
+	query4 := `update tasks set selected_branch_id=:selected_branch_id,previous_state=state,state=:state,active_phase=:active_phase,ended_at=null,error=null where id=:id`
+	if _, err = tx.NamedExecContext(ctx, query4, Task{ID: phase.TaskID, SelectedBranchID: branch.ID, State: nextState, ActivePhase: phase.ID}); err != nil {
 		return RetryResult{}, false, wrap("select retry branch", err)
 	}
 	createdAt := now()
-	query5 := `insert into retry_requests(task_id,idempotency_key,source_attempt_id,branch_id,attempt_id,created_at) values(?,?,?,?,?,?)`
-	if _, err = tx.ExecContext(ctx, query5, phase.TaskID, key, branch.ForkAttemptID, branch.ID, phase.ID, createdAt); err != nil {
+	query5 := `insert into retry_requests(task_id,idempotency_key,source_attempt_id,branch_id,attempt_id,created_at) values(:task_id,:idempotency_key,:source_attempt_id,:branch_id,:attempt_id,:created_at)`
+	if _, err = tx.NamedExecContext(ctx, query5, map[string]any{"task_id": phase.TaskID, "idempotency_key": key, "source_attempt_id": branch.ForkAttemptID, "branch_id": branch.ID, "attempt_id": phase.ID, "created_at": createdAt}); err != nil {
 		return RetryResult{}, false, wrap("save retry request", err)
 	}
 	if err = tx.Commit(); err != nil {

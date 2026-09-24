@@ -4,27 +4,29 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+
+	"github.com/jmoiron/sqlx"
 )
 
 type WorkspaceSnapshot struct {
-	Digest    string `json:"digest"`
-	TaskID    string `json:"task_id"`
-	Path      string `json:"path"`
-	SizeBytes int64  `json:"size_bytes"`
-	Manifest  string `json:"manifest_json,omitempty"`
-	CreatedAt string `json:"created_at"`
+	Digest    string `db:"digest" json:"digest"`
+	TaskID    string `db:"task_id" json:"task_id"`
+	Path      string `db:"path" json:"path"`
+	SizeBytes int64  `db:"size_bytes" json:"size_bytes"`
+	Manifest  string `db:"manifest_json" json:"manifest_json,omitempty"`
+	CreatedAt string `db:"created_at" json:"created_at"`
 }
 
-type SnapshotRepository struct{ db *sql.DB }
+type SnapshotRepository struct{ db *sqlx.DB }
 
 func (r *SnapshotRepository) Save(ctx context.Context, snapshot WorkspaceSnapshot) error {
 	manifest := snapshot.Manifest
 	if manifest == "" {
 		manifest = "{}"
 	}
-	query := `insert or ignore into workspace_snapshots(digest,task_id,path,size_bytes,manifest_json,created_at) values(?,?,?,?,?,?)`
-	_, err := r.db.ExecContext(ctx, query, snapshot.Digest, snapshot.TaskID,
-		snapshot.Path, snapshot.SizeBytes, manifest, snapshot.CreatedAt)
+	snapshot.Manifest = manifest
+	query := `insert or ignore into workspace_snapshots(digest,task_id,path,size_bytes,manifest_json,created_at) values(:digest,:task_id,:path,:size_bytes,:manifest_json,:created_at)`
+	_, err := r.db.NamedExecContext(ctx, query, snapshot)
 	return wrap("save snapshot", err)
 }
 

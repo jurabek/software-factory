@@ -11,34 +11,44 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/jmoiron/sqlx"
 	"github.com/jurabek/software-factory/daemon/internal/session"
 )
 
 type Event struct {
-	Sequence         int64           `json:"sequence"`
-	ID               string          `json:"id"`
-	TaskID           string          `json:"task_id"`
-	PhaseID          string          `json:"phase_id,omitempty"`
-	AttemptID        string          `json:"attempt_id,omitempty"`
-	BranchID         string          `json:"branch_id,omitempty"`
-	ParentEventID    string          `json:"parent_event_id,omitempty"`
-	Kind             session.Kind    `json:"kind"`
-	FormatVersion    int             `json:"format_version"`
-	Name             string          `json:"name,omitempty"`
-	NativeEntryID    string          `json:"native_entry_id,omitempty"`
-	RequestID        string          `json:"request_id,omitempty"`
-	Payload          any             `json:"payload"`
-	Display          session.Display `json:"display"`
-	AvailableActions []string        `json:"available_actions,omitempty"`
-	TokenCount       int             `json:"token_count,omitempty"`
-	StartedAt        time.Time       `json:"started_at"`
-	EndedAt          *time.Time      `json:"ended_at,omitempty"`
+	Sequence         int64           `db:"sequence" json:"sequence"`
+	ID               string          `db:"id" json:"id"`
+	TaskID           string          `db:"task_id" json:"task_id"`
+	PhaseID          string          `db:"phase_id" json:"phase_id,omitempty"`
+	AttemptID        string          `db:"attempt_id" json:"attempt_id,omitempty"`
+	BranchID         string          `db:"branch_id" json:"branch_id,omitempty"`
+	ParentEventID    string          `db:"parent_event_id" json:"parent_event_id,omitempty"`
+	Kind             session.Kind    `db:"kind" json:"kind"`
+	FormatVersion    int             `db:"format_version" json:"format_version"`
+	Name             string          `db:"name" json:"name,omitempty"`
+	NativeEntryID    string          `db:"native_entry_id" json:"native_entry_id,omitempty"`
+	RequestID        string          `db:"request_id" json:"request_id,omitempty"`
+	Payload          any             `db:"-" json:"payload"`
+	Display          session.Display `db:"-" json:"display"`
+	AvailableActions []string        `db:"-" json:"available_actions,omitempty"`
+	TokenCount       int             `db:"token_count" json:"token_count,omitempty"`
+	StartedAt        time.Time       `db:"-" json:"started_at"`
+	EndedAt          *time.Time      `db:"-" json:"ended_at,omitempty"`
+}
+
+type eventRecord struct {
+	Event
+	PayloadJSON string `db:"payload_json"`
+	DisplayJSON string `db:"display_json"`
+	StartedAt   string `db:"started_at"`
+	EndedAt     any    `db:"ended_at"`
+	ActionsJSON string `db:"actions_json"`
 }
 
 // The database is authoritative; trace export is derived output.
 
 type eventInserter interface {
-	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	NamedExecContext(context.Context, string, any) (sql.Result, error)
 }
 
 func appendEventTx(ctx context.Context, inserter eventInserter, event Event) (int64, error) {
@@ -62,8 +72,8 @@ func appendEventTx(ctx context.Context, inserter eventInserter, event Event) (in
 	if string(actions) == "null" {
 		actions = []byte("[]")
 	}
-	query := `insert into events (id,task_id,phase_id,parent_event_id,kind,format_version,name,payload_json,display_json,native_entry_id,request_id,token_count,started_at,ended_at,attempt_id,branch_id,actions_json) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
-	result, err := inserter.ExecContext(ctx, query, event.ID, event.TaskID, nullIfEmpty(event.PhaseID), nullIfEmpty(event.ParentEventID), event.Kind, event.FormatVersion, nullIfEmpty(event.Name), string(payload), string(display), nullIfEmpty(event.NativeEntryID), nullIfEmpty(event.RequestID), event.TokenCount, started, ended, nullIfEmpty(event.AttemptID), nullIfEmpty(event.BranchID), string(actions))
+	query := `insert into events (id,task_id,phase_id,parent_event_id,kind,format_version,name,payload_json,display_json,native_entry_id,request_id,token_count,started_at,ended_at,attempt_id,branch_id,actions_json) values (:id,:task_id,nullif(:phase_id,''),nullif(:parent_event_id,''),:kind,:format_version,nullif(:name,''),:payload_json,:display_json,nullif(:native_entry_id,''),nullif(:request_id,''),:token_count,:started_at,:ended_at,nullif(:attempt_id,''),nullif(:branch_id,''),:actions_json)`
+	result, err := inserter.NamedExecContext(ctx, query, eventRecord{Event: event, PayloadJSON: string(payload), DisplayJSON: string(display), StartedAt: started, EndedAt: ended, ActionsJSON: string(actions)})
 	if err != nil {
 		return 0, fmt.Errorf("insert event: %w", err)
 	}
@@ -99,8 +109,8 @@ func writeEventTrace(taskDir string, event Event, sequence int64) error {
 
 // EventNativeLink pairs a persisted event with its authoritative native entry.
 type EventNativeLink struct {
-	EventID       string
-	NativeEntryID string
+	EventID       string `db:"event_id"`
+	NativeEntryID string `db:"native_entry_id"`
 }
 
 // SetEventNativeEntries backfills native entry references for a request's
@@ -140,10 +150,10 @@ func scanEvents(rows *sql.Rows) ([]Event, error) {
 	return values, rows.Err()
 }
 
-type EventRepository struct{ db *sql.DB }
+type EventRepository struct{ db *sqlx.DB }
 
 func (r *EventRepository) Append(ctx context.Context, taskDir string, event Event) (int64, error) {
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := r.db.BeginTxx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("begin event append: %w",
 			err)
@@ -240,7 +250,7 @@ func (r *EventRepository) SetNativeEntries(ctx context.Context, taskID string, l
 	if len(links) == 0 {
 		return nil
 	}
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := r.db.BeginTxx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin native link: %w", err)
 	}
@@ -249,10 +259,8 @@ func (r *EventRepository) SetNativeEntries(ctx context.Context, taskID string, l
 		if link.EventID == "" || link.NativeEntryID == "" {
 			continue
 		}
-		query := `update events set native_entry_id=? where task_id=? and id=?`
-		if _, err = tx.ExecContext(ctx, query,
-			link.NativeEntryID, taskID, link.EventID,
-		); err != nil {
+		query := `update events set native_entry_id=:native_entry_id where task_id=:task_id and id=:event_id`
+		if _, err = tx.NamedExecContext(ctx, query, map[string]any{"event_id": link.EventID, "native_entry_id": link.NativeEntryID, "task_id": taskID}); err != nil {
 			return fmt.Errorf("link native entry: %w",
 				err)
 		}

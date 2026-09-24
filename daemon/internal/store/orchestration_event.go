@@ -4,14 +4,16 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+
+	"github.com/jmoiron/sqlx"
 )
 
 // OrchestrationEvent is a durable command for the background task controller.
 // Delivery is at-least-once; handlers must derive their effects from task state.
 type OrchestrationEvent struct {
-	ID     string
-	TaskID string
-	Type   string
+	ID     string `db:"id"`
+	TaskID string `db:"task_id"`
+	Type   string `db:"type"`
 }
 
 const (
@@ -26,11 +28,11 @@ const (
 
 // EnqueueOrchestrationEvent records a command after its durable task mutation.
 
-type OrchestrationRepository struct{ db *sql.DB }
+type OrchestrationRepository struct{ db *sqlx.DB }
 
 func (r *OrchestrationRepository) Enqueue(ctx context.Context, event OrchestrationEvent) error {
-	query := `insert into orchestration_events(id,task_id,type,created_at) values(?,?,?,?)`
-	_, err := r.db.ExecContext(ctx, query, event.ID, event.TaskID, event.Type, now())
+	query := `insert into orchestration_events(id,task_id,type,created_at) values(:id,:task_id,:type,:created_at)`
+	_, err := r.db.NamedExecContext(ctx, query, map[string]any{"id": event.ID, "task_id": event.TaskID, "type": event.Type, "created_at": now()})
 	return wrap(
 		"enqueue orchestration event", err)
 }
@@ -72,10 +74,8 @@ func (r *OrchestrationRepository) Complete(ctx context.Context, id string, cause
 		status, message = "pending",
 			cause.Error()
 	}
-	query := `update orchestration_events set status=?,error=?,handled_at=? where id=?`
-	_, err := r.db.ExecContext(ctx,
-		query,
-		status, nullIfEmpty(message), now(), id)
+	query := `update orchestration_events set status=:status,error=nullif(:error,''),handled_at=:handled_at where id=:id`
+	_, err := r.db.NamedExecContext(ctx, query, map[string]any{"id": id, "status": status, "error": message, "handled_at": now()})
 	return wrap("complete orchestration event", err)
 }
 

@@ -4,24 +4,27 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+
+	"github.com/jmoiron/sqlx"
 )
 
 type Branch struct {
-	ID             string `json:"id"`
-	TaskID         string `json:"task_id"`
-	ParentBranchID string `json:"parent_branch_id,omitempty"`
-	ForkAttemptID  string `json:"fork_attempt_id,omitempty"`
-	HeadAttemptID  string `json:"head_attempt_id,omitempty"`
-	Status         string `json:"status"`
-	CreatedAt      string `json:"created_at"`
-	UpdatedAt      string `json:"updated_at"`
+	ID             string `db:"id" json:"id"`
+	TaskID         string `db:"task_id" json:"task_id"`
+	ParentBranchID string `db:"parent_branch_id" json:"parent_branch_id,omitempty"`
+	ForkAttemptID  string `db:"fork_attempt_id" json:"fork_attempt_id,omitempty"`
+	HeadAttemptID  string `db:"head_attempt_id" json:"head_attempt_id,omitempty"`
+	Status         string `db:"status" json:"status"`
+	CreatedAt      string `db:"created_at" json:"created_at"`
+	UpdatedAt      string `db:"updated_at" json:"updated_at"`
 }
 
-type BranchRepository struct{ db *sql.DB }
+type BranchRepository struct{ db *sqlx.DB }
 
 func (r *BranchRepository) Create(ctx context.Context, branch Branch) error {
-	query := `insert into branches(id,task_id,parent_branch_id,fork_attempt_id,head_attempt_id,status,created_at,updated_at) values(?,?,?,?,?,?,?,?)`
-	_, err := r.db.ExecContext(ctx, query, branch.ID, branch.TaskID, nullIfEmpty(branch.ParentBranchID), nullIfEmpty(branch.ForkAttemptID), nullIfEmpty(branch.HeadAttemptID), branch.Status, branch.CreatedAt, branch.CreatedAt)
+	branch.UpdatedAt = branch.CreatedAt
+	query := `insert into branches(id,task_id,parent_branch_id,fork_attempt_id,head_attempt_id,status,created_at,updated_at) values(:id,:task_id,nullif(:parent_branch_id,''),nullif(:fork_attempt_id,''),nullif(:head_attempt_id,''),:status,:created_at,:updated_at)`
+	_, err := r.db.NamedExecContext(ctx, query, branch)
 	return wrap("create branch",
 		err)
 }
@@ -57,15 +60,15 @@ func (r *BranchRepository) Get(ctx context.Context, taskID, branchID string) (Br
 }
 
 func (r *BranchRepository) SetHead(ctx context.Context, taskID, branchID, headAttemptID string) error {
-	query := `update branches set head_attempt_id=?,updated_at=? where task_id=? and id=?`
-	_, err := r.db.ExecContext(ctx, query, nullIfEmpty(headAttemptID), now(), taskID, branchID)
+	query := `update branches set head_attempt_id=nullif(:head_attempt_id,''),updated_at=:updated_at where task_id=:task_id and id=:id`
+	_, err := r.db.NamedExecContext(ctx, query, Branch{ID: branchID, TaskID: taskID, HeadAttemptID: headAttemptID, UpdatedAt: now()})
 	return wrap("move branch head",
 		err)
 }
 
 func (r *BranchRepository) Select(ctx context.Context, taskID, branchID string) error {
-	query := `update tasks set selected_branch_id=? where id=?`
-	_, err := r.db.ExecContext(ctx, query, nullIfEmpty(branchID), taskID)
+	query := `update tasks set selected_branch_id=nullif(:selected_branch_id,'') where id=:id`
+	_, err := r.db.NamedExecContext(ctx, query, Task{ID: taskID, SelectedBranchID: branchID})
 	return wrap("select branch",
 		err)
 }

@@ -8,41 +8,42 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/jmoiron/sqlx"
 	"github.com/jurabek/software-factory/daemon/internal/session"
 )
 
 type Task struct {
-	ID                      string            `json:"id"`
-	ParentTaskID            string            `json:"parent_task_id,omitempty"`
-	Request                 string            `json:"request"`
-	WorkspacePath           string            `json:"workspace_path"`
-	RepositoryType          string            `json:"repository_type"`
-	RepositorySource        string            `json:"repository_source"`
-	SubmittedRepositoryPath string            `json:"submitted_repository_path,omitempty"`
-	CanonicalRepositoryPath string            `json:"canonical_repository_path,omitempty"`
-	RepositoryPath          string            `json:"repository_path,omitempty"`
-	BaseSHA                 string            `json:"base_sha,omitempty"`
-	ReviewBaseSHA           string            `json:"review_base_sha,omitempty"`
-	BranchName              string            `json:"branch_name,omitempty"`
-	State                   string            `json:"state"`
-	PreviousState           string            `json:"previous_state,omitempty"`
-	ActivePhase             string            `json:"active_phase,omitempty"`
-	ActiveStage             string            `json:"active_stage,omitempty"`
-	Pipeline                string            `json:"pipeline,omitempty"`
-	Error                   string            `json:"error,omitempty"`
-	ConfigSnapshot          string            `json:"-"`
-	PlanDigest              string            `json:"plan_digest,omitempty"`
-	ApprovalActor           string            `json:"approval_actor,omitempty"`
-	ApprovalAt              string            `json:"approval_at,omitempty"`
-	CreatedAt               string            `json:"created_at"`
-	StartedAt               string            `json:"started_at,omitempty"`
-	EndedAt                 string            `json:"ended_at,omitempty"`
-	TotalCost               float64           `json:"total_cost"`
-	SelectedBranchID        string            `json:"selected_branch_id,omitempty"`
-	CodingAgent             string            `json:"coding_agent,omitempty"`
-	Model                   string            `json:"model,omitempty"`
-	Thinking                string            `json:"thinking,omitempty"`
-	Stages                  []StageProjection `json:"stages,omitempty"`
+	ID                      string            `db:"id" json:"id"`
+	ParentTaskID            string            `db:"parent_task_id" json:"parent_task_id,omitempty"`
+	Request                 string            `db:"request" json:"request"`
+	WorkspacePath           string            `db:"workspace_path" json:"workspace_path"`
+	RepositoryType          string            `db:"repository_type" json:"repository_type"`
+	RepositorySource        string            `db:"repository_source" json:"repository_source"`
+	SubmittedRepositoryPath string            `db:"submitted_repository_path" json:"submitted_repository_path,omitempty"`
+	CanonicalRepositoryPath string            `db:"canonical_repository_path" json:"canonical_repository_path,omitempty"`
+	RepositoryPath          string            `db:"repository_path" json:"repository_path,omitempty"`
+	BaseSHA                 string            `db:"base_sha" json:"base_sha,omitempty"`
+	ReviewBaseSHA           string            `db:"review_base_sha" json:"review_base_sha,omitempty"`
+	BranchName              string            `db:"branch_name" json:"branch_name,omitempty"`
+	State                   string            `db:"state" json:"state"`
+	PreviousState           string            `db:"previous_state" json:"previous_state,omitempty"`
+	ActivePhase             string            `db:"active_phase" json:"active_phase,omitempty"`
+	ActiveStage             string            `db:"active_stage" json:"active_stage,omitempty"`
+	Pipeline                string            `db:"pipeline" json:"pipeline,omitempty"`
+	Error                   string            `db:"error" json:"error,omitempty"`
+	ConfigSnapshot          string            `db:"config_snapshot" json:"-"`
+	PlanDigest              string            `db:"plan_digest" json:"plan_digest,omitempty"`
+	ApprovalActor           string            `db:"approval_actor" json:"approval_actor,omitempty"`
+	ApprovalAt              string            `db:"approval_at" json:"approval_at,omitempty"`
+	CreatedAt               string            `db:"created_at" json:"created_at"`
+	StartedAt               string            `db:"started_at" json:"started_at,omitempty"`
+	EndedAt                 string            `db:"ended_at" json:"ended_at,omitempty"`
+	TotalCost               float64           `db:"total_cost" json:"total_cost"`
+	SelectedBranchID        string            `db:"selected_branch_id" json:"selected_branch_id,omitempty"`
+	CodingAgent             string            `db:"coding_agent" json:"coding_agent,omitempty"`
+	Model                   string            `db:"model" json:"model,omitempty"`
+	Thinking                string            `db:"thinking" json:"thinking,omitempty"`
+	Stages                  []StageProjection `db:"-" json:"stages,omitempty"`
 }
 
 type TaskSession struct {
@@ -72,10 +73,10 @@ func scanTask(scanner interface{ Scan(...any) error }) (Task, error) {
 
 // The database is authoritative; trace export is derived output.
 
-type TaskRepository struct{ db *sql.DB }
+type TaskRepository struct{ db *sqlx.DB }
 
 func (r *TaskRepository) Abort(ctx context.Context, taskID, from, activePhase string) ([]Message, error) {
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := r.db.BeginTxx(ctx, nil)
 	if err != nil {
 		return nil, wrap(
 			"begin abort", err)
@@ -104,18 +105,16 @@ func (r *TaskRepository) Abort(ctx context.Context, taskID, from, activePhase st
 		return nil, wrap("close abort messages", err)
 	}
 	timestamp := now()
-	query2 := `update tasks set previous_state=state,state='aborted',active_phase=?,error=null,ended_at=? where id=? and state=?`
-	result, err := tx.ExecContext(
-		ctx, query2,
-		nullIfEmpty(activePhase), timestamp, taskID, from)
+	query2 := `update tasks set previous_state=state,state='aborted',active_phase=nullif(:active_phase,''),error=null,ended_at=:ended_at where id=:task_id and state=:from_state`
+	result, err := tx.NamedExecContext(ctx, query2, map[string]any{"task_id": taskID, "from_state": from, "active_phase": activePhase, "ended_at": timestamp})
 	if err != nil {
 		return nil, wrap("abort task", err)
 	}
 	if count, _ := result.RowsAffected(); count != 1 {
 		return nil, ErrConflict
 	}
-	query3 := `update messages set delivery_status='failed',failure_reason='task_aborted',failed_at=? where task_id=? and delivery_status='queued'`
-	if _, err = tx.ExecContext(ctx, query3, timestamp, taskID); err != nil {
+	query3 := `update messages set delivery_status='failed',failure_reason='task_aborted',failed_at=:failed_at where task_id=:task_id and delivery_status='queued'`
+	if _, err = tx.NamedExecContext(ctx, query3, map[string]any{"task_id": taskID, "failed_at": timestamp}); err != nil {
 		return nil, wrap("fail aborted messages",
 			err)
 	}
@@ -141,21 +140,18 @@ func (r *TaskRepository) CreateActive(ctx context.Context, task Task) error {
 }
 
 func (r *TaskRepository) createTask(ctx context.Context, task Task, requireAvailableSlot bool) error {
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := r.db.BeginTxx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin create task: %w",
 			err)
 	}
 	defer tx.Rollback()
-	query := `insert into tasks(id,parent_task_id,request,workspace_path,repository_type,repository_source,submitted_repository_path,state,pipeline,active_stage,config_snapshot,created_at,started_at,coding_agent,model,thinking) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+	query := `insert into tasks(id,parent_task_id,request,workspace_path,repository_type,repository_source,submitted_repository_path,state,pipeline,active_stage,config_snapshot,created_at,started_at,coding_agent,model,thinking) values(:id,nullif(:parent_task_id,''),:request,:workspace_path,:repository_type,:repository_source,nullif(:submitted_repository_path,''),:state,nullif(:pipeline,''),nullif(:active_stage,''),nullif(:config_snapshot,''),:created_at,nullif(:started_at,''),:coding_agent,:model,:thinking)`
 
 	if requireAvailableSlot {
-		query = `insert into tasks(id,parent_task_id,request,workspace_path,repository_type,repository_source,submitted_repository_path,state,pipeline,active_stage,config_snapshot,created_at,started_at,coding_agent,model,thinking) select ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? where not exists(select 1 from tasks where state in ('preparing','planning','awaiting_plan_approval','building','checking','reviewing'))`
+		query = `insert into tasks(id,parent_task_id,request,workspace_path,repository_type,repository_source,submitted_repository_path,state,pipeline,active_stage,config_snapshot,created_at,started_at,coding_agent,model,thinking) select :id,nullif(:parent_task_id,''),:request,:workspace_path,:repository_type,:repository_source,nullif(:submitted_repository_path,''),:state,nullif(:pipeline,''),nullif(:active_stage,''),nullif(:config_snapshot,''),:created_at,nullif(:started_at,''),:coding_agent,:model,:thinking where not exists(select 1 from tasks where state in ('preparing','planning','awaiting_plan_approval','building','checking','reviewing'))`
 	}
-	result, err := tx.ExecContext(ctx, query, task.ID, nullIfEmpty(task.ParentTaskID), task.Request,
-		task.WorkspacePath, task.RepositoryType,
-		task.RepositorySource, nullIfEmpty(task.SubmittedRepositoryPath), task.State, nullIfEmpty(task.Pipeline), nullIfEmpty(task.ActiveStage), nullIfEmpty(task.ConfigSnapshot), task.CreatedAt,
-		nullIfEmpty(task.StartedAt), task.CodingAgent, task.Model, task.Thinking)
+	result, err := tx.NamedExecContext(ctx, query, task)
 	if err != nil {
 		return wrap("create task", err)
 	}
@@ -240,11 +236,8 @@ func (r *TaskRepository) Transition(ctx context.Context, id, from, to, activePha
 	if to == "completed" || to == "blocked" || to == "aborted" {
 		ended = now()
 	}
-	query := `update tasks set previous_state=state,state=?,active_phase=?,error=?,ended_at=? where id=? and state=?`
-	result, err := r.db.ExecContext(ctx, query,
-		to,
-		nullIfEmpty(activePhase), nullIfEmpty(message), ended,
-		id, from)
+	query := `update tasks set previous_state=state,state=:to_state,active_phase=nullif(:active_phase,''),error=nullif(:error,''),ended_at=:ended_at where id=:id and state=:from_state`
+	result, err := r.db.NamedExecContext(ctx, query, map[string]any{"id": id, "from_state": from, "to_state": to, "active_phase": activePhase, "error": message, "ended_at": ended})
 	if err != nil {
 		return fmt.Errorf(
 			"transition task: %w", err)
@@ -257,23 +250,22 @@ func (r *TaskRepository) Transition(ctx context.Context, id, from, to, activePha
 }
 
 func (r *TaskRepository) SetPrepared(ctx context.Context, id, repositoryPath, snapshot string) error {
-	query := `update tasks set repository_path=?,config_snapshot=? where id=?`
-	_, err := r.db.ExecContext(ctx, query, repositoryPath, snapshot, id)
+	query := `update tasks set repository_path=:repository_path,config_snapshot=:config_snapshot where id=:id`
+	_, err := r.db.NamedExecContext(ctx, query, Task{ID: id, RepositoryPath: repositoryPath, ConfigSnapshot: snapshot})
 	return wrap("save task workspace", err)
 }
 
 // SetMaterialization records where the task repository was materialized and
 // the base it was derived from.
 func (r *TaskRepository) SetMaterialization(ctx context.Context, id, canonicalPath, repositoryPath, baseSHA, branchName string) error {
-	query := `update tasks set canonical_repository_path=?,repository_path=?,base_sha=?,review_base_sha=?,branch_name=? where id=?`
-	_, err := r.db.ExecContext(ctx, query,
-		canonicalPath, repositoryPath, baseSHA, baseSHA, branchName, id)
+	query := `update tasks set canonical_repository_path=:canonical_repository_path,repository_path=:repository_path,base_sha=:base_sha,review_base_sha=:review_base_sha,branch_name=:branch_name where id=:id`
+	_, err := r.db.NamedExecContext(ctx, query, Task{ID: id, CanonicalRepositoryPath: canonicalPath, RepositoryPath: repositoryPath, BaseSHA: baseSHA, ReviewBaseSHA: baseSHA, BranchName: branchName})
 	return wrap("save repository materialization", err)
 }
 
 func (r *TaskRepository) SetApproval(ctx context.Context, id, digest, actor string) error {
-	query := `update tasks set plan_digest=?,approval_actor=?,approval_at=? where id=?`
-	_, err := r.db.ExecContext(ctx, query, digest, actor, now(), id)
+	query := `update tasks set plan_digest=:plan_digest,approval_actor=:approval_actor,approval_at=:approval_at where id=:id`
+	_, err := r.db.NamedExecContext(ctx, query, Task{ID: id, PlanDigest: digest, ApprovalActor: actor, ApprovalAt: now()})
 	return wrap("save approval", err)
 }
 
@@ -282,15 +274,14 @@ func (r *TaskRepository) SetApproval(ctx context.Context, id, digest, actor stri
 // and its lifecycle event in one transaction.
 
 func (r *TaskRepository) ApproveWithEvent(ctx context.Context, taskDir, id, digest, actor string, event Event) error {
-	tx, err := r.db.BeginTx(ctx, nil)
+	tx, err := r.db.BeginTxx(ctx, nil)
 	if err != nil {
 		return wrap("begin approval", err)
 	}
 	defer tx.Rollback()
 	approvedAt := now()
-	query := `update tasks set plan_digest=?,approval_actor=?,approval_at=?,previous_state=state,state='building' where id=? and state='awaiting_plan_approval'`
-	result, err := tx.ExecContext(ctx, query, digest, actor, approvedAt,
-		id)
+	query := `update tasks set plan_digest=:plan_digest,approval_actor=:approval_actor,approval_at=:approval_at,previous_state=state,state='building' where id=:id and state='awaiting_plan_approval'`
+	result, err := tx.NamedExecContext(ctx, query, Task{ID: id, PlanDigest: digest, ApprovalActor: actor, ApprovalAt: approvedAt})
 	if err != nil {
 		return wrap("save approval", err)
 	}
@@ -320,36 +311,36 @@ func (r *TaskRepository) ApproveWithEvent(ctx context.Context, taskDir, id, dige
 }
 
 func (r *TaskRepository) SetApprovalCandidate(ctx context.Context, id, digest string) error {
-	query := `update tasks set plan_digest=?,approval_actor=null,approval_at=null where id=?`
-	_, err := r.db.ExecContext(ctx, query, digest, id)
+	query := `update tasks set plan_digest=:plan_digest,approval_actor=null,approval_at=null where id=:id`
+	_, err := r.db.NamedExecContext(ctx, query, Task{ID: id, PlanDigest: digest})
 	return wrap("save approval candidate",
 		err)
 }
 
 func (r *TaskRepository) SetActiveStage(ctx context.Context, taskID, stageID string) error {
-	query := `update tasks set active_stage=? where id=?`
-	_, err := r.db.ExecContext(ctx, query, nullIfEmpty(stageID), taskID)
+	query := `update tasks set active_stage=nullif(:active_stage,'') where id=:id`
+	_, err := r.db.NamedExecContext(ctx, query, Task{ID: taskID, ActiveStage: stageID})
 	return wrap("save active stage",
 		err)
 }
 
 func (r *TaskRepository) InvalidateApproval(ctx context.Context, id string) error {
-	query := `update tasks set plan_digest=null,approval_actor=null,approval_at=null where id=?`
-	_, err := r.db.ExecContext(ctx, query, id)
+	query := `update tasks set plan_digest=null,approval_actor=null,approval_at=null where id=:id`
+	_, err := r.db.NamedExecContext(ctx, query, Task{ID: id})
 	return wrap("invalidate approval",
 		err)
 }
 
 func (r *TaskRepository) Reopen(ctx context.Context, taskID, state string) error {
-	query := `update tasks set previous_state=state,state=?,ended_at=null,error=null where id=?`
-	_, err := r.db.ExecContext(ctx, query, state, taskID)
+	query := `update tasks set previous_state=state,state=:state,ended_at=null,error=null where id=:id`
+	_, err := r.db.NamedExecContext(ctx, query, Task{ID: taskID, State: state})
 	return wrap("reopen task",
 		err)
 }
 
 func (r *TaskRepository) Delete(ctx context.Context, id string) error {
-	query := `delete from tasks where id=?`
-	result, err := r.db.ExecContext(ctx, query, id)
+	query := `delete from tasks where id=:id`
+	result, err := r.db.NamedExecContext(ctx, query, Task{ID: id})
 	if err != nil {
 		return err
 	}

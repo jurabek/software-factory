@@ -6,6 +6,7 @@ require (
 	github.com/go-git/go-billy/v6 v6.0.0-alpha.2
 	github.com/go-git/go-git/v6 v6.0.0-alpha.5
 	github.com/google/uuid v1.6.0
+	github.com/jmoiron/sqlx v1.4.0
 	github.com/stretchr/testify v1.11.1
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.36.0

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/jmoiron/sqlx"
 	_ "modernc.org/sqlite"
 )
 
@@ -49,20 +50,7 @@ var (
 	ErrStateIncompatible = errors.New("state_incompatible: delete the configured Software Factory directory before starting this clean-break version")
 )
 
-func boolToInt(value bool) int {
-	if value {
-		return 1
-	}
-	return 0
-}
-
 func now() string { return time.Now().UTC().Format(time.RFC3339Nano) }
-func nullIfEmpty(value string) any {
-	if value == "" {
-		return nil
-	}
-	return value
-}
 
 func wrap(action string, err error) error {
 	if err == nil {
@@ -98,21 +86,22 @@ type DB = Store
 
 // New wires per-model repositories over db.
 func New(db *sql.DB) *Store {
+	dbx := sqlx.NewDb(db, "sqlite")
 	s := &Store{DB: db}
-	s.Tasks = &TaskRepository{db: db}
-	s.Phases = &PhaseRepository{db: db}
-	s.Events = &EventRepository{db: db}
-	s.Messages = &MessageRepository{db: db}
-	s.AgentSessions = &AgentSessionRepository{db: db}
-	s.Branches = &BranchRepository{db: db}
-	s.Checks = &CheckRepository{db: db}
-	s.Envelopes = &EnvelopeRepository{db: db}
-	s.Definitions = &DefinitionRepository{db: db}
-	s.Evidence = &EvidenceRepository{db: db}
-	s.Orchestration = &OrchestrationRepository{db: db}
-	s.Snapshots = &SnapshotRepository{db: db}
-	s.Retries = &RetryRepository{db: db}
-	s.Processes = &ProcessRepository{db: db}
+	s.Tasks = &TaskRepository{db: dbx}
+	s.Phases = &PhaseRepository{db: dbx}
+	s.Events = &EventRepository{db: dbx}
+	s.Messages = &MessageRepository{db: dbx}
+	s.AgentSessions = &AgentSessionRepository{db: dbx}
+	s.Branches = &BranchRepository{db: dbx}
+	s.Checks = &CheckRepository{db: dbx}
+	s.Envelopes = &EnvelopeRepository{db: dbx}
+	s.Definitions = &DefinitionRepository{db: dbx}
+	s.Evidence = &EvidenceRepository{db: dbx}
+	s.Orchestration = &OrchestrationRepository{db: dbx}
+	s.Snapshots = &SnapshotRepository{db: dbx}
+	s.Retries = &RetryRepository{db: dbx}
+	s.Processes = &ProcessRepository{db: dbx}
 	return s
 }
 
