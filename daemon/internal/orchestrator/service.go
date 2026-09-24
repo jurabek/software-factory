@@ -177,17 +177,12 @@ func (s *Service) handleEvent(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	switch event.
-		Type {
+	switch event.Type {
 	case store.TaskCreated, store.TaskMessaged, store.TaskRetried:
-		task,
-			taskErr := s.db.Tasks.Get(ctx, event.TaskID)
+		task, taskErr := s.db.Tasks.Get(ctx, event.TaskID)
 		if taskErr != nil {
 			err = taskErr
-		} else if task.
-			State != string(stagekit.Paused) &&
-
-			task.State != string(stagekit.Aborted) {
+		} else if task.State != string(stagekit.Paused) && task.State != string(stagekit.Aborted) {
 			s.launch(task.ID, s.progress)
 		}
 	case store.TaskResumed:
@@ -198,56 +193,41 @@ func (s *Service) handleEvent(ctx context.Context, id string) error {
 			if task.PreviousState == "" {
 				err = store.ErrConflict
 			} else {
-				err = s.db.Tasks.Transition(ctx, task.
-					ID, task.
-					State,
-
-					task.PreviousState, task.ActivePhase, "")
+				err = s.db.Tasks.Transition(ctx, task.ID, task.State, task.PreviousState, task.ActivePhase, "")
 				if err == nil {
 					s.launch(task.ID, s.progress)
 				}
 			}
-		} else if task.State == string(stagekit.
-			Blocked) {
+		} else if task.State == string(stagekit.Blocked) {
 			s.launch(task.ID, s.progress)
 		} else {
 			err = store.ErrConflict
 		}
 	case store.TaskApproved:
 		task, taskErr := s.db.Tasks.Get(ctx,
-			event.
-				TaskID)
+			event.TaskID)
 		if taskErr != nil {
 			err = taskErr
-		} else if task.State ==
-			string(stagekit.AwaitingApproval) {
-			err = s.
-				db.Tasks.Transition(ctx, task.ID, task.State, string(stagekit.
-				Building), task.
-				ActivePhase, "")
+		} else if task.State == string(stagekit.AwaitingApproval) {
+			err = s.db.Tasks.Transition(ctx, task.ID, task.State, string(stagekit.Building), task.ActivePhase, "")
 			if err == nil {
 				s.launch(task.ID,
 					s.progress)
 			}
-		} else if task.State != string(stagekit.
-			Building,
-		) {
+		} else if task.State != string(stagekit.Building) {
 			err = store.ErrConflict
 		}
 	case store.TaskPaused:
 		err = s.pause(ctx, event.TaskID)
 	case store.TaskCancelled:
-		err = s.abort(ctx, event.
-			TaskID,
-		)
+		err = s.abort(ctx, event.TaskID)
 	default:
 		err = errors.New("unknown orchestration event")
 	}
 	return err
 }
 
-func (s *Service) progress(ctx context.
-	Context, taskID string,
+func (s *Service) progress(ctx context.Context, taskID string,
 ) error {
 	if s.workflow == nil {
 		return nil
@@ -267,15 +247,13 @@ func (s *Service) launch(id string, run func(context.Context, string) error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	active := &execution{cancel: cancel, done: make(chan struct{})}
-	s.
-		cancel[id] = active
+	s.cancel[id] = active
 	s.mu.Unlock()
 
 	s.runExecution(ctx, id, active, run)
 }
 
-func (s *Service) runExecution(ctx context.Context, id string, active *execution, run func(context.
-	Context, string) error,
+func (s *Service) runExecution(ctx context.Context, id string, active *execution, run func(context.Context, string) error,
 ) {
 	go func() {
 		var runErr error
@@ -284,16 +262,13 @@ func (s *Service) runExecution(ctx context.Context, id string, active *execution
 			var successor *execution
 			var successorCtx context.Context
 			s.mu.Lock()
-			if s.cancel[id] ==
-				active {
+			if s.cancel[id] == active {
 				next = active.next
 				if next == nil {
 					delete(s.cancel, id)
 				} else {
 					var cancel context.CancelFunc
-					successorCtx,
-
-						cancel = context.WithCancel(context.Background())
+					successorCtx, cancel = context.WithCancel(context.Background())
 					successor = &execution{cancel: cancel, done: make(chan struct{})}
 					s.cancel[id] = successor
 				}
@@ -302,60 +277,44 @@ func (s *Service) runExecution(ctx context.Context, id string, active *execution
 			close(active.done)
 			if successor != nil {
 				s.runExecution(successorCtx,
-					id, successor,
-
-					next)
-			} else if !errors.Is(runErr, context.
-				Canceled) {
+					id, successor, next)
+			} else if !errors.Is(runErr, context.Canceled) {
 				s.kickQueuedMessage(id)
 			}
 		}()
 		runErr = run(ctx, id)
-		if runErr == nil &&
-			ctx.Err() != nil {
+		if runErr == nil && ctx.Err() != nil {
 			runErr = ctx.Err()
 		}
-		if runErr != nil && !errors.Is(runErr, context.
-			Canceled) {
+		if runErr != nil && !errors.Is(runErr, context.Canceled) {
 			task, getErr := s.db.Tasks.Get(context.Background(),
 				id)
-			if getErr == nil && task.State != string(stagekit.Paused) &&
-				task.State != string(stagekit.Aborted) && task.State !=
-				string(stagekit.Blocked) {
-				_ = s.db.Tasks.Transition(context.
-					Background(), id, task.State, string(stagekit.
-					Blocked), task.ActivePhase,
-					runErr.
-						Error())
+			if getErr == nil && task.State != string(stagekit.Paused) && task.State != string(stagekit.Aborted) && task.State != string(stagekit.Blocked) {
+				_ = s.db.Tasks.Transition(context.Background(), id, task.State, string(stagekit.Blocked), task.ActivePhase,
+					runErr.Error())
 			}
 		}
 	}()
 }
 
-func (s *Service) Shutdown(ctx context.
-	Context,
+func (s *Service) Shutdown(ctx context.Context,
 ) {
 	s.mu.Lock()
-	workers := make(map[string]*execution,
-
-		len(s.cancel))
+	workers := make(map[string]*execution, len(s.cancel))
 	for id, worker := range s.cancel {
 		workers[id] = worker
-		worker.
-			next = nil
+		worker.next = nil
 		worker.cancel()
 	}
 	s.mu.Unlock()
 	for id, worker := range workers {
 		select {
 		case <-worker.done:
-		case <-ctx.
-			Done():
+		case <-ctx.Done():
 			return
 		}
 		task, err := s.db.Tasks.Get(ctx, id)
-		if err == nil && stagekit.IsActive(stagekit.
-			State(task.State)) {
+		if err == nil && stagekit.IsActive(stagekit.State(task.State)) {
 			_ = s.db.Tasks.Transition(ctx, id, task.State, string(stagekit.Blocked), task.ActivePhase,
 				"server shutting down")
 		}
@@ -386,9 +345,7 @@ func (s *Service) stopAndWait(ctx context.Context, id string) error {
 func (s *Service) scheduleMessage(ctx context.Context, task store.Task, role string) error {
 	_ = role
 	switch stagekit.State(task.State) {
-	case stagekit.AwaitingApproval,
-
-		stagekit.Blocked, stagekit.Completed:
+	case stagekit.AwaitingApproval, stagekit.Blocked, stagekit.Completed:
 		return s.events.Publish(ctx,
 			task.ID, store.TaskMessaged)
 	}
@@ -400,14 +357,11 @@ func (s *Service) kickQueuedMessage(taskID string) {
 	lock := s.taskLock(taskID)
 	lock.Lock()
 	defer lock.Unlock()
-	task, err := s.
-		db.Tasks.Get(ctx, taskID)
+	task, err := s.db.Tasks.Get(ctx, taskID)
 	if err != nil {
 		return
 	}
-	if task.State != string(stagekit.
-		AwaitingApproval) && task.State != string(stagekit.Blocked) && task.State !=
-		string(stagekit.Completed) {
+	if task.State != string(stagekit.AwaitingApproval) && task.State != string(stagekit.Blocked) && task.State != string(stagekit.Completed) {
 		return
 	}
 	message, err := s.db.Messages.NextQueuedForTask(ctx, taskID)
@@ -418,10 +372,7 @@ func (s *Service) kickQueuedMessage(taskID string) {
 }
 
 func (s *Service) traceMessage(ctx context.Context, message store.Message, phase *store.Phase) error {
-	event, err := stagekit.MessageEvent(ctx, s.db, message,
-
-		phase,
-	)
+	event, err := stagekit.MessageEvent(ctx, s.db, message, phase)
 	if err != nil {
 		return err
 	}

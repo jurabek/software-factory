@@ -379,9 +379,7 @@ func (w *tailWriter) Write(data []byte) (int, error) {
 func (w *tailWriter) String() string { return strings.TrimSpace(string(w.data)) }
 
 func (h Harness) Entries(_ context.Context, ref harness.SessionRef) ([]harness.NativeEntry, error) {
-	records,
-
-		err := readSession(ref.Directory,
+	records, err := readSession(ref.Directory,
 		ref.ID)
 	if err != nil {
 		return nil,
@@ -391,13 +389,9 @@ func (h Harness) Entries(_ context.Context, ref harness.SessionRef) ([]harness.N
 }
 
 func (h Harness) Stats(_ context.Context, ref harness.SessionRef) (harness.Stats, error) {
-	records, err := readSession(ref.Directory,
-
-		ref.
-			ID)
+	records, err := readSession(ref.Directory, ref.ID)
 	if err != nil {
-		return harness.
-				Stats{},
+		return harness.Stats{},
 			err
 	}
 	var stats harness.Stats
@@ -406,40 +400,31 @@ func (h Harness) Stats(_ context.Context, ref harness.SessionRef) (harness.Stats
 			stats.LeafID = record.ID
 		}
 		usage := record.Usage
-		if record.Message != nil && record.Message.
-			Usage != nil {
+		if record.Message != nil && record.Message.Usage != nil {
 			usage = record.Message.Usage
 		}
-		if usage ==
-			nil {
+		if usage == nil {
 			continue
 		}
 		stats.Usage.Input += usage.Input
 		stats.Usage.Output += usage.Output
-		stats.Usage.CacheRead += usage.
-			CacheRead
+		stats.Usage.CacheRead += usage.CacheRead
 		stats.Usage.CacheWrite += usage.CacheWrite
-		stats.Usage.
-			Reasoning += usage.Reasoning
+		stats.Usage.Reasoning += usage.Reasoning
 		stats.Usage.TotalTokens += usage.TotalTokens
-		stats.Usage.Cost += usage.Cost.
-			Total
-		if record.Message != nil && record.Message.
-			Role == "assistant" {
+		stats.Usage.Cost += usage.Cost.Total
+		if record.Message != nil && record.Message.Role == "assistant" {
 			stats.ContextTokens = usage.Input + usage.CacheRead + usage.CacheWrite
 		}
 	}
 	return stats, nil
 }
 
-func (h Harness) Report(_ context.Context, ref harness.
-	SessionRef, requestID string) (
+func (h Harness) Report(_ context.Context, ref harness.SessionRef, requestID string) (
 	harness.Report, bool, error,
 ) {
 	if requestID == "" {
-		return harness.Report{}, false,
-
-			nil
+		return harness.Report{}, false, nil
 	}
 	records, err := readSession(ref.Directory, ref.ID)
 	if err != nil {

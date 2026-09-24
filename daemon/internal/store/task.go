@@ -78,15 +78,12 @@ func (r *TaskRepository) Abort(ctx context.Context, taskID, from,
 	activePhase string,
 ) ([]Message, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
-	if err !=
-		nil {
+	if err != nil {
 		return nil, wrap(
 			"begin abort", err)
 	}
 	defer tx.Rollback()
-	rows, err := tx.QueryContext(ctx, `select sequence,id,task_id,actor,text,idempotency_key,coalesce(target_type,''),coalesce(target_id,''),coalesce(stage_id,''),recipient_role,agent_session_id,delivery_status,coalesce(failure_reason,''),created_at,coalesce(delivered_at,''),coalesce(failed_at,'') from messages where task_id=? and delivery_status='queued' order by sequence`,
-
-		taskID)
+	rows, err := tx.QueryContext(ctx, `select sequence,id,task_id,actor,text,idempotency_key,coalesce(target_type,''),coalesce(target_id,''),coalesce(stage_id,''),recipient_role,agent_session_id,delivery_status,coalesce(failure_reason,''),created_at,coalesce(delivered_at,''),coalesce(failed_at,'') from messages where task_id=? and delivery_status='queued' order by sequence`, taskID)
 	if err != nil {
 		return nil, wrap("read abort messages",
 			err)
@@ -114,20 +111,15 @@ func (r *TaskRepository) Abort(ctx context.Context, taskID, from,
 	if err != nil {
 		return nil, wrap("abort task", err)
 	}
-	if count,
-		_ := result.RowsAffected(); count != 1 {
+	if count, _ := result.RowsAffected(); count != 1 {
 		return nil, ErrConflict
 	}
-	if _, err = tx.ExecContext(ctx, `update messages set delivery_status='failed',failure_reason='task_aborted',failed_at=? where task_id=? and delivery_status='queued'`,
-
-		timestamp, taskID); err != nil {
+	if _, err = tx.ExecContext(ctx, `update messages set delivery_status='failed',failure_reason='task_aborted',failed_at=? where task_id=? and delivery_status='queued'`, timestamp, taskID); err != nil {
 		return nil, wrap("fail aborted messages",
 			err)
 	}
 	if err = tx.Commit(); err != nil {
-		return nil, wrap("commit abort",
-
-			err)
+		return nil, wrap("commit abort", err)
 	}
 	for index := range messages {
 		messages[index].DeliveryStatus = "failed"
@@ -142,12 +134,10 @@ func (r *TaskRepository) Abort(ctx context.Context, taskID, from,
 func (r *TaskRepository) Create(
 	ctx context.Context, task Task,
 ) error {
-	return r.
-		createTask(ctx, task, false)
+	return r.createTask(ctx, task, false)
 }
 
-func (r *TaskRepository) CreateActive(ctx context.
-	Context, task Task,
+func (r *TaskRepository) CreateActive(ctx context.Context, task Task,
 ) error {
 	return r.createTask(ctx, task, true)
 }
@@ -166,12 +156,10 @@ func (r *TaskRepository) createTask(
 	if requireAvailableSlot {
 		query = `insert into tasks(id,parent_task_id,request,workspace_path,repository_type,repository_source,submitted_repository_path,state,pipeline,active_stage,config_snapshot,created_at,started_at,coding_agent,model,thinking) select ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? where not exists(select 1 from tasks where state in ('preparing','planning','awaiting_plan_approval','building','checking','reviewing'))`
 	}
-	result, err := tx.ExecContext(ctx, query, task.
-		ID, nullIfEmpty(task.ParentTaskID), task.Request,
+	result, err := tx.ExecContext(ctx, query, task.ID, nullIfEmpty(task.ParentTaskID), task.Request,
 		task.WorkspacePath, task.RepositoryType,
 		task.RepositorySource, nullIfEmpty(task.SubmittedRepositoryPath), task.State, nullIfEmpty(task.Pipeline), nullIfEmpty(task.ActiveStage), nullIfEmpty(task.ConfigSnapshot), task.CreatedAt,
-		nullIfEmpty(task.StartedAt), task.CodingAgent, task.
-			Model, task.Thinking)
+		nullIfEmpty(task.StartedAt), task.CodingAgent, task.Model, task.Thinking)
 	if err != nil {
 		return wrap("create task", err)
 	}
@@ -180,22 +168,17 @@ func (r *TaskRepository) createTask(
 		if rowsErr != nil {
 			return wrap("check task creation", rowsErr)
 		}
-		if count !=
-			1 {
+		if count != 1 {
 			return ErrConflict
 		}
 	}
 	return wrap("commit task", tx.Commit())
 }
 
-func (r *TaskRepository) Get(ctx context.
-	Context, id string) (Task,
+func (r *TaskRepository) Get(ctx context.Context, id string) (Task,
 	error,
 ) {
-	value,
-		err := scanTask(r.db.QueryRowContext(ctx, `select `+taskColumns+` from tasks where id=?`,
-
-		id))
+	value, err := scanTask(r.db.QueryRowContext(ctx, `select `+taskColumns+` from tasks where id=?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Task{}, ErrNotFound
 	}
@@ -206,8 +189,7 @@ func (r *TaskRepository) Get(ctx context.
 	return value, nil
 }
 
-func (r *TaskRepository) List(ctx context.
-	Context,
+func (r *TaskRepository) List(ctx context.Context,
 ) ([]Task, error) {
 	rows, err := r.db.QueryContext(ctx, `select `+taskColumns+` from tasks order by created_at desc`)
 	if err != nil {
@@ -227,9 +209,7 @@ func (r *TaskRepository) List(ctx context.
 
 func (r *TaskRepository) Sessions(ctx context.Context, taskID string) ([]Task, error) {
 	var parentTaskID string
-	err := r.db.QueryRowContext(ctx, `select coalesce(parent_task_id,'') from tasks where id=?`,
-
-		taskID).Scan(&parentTaskID)
+	err := r.db.QueryRowContext(ctx, `select coalesce(parent_task_id,'') from tasks where id=?`, taskID).Scan(&parentTaskID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil,
 			ErrNotFound
@@ -241,8 +221,7 @@ func (r *TaskRepository) Sessions(ctx context.Context, taskID string) ([]Task, e
 	if parentTaskID != "" {
 		taskID = parentTaskID
 	}
-	rows, err := r.db.QueryContext(ctx, `select `+
-		taskColumns+` from tasks where id=? or parent_task_id=? order by created_at`,
+	rows, err := r.db.QueryContext(ctx, `select `+taskColumns+` from tasks where id=? or parent_task_id=? order by created_at`,
 		taskID, taskID)
 	if err != nil {
 		return nil, fmt.Errorf("list task sessions: %w", err)
@@ -250,11 +229,9 @@ func (r *TaskRepository) Sessions(ctx context.Context, taskID string) ([]Task, e
 	defer rows.Close()
 	values := make([]Task, 0)
 	for rows.Next() {
-		value,
-			scanErr := scanTask(rows)
+		value, scanErr := scanTask(rows)
 		if scanErr != nil {
-			return nil, fmt.
-				Errorf("scan task session: %w", scanErr)
+			return nil, fmt.Errorf("scan task session: %w", scanErr)
 		}
 		values = append(values, value)
 	}
@@ -267,10 +244,7 @@ func (r *TaskRepository) Transition(
 	message string,
 ) error {
 	ended := any(nil)
-	if to == "completed" ||
-
-		to ==
-			"blocked" || to == "aborted" {
+	if to == "completed" || to == "blocked" || to == "aborted" {
 		ended = now()
 	}
 	result, err := r.db.ExecContext(ctx, `update tasks set previous_state=state,state=?,active_phase=?,error=?,ended_at=? where id=? and state=?`,
@@ -291,9 +265,7 @@ func (r *TaskRepository) Transition(
 func (r *TaskRepository) SetPrepared(ctx context.Context, id, repositoryPath,
 	snapshot string,
 ) error {
-	_, err := r.db.ExecContext(ctx, `update tasks set repository_path=?,config_snapshot=? where id=?`,
-
-		repositoryPath, snapshot, id)
+	_, err := r.db.ExecContext(ctx, `update tasks set repository_path=?,config_snapshot=? where id=?`, repositoryPath, snapshot, id)
 	return wrap("save task workspace", err)
 }
 
@@ -308,9 +280,7 @@ func (r *TaskRepository) SetMaterialization(ctx context.Context, id, canonicalPa
 func (r *TaskRepository) SetApproval(ctx context.Context, id, digest,
 	actor string,
 ) error {
-	_, err := r.db.ExecContext(ctx, `update tasks set plan_digest=?,approval_actor=?,approval_at=? where id=?`,
-
-		digest, actor, now(), id)
+	_, err := r.db.ExecContext(ctx, `update tasks set plan_digest=?,approval_actor=?,approval_at=? where id=?`, digest, actor, now(), id)
 	return wrap("save approval", err)
 }
 
@@ -318,19 +288,15 @@ func (r *TaskRepository) SetApproval(ctx context.Context, id, digest,
 
 // and its lifecycle event in one transaction.
 
-func (r *TaskRepository) ApproveWithEvent(ctx context.
-	Context, taskDir, id, digest, actor string, event Event,
+func (r *TaskRepository) ApproveWithEvent(ctx context.Context, taskDir, id, digest, actor string, event Event,
 ) error {
 	tx, err := r.db.BeginTx(ctx, nil)
-	if err !=
-		nil {
+	if err != nil {
 		return wrap("begin approval", err)
 	}
 	defer tx.Rollback()
 	approvedAt := now()
-	result, err := tx.ExecContext(ctx, `update tasks set plan_digest=?,approval_actor=?,approval_at=?,previous_state=state,state='building' where id=? and state='awaiting_plan_approval'`,
-
-		digest, actor, approvedAt,
+	result, err := tx.ExecContext(ctx, `update tasks set plan_digest=?,approval_actor=?,approval_at=?,previous_state=state,state='building' where id=? and state='awaiting_plan_approval'`, digest, actor, approvedAt,
 		id)
 	if err != nil {
 		return wrap("save approval", err)
@@ -360,36 +326,25 @@ func (r *TaskRepository) ApproveWithEvent(ctx context.
 	return nil
 }
 
-func (r *TaskRepository) SetApprovalCandidate(ctx context.
-	Context, id,
+func (r *TaskRepository) SetApprovalCandidate(ctx context.Context, id,
 	digest string,
 ) error {
-	_, err := r.db.ExecContext(ctx, `update tasks set plan_digest=?,approval_actor=null,approval_at=null where id=?`,
-
-		digest, id)
+	_, err := r.db.ExecContext(ctx, `update tasks set plan_digest=?,approval_actor=null,approval_at=null where id=?`, digest, id)
 	return wrap("save approval candidate",
 		err)
 }
 
-func (r *TaskRepository) SetActiveStage(ctx context.
-	Context, taskID,
+func (r *TaskRepository) SetActiveStage(ctx context.Context, taskID,
 	stageID string,
 ) error {
-	_, err := r.db.ExecContext(ctx, `update tasks set active_stage=? where id=?`,
-
-		nullIfEmpty(stageID), taskID)
+	_, err := r.db.ExecContext(ctx, `update tasks set active_stage=? where id=?`, nullIfEmpty(stageID), taskID)
 	return wrap("save active stage",
 		err)
 }
 
-func (r *TaskRepository) InvalidateApproval(ctx context.
-	Context, id string,
+func (r *TaskRepository) InvalidateApproval(ctx context.Context, id string,
 ) error {
-	_,
-
-		err := r.db.ExecContext(ctx, `update tasks set plan_digest=null,approval_actor=null,approval_at=null where id=?`,
-
-		id)
+	_, err := r.db.ExecContext(ctx, `update tasks set plan_digest=null,approval_actor=null,approval_at=null where id=?`, id)
 	return wrap("invalidate approval",
 		err)
 }
@@ -397,9 +352,7 @@ func (r *TaskRepository) InvalidateApproval(ctx context.
 func (r *TaskRepository) Reopen(
 	ctx context.Context, taskID, state string,
 ) error {
-	_, err := r.db.ExecContext(ctx, `update tasks set previous_state=state,state=?,ended_at=null,error=null where id=?`,
-
-		state, taskID)
+	_, err := r.db.ExecContext(ctx, `update tasks set previous_state=state,state=?,ended_at=null,error=null where id=?`, state, taskID)
 	return wrap("reopen task",
 		err)
 }
@@ -407,10 +360,8 @@ func (r *TaskRepository) Reopen(
 func (r *TaskRepository) Delete(
 	ctx context.Context, id string,
 ) error {
-	result,
-		err := r.db.ExecContext(ctx, `delete from tasks where id=?`, id)
-	if err !=
-		nil {
+	result, err := r.db.ExecContext(ctx, `delete from tasks where id=?`, id)
+	if err != nil {
 		return err
 	}
 	n, _ := result.RowsAffected()

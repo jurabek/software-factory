@@ -28,26 +28,20 @@ const (
 
 type OrchestrationRepository struct{ db *sql.DB }
 
-func (r *OrchestrationRepository) Enqueue(ctx context.Context,
-
-	event OrchestrationEvent,
+func (r *OrchestrationRepository) Enqueue(ctx context.Context, event OrchestrationEvent,
 ) error {
-	_, err := r.db.ExecContext(ctx, `insert into orchestration_events(id,task_id,type,created_at) values(?,?,?,?)`,
-
-		event.ID, event.TaskID, event.Type, now())
+	_, err := r.db.ExecContext(ctx, `insert into orchestration_events(id,task_id,type,created_at) values(?,?,?,?)`, event.ID, event.TaskID, event.Type, now())
 	return wrap(
 		"enqueue orchestration event", err)
 }
 
-func (r *OrchestrationRepository) Get(ctx context.
-	Context, id string,
+func (r *OrchestrationRepository) Get(ctx context.Context, id string,
 ) (OrchestrationEvent, error) {
 	var event OrchestrationEvent
 	err := r.db.QueryRowContext(ctx, `select id,task_id,type from orchestration_events where id=?`,
 		id,
 	).Scan(&event.ID, &event.TaskID, &event.Type)
-	if err ==
-		sql.ErrNoRows {
+	if err == sql.ErrNoRows {
 		return OrchestrationEvent{}, ErrNotFound
 	}
 	return event, wrap("read orchestration event", err)
@@ -77,9 +71,7 @@ func (r *OrchestrationRepository) Complete(
 	ctx context.Context, id string, cause error,
 ) error {
 	status, message := "handled", ""
-	if cause !=
-
-		nil {
+	if cause != nil {
 		status, message = "pending",
 			cause.Error()
 	}

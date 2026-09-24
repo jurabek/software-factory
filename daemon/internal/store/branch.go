@@ -20,19 +20,13 @@ type Branch struct {
 type BranchRepository struct{ db *sql.DB }
 
 func (r *BranchRepository) Create(ctx context.Context, branch Branch) error {
-	_,
-		err := r.db.ExecContext(ctx, `insert into branches(id,task_id,parent_branch_id,fork_attempt_id,head_attempt_id,status,created_at,updated_at) values(?,?,?,?,?,?,?,?)`,
-
-		branch.ID, branch.TaskID, nullIfEmpty(branch.ParentBranchID), nullIfEmpty(branch.ForkAttemptID), nullIfEmpty(branch.HeadAttemptID), branch.Status, branch.
-			CreatedAt, branch.CreatedAt)
+	_, err := r.db.ExecContext(ctx, `insert into branches(id,task_id,parent_branch_id,fork_attempt_id,head_attempt_id,status,created_at,updated_at) values(?,?,?,?,?,?,?,?)`, branch.ID, branch.TaskID, nullIfEmpty(branch.ParentBranchID), nullIfEmpty(branch.ForkAttemptID), nullIfEmpty(branch.HeadAttemptID), branch.Status, branch.CreatedAt, branch.CreatedAt)
 	return wrap("create branch",
 		err)
 }
 
 func (r *BranchRepository) List(ctx context.Context, taskID string) ([]Branch, error) {
-	rows, err := r.db.QueryContext(ctx, `select id,task_id,coalesce(parent_branch_id,''),coalesce(fork_attempt_id,''),coalesce(head_attempt_id,''),status,created_at,updated_at from branches where task_id=? order by created_at`,
-
-		taskID)
+	rows, err := r.db.QueryContext(ctx, `select id,task_id,coalesce(parent_branch_id,''),coalesce(fork_attempt_id,''),coalesce(head_attempt_id,''),status,created_at,updated_at from branches where task_id=? order by created_at`, taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -41,9 +35,7 @@ func (r *BranchRepository) List(ctx context.Context, taskID string) ([]Branch, e
 		0)
 	for rows.Next() {
 		var value Branch
-		if err = rows.Scan(&value.ID, &value.TaskID, &value.ParentBranchID, &value.
-			ForkAttemptID, &value.HeadAttemptID, &value.Status, &value.
-			CreatedAt, &value.UpdatedAt); err != nil {
+		if err = rows.Scan(&value.ID, &value.TaskID, &value.ParentBranchID, &value.ForkAttemptID, &value.HeadAttemptID, &value.Status, &value.CreatedAt, &value.UpdatedAt); err != nil {
 			return nil, err
 		}
 		values = append(values, value)
@@ -53,17 +45,10 @@ func (r *BranchRepository) List(ctx context.Context, taskID string) ([]Branch, e
 
 func (r *BranchRepository) Get(ctx context.Context,
 	taskID, branchID string) (
-	Branch,
-
-	error,
+	Branch, error,
 ) {
 	var value Branch
-	err := r.db.QueryRowContext(ctx, `select id,task_id,coalesce(parent_branch_id,''),coalesce(fork_attempt_id,''),coalesce(head_attempt_id,''),status,created_at,updated_at from branches where task_id=? and id=?`,
-
-		taskID, branchID).Scan(&value.
-		ID, &value.TaskID, &value.ParentBranchID, &value.ForkAttemptID,
-		&value.HeadAttemptID, &value.Status, &value.
-			CreatedAt, &value.UpdatedAt)
+	err := r.db.QueryRowContext(ctx, `select id,task_id,coalesce(parent_branch_id,''),coalesce(fork_attempt_id,''),coalesce(head_attempt_id,''),status,created_at,updated_at from branches where task_id=? and id=?`, taskID, branchID).Scan(&value.ID, &value.TaskID, &value.ParentBranchID, &value.ForkAttemptID, &value.HeadAttemptID, &value.Status, &value.CreatedAt, &value.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Branch{}, ErrNotFound
 	}
@@ -74,30 +59,22 @@ func (r *BranchRepository) Get(ctx context.Context,
 func (r *BranchRepository) SetHead(ctx context.Context, taskID, branchID,
 	headAttemptID string,
 ) error {
-	_, err := r.db.ExecContext(ctx, `update branches set head_attempt_id=?,updated_at=? where task_id=? and id=?`,
-
-		nullIfEmpty(headAttemptID), now(), taskID, branchID)
+	_, err := r.db.ExecContext(ctx, `update branches set head_attempt_id=?,updated_at=? where task_id=? and id=?`, nullIfEmpty(headAttemptID), now(), taskID, branchID)
 	return wrap("move branch head",
 		err)
 }
 
 func (r *BranchRepository) Select(ctx context.Context, taskID, branchID string) error {
-	_, err := r.db.ExecContext(ctx, `update tasks set selected_branch_id=? where id=?`,
-
-		nullIfEmpty(branchID), taskID)
+	_, err := r.db.ExecContext(ctx, `update tasks set selected_branch_id=? where id=?`, nullIfEmpty(branchID), taskID)
 	return wrap("select branch",
 		err)
 }
 
-func (r *BranchRepository) TaskHeadAttempt(ctx context.
-	Context, taskID string,
+func (r *BranchRepository) TaskHeadAttempt(ctx context.Context, taskID string,
 ) string {
 	var selected string
-	_ = r.db.QueryRowContext(ctx, `select coalesce(selected_branch_id,'') from tasks where id=?`,
-
-		taskID).Scan(&selected)
-	if selected ==
-		"" {
+	_ = r.db.QueryRowContext(ctx, `select coalesce(selected_branch_id,'') from tasks where id=?`, taskID).Scan(&selected)
+	if selected == "" {
 		return ""
 	}
 	var head string

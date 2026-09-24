@@ -134,20 +134,15 @@ func (s *Service) taskDir(id string) string {
 	return filepath.Join(s.deps.Root, "tasks", id)
 }
 
-func (s *Service) messageRecipient(ctx context.
-	Context, task store.Task, target *store.Phase) (string,
-	*store.Phase, error,
+func (s *Service) messageRecipient(ctx context.Context, task store.Task, target *store.Phase) (string, *store.Phase, error,
 ) {
 	if target != nil && target.Kind == "agent" {
 		return target.Owner, target, nil
 	}
-	if target != nil &&
-
-		target.Name != "" && target.Kind != "check" && target.Kind != "git" {
+	if target != nil && target.Name != "" && target.Kind != "check" && target.Kind != "git" {
 		return target.Name, target, nil
 	}
-	if task.ActivePhase !=
-		"" {
+	if task.ActivePhase != "" {
 		active, err := s.deps.Store.Phases.ByID(ctx, task.ID, task.ActivePhase)
 		if err == nil && active.Status == "running" && active.Kind != "check" && active.Kind != "git" {
 			if active.Kind == "agent" {
@@ -166,25 +161,15 @@ func (s *Service) messageRecipient(ctx context.
 		value := phases[len(phases)-1]
 		latest = &value
 	}
-	state := stagekit.State(task.
-		State,
-	)
+	state := stagekit.State(task.State)
 	if state == stagekit.Paused {
-		state = stagekit.
-			State(task.PreviousState)
+		state = stagekit.State(task.PreviousState)
 	}
-	if _, pipeline,
-
-		pipelineErr := config.
-		TaskPipeline(s.deps.Config,
-			s.deps.ConfigPath, task.ConfigSnapshot,
-			task.
-				Pipeline,
-		); pipelineErr == nil {
-		if state ==
-			stagekit.Preparing || state ==
-			stagekit.Planning || state == stagekit.
-			AwaitingApproval {
+	if _, pipeline, pipelineErr := config.TaskPipeline(s.deps.Config,
+		s.deps.ConfigPath, task.ConfigSnapshot,
+		task.Pipeline,
+	); pipelineErr == nil {
+		if state == stagekit.Preparing || state == stagekit.Planning || state == stagekit.AwaitingApproval {
 			for _, stage := range pipeline.Stages {
 				if stage.Kind == "plan" {
 					return stage.ID, latest, nil
@@ -192,22 +177,18 @@ func (s *Service) messageRecipient(ctx context.
 			}
 		}
 		if task.ActiveStage != "" {
-			if stage, _, ok := stageDefinition(pipeline, task.ActiveStage); ok && stage.
-				Agent != "" {
+			if stage, _, ok := stageDefinition(pipeline, task.ActiveStage); ok && stage.Agent != "" {
 				return stage.ID, latest,
 					nil
 			}
 		}
-		if state == stagekit.
-			Checking || state == stagekit.
-			Reviewing {
+		if state == stagekit.Checking || state == stagekit.Reviewing {
 			for _, v := range slices.Backward(pipeline.Stages) {
 				if v.Kind == "review" {
 					return v.ID, latest, nil
 				}
 			}
-			for _, v := range slices.Backward(pipeline.
-				Stages) {
+			for _, v := range slices.Backward(pipeline.Stages) {
 				if v.Kind == "build" {
 					return v.ID, latest,
 						nil
@@ -215,22 +196,15 @@ func (s *Service) messageRecipient(ctx context.
 			}
 		}
 		if state == stagekit.Completed {
-			for _, stage := range pipeline.
-				Stages {
-				if stage.
-					Kind ==
-					"build" {
+			for _, stage := range pipeline.Stages {
+				if stage.Kind == "build" {
 					return stage.ID, latest, nil
 				}
 			}
 		}
 	}
 	switch state {
-	case stagekit.
-		Preparing, stagekit.Planning,
-
-		stagekit.
-			AwaitingApproval:
+	case stagekit.Preparing, stagekit.Planning, stagekit.AwaitingApproval:
 		return "planner",
 			latest, nil
 	case stagekit.Building:
@@ -241,8 +215,7 @@ func (s *Service) messageRecipient(ctx context.
 	case stagekit.Completed:
 		return "builder", latest, nil
 	case stagekit.Blocked:
-		if latest !=
-			nil && latest.Kind == "agent" {
+		if latest != nil && latest.Kind == "agent" {
 			return latest.Owner,
 				latest, nil
 		}
@@ -261,50 +234,35 @@ func (s *Service) ensureAgentSession(ctx context.Context, task store.Task, role 
 		return store.AgentSession{}, err
 	}
 	agentName := role
-	if _, pipeline, pipelineErr := config.TaskPipeline(s.deps.Config, s.deps.
-		ConfigPath, task.ConfigSnapshot, task.Pipeline,
-	); pipelineErr == nil {
+	if _, pipeline, pipelineErr := config.TaskPipeline(s.deps.Config, s.deps.ConfigPath, task.ConfigSnapshot, task.Pipeline); pipelineErr == nil {
 		if stage,
-			_,
-			ok := stageDefinition(pipeline, role); ok && stage.Agent != "" {
+			_, ok := stageDefinition(pipeline, role); ok && stage.Agent != "" {
 			agentName = stage.Agent
 		}
 	}
-	agent, ok := configured.
-		Agent(agentName)
+	agent, ok := configured.Agent(agentName)
 	if !ok {
 		return store.AgentSession{}, fmt.Errorf("agent %s not configured", agentName)
 	}
 	harnessName := configured.Defaults.CodingAgent
 	if _, ok = s.deps.Harnesses.Get(harnessName); !ok {
-		return store.AgentSession{}, fmt.Errorf("harness %s unavailable",
-
-			harnessName)
+		return store.AgentSession{}, fmt.Errorf("harness %s unavailable", harnessName)
 	}
-	stored, err := s.
-		deps.
-		Store.AgentSessions.Get(ctx, task.ID, role)
+	stored, err := s.deps.Store.AgentSessions.Get(ctx, task.ID, role)
 	if err == nil {
-		if stored.
-			Harness != harnessName {
+		if stored.Harness != harnessName {
 			return store.AgentSession{}, store.ErrConflict
 		}
 		return stored, nil
 	}
 	if !errors.Is(err,
-		store.
-			ErrNotFound) {
+		store.ErrNotFound) {
 		return store.AgentSession{}, err
 	}
-	return s.deps.
-		Store.AgentSessions.Reserve(ctx, task.ID, store.
-		AgentSession{StageID: role, AgentName: agentName, Role: agentName, Harness: harnessName, Model: agent.Model, Thinking: agent.Thinking, Color: agent.Color, HarnessSessionID: uuid.New().String(), SessionDirectory: filepath.Join(s.taskDir(task.
-		ID), "sessions", role, harnessName)})
+	return s.deps.Store.AgentSessions.Reserve(ctx, task.ID, store.AgentSession{StageID: role, AgentName: agentName, Role: agentName, Harness: harnessName, Model: agent.Model, Thinking: agent.Thinking, Color: agent.Color, HarnessSessionID: uuid.New().String(), SessionDirectory: filepath.Join(s.taskDir(task.ID), "sessions", role, harnessName)})
 }
 
-func (s *Service) Resolve(ctx context.Context,
-
-	taskID string, target Target,
+func (s *Service) Resolve(ctx context.Context, taskID string, target Target,
 ) (string, string, *store.Phase, error) {
 	count := 0
 	if target.EventID != "" {
@@ -313,8 +271,7 @@ func (s *Service) Resolve(ctx context.Context,
 	if target.AttemptID != "" {
 		count++
 	}
-	if count >
-		1 {
+	if count > 1 {
 		return "", "", nil, fmt.Errorf("target accepts exactly one of event_id or attempt_id")
 	}
 	if target.AttemptID != "" {
@@ -328,19 +285,15 @@ func (s *Service) Resolve(ctx context.Context,
 	if target.EventID != "" {
 		event, err := s.deps.Store.Events.ByID(ctx, taskID,
 			target.EventID)
-		if err !=
-			nil {
+		if err != nil {
 			return "", "", nil, err
 		}
 		attemptID := event.AttemptID
-		if attemptID ==
-			"" {
+		if attemptID == "" {
 			attemptID = event.PhaseID
 		}
-		if attemptID ==
-			"" {
-			return "event", event.
-					ID,
+		if attemptID == "" {
+			return "event", event.ID,
 				nil, nil
 		}
 		phase, err := s.deps.Store.Phases.ByID(ctx, taskID, attemptID)

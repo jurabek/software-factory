@@ -29,10 +29,7 @@ func (r *EnvelopeRepository) Save(ctx context.Context, id, taskID,
 	outputType,
 	payload string, valid bool, attempt int,
 ) error {
-	_,
-		err := r.db.ExecContext(ctx, `insert into envelopes(id,task_id,phase_id,stage_id,agent_role,output_type,payload_json,valid,attempt,created_at) values(?,?,?,?,?,?,?,?,?,?)`,
-
-		id, taskID, phaseID, role, role,
+	_, err := r.db.ExecContext(ctx, `insert into envelopes(id,task_id,phase_id,stage_id,agent_role,output_type,payload_json,valid,attempt,created_at) values(?,?,?,?,?,?,?,?,?,?)`, id, taskID, phaseID, role, role,
 		outputType, payload, valid, attempt, now())
 	if err == nil && valid && role == "planner" {
 		digest := fmt.Sprintf("%x", sha256.Sum256([]byte(payload)))
@@ -43,9 +40,7 @@ func (r *EnvelopeRepository) Save(ctx context.Context, id, taskID,
 }
 
 func (r *EnvelopeRepository) List(ctx context.Context, taskID string) ([]Envelope, error) {
-	rows, err := r.db.QueryContext(ctx, `select id,task_id,coalesce(phase_id,''),coalesce(stage_id,''),agent_role,output_type,payload_json,valid,attempt,created_at from envelopes where task_id=? order by created_at`,
-
-		taskID)
+	rows, err := r.db.QueryContext(ctx, `select id,task_id,coalesce(phase_id,''),coalesce(stage_id,''),agent_role,output_type,payload_json,valid,attempt,created_at from envelopes where task_id=? order by created_at`, taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -53,10 +48,7 @@ func (r *EnvelopeRepository) List(ctx context.Context, taskID string) ([]Envelop
 	values := make([]Envelope, 0)
 	for rows.Next() {
 		var value Envelope
-		if err := rows.
-			Scan(&value.ID, &value.TaskID, &value.PhaseID, &value.StageID,
-				&value.AgentRole, &value.OutputType, &value.Payload, &value.
-					Valid, &value.Attempt, &value.CreatedAt); err != nil {
+		if err := rows.Scan(&value.ID, &value.TaskID, &value.PhaseID, &value.StageID, &value.AgentRole, &value.OutputType, &value.Payload, &value.Valid, &value.Attempt, &value.CreatedAt); err != nil {
 			return nil, err
 		}
 		values = append(values, value)
@@ -68,9 +60,7 @@ func (r *EnvelopeRepository) List(ctx context.Context, taskID string) ([]Envelop
 func (r *EnvelopeRepository) Valid(ctx context.Context, taskID, role string) (string, error) {
 	var payload string
 	err := r.db.QueryRowContext(ctx,
-		`select payload_json from envelopes where task_id=? and agent_role=? and valid=1 order by created_at desc limit 1`,
-
-		taskID, role).Scan(&payload)
+		`select payload_json from envelopes where task_id=? and agent_role=? and valid=1 order by created_at desc limit 1`, taskID, role).Scan(&payload)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", ErrNotFound
 	}

@@ -27,10 +27,7 @@ type Check struct {
 type CheckRepository struct{ db *sql.DB }
 
 func (r *CheckRepository) Save(ctx context.Context, check Check) error {
-	_,
-		err := r.db.ExecContext(ctx, `insert or replace into checks(id,task_id,phase_id,stage_id,check_phase,comparison_baseline,name,command,attempt,status,exit_code,output,output_path,duration_ms,started_at,ended_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-
-		check.ID, check.TaskID,
+	_, err := r.db.ExecContext(ctx, `insert or replace into checks(id,task_id,phase_id,stage_id,check_phase,comparison_baseline,name,command,attempt,status,exit_code,output,output_path,duration_ms,started_at,ended_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, check.ID, check.TaskID,
 		nullIfEmpty(check.PhaseID), nullIfEmpty(check.StageID), check.Phase, nullIfEmpty(check.ComparisonBaseline), check.Name, check.Command, check.Attempt, check.Status,
 		check.ExitCode, check.Output, check.OutputPath, check.DurationMS,
 		check.StartedAt, check.EndedAt)
@@ -42,9 +39,7 @@ func (r *CheckRepository) List(ctx context.Context,
 	taskID string) (
 	[]Check, error,
 ) {
-	rows, err := r.db.QueryContext(ctx, `select id,task_id,coalesce(phase_id,''),coalesce(stage_id,''),coalesce(check_phase,'primary'),coalesce(comparison_baseline,''),name,command,attempt,status,coalesce(exit_code,-1),coalesce(output,''),coalesce(output_path,''),coalesce(duration_ms,0),coalesce(started_at,''),coalesce(ended_at,'') from checks where task_id=? order by rowid`,
-
-		taskID)
+	rows, err := r.db.QueryContext(ctx, `select id,task_id,coalesce(phase_id,''),coalesce(stage_id,''),coalesce(check_phase,'primary'),coalesce(comparison_baseline,''),name,command,attempt,status,coalesce(exit_code,-1),coalesce(output,''),coalesce(output_path,''),coalesce(duration_ms,0),coalesce(started_at,''),coalesce(ended_at,'') from checks where task_id=? order by rowid`, taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -52,15 +47,10 @@ func (r *CheckRepository) List(ctx context.Context,
 	values := make([]Check, 0)
 	for rows.Next() {
 		var value Check
-		if err := rows.Scan(&value.ID, &value.TaskID, &value.
-			PhaseID, &value.StageID, &value.Phase, &value.ComparisonBaseline,
-			&value.Name, &value.Command, &value.Attempt, &value.Status,
-			&value.ExitCode, &value.Output, &value.OutputPath, &value.DurationMS,
-			&value.StartedAt, &value.EndedAt); err != nil {
+		if err := rows.Scan(&value.ID, &value.TaskID, &value.PhaseID, &value.StageID, &value.Phase, &value.ComparisonBaseline, &value.Name, &value.Command, &value.Attempt, &value.Status, &value.ExitCode, &value.Output, &value.OutputPath, &value.DurationMS, &value.StartedAt, &value.EndedAt); err != nil {
 			return nil, err
 		}
 		values = append(values, value)
 	}
-	return values, rows.
-		Err()
+	return values, rows.Err()
 }

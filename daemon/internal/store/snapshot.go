@@ -22,21 +22,14 @@ func (r *SnapshotRepository) Save(ctx context.Context, snapshot WorkspaceSnapsho
 	if manifest == "" {
 		manifest = "{}"
 	}
-	_, err := r.db.ExecContext(ctx, `insert or ignore into workspace_snapshots(digest,task_id,path,size_bytes,manifest_json,created_at) values(?,?,?,?,?,?)`,
-
-		snapshot.Digest, snapshot.TaskID,
-		snapshot.Path, snapshot.SizeBytes, manifest, snapshot.
-			CreatedAt)
+	_, err := r.db.ExecContext(ctx, `insert or ignore into workspace_snapshots(digest,task_id,path,size_bytes,manifest_json,created_at) values(?,?,?,?,?,?)`, snapshot.Digest, snapshot.TaskID,
+		snapshot.Path, snapshot.SizeBytes, manifest, snapshot.CreatedAt)
 	return wrap("save snapshot", err)
 }
 
 func (r *SnapshotRepository) Get(ctx context.Context, digest string) (WorkspaceSnapshot, error) {
 	var value WorkspaceSnapshot
-	err := r.db.QueryRowContext(ctx, `select digest,task_id,coalesce(path,''),coalesce(size_bytes,0),coalesce(manifest_json,'{}'),created_at from workspace_snapshots where digest=?`,
-
-		digest).Scan(&value.Digest, &value.TaskID, &value.
-		Path, &value.SizeBytes, &value.Manifest, &value.
-		CreatedAt)
+	err := r.db.QueryRowContext(ctx, `select digest,task_id,coalesce(path,''),coalesce(size_bytes,0),coalesce(manifest_json,'{}'),created_at from workspace_snapshots where digest=?`, digest).Scan(&value.Digest, &value.TaskID, &value.Path, &value.SizeBytes, &value.Manifest, &value.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return WorkspaceSnapshot{}, ErrNotFound
 	}

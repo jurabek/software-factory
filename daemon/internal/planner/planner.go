@@ -139,47 +139,37 @@ func (s service) Plan(ctx context.Context, input stage.Input) (stage.PlanResult,
 
 func (s service) Approve(ctx context.Context, taskID, actor, expectedDigest string) error {
 	expectedDigest = strings.TrimSpace(expectedDigest)
-	if expectedDigest ==
-		"" {
+	if expectedDigest == "" {
 		return fmt.Errorf("plan_digest is required")
 	}
 	task, err := s.kit.Task(ctx, taskID)
 	if err != nil {
 		return err
 	}
-	if task.State !=
-		string(stagekit.AwaitingApproval) {
+	if task.State != string(stagekit.AwaitingApproval) {
 		return store.ErrConflict
 	}
 	stageDef, err := s.kit.StageByKind(task, "plan")
 	if err != nil {
 		return err
 	}
-	payload, err := s.kit.
-		DB().Envelopes.Valid(ctx, taskID, stageDef.ID)
+	payload, err := s.kit.DB().Envelopes.Valid(ctx, taskID, stageDef.ID)
 	if err != nil {
 		return err
 	}
 	plan, err := Validate(payload)
-	if err !=
-		nil || len(plan.Questions) > 0 {
+	if err != nil || len(plan.Questions) > 0 {
 		return store.ErrConflict
 	}
-	currentDigest := stagekit.
-		PlanApprovalDigest(payload)
-	if expectedDigest !=
-		currentDigest {
+	currentDigest := stagekit.PlanApprovalDigest(payload)
+	if expectedDigest != currentDigest {
 		return ErrStalePlan
 	}
 	event := store.Event{
-		ID: stagekit.RandomID(), TaskID: taskID, Kind: session.KindCustom,
-
-		Name: "task_approved", Payload: session.CustomPayload{
+		ID: stagekit.RandomID(), TaskID: taskID, Kind: session.KindCustom, Name: "task_approved", Payload: session.CustomPayload{
 			CustomType: "task_approved",
-			Data: session.
-				BoundedJSON(map[string]any{"task_id": taskID, "plan_digest": currentDigest, "actor": actor}),
-		}, Display: session.
-			Display{
+			Data:       session.BoundedJSON(map[string]any{"task_id": taskID, "plan_digest": currentDigest, "actor": actor}),
+		}, Display: session.Display{
 			Role:   "system",
 			Status: "success", Title: "Plan approved",
 		}, AvailableActions: []string{"pause", "abort"}, StartedAt: time.Now().UTC(),
@@ -188,18 +178,14 @@ func (s service) Approve(ctx context.Context, taskID, actor, expectedDigest stri
 		return err
 	}
 	if _, err = s.kit.DB().Events.Append(ctx,
-		s.kit.
-			TaskDir(taskID), event); err != nil {
+		s.kit.TaskDir(taskID), event); err != nil {
 		return err
 	}
-	return s.events.Publish(ctx, taskID, store.
-		TaskApproved)
+	return s.events.Publish(ctx, taskID, store.TaskApproved)
 }
 
 func (s service) savedPlan(ctx context.Context, taskID string) (stage.PlanResult, bool, error) {
-	task, err := s.
-		kit.
-		Task(ctx, taskID)
+	task, err := s.kit.Task(ctx, taskID)
 	if err != nil {
 		return stage.PlanResult{}, false, err
 	}
@@ -214,33 +200,23 @@ func (s service) savedPlan(ctx context.Context, taskID string) (stage.PlanResult
 	if queued {
 		return stage.PlanResult{}, false, nil
 	}
-	phase, ok, err := s.kit.
-		SuccessfulPhase(ctx, taskID, stageDef.ID)
-	if err != nil ||
-		!ok {
+	phase, ok, err := s.kit.SuccessfulPhase(ctx, taskID, stageDef.ID)
+	if err != nil || !ok {
 		return stage.PlanResult{}, false, err
 	}
-	payload, err := s.
-		kit.PhaseEnvelope(ctx, taskID,
-
-		phase.ID)
+	payload, err := s.kit.PhaseEnvelope(ctx, taskID, phase.ID)
 	if err != nil {
 		return stage.PlanResult{}, false, err
 	}
-	return stage.
-		PlanResult{
-		Payload: payload, AttemptID: phase.ID, SnapshotID: phase.
-				OutputSnapshot,
-		Approved: task.
-			ApprovalActor != "",
+	return stage.PlanResult{
+		Payload: payload, AttemptID: phase.ID, SnapshotID: phase.OutputSnapshot,
+		Approved: task.ApprovalActor != "",
 	}, true, nil
 }
 
 func (s service) beginPlan(ctx context.Context, taskID string) (store.Task, store.Phase, error) {
 	task, err := s.kit.Task(ctx, taskID)
-	if err !=
-
-		nil {
+	if err != nil {
 		return store.Task{}, store.Phase{}, err
 	}
 	if task.State == string(stagekit.Preparing) {
@@ -254,33 +230,24 @@ func (s service) beginPlan(ctx context.Context, taskID string) (store.Task, stor
 	if err != nil {
 		return store.Task{}, store.Phase{}, err
 	}
-	if err = s.kit.SetActiveStage(ctx, task.ID, stageDef.
-		ID); err != nil {
-		return store.
-			Task{}, store.Phase{}, err
+	if err = s.kit.SetActiveStage(ctx, task.ID, stageDef.ID); err != nil {
+		return store.Task{}, store.Phase{}, err
 	}
-	phase,
-		err := s.kit.BeginOrReusePhase(ctx, task.ID, stageDef.
-		ID, stageDef.Kind, stageDef.
-		Agent, "Execute "+stageDef.ID)
+	phase, err := s.kit.BeginOrReusePhase(ctx, task.ID, stageDef.ID, stageDef.Kind, stageDef.Agent, "Execute "+stageDef.ID)
 	if err != nil {
-		return store.Task{}, store.
-			Phase{}, err
+		return store.Task{}, store.Phase{}, err
 	}
 	return task, phase, nil
 }
 
 func (s service) publishPlan(ctx context.Context, task store.Task, phase store.Phase, turn harness.TurnResult) (stage.PlanResult, error) {
-	baseline,
-
-		err := workspace.Fingerprint(task)
+	baseline, err := workspace.Fingerprint(task)
 	if err != nil {
 
 		s.kit.Fail(ctx, phase, err)
 		return stage.PlanResult{}, err
 	}
-	return s.
-		kit.DeliverAndFinalize(ctx, stagekit.Delivery{
+	return s.kit.DeliverAndFinalize(ctx, stagekit.Delivery{
 		Task: task, Phase: phase,
 		Role: "planner", ReadOnly: true, Instructions: Instructions(), Validate: func(text string) (any, error) {
 			return Validate(text)
@@ -288,24 +255,21 @@ func (s service) publishPlan(ctx context.Context, task store.Task, phase store.P
 	}, turn,
 		func(turn harness.TurnResult) (stage.PlanResult, error) {
 			after, changedErr := workspace.Fingerprint(task)
-			if changedErr !=
-				nil {
+			if changedErr != nil {
 				s.kit.Fail(
 					ctx, phase, changedErr)
 				return stage.PlanResult{},
 					changedErr
 			}
-			if baseline !=
-				after {
+			if baseline != after {
 				readonlyErr := fmt.Errorf("planner modified repository")
 				s.kit.Fail(ctx, phase, readonlyErr)
 				return stage.PlanResult{}, readonlyErr
 			}
-			if completeErr := s.kit.
-				Complete(ctx, stagekit.Completion{
-					Phase: phase, From: stagekit.Planning, To: stagekit.AwaitingApproval,
-					Status: "success", Approval: stagekit.PlanApprovalDigest(turn.Payload), Planner: true,
-				}); completeErr != nil {
+			if completeErr := s.kit.Complete(ctx, stagekit.Completion{
+				Phase: phase, From: stagekit.Planning, To: stagekit.AwaitingApproval,
+				Status: "success", Approval: stagekit.PlanApprovalDigest(turn.Payload), Planner: true,
+			}); completeErr != nil {
 
 				s.kit.Fail(ctx, phase,
 					completeErr)

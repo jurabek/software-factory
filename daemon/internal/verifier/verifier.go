@@ -533,37 +533,29 @@ func CopyOverlayPath(sourceRoot, destinationRoot, relative string) error {
 }
 
 func (s service) savedVerification(ctx context.Context,
-	taskID, buildAttemptID string) (stage.VerificationResult, bool,
-
-	error,
+	taskID, buildAttemptID string) (stage.VerificationResult, bool, error,
 ) {
 	task, err := s.kit.Task(ctx, taskID)
 	if err != nil {
-		return stage.
-			VerificationResult{}, false, err
+		return stage.VerificationResult{}, false, err
 	}
 	stageDef, err := s.kit.StageByKind(task, "verify")
 	if err != nil {
 		return stage.VerificationResult{}, false,
 			err
 	}
-	phase, ok, err := s.kit.SuccessfulPhase(ctx, task.
-		ID, stageDef.ID)
+	phase, ok, err := s.kit.SuccessfulPhase(ctx, task.ID, stageDef.ID)
 	if err != nil || !ok {
 		return stage.VerificationResult{}, false, err
 	}
-	eligible,
-		err := s.kit.
-		AttemptAfter(ctx, task.ID, phase.ID, buildAttemptID)
+	eligible, err := s.kit.AttemptAfter(ctx, task.ID, phase.ID, buildAttemptID)
 	if err != nil {
 		return stage.VerificationResult{}, false, err
 	}
 	if !eligible {
 		return stage.VerificationResult{}, false, nil
 	}
-	checks,
-
-		err := s.kit.DB().Checks.List(ctx, task.ID)
+	checks, err := s.kit.DB().Checks.List(ctx, task.ID)
 	if err != nil {
 		return stage.VerificationResult{},
 			false, err
@@ -575,46 +567,36 @@ func (s service) savedVerification(ctx context.Context,
 		}
 	}
 	return stage.VerificationResult{
-		AttemptID: phase.ID, SnapshotID: phase.OutputSnapshot,
-
-		Passed: passed,
+		AttemptID: phase.ID, SnapshotID: phase.OutputSnapshot, Passed: passed,
 	}, true, nil
 }
 
 func (s service) beginVerification(ctx context.Context, taskID, planAttemptID, buildAttemptID string) (store.Task, store.Phase, error) {
-	task,
-
-		err := s.kit.Task(ctx, taskID)
+	task, err := s.kit.Task(ctx, taskID)
 	if err != nil {
 		return store.Task{}, store.Phase{}, err
 	}
-	planStage,
-		err := s.kit.StageByKind(task, "plan")
+	planStage, err := s.kit.StageByKind(task, "plan")
 	if err != nil {
 		return store.Task{}, store.Phase{}, err
 	}
-	if err = s.kit.RequireAttempt(ctx, task.ID, planStage.ID, planAttemptID); err !=
-		nil {
+	if err = s.kit.RequireAttempt(ctx, task.ID, planStage.ID, planAttemptID); err != nil {
 		return store.Task{}, store.Phase{},
 			err
 	}
 	buildStage, err := s.kit.StageByKind(task, "build")
-	if err !=
-		nil {
+	if err != nil {
 		return store.Task{}, store.Phase{}, err
 	}
 	if err = s.kit.RequireAttempt(ctx, task.ID, buildStage.ID, buildAttemptID); err != nil {
 		return store.Task{}, store.Phase{}, err
 	}
-	stageDef,
-
-		err := s.kit.StageByKind(task, "verify")
+	stageDef, err := s.kit.StageByKind(task, "verify")
 	if err != nil {
 		return store.Task{}, store.Phase{}, err
 	}
 	if err = s.kit.SetActiveStage(ctx,
-		task.
-			ID, stageDef.ID,
+		task.ID, stageDef.ID,
 	); err != nil {
 		return store.Task{}, store.Phase{}, err
 	}
@@ -627,18 +609,14 @@ func (s service) beginVerification(ctx context.Context, taskID, planAttemptID, b
 		return store.Task{}, store.Phase{}, err
 	}
 	task.State = string(stagekit.Checking)
-	phase, err := s.kit.BeginOrReusePhase(ctx, task.ID, stageDef.ID, stageDef.Kind, stageDef.Agent,
-
-		"Execute "+stageDef.ID)
+	phase, err := s.kit.BeginOrReusePhase(ctx, task.ID, stageDef.ID, stageDef.Kind, stageDef.Agent, "Execute "+stageDef.ID)
 	if err != nil {
 		return store.Task{}, store.Phase{}, err
 	}
 	return task, phase, nil
 }
 
-func (s service) publishVerification(ctx context.Context, phase store.Phase, checks []store.Check,
-
-	comparisons []store.Comparison, report string, passed bool,
+func (s service) publishVerification(ctx context.Context, phase store.Phase, checks []store.Check, comparisons []store.Comparison, report string, passed bool,
 ) (stage.VerificationResult, error) {
 	status, to := "success", stagekit.Reviewing
 	if !passed {
@@ -647,16 +625,11 @@ func (s service) publishVerification(ctx context.Context, phase store.Phase, che
 	if err := s.kit.Complete(
 		ctx, stagekit.Completion{
 			Phase: phase,
-			From: stagekit.
-				Checking, To: to, Status: status, Checks: checks,
-
-			Comparisons: comparisons,
+			From:  stagekit.Checking, To: to, Status: status, Checks: checks, Comparisons: comparisons,
 		}); err != nil {
-		s.kit.
-			Fail(ctx, phase,
-				err)
+		s.kit.Fail(ctx, phase,
+			err)
 		return stage.VerificationResult{}, err
 	}
-	return stage.VerificationResult{AttemptID: phase.ID, SnapshotID: phase.
-		OutputSnapshot, Report: report, Passed: passed}, nil
+	return stage.VerificationResult{AttemptID: phase.ID, SnapshotID: phase.OutputSnapshot, Report: report, Passed: passed}, nil
 }

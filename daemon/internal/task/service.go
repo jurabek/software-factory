@@ -90,25 +90,20 @@ func (s *Service) ensureBranch(ctx context.Context, taskID, parent string) error
 			ctx, taskID,
 			branches[0].ID)
 	}
-	branch := store.Branch{ID: stagekit.
-		RandomID(), TaskID: taskID, ParentBranchID: parent, Status: "active", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	branch := store.Branch{ID: stagekit.RandomID(), TaskID: taskID, ParentBranchID: parent, Status: "active", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
 	if err = s.deps.Store.Branches.Create(ctx, branch); err != nil {
 		return err
 	}
 	return s.deps.Store.Branches.Select(ctx, taskID, branch.ID)
 }
 
-func (s *Service) Create(ctx context.Context, request CreateRequest) (store.Task,
-
-	error,
+func (s *Service) Create(ctx context.Context, request CreateRequest) (store.Task, error,
 ) {
 	task, err := s.create(ctx, request, "")
 	if err != nil {
 		return store.Task{}, err
 	}
-	if err = s.ensureBranch(ctx, task.
-		ID, ""); err !=
-		nil {
+	if err = s.ensureBranch(ctx, task.ID, ""); err != nil {
 		return store.Task{}, err
 	}
 	return task,
@@ -120,107 +115,79 @@ func (s *Service) CreateSession(ctx context.Context, taskID string, request Crea
 	if err != nil {
 		return store.Task{}, err
 	}
-	if task.
-		ParentTaskID !=
-		"" {
-		task, err = s.
-			deps.Store.Tasks.Get(
+	if task.ParentTaskID != "" {
+		task, err = s.deps.Store.Tasks.Get(
 			ctx, task.ParentTaskID)
 		if err != nil {
-			return store.
-				Task{}, err
+			return store.Task{}, err
 		}
 	}
-	repository := Repository{Type: task.
-		RepositoryType}
+	repository := Repository{Type: task.RepositoryType}
 	if task.RepositoryType == "local" {
-		repository.
-			Path = task.RepositorySource
+		repository.Path = task.RepositorySource
 	} else {
 		repository.Repo = task.RepositorySource
 	}
 	created, err := s.create(ctx, CreateRequest{
 		Request:    request.Request,
-		Repository: repository, CodingAgent: task.CodingAgent, Model: task.Model,
-
-		Thinking: task.Thinking, Pipeline: task.Pipeline,
+		Repository: repository, CodingAgent: task.CodingAgent, Model: task.Model, Thinking: task.Thinking, Pipeline: task.Pipeline,
 	},
 		task.ID)
-	if err !=
-		nil {
+	if err != nil {
 		return store.Task{}, err
 	}
 	if err = s.ensureBranch(ctx,
-		created.
-			ID,
+		created.ID,
 		""); err != nil {
 		return store.Task{}, err
 	}
 	return created, nil
 }
 
-func (s *Service) create(ctx context.
-	Context, request CreateRequest, parentTaskID string) (store.
-	Task, error,
+func (s *Service) create(ctx context.Context, request CreateRequest, parentTaskID string) (store.Task, error,
 ) {
 	request.Request = strings.TrimSpace(request.Request)
 	if request.Request == "" {
 		return store.Task{}, fmt.Errorf("task description is required")
 	}
-	request.CodingAgent = strings.
-		TrimSpace(request.
-			CodingAgent,
-		)
+	request.CodingAgent = strings.TrimSpace(request.CodingAgent)
 	request.Model = strings.TrimSpace(request.Model)
 	request.Thinking = strings.TrimSpace(request.Thinking)
-	request.Pipeline = strings.
-		TrimSpace(request.Pipeline)
+	request.Pipeline = strings.TrimSpace(request.Pipeline)
 	configured, err := config.Freeze(s.deps.Config, s.deps.ConfigPath)
 	if err != nil {
 		return store.Task{}, err
 	}
 	selectedPipeline, err := config.SelectPipeline(configured, request.Pipeline)
 	if err != nil {
-		return store.
-			Task{}, err
+		return store.Task{}, err
 	}
-	if request.CodingAgent != "" && !config.IsValidHarness(request.
-		CodingAgent) {
+	if request.CodingAgent != "" && !config.IsValidHarness(request.CodingAgent) {
 		return store.Task{}, fmt.Errorf("coding_agent must be pi or codex")
 	}
-	if request.
-		Thinking !=
-		"" {
-		harnessForThinking := request.
-			CodingAgent
-		if harnessForThinking ==
-			"" {
+	if request.Thinking != "" {
+		harnessForThinking := request.CodingAgent
+		if harnessForThinking == "" {
 			harnessForThinking = s.deps.Config.Defaults.CodingAgent
 		}
 		if harnessForThinking == "" {
 			harnessForThinking = "pi"
 		}
-		if !config.IsValidThinkingFor(harnessForThinking, request.
-			Thinking) {
+		if !config.IsValidThinkingFor(harnessForThinking, request.Thinking) {
 			return store.Task{}, fmt.Errorf("thinking %q unsupported for %s",
 				request.Thinking, harnessForThinking)
 		}
 	}
 	if request.CodingAgent != "" {
-		if _, ok := s.deps.Harnesses.Get(request.CodingAgent); !ok && s.deps.
-			Harnesses != nil {
-			return store.Task{}, fmt.Errorf("harness %s unavailable", request.
-				CodingAgent)
+		if _, ok := s.deps.Harnesses.Get(request.CodingAgent); !ok && s.deps.Harnesses != nil {
+			return store.Task{}, fmt.Errorf("harness %s unavailable", request.CodingAgent)
 		}
 	}
-	id,
-		err := taskID()
-	if err !=
-		nil {
+	id, err := taskID()
+	if err != nil {
 		return store.Task{}, err
 	}
-	createdAt := time.Now().UTC().Format(time.
-		RFC3339Nano)
+	createdAt := time.Now().UTC().Format(time.RFC3339Nano)
 	source,
 		submitted, err := normalizeRepository(request.Repository)
 	if err != nil {
@@ -228,21 +195,17 @@ func (s *Service) create(ctx context.
 	}
 	workspace := filepath.Join(s.root, "tasks", id)
 	for _, directory := range []string{
-		workspace, filepath.
-			Join(workspace, "workspace",
-				"repository"), filepath.Join(workspace, "attempts"),
+		workspace, filepath.Join(workspace, "workspace",
+			"repository"), filepath.Join(workspace, "attempts"),
 		filepath.Join(workspace,
-			"snapshots"), filepath.
-			Join(workspace, "sessions"), filepath.Join(workspace, "workspace",
-			"snapshots"), filepath.Join(workspace, "workspace", "branches"), filepath.
-			Join(
-				workspace, "workspace", "attempts"),
+			"snapshots"), filepath.Join(workspace, "sessions"), filepath.Join(workspace, "workspace",
+			"snapshots"), filepath.Join(workspace, "workspace", "branches"), filepath.Join(
+			workspace, "workspace", "attempts"),
 	} {
 		if err = os.MkdirAll(directory, 0o700); err != nil {
 			_ = os.RemoveAll(workspace)
-			return store.Task{}, fmt.
-				Errorf("create task workspace: %w",
-					err)
+			return store.Task{}, fmt.Errorf("create task workspace: %w",
+				err)
 		}
 	}
 	configured = config.ApplyTaskOverrides(configured, request.CodingAgent,
@@ -252,10 +215,7 @@ func (s *Service) create(ctx context.
 	configSnapshot, err := config.Snapshot(configured)
 	if err != nil {
 		_ = os.RemoveAll(workspace)
-		return store.
-			Task{}, fmt.Errorf("encode task config: %w",
-
-			err)
+		return store.Task{}, fmt.Errorf("encode task config: %w", err)
 	}
 	if len(configured.Agents) == 0 {
 		configSnapshot = ""
@@ -263,10 +223,7 @@ func (s *Service) create(ctx context.
 	task := store.Task{
 		ID: id, ParentTaskID: parentTaskID, Request: request.Request,
 		WorkspacePath:  workspace,
-		RepositoryType: request.Repository.Type, RepositorySource: source,
-
-		SubmittedRepositoryPath: submitted, State: string(stagekit.Preparing), Pipeline: selectedPipeline.Name, ConfigSnapshot: configSnapshot, CreatedAt: createdAt, StartedAt: createdAt, CodingAgent: request.CodingAgent, Model: request.
-						Model, Thinking: request.Thinking,
+		RepositoryType: request.Repository.Type, RepositorySource: source, SubmittedRepositoryPath: submitted, State: string(stagekit.Preparing), Pipeline: selectedPipeline.Name, ConfigSnapshot: configSnapshot, CreatedAt: createdAt, StartedAt: createdAt, CodingAgent: request.CodingAgent, Model: request.Model, Thinking: request.Thinking,
 	}
 	metadata, err := json.MarshalIndent(task, "",
 		"  ")
@@ -275,15 +232,11 @@ func (s *Service) create(ctx context.
 		return store.Task{}, fmt.Errorf("encode task metadata: %w",
 			err)
 	}
-	if err = os.WriteFile(filepath.
-		Join(workspace, "task.json"), metadata, 0o600); err != nil {
+	if err = os.WriteFile(filepath.Join(workspace, "task.json"), metadata, 0o600); err != nil {
 		_ = os.RemoveAll(workspace)
-		return store.Task{}, fmt.Errorf("write task metadata: %w",
-
-			err)
+		return store.Task{}, fmt.Errorf("write task metadata: %w", err)
 	}
-	if err := s.deps.
-		Store.Tasks.CreateActive(ctx, task); err != nil {
+	if err := s.deps.Store.Tasks.CreateActive(ctx, task); err != nil {
 		_ = os.RemoveAll(workspace)
 		return store.Task{}, err
 	}
@@ -296,18 +249,15 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 		return err
 	}
 	tasks := []store.Task{task}
-	if task.
-		ParentTaskID == "" {
-		tasks, err = s.deps.
-			Store.Tasks.Sessions(ctx, id)
+	if task.ParentTaskID == "" {
+		tasks, err = s.deps.Store.Tasks.Sessions(ctx, id)
 		if err != nil {
 			return err
 		}
 	}
 	for _, session := range tasks {
 		if stagekit.IsActive(stagekit.State(session.State)) {
-			return store.
-				ErrConflict
+			return store.ErrConflict
 		}
 	}
 	for _, session := range tasks {
@@ -315,22 +265,15 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 			_ = s.deps.Sandbox.Cleanup(ctx, workspace.CleanupRequest{TaskID: session.ID, WorkspaceRoot: session.WorkspacePath, SourceType: session.RepositoryType, CanonicalPath: session.CanonicalRepositoryPath, WorkingPath: session.RepositoryPath})
 		}
 
-		if err := os.RemoveAll(filepath.Join(s.root, "tasks", session.ID)); err !=
-
-			nil {
-			return fmt.
-				Errorf("remove task files: %w",
-
-					err)
+		if err := os.RemoveAll(filepath.Join(s.root, "tasks", session.ID)); err != nil {
+			return fmt.Errorf("remove task files: %w", err)
 		}
 	}
-	return s.deps.
-		Store.Tasks.Delete(ctx,
+	return s.deps.Store.Tasks.Delete(ctx,
 		id)
 }
 
-func (s *Service) Diff(ctx context.
-	Context, id string,
+func (s *Service) Diff(ctx context.Context, id string,
 ) (Diff, error) {
 	task, err := s.deps.Store.Tasks.Get(ctx, id)
 	if err != nil {
@@ -343,22 +286,17 @@ func (s *Service) Diff(ctx context.
 func (s *Service) diffRepository(
 	task store.Task, reviewBase bool,
 ) (Diff, error) {
-	base := task.
-		BaseSHA
+	base := task.BaseSHA
 	if reviewBase && task.ReviewBaseSHA != "" {
-		base = task.
-			ReviewBaseSHA
+		base = task.ReviewBaseSHA
 	}
 	files, err := factorygit.ChangedFiles(task.RepositoryPath, base)
 	if err != nil {
 		return Diff{}, err
 	}
-	patch, err := factorygit.
-		Diff(
-			task.
-				RepositoryPath, base)
-	if err !=
-		nil {
+	patch, err := factorygit.Diff(
+		task.RepositoryPath, base)
+	if err != nil {
 		return Diff{}, err
 	}
 	return Diff{Files: files, Patch: patch}, nil
