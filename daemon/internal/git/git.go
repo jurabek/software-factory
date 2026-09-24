@@ -540,18 +540,19 @@ func validateTestPattern(pattern string) error {
 		return fmt.Errorf("test pattern must be relative: %q", pattern)
 	}
 	normalized := filepath.ToSlash(pattern)
-	if _, err := path.Match(strings.ReplaceAll(normalized, "**", "*"), ""); err != nil {
-		return fmt.Errorf("invalid test pattern %q: %w", pattern, err)
-	}
 	segments := strings.Split(normalized, "/")
 	if slices.Contains(segments, "..") {
 		return fmt.Errorf("test pattern escapes root: %q", pattern)
 	}
 	for _, segment := range segments {
-		if segment != "**" {
-			if _, err := path.Match(segment, ""); err != nil {
-				return fmt.Errorf("invalid test pattern %q: %w", pattern, err)
-			}
+		if strings.Contains(segment, "**") && segment != "**" {
+			return fmt.Errorf("invalid test pattern %q: recursive wildcards must be a standalone path segment", pattern)
+		}
+		if segment == "**" {
+			continue
+		}
+		if _, err := path.Match(segment, ""); err != nil {
+			return fmt.Errorf("invalid test pattern %q: %w", pattern, err)
 		}
 	}
 	return nil
