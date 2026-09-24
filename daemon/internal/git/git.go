@@ -210,47 +210,6 @@ func buildProfile(workspace, sourceType, source, sha string) (Profile, error) {
 	return Profile{Root: workspace, SourceType: sourceType, Source: source, BaseSHA: sha, Checks: checks, Generated: generated, Protected: protected, Tests: tests, PreChangeVerification: preChangeVerification, Instructions: instructions}, nil
 }
 
-func directivesFromAgents(path string) ([]Check, []string, []string, bool, error) {
-	body, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return nil, nil, nil, false, nil
-	}
-	if err != nil {
-		return nil, nil, nil, false, err
-	}
-	text := string(body)
-	start := strings.Index(text, "<!-- software-factory:start -->")
-	end := strings.Index(text, "<!-- software-factory:end -->")
-	if start < 0 || end <= start {
-		return nil, nil, nil, false, nil
-	}
-	block := strings.TrimSpace(text[start+len("<!-- software-factory:start -->") : end])
-	lines := strings.Split(block, "\n")
-	if len(lines) > 0 && strings.HasPrefix(strings.TrimSpace(lines[0]), "```") {
-		lines = lines[1:]
-	}
-	if len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "```" {
-		lines = lines[:len(lines)-1]
-	}
-	var value directives
-	if err := yaml.Unmarshal([]byte(strings.Join(lines, "\n")), &value); err != nil {
-		return nil, nil, nil, true, fmt.Errorf("parse AGENTS.md factory block: %w", err)
-	}
-	seen := map[string]bool{}
-	for _, check := range value.Checks {
-		if strings.TrimSpace(check.ID) == "" || strings.TrimSpace(check.Command) == "" || seen[check.ID] {
-			return nil, nil, nil, true, fmt.Errorf("checks require unique non-empty IDs and commands")
-		}
-		seen[check.ID] = true
-	}
-	for _, path := range append(append([]string{}, value.Generated...), value.Protected...) {
-		if err := validateRelativePath(path); err != nil {
-			return nil, nil, nil, true, err
-		}
-	}
-	return value.Checks, value.Generated, value.Protected, true, nil
-}
-
 func DetectQualityProfile(root string) ([]Check, []string, []string, []string, bool, error) {
 	agents := filepath.Join(root, "AGENTS.md")
 	if body, err := os.ReadFile(agents); err == nil {
@@ -583,9 +542,6 @@ func validateTestPattern(pattern string) error {
 	normalized := filepath.ToSlash(pattern)
 	if slices.Contains(strings.Split(normalized, "/"), "..") {
 		return fmt.Errorf("test pattern escapes root: %q", pattern)
-	}
-	if _, err := path.Match("", ""); err != nil {
-		return fmt.Errorf("invalid test pattern %q: %w", pattern, err)
 	}
 	for segment := range strings.SplitSeq(normalized, "/") {
 		if segment != "**" {

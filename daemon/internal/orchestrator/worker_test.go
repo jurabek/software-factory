@@ -75,9 +75,9 @@ func TestHandleEventsStopsWhenContextIsCanceled(t *testing.T) {
 
 func TestAvailableActionsContainControlsOnly(t *testing.T) {
 	for _, actions := range [][]string{
-		stagekit.AvailableActions(nil, string(Preparing)),
-		stagekit.AvailableActions(&store.Phase{Status: "running", Kind: "agent"}, string(Building)),
-		stagekit.AvailableActions(&store.Phase{Status: "failed", Kind: "check"}, string(Blocked)),
+		stagekit.AvailableActions(nil, string(stagekit.Preparing)),
+		stagekit.AvailableActions(&store.Phase{Status: "running", Kind: "agent"}, string(stagekit.Building)),
+		stagekit.AvailableActions(&store.Phase{Status: "failed", Kind: "check"}, string(stagekit.Blocked)),
 	} {
 		for _, action := range actions {
 			switch action {

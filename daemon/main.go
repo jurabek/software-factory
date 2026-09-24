@@ -319,29 +319,14 @@ func daemonNetworkConfig(bind, port string) (string, error) {
 }
 
 func loadDaemonToken(path string) (string, error) {
-	value, err := os.ReadFile(path)
-	if err == nil {
-		return validateDaemonID(string(value))
-	}
-	if !errors.Is(err, os.ErrNotExist) {
-		return "", err
-	}
-	var random [16]byte
-	if _, err = rand.Read(random[:]); err != nil {
-		return "", err
-	}
-	if err = createIfMissing(path, []byte(hex.EncodeToString(random[:])+"\n")); err != nil {
-		return "", err
-	}
-	value, err = os.ReadFile(path)
-	if err != nil {
-		return "", err
-	}
-	return validateDaemonID(string(value))
+	return loadOrCreateID(path)
 }
 
 func loadDaemonID(root string) (string, error) {
-	path := filepath.Join(root, "daemon-id")
+	return loadOrCreateID(filepath.Join(root, "daemon-id"))
+}
+
+func loadOrCreateID(path string) (string, error) {
 	value, err := os.ReadFile(path)
 	if err == nil {
 		return validateDaemonID(string(value))

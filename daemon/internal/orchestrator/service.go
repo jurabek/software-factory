@@ -383,18 +383,6 @@ func (s *Service) stopAndWait(ctx context.Context, id string) error {
 	}
 }
 
-func (s *Service) scheduleMessage(ctx context.Context, task store.Task, role string) error {
-	_ = role
-	switch stagekit.State(task.State) {
-	case stagekit.AwaitingApproval,
-
-		stagekit.Blocked, stagekit.Completed:
-		return s.events.Publish(ctx,
-			task.ID, store.TaskMessaged)
-	}
-	return nil
-}
-
 func (s *Service) kickQueuedMessage(taskID string) {
 	ctx := context.Background()
 	lock := s.taskLock(taskID)
@@ -410,12 +398,10 @@ func (s *Service) kickQueuedMessage(taskID string) {
 		string(stagekit.Completed) {
 		return
 	}
-	message,
-		err := s.db.Messages.NextQueuedForTask(ctx, taskID)
-	if err != nil {
+	if _, err := s.db.Messages.NextQueuedForTask(ctx, taskID); err != nil {
 		return
 	}
-	_ = s.scheduleMessage(ctx, task, message.StageID)
+	_ = s.events.Publish(ctx, task.ID, store.TaskMessaged)
 }
 
 func (s *Service) traceMessage(ctx context.Context, message store.Message, phase *store.Phase) error {

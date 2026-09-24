@@ -112,20 +112,6 @@ export const daemonCommands: readonly DaemonCommand[] = [
 	"abort",
 ];
 
-const safeUpstreamCodes = new Set([
-	"invalid_request",
-	"invalid_task",
-	"invalid_session",
-	"invalid_message",
-	"configuration_invalid",
-	"unknown_harness",
-	"models_unavailable",
-	"not_found",
-	"invalid_state",
-	"stale_plan",
-	"stale_branch",
-]);
-
 const safeMessages: Record<string, string> = {
 	invalid_request: "Daemon rejected the request shape.",
 	invalid_task: "Daemon rejected the task input.",
@@ -188,7 +174,7 @@ async function safeCode(status: number, response: Response): Promise<string> {
 			body &&
 			typeof body === "object" &&
 			typeof body.code === "string" &&
-			safeUpstreamCodes.has(body.code)
+			Object.hasOwn(safeMessages, body.code)
 		) {
 			return body.code;
 		}
@@ -214,8 +200,6 @@ async function requestJSON(
 	options: DaemonRequestOptions & {
 		method?: string;
 		body?: unknown;
-		accept?: string;
-		lastEventID?: string;
 	} = {},
 ): Promise<unknown> {
 	let response: Response;
@@ -223,10 +207,6 @@ async function requestJSON(
 		const headers = requestHeaders(credential, options, {
 			...(options.body !== undefined
 				? { "Content-Type": "application/json" }
-				: {}),
-			...(options.accept ? { Accept: options.accept } : {}),
-			...(options.lastEventID !== undefined
-				? { "Last-Event-ID": options.lastEventID }
 				: {}),
 		});
 		response = await fetcher(`${endpoint}${path}`, {
