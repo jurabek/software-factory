@@ -4,28 +4,36 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+
+	"github.com/jmoiron/sqlx"
 )
 
 type PhaseDefinition struct {
-	ID             string `json:"id"`
-	TaskID         string `json:"task_id"`
-	PhaseKey       string `json:"phase_key"`
-	Revision       int    `json:"revision"`
-	Executor       string `json:"executor"`
-	Owner          string `json:"owner"`
-	Spec           string `json:"spec_json"`
-	Digest         string `json:"digest"`
-	ParentRevision int    `json:"parent_revision"`
-	CreatedAt      string `json:"created_at"`
+	ID             string `db:"id" json:"id"`
+	TaskID         string `db:"task_id" json:"task_id"`
+	PhaseKey       string `db:"phase_key" json:"phase_key"`
+	Revision       int    `db:"revision" json:"revision"`
+	Executor       string `db:"executor" json:"executor"`
+	Owner          string `db:"owner" json:"owner"`
+	Spec           string `db:"spec_json" json:"spec_json"`
+	Digest         string `db:"digest" json:"digest"`
+	ParentRevision int    `db:"parent_revision" json:"parent_revision"`
+	CreatedAt      string `db:"created_at" json:"created_at"`
 }
 
-func (db *DB) CreateDefinition(ctx context.Context, definition PhaseDefinition) error {
-	_, err := db.ExecContext(ctx, `insert into phase_definitions(id,task_id,phase_key,revision,executor,owner,spec_json,digest,parent_revision,created_at) values(?,?,?,?,?,?,?,?,?,?)`, definition.ID, definition.TaskID, definition.PhaseKey, definition.Revision, definition.Executor, definition.Owner, definition.Spec, definition.Digest, definition.ParentRevision, definition.CreatedAt)
-	return wrap("create phase definition", err)
+type DefinitionRepository struct{ db *sqlx.DB }
+
+func (r *DefinitionRepository) Create(ctx context.Context, definition PhaseDefinition) error {
+	query := `insert into phase_definitions(id,task_id,phase_key,revision,executor,owner,spec_json,digest,parent_revision,created_at) values(:id,:task_id,:phase_key,:revision,:executor,:owner,:spec_json,:digest,:parent_revision,:created_at)`
+	_, err := r.db.NamedExecContext(ctx, query, definition)
+	return wrap("create phase definition",
+		err)
 }
-func (db *DB) LatestDefinition(ctx context.Context, taskID, phaseKey string) (PhaseDefinition, error) {
+
+func (r *DefinitionRepository) Latest(ctx context.Context, taskID, phaseKey string) (PhaseDefinition, error) {
 	var value PhaseDefinition
-	err := db.QueryRowContext(ctx, `select id,task_id,phase_key,revision,coalesce(executor,''),coalesce(owner,''),coalesce(spec_json,'{}'),coalesce(digest,''),coalesce(parent_revision,0),created_at from phase_definitions where task_id=? and phase_key=? order by revision desc limit 1`, taskID, phaseKey).Scan(&value.ID, &value.TaskID, &value.PhaseKey, &value.Revision, &value.Executor, &value.Owner, &value.Spec, &value.Digest, &value.ParentRevision, &value.CreatedAt)
+	query := `select id,task_id,phase_key,revision,coalesce(executor,''),coalesce(owner,''),coalesce(spec_json,'{}'),coalesce(digest,''),coalesce(parent_revision,0),created_at from phase_definitions where task_id=? and phase_key=? order by revision desc limit 1`
+	err := r.db.QueryRowContext(ctx, query, taskID, phaseKey).Scan(&value.ID, &value.TaskID, &value.PhaseKey, &value.Revision, &value.Executor, &value.Owner, &value.Spec, &value.Digest, &value.ParentRevision, &value.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return PhaseDefinition{}, ErrNotFound
 	}

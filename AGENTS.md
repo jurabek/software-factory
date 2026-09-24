@@ -3,7 +3,8 @@
 - In this current phase all Database or Modules can be destructive. If you change schemas or DB. You don't need to deal with migrations.
 - Use absolute import paths; application modules use the `@/...` alias.
 - Never force-push.
-- In Golang Never move private methods into separate file. Keep methods where main Struct is located  
+- In Golang Never move private methods into separate file. Keep methods where main Struct is located.
+- Keep Go selector chains on one line (for example, `s.kit.Task(...)`) and run `gofmt` on every changed Go file.
 
 <!-- software-factory:start -->
 ```yaml

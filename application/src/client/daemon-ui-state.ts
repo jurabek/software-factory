@@ -172,17 +172,8 @@ export function relativeTime(iso: string, now: number = Date.now()): string {
 	return new Date(iso).toLocaleDateString();
 }
 
-export function orderedAttempts(
-	attempts: TaskAttempt[],
-	branchId?: string | null,
-): TaskAttempt[] {
-	return attempts
-		.filter(
-			(attempt) =>
-				!branchId || !attempt.branch_id || attempt.branch_id === branchId,
-		)
-		.slice()
-		.sort(
+export function orderedAttempts(attempts: TaskAttempt[]): TaskAttempt[] {
+	return attempts.slice().sort(
 			(left, right) =>
 				(left.attempt ?? 0) - (right.attempt ?? 0) ||
 				(left.started_at ?? "").localeCompare(right.started_at ?? ""),

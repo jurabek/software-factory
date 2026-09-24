@@ -18,7 +18,7 @@ create table if not exists tasks (
  created_at text not null, started_at text, ended_at text,
  coding_agent text not null default '', model text not null default '', thinking text not null default ''
 );
-create table if not exists phases (id text primary key, task_id text not null references tasks(id) on delete cascade, sequence integer not null, name text not null, kind text not null, owner text not null, description text, status text not null, attempt integer not null default 1, retries integer not null default 0, error text, started_at text, ended_at text, native_base_entry_id text, fork_native integer not null default 0);
+create table if not exists phases (id text primary key, task_id text not null references tasks(id) on delete cascade, sequence integer not null, name text not null, kind text not null, owner text not null, description text, status text not null, attempt integer not null default 1, retries integer not null default 0, error text, started_at text, ended_at text);
 create table if not exists events (sequence integer primary key autoincrement, id text not null unique, task_id text not null references tasks(id) on delete cascade, phase_id text, parent_event_id text, kind text not null, format_version integer not null default 1, name text, payload_json text not null, display_json text not null default '{}', native_entry_id text, request_id text, token_count integer not null default 0, started_at text not null, ended_at text);
 create table if not exists orchestration_events (
  id text primary key, task_id text not null references tasks(id) on delete cascade,
@@ -38,18 +38,6 @@ create table if not exists messages (
  delivery_status text not null, failure_reason text,
  created_at text not null, delivered_at text, failed_at text,
  unique(task_id, idempotency_key)
-);
-create table if not exists retry_requests (
- task_id text not null references tasks(id) on delete cascade,
- idempotency_key text not null, source_attempt_id text not null,
- branch_id text not null, attempt_id text not null, created_at text not null,
- primary key(task_id, idempotency_key)
-);
-create table if not exists branches (
- id text primary key, task_id text not null references tasks(id) on delete cascade,
- parent_branch_id text, fork_attempt_id text,
- head_attempt_id text, status text not null default 'active',
- created_at text not null, updated_at text not null
 );
 create table if not exists phase_definitions (
  id text primary key, task_id text not null references tasks(id) on delete cascade,
@@ -87,7 +75,7 @@ func incompatibleSchema(ctx context.Context, db *sql.DB) (bool, error) {
 			return true, columnErr
 		}
 	}
-	for _, table := range []string{"branches", "phase_definitions", "workspace_snapshots"} {
+	for _, table := range []string{"phase_definitions", "workspace_snapshots"} {
 		exists, tableErr := tableExists(ctx, db, table)
 		if tableErr != nil || !exists {
 			return true, tableErr
@@ -116,16 +104,30 @@ func incompatibleSchema(ctx context.Context, db *sql.DB) (bool, error) {
 
 func ensureRetriableColumns(ctx context.Context, db *sql.DB) error {
 	adds := [][2]string{
-		{"tasks", "parent_task_id text references tasks(id) on delete cascade"}, {"tasks", "selected_branch_id text"}, {"tasks", "pipeline text"}, {"tasks", "active_stage text"},
-		{"tasks", "coding_agent text not null default ''"}, {"tasks", "model text not null default ''"}, {"tasks", "thinking text not null default ''"},
-		{"phases", "branch_id text"}, {"phases", "definition_id text"}, {"phases", "input_snapshot text"}, {"phases", "output_snapshot text"}, {"phases", "superseded integer not null default 0"},
-		{"phases", "native_base_entry_id text"}, {"phases", "fork_native integer not null default 0"},
-		{"events", "attempt_id text"}, {"events", "branch_id text"}, {"events", "actions_json text"}, {"events", "request_id text"},
-		{"phases", "stage_id text"}, {"envelopes", "stage_id text"}, {"messages", "stage_id text"},
-		{"checks", "stage_id text"}, {"checks", "check_phase text not null default 'primary'"}, {"checks", "comparison_baseline text"}, {"checks", "output_path text"},
+		{"tasks", "parent_task_id text references tasks(id) on delete cascade"},
+		{"tasks", "pipeline text"},
+		{"tasks", "active_stage text"},
+		{"tasks", "coding_agent text not null default ''"},
+		{"tasks", "model text not null default ''"},
+		{"tasks", "thinking text not null default ''"},
+		{"phases", "definition_id text"},
+		{"phases", "input_snapshot text"},
+		{"phases", "output_snapshot text"},
+		{"phases", "superseded integer not null default 0"},
+		{"events", "attempt_id text"},
+		{"events", "actions_json text"},
+		{"events", "request_id text"},
+		{"phases", "stage_id text"},
+		{"envelopes", "stage_id text"},
+		{"messages", "stage_id text"},
+		{"checks", "stage_id text"},
+		{"checks", "check_phase text not null default 'primary'"},
+		{"checks", "comparison_baseline text"},
+		{"checks", "output_path text"},
 	}
 	for _, add := range adds {
-		if _, err := db.ExecContext(ctx, `alter table `+add[0]+` add column `+add[1]); err != nil && !isDuplicateColumn(err) {
+		query := `alter table ` + add[0] + ` add column ` + add[1]
+		if _, err := db.ExecContext(ctx, query); err != nil && !isDuplicateColumn(err) {
 			return fmt.Errorf("migrate %s: %w", add[0], err)
 		}
 	}
@@ -142,12 +144,14 @@ func isDuplicateColumn(err error) bool {
 
 func tableExists(ctx context.Context, db *sql.DB, name string) (bool, error) {
 	var count int
-	err := db.QueryRowContext(ctx, `select count(*) from sqlite_master where type='table' and name=?`, name).Scan(&count)
+	query := `select count(*) from sqlite_master where type='table' and name=?`
+	err := db.QueryRowContext(ctx, query, name).Scan(&count)
 	return count > 0, err
 }
 
 func columnExists(ctx context.Context, db *sql.DB, table, column string) (bool, error) {
 	var count int
-	err := db.QueryRowContext(ctx, `select count(*) from pragma_table_info(?) where name=?`, table, column).Scan(&count)
+	query := `select count(*) from pragma_table_info(?) where name=?`
+	err := db.QueryRowContext(ctx, query, table, column).Scan(&count)
 	return count > 0, err
 }

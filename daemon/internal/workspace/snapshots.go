@@ -23,18 +23,12 @@ import (
 	"github.com/jurabek/software-factory/daemon/internal/store"
 )
 
-// Store persists workspace snapshots.
-type Store interface {
-	SaveSnapshot(context.Context, store.WorkspaceSnapshot) error
-	Snapshot(context.Context, string) (store.WorkspaceSnapshot, error)
-}
-
 // Service captures and restores workspace snapshots.
 type Service struct {
-	db Store
+	db *store.Store
 }
 
-func New(db Store) *Service {
+func New(db *store.Store) *Service {
 	return &Service{db: db}
 }
 
@@ -125,39 +119,17 @@ func (s *Service) CaptureSnapshot(ctx context.Context, task store.Task) (store.W
 		size += entry.Size
 	}
 	snapshot := store.WorkspaceSnapshot{Digest: digest, TaskID: task.ID, Path: destination, SizeBytes: size, Manifest: string(manifest), CreatedAt: nowString()}
-	if err := s.db.SaveSnapshot(ctx, snapshot); err != nil {
+	if err := s.db.Snapshots.Save(ctx, snapshot); err != nil {
 		return store.WorkspaceSnapshot{}, err
 	}
 	return snapshot, nil
-}
-
-// MaterializeSnapshot restores a snapshot into workspace/repository.
-func (s *Service) MaterializeSnapshot(ctx context.Context, task store.Task, digest string) error {
-	if digest == "" {
-		return nil
-	}
-	snapshot, err := s.db.Snapshot(ctx, digest)
-	if err != nil {
-		return err
-	}
-	destination := filepath.Join(task.WorkspacePath, "workspace", "repository")
-	if err := os.MkdirAll(destination, 0o700); err != nil {
-		return err
-	}
-	if _, err := os.Stat(snapshot.Path); os.IsNotExist(err) {
-		return nil
-	}
-	if err := clearRepositoryContents(destination); err != nil {
-		return err
-	}
-	return copyDir(snapshot.Path, destination)
 }
 
 func (s *Service) MaterializeScratch(ctx context.Context, task store.Task, digest, destination string) error {
 	if digest == "" {
 		return fmt.Errorf("comparison snapshot is required")
 	}
-	snapshot, err := s.db.Snapshot(ctx, digest)
+	snapshot, err := s.db.Snapshots.Get(ctx, digest)
 	if err != nil {
 		return err
 	}
@@ -186,29 +158,6 @@ func (s *Service) MaterializeScratch(ctx context.Context, task store.Task, diges
 		Author:            &object.Signature{Name: "Software Factory", Email: "software-factory@localhost", When: time.Now()},
 	}); err != nil {
 		return fmt.Errorf("commit scratch repository: %w", err)
-	}
-	return nil
-}
-
-func clearRepositoryContents(root string) error {
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		return err
-	}
-	for _, entry := range entries {
-		path := filepath.Join(root, entry.Name())
-		if !entry.IsDir() {
-			if err := os.Remove(path); err != nil {
-				return err
-			}
-			continue
-		}
-		if entry.Name() == ".git" {
-			continue
-		}
-		if err := os.RemoveAll(path); err != nil {
-			return err
-		}
 	}
 	return nil
 }

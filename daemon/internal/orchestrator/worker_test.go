@@ -17,8 +17,8 @@ func TestExecutionOwnerAdmitsOneSuccessorAfterCurrentSettlement(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	created := store.Task{ID: "task-1", Request: "change", WorkspacePath: filepath.Join(root, "tasks", "task-1"), State: string(stagekit.Preparing), CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
-	if err = db.CreateTask(context.Background(), created); err != nil {
+	created := store.Task{ID: "task-1", Request: "change", WorkspacePath: filepath.Join(root, "tasks", "task-1"), State: Preparing, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err = db.Tasks.Create(context.Background(), created); err != nil {
 		t.Fatal(err)
 	}
 	service := New(root, Dependencies{Store: db})
@@ -75,9 +75,9 @@ func TestHandleEventsStopsWhenContextIsCanceled(t *testing.T) {
 
 func TestAvailableActionsContainControlsOnly(t *testing.T) {
 	for _, actions := range [][]string{
-		stagekit.AvailableActions(nil, string(stagekit.Preparing)),
-		stagekit.AvailableActions(&store.Phase{Status: "running", Kind: "agent"}, string(stagekit.Building)),
-		stagekit.AvailableActions(&store.Phase{Status: "failed", Kind: "check"}, string(stagekit.Blocked)),
+		stagekit.AvailableActions(nil, stagekit.Preparing),
+		stagekit.AvailableActions(&store.Phase{Status: "running", Kind: "agent"}, stagekit.Building),
+		stagekit.AvailableActions(&store.Phase{Status: "failed", Kind: "check"}, stagekit.Blocked),
 	} {
 		for _, action := range actions {
 			switch action {

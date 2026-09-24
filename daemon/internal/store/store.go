@@ -9,12 +9,11 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/jmoiron/sqlx"
 	_ "modernc.org/sqlite"
 )
 
-type DB struct{ *sql.DB }
-
-func Open(path string) (*DB, error) {
+func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("create database directory: %w", err)
 	}
@@ -37,39 +36,80 @@ func Open(path string) (*DB, error) {
 		db.Close()
 		return nil, err
 	}
-	wrapped := &DB{DB: db}
 	if err := os.Chmod(path, 0o600); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("secure database: %w", err)
 	}
-	return wrapped, nil
+	return New(db), nil
 }
 
 var (
 	ErrNotFound          = errors.New("not found")
 	ErrConflict          = errors.New("conflict")
-	ErrStaleBranch       = errors.New("stale_branch")
 	ErrStateIncompatible = errors.New("state_incompatible: delete the configured Software Factory directory before starting this clean-break version")
 )
 
-func boolToInt(value bool) int {
-	if value {
-		return 1
-	}
-	return 0
-}
-
 func now() string { return time.Now().UTC().Format(time.RFC3339Nano) }
-func nullIfEmpty(value string) any {
-	if value == "" {
-		return nil
-	}
-	return value
-}
 
 func wrap(action string, err error) error {
 	if err == nil {
 		return nil
 	}
 	return fmt.Errorf("%s: %w", action, err)
+}
+
+// Store aggregates small per-model repositories over one SQLite handle.
+// Single-table work lives on the repositories; multi-model transactions are
+// composed here or inside the owning repository. It embeds *sql.DB so raw
+// SQL stays available for tests and migrations.
+type Store struct {
+	*sql.DB
+	Tasks         *TaskRepository
+	Phases        *PhaseRepository
+	Events        *EventRepository
+	Messages      *MessageRepository
+	AgentSessions *AgentSessionRepository
+	Checks        *CheckRepository
+	Envelopes     *EnvelopeRepository
+	Definitions   *DefinitionRepository
+	Evidence      *EvidenceRepository
+	Orchestration *OrchestrationRepository
+	Snapshots     *SnapshotRepository
+	Processes     *ProcessRepository
+}
+
+// New wires per-model repositories over db.
+func New(db *sql.DB) *Store {
+	dbx := sqlx.NewDb(db, "sqlite")
+	s := &Store{DB: db}
+	s.Tasks = &TaskRepository{db: dbx}
+	s.Phases = &PhaseRepository{db: dbx}
+	s.Events = &EventRepository{db: dbx}
+	s.Messages = &MessageRepository{db: dbx}
+	s.AgentSessions = &AgentSessionRepository{db: dbx}
+	s.Checks = &CheckRepository{db: dbx}
+	s.Envelopes = &EnvelopeRepository{db: dbx}
+	s.Definitions = &DefinitionRepository{db: dbx}
+	s.Evidence = &EvidenceRepository{db: dbx}
+	s.Orchestration = &OrchestrationRepository{db: dbx}
+	s.Snapshots = &SnapshotRepository{db: dbx}
+	s.Processes = &ProcessRepository{db: dbx}
+	return s
+}
+
+func (s *Store) TaskSessionsWithAgents(ctx context.Context, taskID string) ([]TaskSession, error) {
+	tasks, err := s.Tasks.Sessions(ctx, taskID)
+	if err != nil {
+		return nil,
+			err
+	}
+	values := make([]TaskSession, 0, len(tasks))
+	for _, task := range tasks {
+		agents, agentsErr := s.AgentSessions.List(ctx, task.ID)
+		if agentsErr != nil {
+			return nil, agentsErr
+		}
+		values = append(values, TaskSession{Task: task, AgentSessions: agents})
+	}
+	return values, nil
 }

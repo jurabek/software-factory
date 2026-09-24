@@ -11,7 +11,7 @@ import (
 	"github.com/jurabek/software-factory/daemon/internal/store"
 )
 
-func testTaskService(t *testing.T) (*Service, *store.DB, string) {
+func testTaskService(t *testing.T) (*Service, *store.Store, string) {
 	t.Helper()
 	root := t.TempDir()
 	db, err := store.Open(filepath.Join(root, "factory.db"))
@@ -23,7 +23,7 @@ func testTaskService(t *testing.T) (*Service, *store.DB, string) {
 	return New(root, Deps{Store: db, Config: configured}), db, root
 }
 
-func TestCreateAllocatesWorkspaceBranchAndConfigSnapshot(t *testing.T) {
+func TestCreateAllocatesWorkspaceAndConfigSnapshot(t *testing.T) {
 	service, db, root := testTaskService(t)
 	created, err := service.Create(context.Background(), CreateRequest{Request: " build ", Repository: Repository{Type: "github", Repo: "owner/repository"}})
 	if err != nil {
@@ -37,12 +37,12 @@ func TestCreateAllocatesWorkspaceBranchAndConfigSnapshot(t *testing.T) {
 			t.Fatalf("workspace item %s: %v", relative, err)
 		}
 	}
-	stored, err := db.Task(context.Background(), created.ID)
+	stored, err := db.Tasks.Get(context.Background(), created.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored.SelectedBranchID == "" || stored.ConfigSnapshot == "" {
-		t.Fatalf("task missing branch or config snapshot: %+v", stored)
+	if stored.ConfigSnapshot == "" {
+		t.Fatalf("task missing config snapshot: %+v", stored)
 	}
 	configured, _, err := config.Parse([]byte(stored.ConfigSnapshot), root)
 	if err != nil {
@@ -91,7 +91,7 @@ func TestCreateSessionUsesRootTaskAndDeleteCleansAllWorkspaces(t *testing.T) {
 			t.Fatalf("workspace %q still exists: %v", workspace, err)
 		}
 	}
-	if _, err = db.Task(ctx, second.ID); !errors.Is(err, store.ErrNotFound) {
+	if _, err = db.Tasks.Get(ctx, second.ID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("child lookup error = %v, want not found", err)
 	}
 }

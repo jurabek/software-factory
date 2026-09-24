@@ -1,32 +1,42 @@
 package store
 
-import "context"
+import (
+	"context"
+
+	"github.com/jmoiron/sqlx"
+)
 
 type Check struct {
-	ID                 string `json:"id"`
-	TaskID             string `json:"task_id"`
-	PhaseID            string `json:"phase_id"`
-	StageID            string `json:"stage_id"`
-	Phase              string `json:"phase"`
-	ComparisonBaseline string `json:"comparison_baseline,omitempty"`
-	Name               string `json:"name"`
-	Command            string `json:"command"`
-	Status             string `json:"status"`
-	Output             string `json:"output"`
-	OutputPath         string `json:"output_path"`
-	Attempt            int    `json:"attempt"`
-	ExitCode           int    `json:"exit_code"`
-	DurationMS         int    `json:"duration_ms"`
-	StartedAt          string `json:"started_at"`
-	EndedAt            string `json:"ended_at"`
+	ID                 string `db:"id" json:"id"`
+	TaskID             string `db:"task_id" json:"task_id"`
+	PhaseID            string `db:"phase_id" json:"phase_id"`
+	StageID            string `db:"stage_id" json:"stage_id"`
+	Phase              string `db:"check_phase" json:"phase"`
+	ComparisonBaseline string `db:"comparison_baseline" json:"comparison_baseline,omitempty"`
+	Name               string `db:"name" json:"name"`
+	Command            string `db:"command" json:"command"`
+	Status             string `db:"status" json:"status"`
+	Output             string `db:"output" json:"output"`
+	OutputPath         string `db:"output_path" json:"output_path"`
+	Attempt            int    `db:"attempt" json:"attempt"`
+	ExitCode           int    `db:"exit_code" json:"exit_code"`
+	DurationMS         int    `db:"duration_ms" json:"duration_ms"`
+	StartedAt          string `db:"started_at" json:"started_at"`
+	EndedAt            string `db:"ended_at" json:"ended_at"`
 }
 
-func (db *DB) SaveCheck(ctx context.Context, check Check) error {
-	_, err := db.ExecContext(ctx, `insert or replace into checks(id,task_id,phase_id,stage_id,check_phase,comparison_baseline,name,command,attempt,status,exit_code,output,output_path,duration_ms,started_at,ended_at) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, check.ID, check.TaskID, nullIfEmpty(check.PhaseID), nullIfEmpty(check.StageID), check.Phase, nullIfEmpty(check.ComparisonBaseline), check.Name, check.Command, check.Attempt, check.Status, check.ExitCode, check.Output, check.OutputPath, check.DurationMS, check.StartedAt, check.EndedAt)
-	return wrap("save check", err)
+type CheckRepository struct{ db *sqlx.DB }
+
+func (r *CheckRepository) Save(ctx context.Context, check Check) error {
+	query := `insert or replace into checks(id,task_id,phase_id,stage_id,check_phase,comparison_baseline,name,command,attempt,status,exit_code,output,output_path,duration_ms,started_at,ended_at) values(:id,:task_id,nullif(:phase_id,''),nullif(:stage_id,''),:check_phase,nullif(:comparison_baseline,''),:name,:command,:attempt,:status,:exit_code,:output,:output_path,:duration_ms,:started_at,:ended_at)`
+	_, err := r.db.NamedExecContext(ctx, query, check)
+	return wrap("save check",
+		err)
 }
-func (db *DB) Checks(ctx context.Context, taskID string) ([]Check, error) {
-	rows, err := db.QueryContext(ctx, `select id,task_id,coalesce(phase_id,''),coalesce(stage_id,''),coalesce(check_phase,'primary'),coalesce(comparison_baseline,''),name,command,attempt,status,coalesce(exit_code,-1),coalesce(output,''),coalesce(output_path,''),coalesce(duration_ms,0),coalesce(started_at,''),coalesce(ended_at,'') from checks where task_id=? order by rowid`, taskID)
+
+func (r *CheckRepository) List(ctx context.Context, taskID string) ([]Check, error) {
+	query := `select id,task_id,coalesce(phase_id,''),coalesce(stage_id,''),coalesce(check_phase,'primary'),coalesce(comparison_baseline,''),name,command,attempt,status,coalesce(exit_code,-1),coalesce(output,''),coalesce(output_path,''),coalesce(duration_ms,0),coalesce(started_at,''),coalesce(ended_at,'') from checks where task_id=? order by rowid`
+	rows, err := r.db.QueryContext(ctx, query, taskID)
 	if err != nil {
 		return nil, err
 	}

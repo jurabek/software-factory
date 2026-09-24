@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,21 +17,21 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jurabek/software-factory/daemon/internal/builder"
 	"github.com/jurabek/software-factory/daemon/internal/config"
 	"github.com/jurabek/software-factory/daemon/internal/creation"
 	"github.com/jurabek/software-factory/daemon/internal/harness"
 	"github.com/jurabek/software-factory/daemon/internal/messaging"
 	"github.com/jurabek/software-factory/daemon/internal/orchestrator"
 	"github.com/jurabek/software-factory/daemon/internal/pipeline"
-	"github.com/jurabek/software-factory/daemon/internal/planner"
+	"github.com/jurabek/software-factory/daemon/internal/pipeline/builder"
+	"github.com/jurabek/software-factory/daemon/internal/pipeline/planner"
+	"github.com/jurabek/software-factory/daemon/internal/pipeline/reviewer"
+	"github.com/jurabek/software-factory/daemon/internal/pipeline/verifier"
 	"github.com/jurabek/software-factory/daemon/internal/projection"
-	"github.com/jurabek/software-factory/daemon/internal/reviewer"
 	"github.com/jurabek/software-factory/daemon/internal/session"
 	"github.com/jurabek/software-factory/daemon/internal/stagekit"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 	"github.com/jurabek/software-factory/daemon/internal/task"
-	"github.com/jurabek/software-factory/daemon/internal/verifier"
 	"github.com/jurabek/software-factory/daemon/internal/workspace"
 	"github.com/stretchr/testify/suite"
 )
@@ -139,7 +138,7 @@ func (h *taskFlowHarness) Requests() []harness.Prompt {
 type taskFlowSuite struct {
 	suite.Suite
 	client       *http.Client
-	db           *store.DB
+	db           *store.Store
 	harness      *taskFlowHarness
 	repo         string
 	server       *httptest.Server
@@ -240,7 +239,7 @@ func (s *taskFlowSuite) TestCreateApproveBuildAndCheck() {
 	}, http.StatusCreated, &created)
 	s.Require().NotEmpty(created.ID)
 
-	planned := s.awaitState(created.ID, string(stagekit.AwaitingApproval))
+	planned := s.awaitState(created.ID, stagekit.AwaitingApproval)
 	s.Require().NotEmpty(planned.PlanDigest)
 	s.Contains(planned.AvailableActions, "approve")
 
@@ -279,7 +278,7 @@ func (s *taskFlowSuite) TestCreateApproveBuildAndCheck() {
 	s.Equal("queued", messageDeliveryStatus(queued))
 	queuedStream.Close()
 	close(s.harness.releaseBuild)
-	completed := s.awaitState(created.ID, string(stagekit.Completed))
+	completed := s.awaitState(created.ID, stagekit.Completed)
 	s.Equal("flow-e2e", completed.ApprovalActor)
 	s.NotEmpty(completed.ApprovalAt)
 	delivered, deliveredStream := s.readStreamEvent(created.ID, 0, queued.Sequence)
@@ -408,7 +407,7 @@ func (s *taskFlowSuite) awaitState(taskID, expected string) taskResponse {
 		if task.State == expected {
 			return task
 		}
-		if task.State == string(stagekit.Blocked) || task.State == string(stagekit.Aborted) {
+		if task.State == stagekit.Blocked || task.State == stagekit.Aborted {
 			s.T().Fatalf("task reached %s while awaiting %s: %s", task.State, expected, task.Error)
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -435,20 +434,6 @@ func (s *taskFlowSuite) request(method, path string, body any, wantStatus int, t
 	if target != nil {
 		s.Require().NoError(json.NewDecoder(response.Body).Decode(target))
 	}
-}
-
-func (s *taskFlowSuite) requestText(path string, wantStatus int) string {
-	s.T().Helper()
-	request, err := http.NewRequest(http.MethodGet, s.server.URL+path, nil)
-	s.Require().NoError(err)
-	request.Header.Set("Authorization", "Bearer "+testToken)
-	response, err := s.client.Do(request)
-	s.Require().NoError(err)
-	defer response.Body.Close()
-	s.Require().Equal(wantStatus, response.StatusCode)
-	content, err := io.ReadAll(response.Body)
-	s.Require().NoError(err)
-	return string(content)
 }
 
 func (s *taskFlowSuite) git(args ...string) {

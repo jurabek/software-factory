@@ -15,7 +15,6 @@ export type DaemonTask = {
 	pipeline?: string;
 	stages?: DaemonStageProjection[];
 	workspace_path?: string;
-	selected_branch_id?: string;
 	repository_type?: string;
 	repository_source?: string;
 	plan_digest?: string;
@@ -39,6 +38,8 @@ export type DaemonCommandInput = { plan_digest: string };
 export type DaemonRequestOptions = {
 	signal?: AbortSignal;
 	actor?: string;
+	accept?: string;
+	lastEventID?: string;
 };
 export type EventQuery = { after?: number; limit?: number; tail?: number };
 export type DaemonEvent = {
@@ -48,7 +49,6 @@ export type DaemonEvent = {
 	task_id: string;
 	phase_id?: string;
 	attempt_id?: string;
-	branch_id?: string;
 	parent_event_id?: string;
 	kind: SessionKind;
 	name?: string;
@@ -123,7 +123,6 @@ const safeMessages: Record<string, string> = {
 	not_found: "Task not found on this daemon.",
 	invalid_state: "Task state does not allow this operation.",
 	stale_plan: "Stored plan is stale; refresh and reselect the action.",
-	stale_branch: "Selected branch head is stale; refresh lineage and reselect.",
 };
 
 export class DaemonRequestError extends Error {
@@ -163,6 +162,9 @@ function requestHeaders(
 		Authorization: `Bearer ${credential}`,
 	};
 	if (options.actor) headers[daemonActorHeader] = options.actor;
+	if (options.accept) headers.Accept = options.accept;
+	if (options.lastEventID !== undefined)
+		headers["Last-Event-ID"] = options.lastEventID;
 	return { ...headers, ...extra };
 }
 
@@ -750,35 +752,6 @@ export function createDaemonClient(fetcher: typeof fetch = fetch) {
 				options,
 			);
 		},
-		async attempt(
-			endpoint: string,
-			credential: string,
-			taskId: string,
-			attemptId: string,
-			options: DaemonRequestOptions = {},
-		): Promise<unknown> {
-			return requestJSON(
-				fetcher,
-				endpoint,
-				credential,
-				`/api/v1/tasks/${encodeURIComponent(taskId)}/attempts/${encodeURIComponent(attemptId)}`,
-				options,
-			);
-		},
-		async branches(
-			endpoint: string,
-			credential: string,
-			taskId: string,
-			options: DaemonRequestOptions = {},
-		): Promise<unknown> {
-			return requestJSON(
-				fetcher,
-				endpoint,
-				credential,
-				`/api/v1/tasks/${encodeURIComponent(taskId)}/branches`,
-				options,
-			);
-		},
 		async checks(
 			endpoint: string,
 			credential: string,
@@ -900,9 +873,6 @@ export function createDaemonClient(fetcher: typeof fetch = fetch) {
 						: {}),
 					...(typeof event.attempt_id === "string"
 						? { attempt_id: event.attempt_id }
-						: {}),
-					...(typeof event.branch_id === "string"
-						? { branch_id: event.branch_id }
 						: {}),
 					...(typeof event.parent_event_id === "string"
 						? { parent_event_id: event.parent_event_id }

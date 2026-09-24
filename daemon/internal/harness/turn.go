@@ -8,7 +8,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
 	"uuid"
 
 	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
@@ -18,24 +17,11 @@ import (
 
 const maxCapturedOutput = 64 << 10
 
-// DB is the narrow persistence surface a single agent turn needs.
-type DB interface {
-	AgentSession(ctx context.Context, taskID, stageID string) (store.AgentSession, error)
-	ReserveAgentSession(ctx context.Context, taskID string, value store.AgentSession) (store.AgentSession, error)
-	BeginAgentInvocation(ctx context.Context, taskID, stageID, invocationID, requestID, phaseID string) error
-	FinalizeAgentInvocation(ctx context.Context, taskID, stageID, invocationID string, value store.AgentSession) error
-	ClearAgentInvocation(ctx context.Context, taskID, stageID, invocationID string) error
-	SetPhaseNativeBase(ctx context.Context, taskID, phaseID, entryID string) error
-	SaveEnvelope(ctx context.Context, id, taskID, phaseID, stageID, kind, payload string, valid bool, attempt int) error
-	EventsByRequest(ctx context.Context, taskID, requestID string) ([]store.Event, error)
-	SetEventNativeEntries(ctx context.Context, taskID string, links []store.EventNativeLink) error
-}
-
 // Deps supplies the narrow collaborators for a turn. It carries runtime tuning
 // and adapters, never the orchestrator. NativeReader is optional and backs
 // restart reconciliation for turns recovered without a live session.
 type Deps struct {
-	DB              DB
+	DB              *store.Store
 	Harnesses       Registry
 	NativeReader    NativeReader
 	AgentDeadlineMS int
@@ -87,9 +73,9 @@ func RunTurn(ctx context.Context, deps Deps, input TurnInput) (TurnResult, error
 	if !ok {
 		return TurnResult{}, fmt.Errorf("harness %s unavailable", input.HarnessName)
 	}
-	storedSession, err := deps.DB.AgentSession(ctx, input.TaskID, stageID)
+	storedSession, err := deps.DB.AgentSessions.Get(ctx, input.TaskID, stageID)
 	if errors.Is(err, store.ErrNotFound) {
-		storedSession, err = deps.DB.ReserveAgentSession(ctx, input.TaskID, store.AgentSession{StageID: stageID, AgentName: agentName, Role: agentName, Harness: input.HarnessName, Model: input.Model, Thinking: input.Thinking, Color: input.Color, HarnessSessionID: uuid.New().String(), SessionDirectory: input.SessionDir})
+		storedSession, err = deps.DB.AgentSessions.Reserve(ctx, input.TaskID, store.AgentSession{StageID: stageID, AgentName: agentName, Role: agentName, Harness: input.HarnessName, Model: input.Model, Thinking: input.Thinking, Color: input.Color, HarnessSessionID: uuid.New().String(), SessionDirectory: input.SessionDir})
 	}
 	if err != nil {
 		return TurnResult{}, err
@@ -117,21 +103,8 @@ func RunTurn(ctx context.Context, deps Deps, input TurnInput) (TurnResult, error
 	}
 	defer native.Close()
 	sessionReady := storedSession.SessionReady
-	forkAt := ""
-	if input.Phase.ForkNative {
-		forkAt = input.Phase.NativeBaseEntryID
-	} else if input.Phase.NativeBaseEntryID == "" {
-		// Record the attempt's input checkpoint so a later exact retry can fork
-		// the native session back to it.
-		if err = deps.DB.SetPhaseNativeBase(ctx, input.TaskID, input.Phase.ID, storedSession.LastEntryID); err != nil {
-			return TurnResult{}, err
-		}
-	}
 	for attempt := 0; attempt <= deps.JSONFixAttempts; attempt++ {
 		prompt := Prompt{RequestID: input.RequestID, Attempt: attempt + 1, Text: input.UserPrompt, DeadlineMS: deps.AgentDeadlineMS}
-		if attempt == 0 {
-			prompt.ForkAtEntryID = forkAt
-		}
 		if attempt > 0 {
 			prompt.Text = "Your previous final response was invalid: " + err.Error() + "\n" + input.CorrectionSuffix
 		}
@@ -143,7 +116,7 @@ func RunTurn(ctx context.Context, deps Deps, input TurnInput) (TurnResult, error
 			}
 		}
 		invocationID := uuid.New().String()
-		if err := deps.DB.BeginAgentInvocation(ctx, input.TaskID, stageID, invocationID, input.RequestID, input.Phase.ID); err != nil {
+		if err := deps.DB.AgentSessions.BeginInvocation(ctx, input.TaskID, stageID, invocationID, input.RequestID, input.Phase.ID); err != nil {
 			return TurnResult{}, err
 		}
 		if input.OnDispatch != nil {
@@ -175,7 +148,7 @@ func RunTurn(ctx context.Context, deps Deps, input TurnInput) (TurnResult, error
 		reconcileNative(ctx, native, input.RequestID, &result)
 		correlateNative(ctx, deps.DB, native, input.TaskID, input.RequestID)
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		finalizeErr := deps.DB.FinalizeAgentInvocation(cleanupCtx, input.TaskID, stageID, invocationID, store.AgentSession{StageID: stageID, AgentName: agentName, Role: agentName, Harness: input.HarnessName, Provider: result.Provider, Model: result.Model, Thinking: input.Thinking, Color: input.Color, HarnessSessionID: storedSession.HarnessSessionID, SessionDirectory: storedSession.SessionDirectory, SessionReady: sessionReady, NativeTranscriptPath: result.NativeTranscriptPath, ContextTokens: result.ContextTokens, ContextWindow: result.ContextWindow, LastEntryID: result.LeafEntryID, Usage: persistedUsage(result.Usage), Cost: result.Usage.Cost})
+		finalizeErr := deps.DB.AgentSessions.FinalizeInvocation(cleanupCtx, input.TaskID, stageID, invocationID, store.AgentSession{StageID: stageID, AgentName: agentName, Role: agentName, Harness: input.HarnessName, Provider: result.Provider, Model: result.Model, Thinking: input.Thinking, Color: input.Color, HarnessSessionID: storedSession.HarnessSessionID, SessionDirectory: storedSession.SessionDirectory, SessionReady: sessionReady, NativeTranscriptPath: result.NativeTranscriptPath, ContextTokens: result.ContextTokens, ContextWindow: result.ContextWindow, LastEntryID: result.LeafEntryID, Usage: persistedUsage(result.Usage), Cost: result.Usage.Cost})
 		cancel()
 		if finalizeErr != nil {
 			return TurnResult{}, finalizeErr
@@ -193,7 +166,7 @@ func RunTurn(ctx context.Context, deps Deps, input TurnInput) (TurnResult, error
 		if valid {
 			stored = result.Text
 		}
-		if err := deps.DB.SaveEnvelope(ctx, uuid.New().String(), input.TaskID, input.Phase.ID, stageID, input.EnvelopeKind, stored, valid, attempt+1); err != nil {
+		if err := deps.DB.Envelopes.Save(ctx, uuid.New().String(), input.TaskID, input.Phase.ID, stageID, input.EnvelopeKind, stored, valid, attempt+1); err != nil {
 			return TurnResult{}, err
 		}
 		if valid {
@@ -224,7 +197,7 @@ func reconcilePendingTurn(ctx context.Context, deps Deps, input TurnInput, stage
 	if _, err := input.Validate(result.Text); err != nil {
 		return TurnResult{}, false, releaseInvocation(ctx, deps, input.TaskID, stageID, stored.PendingInvocationID)
 	}
-	err := deps.DB.FinalizeAgentInvocation(ctx, input.TaskID, stageID, stored.PendingInvocationID, store.AgentSession{
+	err := deps.DB.AgentSessions.FinalizeInvocation(ctx, input.TaskID, stageID, stored.PendingInvocationID, store.AgentSession{
 		StageID: stageID, AgentName: stored.AgentName, Role: stored.Role, Harness: stored.Harness,
 		Provider: result.Provider, Model: result.Model, Thinking: stored.Thinking, Color: stored.Color,
 		HarnessSessionID: stored.HarnessSessionID, SessionDirectory: stored.SessionDirectory,
@@ -235,14 +208,14 @@ func reconcilePendingTurn(ctx context.Context, deps Deps, input TurnInput, stage
 	if err != nil {
 		return TurnResult{}, false, err
 	}
-	if err = deps.DB.SaveEnvelope(ctx, uuid.New().String(), input.TaskID, input.Phase.ID, stageID, input.EnvelopeKind, result.Text, true, 1); err != nil {
+	if err = deps.DB.Envelopes.Save(ctx, uuid.New().String(), input.TaskID, input.Phase.ID, stageID, input.EnvelopeKind, result.Text, true, 1); err != nil {
 		return TurnResult{}, false, err
 	}
 	return TurnResult{Payload: result.Text, ReportText: result.ReportText, ReportEntryID: result.ReportEntryID}, true, nil
 }
 
 func releaseInvocation(ctx context.Context, deps Deps, taskID, stageID, invocationID string) error {
-	if err := deps.DB.ClearAgentInvocation(ctx, taskID, stageID, invocationID); err != nil && !errors.Is(err, store.ErrConflict) {
+	if err := deps.DB.AgentSessions.ClearInvocation(ctx, taskID, stageID, invocationID); err != nil && !errors.Is(err, store.ErrConflict) {
 		return err
 	}
 	return nil
@@ -271,7 +244,7 @@ func (s readerSource) Report(ctx context.Context, requestID string) (Report, boo
 // correlateNative backfills the native entry reference for the events produced
 // by a request. The native session is authoritative, so the read path resolves
 // payloads from these references.
-func correlateNative(ctx context.Context, db DB, native Session, taskID, requestID string) {
+func correlateNative(ctx context.Context, db *store.Store, native Session, taskID, requestID string) {
 	if requestID == "" || taskID == "" {
 		return
 	}
@@ -283,7 +256,7 @@ func correlateNative(ctx context.Context, db DB, native Session, taskID, request
 	if len(requestEntries) == 0 {
 		return
 	}
-	events, err := db.EventsByRequest(ctx, taskID, requestID)
+	events, err := db.Events.ByRequest(ctx, taskID, requestID)
 	if err != nil {
 		return
 	}
@@ -291,7 +264,7 @@ func correlateNative(ctx context.Context, db DB, native Session, taskID, request
 	if len(links) == 0 {
 		return
 	}
-	_ = db.SetEventNativeEntries(ctx, taskID, links)
+	_ = db.Events.SetNativeEntries(ctx, taskID, links)
 }
 
 // requestSubtree resolves the native entry ids belonging to a factory request,

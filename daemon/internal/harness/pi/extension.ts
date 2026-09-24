@@ -3,7 +3,6 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 type FactoryRequest = {
   requestId: string;
   attempt?: number;
-  forkAt?: string;
   prompt: string;
 };
 
@@ -37,19 +36,6 @@ export default function (pi: ExtensionAPI) {
       const request = decodeRequest(args);
       const nextAttempt = (attempts.get(request.requestId) ?? 0) + 1;
       attempts.set(request.requestId, nextAttempt);
-      // Exact retry branches the native session at the attempt's input
-      // checkpoint so earlier paths stay navigable. A missing checkpoint
-      // (e.g. an empty session) falls back to the current leaf.
-      if (request.forkAt) {
-        try {
-          await ctx.navigateTree(request.forkAt, {
-            summarize: false,
-            label: `factory-attempt:${request.attempt ?? nextAttempt}`,
-          });
-        } catch {
-          // Checkpoint is gone; continue from the current leaf.
-        }
-      }
       pi.appendEntry("factory-request", {
         requestId: request.requestId,
         attempt: request.attempt ?? nextAttempt,

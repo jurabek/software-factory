@@ -50,8 +50,6 @@ func (h tasksHandler) registerRoutes(mux *http.ServeMux) {
 	mux.Handle("POST /api/v1/tasks/{id}/abort", h.control(h.abort))
 	mux.HandleFunc("DELETE /api/v1/tasks/{id}", h.delete)
 	mux.HandleFunc("GET /api/v1/tasks/{id}/attempts", h.attempts)
-	mux.HandleFunc("GET /api/v1/tasks/{id}/attempts/{attemptID}", h.attempt)
-	mux.HandleFunc("GET /api/v1/tasks/{id}/branches", h.branches)
 	mux.HandleFunc("GET /api/v1/tasks/{id}/events", h.events)
 	mux.HandleFunc("GET /api/v1/tasks/{id}/events/stream", h.stream)
 	mux.HandleFunc("GET /api/v1/tasks/{id}/results", h.results)
@@ -86,7 +84,7 @@ func (h tasksHandler) create(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h tasksHandler) tasks(w http.ResponseWriter, r *http.Request) {
-	values, err := h.db.Tasks(r.Context())
+	values, err := h.db.Tasks.List(r.Context())
 	if err != nil {
 		internal(w, err)
 		return
@@ -104,7 +102,7 @@ func (h tasksHandler) tasks(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h tasksHandler) task(w http.ResponseWriter, r *http.Request) {
-	value, err := h.db.Task(r.Context(), r.PathValue("id"))
+	value, err := h.db.Tasks.Get(r.Context(), r.PathValue("id"))
 	if err != nil {
 		storeError(w, err)
 		return
@@ -144,7 +142,7 @@ func (h tasksHandler) createSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h tasksHandler) response(ctx context.Context, task store.Task) (taskResponse, error) {
-	phases, err := h.db.Phases(ctx, task.ID)
+	phases, err := h.db.Phases.List(ctx, task.ID)
 	if err != nil {
 		return taskResponse{}, err
 	}
@@ -206,14 +204,14 @@ func (h tasksHandler) pause(ctx context.Context, id string) error {
 }
 
 func (h tasksHandler) resume(ctx context.Context, id string) error {
-	task, err := h.db.Task(ctx, id)
+	task, err := h.db.Tasks.Get(ctx, id)
 	if err != nil {
 		return err
 	}
-	if task.State != string(stagekit.Paused) && task.State != string(stagekit.Blocked) {
+	if task.State != stagekit.Paused && task.State != stagekit.Blocked {
 		return store.ErrConflict
 	}
-	if task.State == string(stagekit.Blocked) && task.Error == "unresolved_questions" {
+	if task.State == stagekit.Blocked && task.Error == "unresolved_questions" {
 		return store.ErrConflict
 	}
 	return h.communicators.Events.Publish(ctx, id, store.TaskResumed)
@@ -223,12 +221,12 @@ func (h tasksHandler) abort(ctx context.Context, id string) error {
 	return h.publishControl(ctx, id, stagekit.Aborted, store.TaskCancelled)
 }
 
-func (h tasksHandler) publishControl(ctx context.Context, id string, target stagekit.State, kind string) error {
-	task, err := h.db.Task(ctx, id)
+func (h tasksHandler) publishControl(ctx context.Context, id, target, kind string) error {
+	task, err := h.db.Tasks.Get(ctx, id)
 	if err != nil {
 		return err
 	}
-	if task.State != string(target) && !stagekit.CanTransition(stagekit.State(task.State), target) {
+	if task.State != target && !stagekit.CanTransition(task.State, target) {
 		return store.ErrConflict
 	}
 	return h.communicators.Events.Publish(ctx, id, kind)
@@ -264,7 +262,7 @@ func (h tasksHandler) sendMessage(w http.ResponseWriter, r *http.Request) {
 	if actor == "" {
 		actor = "local-user"
 	}
-	value, _, err := h.communicators.Messages.Send(r.Context(), r.PathValue("id"), actor, request)
+	value, err := h.communicators.Messages.Send(r.Context(), r.PathValue("id"), actor, request)
 	if err != nil {
 		storeError(w, err)
 		return
@@ -276,7 +274,7 @@ func (h tasksHandler) messages(w http.ResponseWriter, r *http.Request) {
 	if !h.exists(w, r) {
 		return
 	}
-	values, err := h.db.Messages(r.Context(), r.PathValue("id"))
+	values, err := h.db.Messages.List(r.Context(), r.PathValue("id"))
 	if err != nil {
 		internal(w, err)
 		return
@@ -296,28 +294,7 @@ func (h tasksHandler) attempts(w http.ResponseWriter, r *http.Request) {
 	if !h.exists(w, r) {
 		return
 	}
-	values, err := h.db.Phases(r.Context(), r.PathValue("id"))
-	if err != nil {
-		internal(w, err)
-		return
-	}
-	write(w, http.StatusOK, values)
-}
-
-func (h tasksHandler) attempt(w http.ResponseWriter, r *http.Request) {
-	value, err := h.db.PhaseByID(r.Context(), r.PathValue("id"), r.PathValue("attemptID"))
-	if err != nil {
-		storeError(w, err)
-		return
-	}
-	write(w, http.StatusOK, value)
-}
-
-func (h tasksHandler) branches(w http.ResponseWriter, r *http.Request) {
-	if !h.exists(w, r) {
-		return
-	}
-	values, err := h.db.Branches(r.Context(), r.PathValue("id"))
+	values, err := h.db.Phases.List(r.Context(), r.PathValue("id"))
 	if err != nil {
 		internal(w, err)
 		return
@@ -329,7 +306,7 @@ func (h tasksHandler) checks(w http.ResponseWriter, r *http.Request) {
 	if !h.exists(w, r) {
 		return
 	}
-	values, err := h.db.Checks(r.Context(), r.PathValue("id"))
+	values, err := h.db.Checks.List(r.Context(), r.PathValue("id"))
 	if err != nil {
 		internal(w, err)
 		return
@@ -341,7 +318,7 @@ func (h tasksHandler) results(w http.ResponseWriter, r *http.Request) {
 	if !h.exists(w, r) {
 		return
 	}
-	values, err := h.db.Envelopes(r.Context(), r.PathValue("id"))
+	values, err := h.db.Envelopes.List(r.Context(), r.PathValue("id"))
 	if err != nil {
 		internal(w, err)
 		return
@@ -368,9 +345,9 @@ func (h tasksHandler) events(w http.ResponseWriter, r *http.Request) {
 	var values []store.Event
 	var err error
 	if tail > 0 {
-		values, err = h.db.RecentEvents(r.Context(), r.PathValue("id"), tail)
+		values, err = h.db.Events.Recent(r.Context(), r.PathValue("id"), tail)
 	} else {
-		values, err = h.db.Events(r.Context(), r.PathValue("id"), after, limit)
+		values, err = h.db.Events.List(r.Context(), r.PathValue("id"), after, limit)
 	}
 	if err != nil {
 		internal(w, err)
@@ -414,7 +391,7 @@ func (h tasksHandler) stream(w http.ResponseWriter, r *http.Request) {
 	defer ticker.Stop()
 	defer heartbeat.Stop()
 	send := func() bool {
-		events, err := h.db.Events(r.Context(), r.PathValue("id"), after, 250)
+		events, err := h.db.Events.List(r.Context(), r.PathValue("id"), after, 250)
 		if err != nil {
 			return false
 		}
@@ -448,7 +425,7 @@ func (h tasksHandler) stream(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h tasksHandler) exists(w http.ResponseWriter, r *http.Request) bool {
-	if _, err := h.db.Task(r.Context(), r.PathValue("id")); err != nil {
+	if _, err := h.db.Tasks.Get(r.Context(), r.PathValue("id")); err != nil {
 		storeError(w, err)
 		return false
 	}

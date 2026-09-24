@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
 	"uuid"
 
 	"github.com/jurabek/software-factory/daemon/internal/session"
@@ -97,7 +96,7 @@ func (s *scriptedSession) Report(_ context.Context, requestID string) (Report, b
 
 func (s *scriptedSession) Close() error { return nil }
 
-func testTurnDeps(t *testing.T, adapter Harness, fixAttempts int) (Deps, *store.DB, store.Task) {
+func testTurnDeps(t *testing.T, adapter Harness, fixAttempts int) (Deps, *store.Store, store.Task) {
 	t.Helper()
 	root := t.TempDir()
 	db, err := store.Open(filepath.Join(root, "factory.db"))
@@ -113,7 +112,7 @@ func testTurnDeps(t *testing.T, adapter Harness, fixAttempts int) (Deps, *store.
 	if err = os.MkdirAll(task.WorkspacePath, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err = db.CreateTask(context.Background(), task); err != nil {
+	if err = db.Tasks.Create(context.Background(), task); err != nil {
 		t.Fatal(err)
 	}
 	deps := Deps{DB: db, Harnesses: Registry{"pi": adapter}, JSONFixAttempts: fixAttempts}
@@ -127,7 +126,7 @@ func validBuild(text string) (any, error) {
 	return text, nil
 }
 
-func runTurn(t *testing.T, deps Deps, db *store.DB, task store.Task, phase store.Phase, role string, validate Validate) (TurnResult, error) {
+func runTurn(t *testing.T, deps Deps, db *store.Store, task store.Task, phase store.Phase, role string, validate Validate) (TurnResult, error) {
 	t.Helper()
 	return RunTurn(context.Background(), deps, TurnInput{
 		TaskID: task.ID, RequestID: "req-test", Phase: phase, Role: role, HarnessName: "pi",
@@ -139,9 +138,9 @@ func runTurn(t *testing.T, deps Deps, db *store.DB, task store.Task, phase store
 	})
 }
 
-func testSink(db *store.DB, taskID, phaseID string) EventSink {
+func testSink(db *store.Store, taskID, phaseID string) EventSink {
 	return func(ctx context.Context, event Event) error {
-		_, err := db.AppendEvent(ctx, "", store.Event{
+		_, err := db.Events.Append(ctx, "", store.Event{
 			ID: uuid.New().String(), TaskID: taskID, PhaseID: phaseID,
 			Kind: event.Kind, Name: event.Name, NativeEntryID: event.NativeEntryID, RequestID: event.RequestID,
 			Payload: event.Payload, Display: event.Display,
@@ -161,7 +160,7 @@ func TestRunTurnPersistsMetadataOnRunError(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "cli failed") {
 		t.Fatalf("err = %v, want cli failed", err)
 	}
-	stored, err := db.AgentSession(context.Background(), task.ID, "builder")
+	stored, err := db.AgentSessions.Get(context.Background(), task.ID, "builder")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +183,7 @@ func TestRunTurnCancelsInvocationWhenRequiredLiveEventCannotPersist(t *testing.T
 	deps, db, task := testTurnDeps(t, agent, 0)
 	ctx := context.Background()
 	phase := store.Phase{ID: "phase-1", TaskID: task.ID, Sequence: 1, Name: "building", Kind: "agent", Owner: "builder", Status: "running", Attempt: 1}
-	if err := db.AddPhase(ctx, phase); err != nil {
+	if err := db.Phases.Add(ctx, phase); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.ExecContext(ctx, `create trigger reject_required_live_event before insert on events when new.kind = 'message' begin select raise(abort, 'required live event failure'); end`); err != nil {
@@ -200,14 +199,14 @@ func TestRunTurnCancelsInvocationWhenRequiredLiveEventCannotPersist(t *testing.T
 	default:
 		t.Fatal("harness did not observe invocation cancellation")
 	}
-	envelopes, err := db.Envelopes(ctx, task.ID)
+	envelopes, err := db.Envelopes.List(ctx, task.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(envelopes) != 0 {
 		t.Fatalf("envelopes = %+v, want none after required live event failure", envelopes)
 	}
-	stored, err := db.AgentSession(ctx, task.ID, "builder")
+	stored, err := db.AgentSessions.Get(ctx, task.ID, "builder")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,35 +250,12 @@ func TestRunTurnPreservesReadyWhenFailedResultOmitsReadiness(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected second run error")
 	}
-	stored, err := db.AgentSession(context.Background(), task.ID, "builder")
+	stored, err := db.AgentSessions.Get(context.Background(), task.ID, "builder")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !stored.SessionReady {
 		t.Fatal("session_ready reset to false by failed result, want preserved true")
-	}
-}
-
-func TestRunTurnForksOnlyOnFirstCorrectionAttempt(t *testing.T) {
-	agent := &scriptedHarness{
-		results: []Result{
-			{Text: "invalid", SessionReady: true},
-			{Text: `{"ok":true}`, SessionReady: true},
-		},
-	}
-	deps, db, task := testTurnDeps(t, agent, 1)
-	phase := store.Phase{ID: "phase-1", Attempt: 2, ForkNative: true, NativeBaseEntryID: "checkpoint-1"}
-	if _, err := runTurn(t, deps, db, task, phase, "builder", validBuild); err != nil {
-		t.Fatal(err)
-	}
-	if len(agent.requests) != 2 {
-		t.Fatalf("requests = %d, want 2", len(agent.requests))
-	}
-	if agent.requests[0].ForkAtEntryID != "checkpoint-1" {
-		t.Fatalf("first ForkAtEntryID = %q, want checkpoint-1", agent.requests[0].ForkAtEntryID)
-	}
-	if agent.requests[1].ForkAtEntryID != "" {
-		t.Fatalf("correction ForkAtEntryID = %q, want empty", agent.requests[1].ForkAtEntryID)
 	}
 }
 
@@ -296,7 +272,7 @@ func TestRunTurnSessionMismatchErrorsEvenWithRunError(t *testing.T) {
 	if !strings.Contains(err.Error(), "cli failed") || !strings.Contains(err.Error(), "identity changed") {
 		t.Fatalf("err = %v, want both run and identity errors", err)
 	}
-	stored, err := db.AgentSession(context.Background(), task.ID, "builder")
+	stored, err := db.AgentSessions.Get(context.Background(), task.ID, "builder")
 	if err != nil {
 		t.Fatal(err)
 	}

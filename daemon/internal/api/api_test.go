@@ -38,12 +38,12 @@ func TestEventsTailReturnsNewestEventsInSequenceOrder(t *testing.T) {
 
 	createdAt := time.Now().UTC().Format(time.RFC3339Nano)
 	task := store.Task{ID: "task-1", Request: "request", WorkspacePath: t.TempDir(), RepositoryType: "local", RepositorySource: t.TempDir(), State: "preparing", CreatedAt: createdAt}
-	if err := db.CreateTask(context.Background(), task); err != nil {
+	if err := db.Tasks.Create(context.Background(), task); err != nil {
 		t.Fatal(err)
 	}
 	taskDir := t.TempDir()
 	for index := 1; index <= 3; index++ {
-		_, err := db.AppendEvent(context.Background(), taskDir, store.Event{
+		_, err := db.Events.Append(context.Background(), taskDir, store.Event{
 			ID:        fmt.Sprintf("event-%d", index),
 			TaskID:    task.ID,
 			Kind:      session.KindCustom,
@@ -103,13 +103,13 @@ func TestControlsReturnAfterEnqueueWithoutWaitingForOrchestration(t *testing.T) 
 	tests := []struct {
 		id, command, state, eventType string
 	}{
-		{id: "pause-task", command: "pause", state: string(stagekit.Building), eventType: store.TaskPaused},
-		{id: "resume-task", command: "resume", state: string(stagekit.Paused), eventType: store.TaskResumed},
-		{id: "abort-task", command: "abort", state: string(stagekit.Building), eventType: store.TaskCancelled},
+		{id: "pause-task", command: "pause", state: stagekit.Building, eventType: store.TaskPaused},
+		{id: "resume-task", command: "resume", state: stagekit.Paused, eventType: store.TaskResumed},
+		{id: "abort-task", command: "abort", state: stagekit.Building, eventType: store.TaskCancelled},
 	}
 	for _, test := range tests {
 		createdAt := time.Now().UTC().Format(time.RFC3339Nano)
-		if err = db.CreateTask(ctx, store.Task{ID: test.id, Request: "request", WorkspacePath: t.TempDir(), State: test.state, CreatedAt: createdAt}); err != nil {
+		if err = db.Tasks.Create(ctx, store.Task{ID: test.id, Request: "request", WorkspacePath: t.TempDir(), State: test.state, CreatedAt: createdAt}); err != nil {
 			t.Fatal(err)
 		}
 		request := httptest.NewRequest(http.MethodPost, "/api/v1/tasks/"+test.id+"/"+test.command, nil)
@@ -119,7 +119,7 @@ func TestControlsReturnAfterEnqueueWithoutWaitingForOrchestration(t *testing.T) 
 		if response.Code != http.StatusAccepted {
 			t.Fatalf("%s status = %d: %s", test.command, response.Code, response.Body.String())
 		}
-		current, taskErr := db.Task(ctx, test.id)
+		current, taskErr := db.Tasks.Get(ctx, test.id)
 		if taskErr != nil {
 			t.Fatal(taskErr)
 		}
@@ -128,7 +128,7 @@ func TestControlsReturnAfterEnqueueWithoutWaitingForOrchestration(t *testing.T) 
 		}
 	}
 
-	pending, err := db.PendingOrchestrationEvents(ctx)
+	pending, err := db.Orchestration.Pending(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,21 +154,21 @@ func TestRestartRecoveryIsVisibleThroughTaskHTTPReads(t *testing.T) {
 	}
 	defer db.Close()
 	createdAt := time.Now().UTC().Format(time.RFC3339Nano)
-	active := store.Task{ID: "active-task", Request: "request", WorkspacePath: t.TempDir(), State: string(stagekit.Building), CreatedAt: createdAt}
-	paused := store.Task{ID: "paused-task", Request: "paused", WorkspacePath: t.TempDir(), State: string(stagekit.Paused), CreatedAt: createdAt}
+	active := store.Task{ID: "active-task", Request: "request", WorkspacePath: t.TempDir(), State: stagekit.Building, CreatedAt: createdAt}
+	paused := store.Task{ID: "paused-task", Request: "paused", WorkspacePath: t.TempDir(), State: stagekit.Paused, CreatedAt: createdAt}
 	for _, task := range []store.Task{active, paused} {
-		if err = db.CreateTask(ctx, task); err != nil {
+		if err = db.Tasks.Create(ctx, task); err != nil {
 			t.Fatal(err)
 		}
 	}
 	phase := store.Phase{ID: "active-attempt", TaskID: active.ID, Sequence: 1, Name: "build", Kind: "build", Owner: "builder", Status: "running", Attempt: 1}
-	if err = db.AddPhase(ctx, phase); err != nil {
+	if err = db.Phases.Add(ctx, phase); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = db.ExecContext(ctx, `update tasks set active_phase=? where id=?`, phase.ID, active.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err = db.Recover(ctx); err != nil {
+	if err = db.Processes.Recover(ctx); err != nil {
 		t.Fatal(err)
 	}
 
@@ -191,10 +191,10 @@ func TestRestartRecoveryIsVisibleThroughTaskHTTPReads(t *testing.T) {
 		return task
 	}
 	recovered := readTask(active.ID)
-	if recovered.State != string(stagekit.Blocked) || recovered.PreviousState != string(stagekit.Building) || recovered.Error == "" {
+	if recovered.State != stagekit.Blocked || recovered.PreviousState != stagekit.Building || recovered.Error == "" {
 		t.Fatalf("recovered task = %+v", recovered)
 	}
-	if current := readTask(paused.ID); current.State != string(stagekit.Paused) {
+	if current := readTask(paused.ID); current.State != stagekit.Paused {
 		t.Fatalf("paused task = %+v, want unchanged", current)
 	}
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/tasks/"+active.ID+"/attempts", nil)

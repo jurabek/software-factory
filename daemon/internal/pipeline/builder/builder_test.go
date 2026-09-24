@@ -1,8 +1,9 @@
 package builder
 
 import (
-	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
 	"testing"
+
+	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
 )
 
 func TestValidateAcceptsWellFormedBuild(t *testing.T) {

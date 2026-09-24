@@ -335,12 +335,6 @@ test("task workflow resources stay on the authenticated daemon connection", asyn
 		"task-1",
 		options,
 	);
-	await client.branches(
-		"http://127.0.0.1:8080",
-		"credential",
-		"task-1",
-		options,
-	);
 	await client.checks("http://127.0.0.1:8080", "credential", "task-1", options);
 	await client.results(
 		"http://127.0.0.1:8080",
@@ -361,7 +355,6 @@ test("task workflow resources stay on the authenticated daemon connection", asyn
 			"/api/v1/tasks/task-1/messages",
 			"/api/v1/tasks/task-1",
 			"/api/v1/tasks/task-1/attempts",
-			"/api/v1/tasks/task-1/branches",
 			"/api/v1/tasks/task-1/checks",
 			"/api/v1/tasks/task-1/results",
 			"/api/v1/tasks/task-1/diff",
@@ -437,7 +430,7 @@ test("event streams forward cursors without a JSON timeout", async () => {
 	assert.equal(headers["Last-Event-ID"], "42");
 });
 
-test("event reads preserve lineage and available actions", async () => {
+test("event reads preserve attempt and available actions", async () => {
 	const client = createDaemonClient(async () =>
 		Response.json({
 			events: [
@@ -448,7 +441,6 @@ test("event reads preserve lineage and available actions", async () => {
 					task_id: "task-1",
 					phase_id: "phase-1",
 					attempt_id: "attempt-1",
-					branch_id: "branch-1",
 					kind: "phase_end",
 					payload: { status: "passed" },
 					display: {
@@ -477,7 +469,6 @@ test("event reads preserve lineage and available actions", async () => {
 					task_id: "task-1",
 					phase_id: "phase-1",
 					attempt_id: "attempt-1",
-					branch_id: "branch-1",
 					kind: "phase_end",
 					payload: { status: "passed" },
 					display: {

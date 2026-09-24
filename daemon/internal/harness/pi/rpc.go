@@ -460,7 +460,7 @@ func (s *rpcSession) promptMessage(prompt harness.Prompt) (string, error) {
 	if s.runner.ExtensionPath == "" || prompt.RequestID == "" {
 		return prompt.Text, nil
 	}
-	payload, err := json.Marshal(map[string]any{"requestId": prompt.RequestID, "attempt": prompt.Attempt, "forkAt": prompt.ForkAtEntryID, "prompt": prompt.Text})
+	payload, err := json.Marshal(map[string]any{"requestId": prompt.RequestID, "attempt": prompt.Attempt, "prompt": prompt.Text})
 	if err != nil {
 		return "", fmt.Errorf("encode factory request: %w", err)
 	}

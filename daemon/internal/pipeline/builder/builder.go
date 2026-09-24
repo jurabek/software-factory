@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
 	"uuid"
 
 	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
@@ -73,20 +72,9 @@ func Instructions() string {
 	return `Return exactly one JSON object: {` + stage.CommonInstructions() + `,"changed_files":[],"commit_message":"...","test_changes":[{"path":"...","reason":"..."}]}. Put the human-readable report in report_markdown.`
 }
 
-// EvidenceStore persists builder test evidence.
-type EvidenceStore interface {
-	SaveTestChanges(ctx context.Context, changes []store.TestChange) error
-}
-
-// Service is the build stage's public surface. Lifecycle, resume, and state
-// transitions are hidden inside the package.
-type Service interface {
-	Build(context.Context, stage.Input, stage.PlanResult) (stage.BuildResult, error)
-}
-
 type service struct{ kit *stagekit.Kit }
 
-func New(kit *stagekit.Kit) Service { return service{kit: kit} }
+func New(kit *stagekit.Kit) service { return service{kit: kit} }
 
 // Build resumes a durable result when present, otherwise renders
 // implementation prompts from the exact upstream plan, runs the build turn
@@ -217,7 +205,7 @@ func ValidateTestChangeSet(changes []TestChange, expected map[string]factorygit.
 
 // PersistEvidence validates test evidence against Git-derived changes and
 // stores it for the attempt.
-func PersistEvidence(ctx context.Context, db EvidenceStore, task store.Task, phase store.Phase, payload string) error {
+func PersistEvidence(ctx context.Context, db *store.Store, task store.Task, phase store.Phase, payload string) error {
 	build, err := Validate(payload)
 	if err != nil {
 		return err
@@ -249,7 +237,7 @@ func PersistEvidence(ctx context.Context, db EvidenceStore, task store.Task, pha
 			CreatedAt:  time.Now().UTC().Format(time.RFC3339Nano),
 		})
 	}
-	return db.SaveTestChanges(ctx, changes)
+	return db.Evidence.SaveTestChanges(ctx, changes)
 }
 
 // CheckProtectedPaths rejects builds touching protected paths.
@@ -265,3 +253,127 @@ func CheckProtectedPaths(repoPath, base string, protected []string) error {
 	}
 	return nil
 }
+
+func (s service) savedBuild(ctx context.Context, taskID, planAttemptID string) (stage.BuildResult, bool, error) {
+	task, err := s.kit.Task(ctx, taskID)
+	if err != nil {
+		return stage.BuildResult{}, false, err
+	}
+	planStage, err := s.kit.StageByKind(task, "plan")
+	if err != nil {
+		return stage.BuildResult{}, false, err
+	}
+	if err = s.kit.RequireAttempt(ctx, task.ID, planStage.ID, planAttemptID); err != nil {
+		return stage.BuildResult{}, false, err
+	}
+	stageDef, err := s.kit.StageByKind(task, "build")
+	if err != nil {
+		return stage.BuildResult{}, false, err
+	}
+	queued, err := s.kit.DB().Messages.QueuedForStages(ctx, taskID, stageDef.ID, "builder")
+	if err != nil {
+		return stage.BuildResult{}, false, err
+	}
+	if queued {
+		return stage.BuildResult{}, false, nil
+	}
+	phase, ok, err := s.kit.SuccessfulPhase(ctx, task.ID, stageDef.ID)
+	if err != nil || !ok {
+		return stage.BuildResult{}, false, err
+	}
+	payload, err := s.kit.PhaseEnvelope(ctx, task.ID, phase.ID)
+	if err != nil {
+		return stage.BuildResult{},
+			false, err
+	}
+	eligible, err := s.kit.AttemptAfter(ctx, task.ID, phase.ID, planAttemptID)
+	if err != nil {
+		return stage.BuildResult{}, false, err
+	}
+	if !eligible {
+		return stage.BuildResult{}, false, nil
+	}
+	return stage.BuildResult{Payload: payload, AttemptID: phase.ID, SnapshotID: phase.OutputSnapshot}, true, nil
+}
+
+func (s service) beginBuild(ctx context.Context, taskID, planAttemptID string) (store.Task, store.Phase, error) {
+	task, err := s.kit.Task(ctx, taskID)
+	if err != nil {
+		return store.Task{}, store.Phase{}, err
+	}
+	planStage, err := s.kit.StageByKind(task, "plan")
+	if err != nil {
+		return store.Task{}, store.Phase{}, err
+	}
+	if err = s.kit.RequireAttempt(ctx, task.ID, planStage.ID, planAttemptID); err != nil {
+		return store.Task{}, store.Phase{}, err
+	}
+	stageDef, err := s.kit.StageByKind(
+		task, "build")
+	if err != nil {
+		return store.Task{}, store.Phase{}, err
+	}
+	if err = s.kit.SetActiveStage(ctx, task.ID, stageDef.ID); err != nil {
+		return store.Task{}, store.Phase{}, err
+	}
+	task, err = s.kit.Task(ctx, task.ID)
+	if err != nil {
+		return store.Task{}, store.Phase{}, err
+	}
+	if err = s.kit.Transition(ctx, task, stagekit.Building, ""); err != nil {
+		return store.Task{}, store.Phase{}, err
+	}
+	task.State = stagekit.Building
+	phase, err := s.kit.BeginOrReusePhase(ctx, task.ID, stageDef.ID, stageDef.Kind, stageDef.Agent, "Execute "+stageDef.ID)
+	if err != nil {
+		return store.Task{}, store.Phase{}, err
+	}
+	return task, phase, nil
+}
+
+func (s service) publishBuild(ctx context.Context, task store.Task, phase store.Phase, turn harness.TurnResult, profile workspace.Materialization) (stage.BuildResult, error) {
+	return s.kit.DeliverAndFinalize(ctx, stagekit.Delivery{Task: task, Phase: phase, Role: "build", ReadOnly: readOnly(
+		phase), Instructions: Instructions(), Validate: func(text string) (any, error) {
+		return ValidateWithEvidence(task.RepositoryPath, workspace.ReviewBase(task), profile.Tests, text)
+	}, OnValid: func(ctx context.Context, text string) error {
+		return PersistEvidence(ctx, s.kit.DB(), task, phase,
+			text)
+	}}, turn, func(turn harness.TurnResult) (stage.BuildResult, error) {
+		if err := s.validatePaths(task, profile); err != nil {
+			s.kit.Fail(ctx, phase, err)
+			return stage.BuildResult{}, err
+		}
+		if err := PersistEvidence(ctx, s.kit.DB(), task, phase, turn.Payload); err != nil {
+			s.kit.Fail(ctx, phase, err)
+			return stage.BuildResult{},
+				err
+		}
+		if err := s.kit.Complete(ctx, stagekit.Completion{
+			Phase: phase, From: stagekit.Building,
+			To: stagekit.Checking, Status: "success",
+		}); err != nil {
+			s.kit.Fail(ctx, phase, err)
+			return stage.BuildResult{}, err
+		}
+		resultPhase,
+			ok, err := s.kit.SuccessfulPhase(ctx, task.ID, phase.Name)
+		if err != nil {
+			return stage.BuildResult{}, err
+		}
+		if !ok {
+			return stage.BuildResult{}, errNoDurableResult
+		}
+		resultPayload, err := s.kit.PhaseEnvelope(ctx, task.ID, resultPhase.ID)
+		if err != nil {
+			return stage.BuildResult{}, err
+		}
+		return stage.BuildResult{Payload: resultPayload, AttemptID: resultPhase.ID, SnapshotID: resultPhase.OutputSnapshot}, nil
+	})
+}
+
+func (s service) validatePaths(task store.Task, profile workspace.Materialization) error {
+	return CheckProtectedPaths(task.RepositoryPath,
+		workspace.ReviewBase(task), profile.Protected)
+}
+
+var errNoDurableResult = fmt.Errorf("builder completed without a durable result")

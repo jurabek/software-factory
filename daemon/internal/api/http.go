@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/jurabek/software-factory/daemon/internal/planner"
+	"github.com/jurabek/software-factory/daemon/internal/pipeline/planner"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 )
 
@@ -72,8 +72,6 @@ func storeError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		fail(w, http.StatusNotFound, "not_found", "resource not found")
-	case errors.Is(err, store.ErrStaleBranch):
-		fail(w, http.StatusConflict, "stale_branch", "selected branch head is stale; refresh lineage and reselect the action")
 	case errors.Is(err, store.ErrConflict):
 		fail(w, http.StatusConflict, "invalid_state", "task state does not allow this operation")
 	case errors.Is(err, planner.ErrStalePlan):

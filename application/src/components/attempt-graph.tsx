@@ -15,21 +15,18 @@ const statusBorder: Record<string, string> = {
 	success: "border-success",
 };
 
-// Vertical chain of the attempts on the selected branch: prepare, planning,
-// building, reviewing. Selecting a node narrows the work log to that attempt;
-// selecting it again clears the filter.
+// Vertical chain of task attempts. Selecting a node narrows the work log to
+// that attempt; selecting it again clears the filter.
 export function AttemptGraph({
 	attempts,
-	branchId,
 	selectedId,
 	onSelect,
 }: {
 	attempts: TaskAttempt[];
-	branchId?: string | null;
 	selectedId: string | null;
 	onSelect: (attemptId: string | null) => void;
 }) {
-	const nodes = orderedAttempts(attempts, branchId);
+	const nodes = orderedAttempts(attempts);
 	if (!nodes.length)
 		return (
 			<p className="text-muted-foreground text-[0.78rem]">

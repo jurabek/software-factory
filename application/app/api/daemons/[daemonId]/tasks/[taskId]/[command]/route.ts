@@ -43,8 +43,17 @@ export async function POST(
 			)
 				return privateJSON({ error: "invalid_request" }, 400);
 			input = { plan_digest: body.plan_digest };
-		} else if (request.body !== null) {
-			return privateJSON({ error: "invalid_request" }, 400);
+		} else {
+			// Browsers/Next may present an empty POST as a (possibly empty)
+			// stream rather than null. Accept empty bodies, reject payloads
+			// like the daemon's emptyBody does.
+			try {
+				const text = await request.text();
+				if (text.trim() !== "")
+					return privateJSON({ error: "invalid_request" }, 400);
+			} catch {
+				return privateJSON({ error: "invalid_request" }, 400);
+			}
 		}
 		const result = await getDaemonRegistry().command(
 			daemonId,

@@ -8,7 +8,6 @@ import {
 	ExternalLink,
 	File,
 	Folder,
-	GitBranch,
 	Monitor,
 	PanelLeftClose,
 	Pencil,
@@ -31,7 +30,6 @@ import {
 } from "@/client/agent-envelope.ts";
 import {
 	daemonAttempts,
-	daemonBranches,
 	daemonChecks,
 	daemonCommand,
 	daemonDiff,
@@ -46,7 +44,6 @@ import {
 	openTaskStream,
 	type QualifiedTask,
 	type TaskAttempt,
-	type TaskBranch,
 	type TaskCheck,
 	type TaskDetails,
 	type TaskDiff,
@@ -78,13 +75,6 @@ import {
 	CollapsibleTrigger,
 } from "@/components/ui/collapsible.tsx";
 import { Label } from "@/components/ui/label.tsx";
-import {
-	Select,
-	SelectContent,
-	SelectItem,
-	SelectTrigger,
-	SelectValue,
-} from "@/components/ui/select.tsx";
 import { SidebarTrigger } from "@/components/ui/sidebar.tsx";
 import { Switch } from "@/components/ui/switch.tsx";
 import {
@@ -415,14 +405,12 @@ export function TaskDetail({
 }) {
 	const [details, setDetails] = useState<TaskDetails | null>(null);
 	const [attempts, setAttempts] = useState<TaskAttempt[]>([]);
-	const [branches, setBranches] = useState<TaskBranch[]>([]);
 	const [checks, setChecks] = useState<TaskCheck[]>([]);
 	const [results, setResults] = useState<TaskResult[]>([]);
 	const [diff, setDiff] = useState<TaskDiff>({ files: [], patch: "" });
 	const [sessions, setSessions] = useState<TaskDetails[]>([]);
 	const [messages, setMessages] = useState<TaskMessage[]>([]);
 	const [selectedAttempt, setSelectedAttempt] = useState<string | null>(null);
-	const [selectedBranchId, setSelectedBranchId] = useState<string | null>(null);
 	const [selectedReport, setSelectedReport] = useState<string | null>(null);
 	const [selectedEvent, setSelectedEvent] = useState<SessionEvent | null>(null);
 	const [autoScroll] = useState(true);
@@ -449,10 +437,6 @@ export function TaskDetail({
 
 	const currentTask = details ?? task;
 	const rootTaskId = currentTask.parent_task_id ?? currentTask.id;
-	const selectedBranch =
-		branches.find((branch) => branch.id === selectedBranchId) ??
-		branches.find((branch) => branch.id === currentTask.selected_branch_id) ??
-		branches[0];
 	const reportViews: DisplayReport[] = [
 		...results.map((result) => ({
 			id: result.id,
@@ -535,7 +519,6 @@ export function TaskDetail({
 			const [
 				taskResult,
 				attemptResult,
-				branchResult,
 				checksResult,
 				resultsResult,
 				diffResult,
@@ -544,7 +527,6 @@ export function TaskDetail({
 			] = await Promise.all([
 				daemonTask(daemonId, task.id, signal),
 				daemonAttempts(daemonId, task.id, signal),
-				daemonBranches(daemonId, task.id, signal),
 				daemonChecks(daemonId, task.id, signal),
 				daemonResults(daemonId, task.id, signal),
 				daemonDiff(daemonId, task.id, signal),
@@ -553,21 +535,12 @@ export function TaskDetail({
 			]);
 			setDetails(taskResult.task);
 			setAttempts(attemptResult.attempts ?? []);
-			setBranches(branchResult.branches ?? []);
 			setChecks(checksResult.checks ?? []);
 			setResults(resultsResult.results ?? []);
 			setDiff(diffResult.diff ?? { files: [], patch: "" });
 			setSessions(sessionsResult.sessions ?? []);
 			setMessages(messagesResult.messages ?? []);
 			setAvailableActions(taskResult.task.available_actions ?? []);
-			setSelectedBranchId((current) =>
-				current &&
-				branchResult.branches?.some((branch) => branch.id === current)
-					? current
-					: (taskResult.task.selected_branch_id ??
-						branchResult.branches?.[0]?.id ??
-						null),
-			);
 		},
 		[daemonId, rootTaskId, task.id],
 	);
@@ -577,14 +550,12 @@ export function TaskDetail({
 		const controller = new AbortController();
 		setDetails(null);
 		setAttempts([]);
-		setBranches([]);
 		setChecks([]);
 		setResults([]);
 		setDiff({ files: [], patch: "" });
 		setSessions([]);
 		setMessages([]);
 		setSelectedAttempt(null);
-		setSelectedBranchId(null);
 		setSelectedReport(null);
 		setSelectedEvent(null);
 		setError(null);
@@ -1346,15 +1317,6 @@ export function TaskDetail({
 								variant="ghost"
 								size="icon-sm"
 								disabled
-								aria-label="Branches"
-							>
-								<GitBranch />
-							</Button>
-							<Button
-								type="button"
-								variant="ghost"
-								size="icon-sm"
-								disabled
 								aria-label="Files"
 							>
 								<Folder />
@@ -1578,15 +1540,6 @@ export function TaskDetail({
 							</div>
 							<div className="grid gap-0.5 border-t pt-2">
 								<dt className="text-muted-foreground text-[0.66rem] uppercase tracking-[0.06em]">
-									Branch
-								</dt>
-								<dd className="text-subtle truncate text-[0.78rem]">
-									{selectedBranch?.id?.slice(0, 8) ?? "-"} · head{" "}
-									{selectedBranch?.head_attempt_id?.slice(0, 8) ?? "-"}
-								</dd>
-							</div>
-							<div className="grid gap-0.5 border-t pt-2">
-								<dt className="text-muted-foreground text-[0.66rem] uppercase tracking-[0.06em]">
 									Attempt
 								</dt>
 								<dd className="text-subtle truncate text-[0.78rem]">
@@ -1611,30 +1564,6 @@ export function TaskDetail({
 								</dd>
 							</div>
 						</dl>
-						{branches.length > 1 ? (
-							<div className="mt-4 grid gap-1.5">
-								<Label htmlFor="branch">Branch</Label>
-								<Select
-									value={selectedBranch?.id ?? ""}
-									disabled={offline || pending}
-									onValueChange={(value) => {
-										setSelectedBranchId(value);
-										setSelectedAttempt(null);
-									}}
-								>
-									<SelectTrigger id="branch" size="sm" className="w-full">
-										<SelectValue />
-									</SelectTrigger>
-									<SelectContent>
-										{branches.map((branch) => (
-											<SelectItem key={branch.id} value={branch.id}>
-												{branch.id.slice(0, 8)} · {branch.status}
-											</SelectItem>
-										))}
-									</SelectContent>
-								</Select>
-							</div>
-						) : null}
 						{currentTask.repository_type && currentTask.repository_source ? (
 							<div className="mt-4 grid gap-0.5 rounded-md border px-2 py-1.5">
 								<strong className="text-[0.75rem] font-medium">
@@ -1652,7 +1581,6 @@ export function TaskDetail({
 					>
 						<AttemptGraph
 							attempts={attempts}
-							branchId={selectedBranch?.id}
 							selectedId={selectedAttempt}
 							onSelect={setSelectedAttempt}
 						/>

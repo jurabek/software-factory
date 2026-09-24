@@ -68,15 +68,9 @@ type Diff struct {
 	Patch string   `json:"patch"`
 }
 
-// Service is the review stage's public surface. Lifecycle, resume, and state
-// transitions are hidden inside the package.
-type Service interface {
-	Review(context.Context, stage.Input, stage.PlanResult, stage.BuildResult, stage.VerificationResult) (stage.ReviewResult, error)
-}
-
 type service struct{ kit *stagekit.Kit }
 
-func New(kit *stagekit.Kit) Service { return service{kit: kit} }
+func New(kit *stagekit.Kit) service { return service{kit: kit} }
 
 // Review resumes a durable result when present, otherwise assembles upstream
 // evidence, runs the review turn, and publishes the verdict.
@@ -143,15 +137,15 @@ func (s service) Review(ctx context.Context, input stage.Input, plan stage.PlanR
 
 // evidence assembles the review prompt payload from upstream results.
 func (s service) evidence(ctx context.Context, task store.Task, plan stage.PlanResult) (map[string]any, error) {
-	checks, err := s.kit.DB().Checks(ctx, task.ID)
+	checks, err := s.kit.DB().Checks.List(ctx, task.ID)
 	if err != nil {
 		return nil, err
 	}
-	testChanges, err := s.kit.DB().TestChanges(ctx, task.ID)
+	testChanges, err := s.kit.DB().Evidence.TestChanges(ctx, task.ID)
 	if err != nil {
 		return nil, err
 	}
-	comparisons, err := s.kit.DB().Comparisons(ctx, task.ID)
+	comparisons, err := s.kit.DB().Evidence.Comparisons(ctx, task.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -172,4 +166,147 @@ func (s service) evidence(ctx context.Context, task store.Task, plan stage.PlanR
 		"Plan": plan.Payload, "Checks": checks, "TestChanges": testChanges, "Comparisons": comparisons,
 		"ChangedFiles": changedFiles, "Diff": Diff{Files: files, Patch: patch},
 	}, nil
+}
+
+func (s service) savedReview(ctx context.Context, taskID, verificationAttemptID string) (stage.ReviewResult, bool, error) {
+	task, err := s.kit.Task(ctx, taskID)
+	if err != nil {
+		return stage.ReviewResult{}, false, err
+	}
+	stageDef, err := s.kit.StageByKind(task, "review")
+	if err != nil {
+		return stage.ReviewResult{}, false,
+			err
+	}
+	queued, err := s.kit.DB().Messages.QueuedForStages(ctx, taskID, stageDef.ID, stageDef.Agent)
+	if err != nil {
+		return stage.ReviewResult{},
+			false, err
+	}
+	if queued {
+		return stage.ReviewResult{}, false, nil
+	}
+	phase, ok, err := s.kit.SuccessfulPhase(ctx, task.ID, stageDef.ID)
+	if err != nil || !ok {
+		return stage.ReviewResult{}, false, err
+	}
+	payload, err := s.kit.PhaseEnvelope(ctx, task.ID, phase.ID)
+	if err != nil {
+		return stage.ReviewResult{}, false,
+			err
+	}
+	review, err := Validate(payload)
+	if err != nil {
+		return stage.ReviewResult{}, false, err
+	}
+	eligible, err := s.kit.AttemptAfter(ctx, task.ID, phase.ID, verificationAttemptID)
+	if err != nil {
+		return stage.ReviewResult{},
+			false,
+			err
+	}
+	if !eligible {
+		return stage.ReviewResult{}, false,
+			nil
+	}
+	return stage.ReviewResult{Payload: payload, AttemptID: phase.ID, SnapshotID: phase.OutputSnapshot, Approved: review.Approved}, true, nil
+}
+
+func (s service) beginReview(ctx context.Context, taskID, planAttemptID, buildAttemptID, verificationAttemptID string) (store.Task, store.Phase, error) {
+	task, err := s.kit.Task(ctx, taskID)
+	if err != nil {
+		return store.Task{}, store.Phase{}, err
+	}
+	planStage, err := s.kit.StageByKind(task, "plan")
+	if err != nil {
+		return store.Task{}, store.Phase{}, err
+	}
+	if err = s.kit.RequireAttempt(ctx, task.ID, planStage.ID, planAttemptID); err != nil {
+		return store.Task{}, store.Phase{}, err
+	}
+	buildStage, err := s.kit.StageByKind(task, "build")
+	if err != nil {
+		return store.Task{}, store.Phase{},
+			err
+	}
+	if err = s.kit.RequireAttempt(ctx, task.ID, buildStage.ID, buildAttemptID); err != nil {
+		return store.Task{}, store.Phase{}, err
+	}
+	verifyStage, err := s.kit.StageByKind(task, "verify")
+	if err != nil {
+		return store.Task{}, store.Phase{}, err
+	}
+	if err = s.kit.RequireAttempt(ctx, task.ID, verifyStage.ID, verificationAttemptID); err != nil {
+		return store.Task{}, store.Phase{}, err
+	}
+	stageDef, err := s.kit.StageByKind(task, "review")
+	if err != nil {
+		return store.Task{}, store.Phase{}, err
+	}
+	if err = s.kit.SetActiveStage(ctx, task.ID, stageDef.ID); err != nil {
+		return store.Task{}, store.Phase{}, err
+	}
+	task, err = s.kit.Task(ctx, task.ID)
+	if err != nil {
+		return store.Task{}, store.Phase{}, err
+	}
+	if err = s.kit.Transition(ctx, task,
+		stagekit.Reviewing,
+		""); err != nil {
+		return store.Task{},
+			store.Phase{},
+			err
+	}
+	task.State = stagekit.Reviewing
+	phase, err := s.kit.BeginOrReusePhase(ctx, task.ID, stageDef.ID, stageDef.Kind, stageDef.Agent, "Execute "+stageDef.ID)
+	if err != nil {
+		return store.Task{}, store.Phase{}, err
+	}
+	return task, phase, nil
+}
+
+func (s service) publishReview(ctx context.Context, task store.Task, phase store.Phase, turn harness.TurnResult, before string) (stage.ReviewResult, error) {
+	return s.kit.DeliverAndFinalize(ctx, stagekit.Delivery{
+		Task: task, Phase: phase, Role: "review", ReadOnly: true, Instructions: Instructions(), Validate: func(text string) (any, error) {
+			return Validate(text)
+		},
+	}, turn, func(turn harness.TurnResult) (stage.ReviewResult, error) {
+		payload := turn.Payload
+		review, validationErr := Validate(payload)
+		if validationErr != nil {
+			s.kit.Fail(ctx, phase, validationErr)
+			return stage.ReviewResult{}, validationErr
+		}
+		if !review.Approved {
+			rejected := fmt.Errorf("reviewer rejected implementation")
+			if err := s.kit.Complete(ctx, stagekit.Completion{
+				Phase: phase, From: stagekit.Reviewing,
+				To: stagekit.Blocked, Status: "failed", Cause: rejected,
+			}); err != nil {
+				return stage.ReviewResult{}, err
+			}
+			return stage.ReviewResult{
+				Payload: payload, AttemptID: phase.ID,
+				SnapshotID: phase.OutputSnapshot, Approved: false,
+			}, nil
+		}
+		after, fingerprintErr := workspace.Fingerprint(task)
+		if fingerprintErr != nil {
+			s.kit.Fail(ctx, phase, fingerprintErr)
+			return stage.ReviewResult{},
+				fingerprintErr
+		}
+		if before != after {
+			readonlyErr := fmt.Errorf("%s modified repository",
+				phase.Name)
+			s.kit.Fail(ctx, phase, readonlyErr)
+			return stage.ReviewResult{}, readonlyErr
+		}
+		if err := s.kit.Complete(ctx, stagekit.Completion{Phase: phase, From: stagekit.Reviewing, To: stagekit.Completed, Status: "success"}); err != nil {
+			s.kit.Fail(ctx, phase, err)
+			return stage.ReviewResult{},
+				err
+		}
+		return stage.ReviewResult{Payload: payload, AttemptID: phase.ID, SnapshotID: phase.OutputSnapshot, Approved: true}, nil
+	})
 }

@@ -5,107 +5,40 @@ import (
 	"database/sql"
 	"errors"
 	"log/slog"
-	"strings"
+
+	"github.com/jmoiron/sqlx"
 )
 
 type Message struct {
-	Sequence       int64          `json:"sequence"`
-	ID             string         `json:"id"`
-	TaskID         string         `json:"task_id"`
-	Actor          string         `json:"actor"`
-	Text           string         `json:"text"`
-	IdempotencyKey string         `json:"idempotency_key"`
-	TargetType     string         `json:"-"`
-	TargetID       string         `json:"-"`
-	Target         *MessageTarget `json:"target,omitempty"`
-	StageID        string         `json:"stage_id,omitempty"`
-	RecipientRole  string         `json:"recipient_role"`
-	AgentSessionID string         `json:"agent_session_id"`
-	DeliveryStatus string         `json:"delivery_status"`
-	FailureReason  string         `json:"failure_reason,omitempty"`
-	CreatedAt      string         `json:"created_at"`
-	DeliveredAt    string         `json:"delivered_at,omitempty"`
-	FailedAt       string         `json:"failed_at,omitempty"`
+	Sequence       int64          `db:"sequence" json:"sequence"`
+	ID             string         `db:"id" json:"id"`
+	TaskID         string         `db:"task_id" json:"task_id"`
+	Actor          string         `db:"actor" json:"actor"`
+	Text           string         `db:"text" json:"text"`
+	IdempotencyKey string         `db:"idempotency_key" json:"idempotency_key"`
+	TargetType     string         `db:"target_type" json:"-"`
+	TargetID       string         `db:"target_id" json:"-"`
+	Target         *MessageTarget `db:"-" json:"target,omitempty"`
+	StageID        string         `db:"stage_id" json:"stage_id,omitempty"`
+	RecipientRole  string         `db:"recipient_role" json:"recipient_role"`
+	AgentSessionID string         `db:"agent_session_id" json:"agent_session_id"`
+	DeliveryStatus string         `db:"delivery_status" json:"delivery_status"`
+	FailureReason  string         `db:"failure_reason" json:"failure_reason,omitempty"`
+	CreatedAt      string         `db:"created_at" json:"created_at"`
+	DeliveredAt    string         `db:"delivered_at" json:"delivered_at,omitempty"`
+	FailedAt       string         `db:"failed_at" json:"failed_at,omitempty"`
 }
 type MessageTarget struct {
 	AttemptID string `json:"attempt_id,omitempty"`
 	EventID   string `json:"event_id,omitempty"`
 }
 
-func (db *DB) SaveMessage(ctx context.Context, value Message) (Message, bool, error) {
-	result, err := db.ExecContext(ctx, `insert into messages(id,task_id,actor,text,idempotency_key,target_type,target_id,stage_id,recipient_role,agent_session_id,delivery_status,created_at) values(?,?,?,?,?,?,?,?,?,?,?,?) on conflict(task_id,idempotency_key) do nothing`, value.ID, value.TaskID, value.Actor, value.Text, value.IdempotencyKey, nullIfEmpty(value.TargetType), nullIfEmpty(value.TargetID), nullIfEmpty(value.StageID), value.RecipientRole, value.AgentSessionID, value.DeliveryStatus, value.CreatedAt)
-	if err != nil {
-		return Message{}, false, wrap("save message", err)
-	}
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return Message{}, false, wrap("read message insert result", err)
-	}
-	stored, err := db.messageByKey(ctx, value.TaskID, value.IdempotencyKey)
-	return stored, rows == 1, err
-}
-
 // AcceptMessageWithEvent stores a new Message, applies the associated Task
 // lifecycle changes, and records its history event in one transaction. The
 // event trace is derived output and is written only after the commit.
-func (db *DB) AcceptMessageWithEvent(ctx context.Context, value Message, event Event, invalidateApproval, reopen bool, reopenState, taskDir string) (Message, bool, error) {
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return Message{}, false, wrap("begin message acceptance", err)
-	}
-	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, `insert into messages(id,task_id,actor,text,idempotency_key,target_type,target_id,stage_id,recipient_role,agent_session_id,delivery_status,created_at) values(?,?,?,?,?,?,?,?,?,?,?,?) on conflict(task_id,idempotency_key) do nothing`, value.ID, value.TaskID, value.Actor, value.Text, value.IdempotencyKey, nullIfEmpty(value.TargetType), nullIfEmpty(value.TargetID), nullIfEmpty(value.StageID), value.RecipientRole, value.AgentSessionID, value.DeliveryStatus, value.CreatedAt)
-	if err != nil {
-		return Message{}, false, wrap("accept message", err)
-	}
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return Message{}, false, wrap("read message acceptance result", err)
-	}
-	stored, err := scanMessage(tx.QueryRowContext(ctx, `select sequence,id,task_id,actor,text,idempotency_key,coalesce(target_type,''),coalesce(target_id,''),coalesce(stage_id,''),recipient_role,agent_session_id,delivery_status,coalesce(failure_reason,''),created_at,coalesce(delivered_at,''),coalesce(failed_at,'') from messages where task_id=? and idempotency_key=?`, value.TaskID, value.IdempotencyKey))
-	if err != nil {
-		return Message{}, false, err
-	}
-	if rows != 1 {
-		return stored, false, nil
-	}
-	if invalidateApproval {
-		if _, err = tx.ExecContext(ctx, `update tasks set plan_digest=null,approval_actor=null,approval_at=null where id=?`, value.TaskID); err != nil {
-			return Message{}, false, wrap("invalidate approval for message", err)
-		}
-	}
-	if reopen {
-		result, err = tx.ExecContext(ctx, `update tasks set previous_state=state,state=?,ended_at=null,error=null where id=?`, reopenState, value.TaskID)
-		if err != nil {
-			return Message{}, false, wrap("reopen task for message", err)
-		}
-		if count, countErr := result.RowsAffected(); countErr != nil || count != 1 {
-			if countErr != nil {
-				return Message{}, false, wrap("check task reopen for message", countErr)
-			}
-			return Message{}, false, ErrConflict
-		}
-	}
-	sequence, err := appendEventTx(ctx, tx, event)
-	if err != nil {
-		return Message{}, false, err
-	}
-	event.Sequence = sequence
-	if err = tx.Commit(); err != nil {
-		return Message{}, false, wrap("commit message acceptance", err)
-	}
-	if err = writeEventTrace(taskDir, event, sequence); err != nil {
-		// The database is authoritative; trace export is derived output.
-		slog.Error("write derived event trace", "task_id", value.TaskID, "event_id", event.ID, "error", err)
-	}
-	return stored, true, nil
-}
-func (db *DB) messageByKey(ctx context.Context, taskID, key string) (Message, error) {
-	return scanMessage(db.QueryRowContext(ctx, `select sequence,id,task_id,actor,text,idempotency_key,coalesce(target_type,''),coalesce(target_id,''),coalesce(stage_id,''),recipient_role,agent_session_id,delivery_status,coalesce(failure_reason,''),created_at,coalesce(delivered_at,''),coalesce(failed_at,'') from messages where task_id=? and idempotency_key=?`, taskID, key))
-}
-func (db *DB) MessageByIdempotencyKey(ctx context.Context, taskID, key string) (Message, error) {
-	return db.messageByKey(ctx, taskID, key)
-}
+
+// The database is authoritative; trace export is derived output.
+
 func scanMessage(scanner interface{ Scan(...any) error }) (Message, error) {
 	var value Message
 	err := scanner.Scan(&value.Sequence, &value.ID, &value.TaskID, &value.Actor, &value.Text, &value.IdempotencyKey, &value.TargetType, &value.TargetID, &value.StageID, &value.RecipientRole, &value.AgentSessionID, &value.DeliveryStatus, &value.FailureReason, &value.CreatedAt, &value.DeliveredAt, &value.FailedAt)
@@ -123,8 +56,123 @@ func scanMessage(scanner interface{ Scan(...any) error }) (Message, error) {
 	}
 	return value, wrap("read message", err)
 }
-func (db *DB) Messages(ctx context.Context, taskID string) ([]Message, error) {
-	rows, err := db.QueryContext(ctx, `select sequence,id,task_id,actor,text,idempotency_key,coalesce(target_type,''),coalesce(target_id,''),coalesce(stage_id,''),recipient_role,agent_session_id,delivery_status,coalesce(failure_reason,''),created_at,coalesce(delivered_at,''),coalesce(failed_at,'') from messages where task_id=? order by sequence`, taskID)
+
+// QueuedMessageForStages reports whether a queued message is routed to any of
+// the given stage identifiers.
+
+// BeginMessageInvocationWithEvent delivers a queued message and records its
+// delivery event in the same database transaction. The file trace is derived
+// output and is written only after the transaction commits.
+
+// DeliverMessageWithEvent marks a queued message delivered and records its
+// delivery event without touching the agent-session invocation marker. The
+// caller records that marker separately, so a message dispatch and an agent
+// invocation that share a transaction window stay distinct.
+
+// FailMessageWithEvent publishes a message failure and its lifecycle event in
+// one transaction. The event trace is derived output and is written only
+// after the database commit.
+
+type MessageRepository struct{ db *sqlx.DB }
+
+func (r *MessageRepository) Save(ctx context.Context, value Message) (Message, bool, error) {
+	query := `insert into messages(id,task_id,actor,text,idempotency_key,target_type,target_id,stage_id,recipient_role,agent_session_id,delivery_status,created_at) values(:id,:task_id,:actor,:text,:idempotency_key,nullif(:target_type,''),nullif(:target_id,''),nullif(:stage_id,''),:recipient_role,:agent_session_id,:delivery_status,:created_at) on conflict(task_id,idempotency_key) do nothing`
+	result, err := r.db.NamedExecContext(ctx, query, value)
+	if err != nil {
+		return Message{},
+			false, wrap("save message", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return Message{}, false, wrap("read message insert result",
+			err)
+	}
+	stored, err := r.messageByKey(ctx, value.TaskID, value.IdempotencyKey)
+	return stored,
+		rows == 1, err
+}
+
+// AcceptMessageWithEvent stores a new Message, applies the associated Task
+
+// lifecycle changes, and records its history event in one transaction. The
+
+// event trace is derived output and is written only after the commit.
+
+func (r *MessageRepository) AcceptWithEvent(ctx context.Context, value Message, event Event, invalidateApproval, reopen bool, reopenState, taskDir string) (Message, bool, error) {
+	tx, err := r.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return Message{}, false, wrap("begin message acceptance", err)
+	}
+	defer tx.Rollback()
+	query := `insert into messages(id,task_id,actor,text,idempotency_key,target_type,target_id,stage_id,recipient_role,agent_session_id,delivery_status,created_at) values(:id,:task_id,:actor,:text,:idempotency_key,nullif(:target_type,''),nullif(:target_id,''),nullif(:stage_id,''),:recipient_role,:agent_session_id,:delivery_status,:created_at) on conflict(task_id,idempotency_key) do nothing`
+	result, err := tx.NamedExecContext(ctx, query, value)
+	if err != nil {
+		return Message{}, false, wrap("accept message",
+			err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return Message{}, false, wrap("read message acceptance result", err)
+	}
+	query2 := `select sequence,id,task_id,actor,text,idempotency_key,coalesce(target_type,''),coalesce(target_id,''),coalesce(stage_id,''),recipient_role,agent_session_id,delivery_status,coalesce(failure_reason,''),created_at,coalesce(delivered_at,''),coalesce(failed_at,'') from messages where task_id=? and idempotency_key=?`
+	stored, err := scanMessage(tx.QueryRowContext(ctx, query2, value.TaskID, value.IdempotencyKey))
+	if err != nil {
+		return Message{},
+			false, err
+	}
+	if rows != 1 {
+		return stored, false, nil
+	}
+	if invalidateApproval {
+		query3 := `update tasks set plan_digest=null,approval_actor=null,approval_at=null where id=:id`
+		if _, err = tx.NamedExecContext(ctx, query3, Task{ID: value.TaskID}); err != nil {
+			return Message{}, false, wrap("invalidate approval for message", err)
+		}
+	}
+	if reopen {
+		query4 := `update tasks set previous_state=state,state=:state,ended_at=null,error=null where id=:id`
+		result, err = tx.NamedExecContext(ctx, query4, Task{ID: value.TaskID, State: reopenState})
+		if err != nil {
+			return Message{}, false, wrap("reopen task for message", err)
+		}
+		if count, countErr := result.RowsAffected(); countErr != nil || count != 1 {
+			if countErr != nil {
+				return Message{}, false, wrap("check task reopen for message", countErr)
+			}
+			return Message{}, false, ErrConflict
+		}
+	}
+	sequence, err := appendEventTx(ctx, tx, event)
+	if err != nil {
+		return Message{}, false, err
+	}
+	event.Sequence = sequence
+	if err = tx.Commit(); err != nil {
+		return Message{}, false, wrap(
+			"commit message acceptance", err)
+	}
+	if err = writeEventTrace(
+		taskDir, event, sequence); err != nil {
+		slog.Error("write derived event trace", "task_id",
+			value.TaskID, "event_id",
+			event.ID, "error",
+			err)
+	}
+	return stored, true, nil
+}
+
+func (r *MessageRepository) messageByKey(ctx context.Context, taskID, key string) (Message, error) {
+	query := `select sequence,id,task_id,actor,text,idempotency_key,coalesce(target_type,''),coalesce(target_id,''),coalesce(stage_id,''),recipient_role,agent_session_id,delivery_status,coalesce(failure_reason,''),created_at,coalesce(delivered_at,''),coalesce(failed_at,'') from messages where task_id=? and idempotency_key=?`
+	return scanMessage(r.db.QueryRowContext(ctx, query, taskID, key))
+}
+
+func (r *MessageRepository) ByIdempotencyKey(ctx context.Context, taskID, key string) (Message, error) {
+	return r.messageByKey(ctx, taskID, key)
+}
+
+func (r *MessageRepository) List(ctx context.Context, taskID string) ([]Message, error) {
+	query := `select sequence,id,task_id,actor,text,idempotency_key,coalesce(target_type,''),coalesce(target_id,''),coalesce(stage_id,''),recipient_role,agent_session_id,delivery_status,coalesce(failure_reason,''),created_at,coalesce(delivered_at,''),coalesce(failed_at,'') from messages where task_id=? order by sequence`
+	rows, err := r.db.QueryContext(ctx, query, taskID)
 	if err != nil {
 		return nil, wrap("list messages", err)
 	}
@@ -139,65 +187,87 @@ func (db *DB) Messages(ctx context.Context, taskID string) ([]Message, error) {
 	}
 	return values, rows.Err()
 }
-func (db *DB) NextQueuedMessage(ctx context.Context, taskID, role string) (Message, error) {
-	return scanMessage(db.QueryRowContext(ctx, `select sequence,id,task_id,actor,text,idempotency_key,coalesce(target_type,''),coalesce(target_id,''),coalesce(stage_id,''),recipient_role,agent_session_id,delivery_status,coalesce(failure_reason,''),created_at,coalesce(delivered_at,''),coalesce(failed_at,'') from messages where task_id=? and stage_id=? and delivery_status='queued' order by sequence limit 1`, taskID, role))
+
+func (r *MessageRepository) NextQueued(ctx context.Context, taskID, role string) (Message, error) {
+	query := `select sequence,id,task_id,actor,text,idempotency_key,coalesce(target_type,''),coalesce(target_id,''),coalesce(stage_id,''),recipient_role,agent_session_id,delivery_status,coalesce(failure_reason,''),created_at,coalesce(delivered_at,''),coalesce(failed_at,'') from messages where task_id=? and stage_id=? and delivery_status='queued' order by sequence limit 1`
+	return scanMessage(r.db.QueryRowContext(ctx, query, taskID, role))
 }
-func (db *DB) NextQueuedTaskMessage(ctx context.Context, taskID string) (Message, error) {
-	return scanMessage(db.QueryRowContext(ctx, `select sequence,id,task_id,actor,text,idempotency_key,coalesce(target_type,''),coalesce(target_id,''),coalesce(stage_id,''),recipient_role,agent_session_id,delivery_status,coalesce(failure_reason,''),created_at,coalesce(delivered_at,''),coalesce(failed_at,'') from messages where task_id=? and delivery_status='queued' order by sequence limit 1`, taskID))
+
+func (r *MessageRepository) NextQueuedForTask(ctx context.Context, taskID string) (Message, error) {
+	query := `select sequence,id,task_id,actor,text,idempotency_key,coalesce(target_type,''),coalesce(target_id,''),coalesce(stage_id,''),recipient_role,agent_session_id,delivery_status,coalesce(failure_reason,''),created_at,coalesce(delivered_at,''),coalesce(failed_at,'') from messages where task_id=? and delivery_status='queued' order by sequence limit 1`
+	return scanMessage(r.db.QueryRowContext(ctx, query, taskID))
 }
 
 // QueuedMessageForStages reports whether a queued message is routed to any of
+
 // the given stage identifiers.
-func (db *DB) QueuedMessageForStages(ctx context.Context, taskID string, stages ...string) (bool, error) {
+
+func (r *MessageRepository) QueuedForStages(ctx context.Context, taskID string, stages ...string) (bool, error) {
 	if len(stages) == 0 {
 		return false, nil
 	}
-	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(stages)), ",")
-	args := make([]any, 0, len(stages)+1)
-	args = append(args, taskID)
-	for _, stage := range stages {
-		args = append(args, stage)
+	query, args, err := sqlx.Named(`select count(*) from messages where task_id=:task_id and delivery_status='queued' and stage_id in (:stages)`, map[string]any{"task_id": taskID, "stages": stages})
+	if err != nil {
+		return false, wrap("bind queued stage messages", err)
+	}
+	query, args, err = sqlx.In(query, args...)
+	if err != nil {
+		return false, wrap("expand queued stage messages", err)
 	}
 	var count int
-	if err := db.QueryRowContext(ctx, `select count(*) from messages where task_id=? and delivery_status='queued' and stage_id in (`+placeholders+`)`, args...).Scan(&count); err != nil {
-		return false, wrap("count queued stage messages", err)
+	if err := r.db.QueryRowContext(ctx, r.db.Rebind(query), args...).Scan(&count); err != nil {
+		return false, wrap("count queued stage messages",
+			err)
 	}
 	return count > 0, nil
 }
-func (db *DB) BeginMessageInvocation(ctx context.Context, taskID, role, invocationID, messageID string) error {
-	return db.beginMessageInvocation(ctx, taskID, role, invocationID, messageID, nil, "")
+
+func (r *MessageRepository) BeginInvocation(ctx context.Context, taskID, role, invocationID, messageID string) error {
+	return r.beginMessageInvocation(ctx, taskID, role, invocationID,
+		messageID, nil, "")
 }
 
 // BeginMessageInvocationWithEvent delivers a queued message and records its
+
 // delivery event in the same database transaction. The file trace is derived
+
 // output and is written only after the transaction commits.
-func (db *DB) BeginMessageInvocationWithEvent(ctx context.Context, taskID, role, invocationID, messageID string, event Event, taskDir string) error {
-	return db.beginMessageInvocation(ctx, taskID, role, invocationID, messageID, &event, taskDir)
+
+func (r *MessageRepository) BeginInvocationWithEvent(ctx context.Context, taskID, role, invocationID, messageID string, event Event, taskDir string) error {
+	return r.beginMessageInvocation(ctx, taskID, role, invocationID, messageID, &event, taskDir)
 }
 
 // DeliverMessageWithEvent marks a queued message delivered and records its
+
 // delivery event without touching the agent-session invocation marker. The
+
 // caller records that marker separately, so a message dispatch and an agent
+
 // invocation that share a transaction window stay distinct.
-func (db *DB) DeliverMessageWithEvent(ctx context.Context, taskID, messageID string, event Event, taskDir string) error {
-	return db.beginMessageInvocation(ctx, taskID, "", "", messageID, &event, taskDir)
+
+func (r *MessageRepository) DeliverWithEvent(ctx context.Context, taskID, messageID string, event Event, taskDir string) error {
+	return r.beginMessageInvocation(ctx, taskID, "", "", messageID, &event, taskDir)
 }
 
-func (db *DB) beginMessageInvocation(ctx context.Context, taskID, role, invocationID, messageID string, event *Event, taskDir string) error {
-	tx, err := db.BeginTx(ctx, nil)
+func (r *MessageRepository) beginMessageInvocation(ctx context.Context, taskID, role, invocationID, messageID string, event *Event, taskDir string) error {
+	tx, err := r.db.BeginTxx(ctx, nil)
 	if err != nil {
-		return wrap("begin message delivery", err)
+		return wrap("begin message delivery",
+			err)
 	}
 	defer tx.Rollback()
 	var state string
-	if err = tx.QueryRowContext(ctx, `select state from tasks where id=?`, taskID).Scan(&state); err != nil {
+	query := `select state from tasks where id=?`
+	if err = tx.QueryRowContext(ctx, query,
+		taskID).Scan(&state); err != nil {
 		return wrap("read message task state", err)
 	}
 	if state == "aborted" {
 		return ErrConflict
 	}
 	if role != "" {
-		result, err := tx.ExecContext(ctx, `update agent_sessions set pending_invocation_id=?,pending_request_id=null,pending_phase_id=null,last_used_at=? where task_id=? and stage_id=? and pending_invocation_id is null`, invocationID, now(), taskID, role)
+		query2 := `update agent_sessions set pending_invocation_id=:pending_invocation_id,pending_request_id=null,pending_phase_id=null,last_used_at=:last_used_at where task_id=:task_id and stage_id=:stage_id and pending_invocation_id is null`
+		result, err := tx.NamedExecContext(ctx, query2, AgentSession{TaskID: taskID, StageID: role, PendingInvocationID: invocationID, LastUsedAt: now()})
 		if err != nil {
 			return wrap("begin message invocation", err)
 		}
@@ -205,9 +275,11 @@ func (db *DB) beginMessageInvocation(ctx context.Context, taskID, role, invocati
 			return ErrConflict
 		}
 	}
-	result, err := tx.ExecContext(ctx, `update messages set delivery_status='delivered',delivered_at=?,failure_reason=null,failed_at=null where task_id=? and id=? and delivery_status='queued'`, now(), taskID, messageID)
+	query3 := `update messages set delivery_status='delivered',delivered_at=:delivered_at,failure_reason=null,failed_at=null where task_id=:task_id and id=:id and delivery_status='queued'`
+	result, err := tx.NamedExecContext(ctx, query3, Message{ID: messageID, TaskID: taskID, DeliveredAt: now()})
 	if err != nil {
-		return wrap("deliver message", err)
+		return wrap("deliver message",
+			err)
 	}
 	if count, _ := result.RowsAffected(); count != 1 {
 		return ErrConflict
@@ -220,42 +292,56 @@ func (db *DB) beginMessageInvocation(ctx context.Context, taskID, role, invocati
 		event.Sequence = sequence
 	}
 	if err = tx.Commit(); err != nil {
-		return wrap("commit message delivery", err)
+		return wrap("commit message delivery",
+			err)
 	}
 	if event != nil {
 		if err = writeEventTrace(taskDir, *event, event.Sequence); err != nil {
-			slog.Error("write derived event trace", "task_id", taskID, "event_id", event.ID, "error", err)
+			slog.Error("write derived event trace", "task_id",
+				taskID, "event_id",
+				event.ID, "error", err)
 		}
 	}
 	return nil
 }
-func (db *DB) FailMessage(ctx context.Context, taskID, messageID, reason string) (Message, error) {
-	return db.failMessage(ctx, taskID, messageID, reason, nil, "")
+
+func (r *MessageRepository) Fail(ctx context.Context, taskID, messageID, reason string) (Message, error) {
+	return r.failMessage(ctx, taskID, messageID, reason, nil, "")
 }
 
 // FailMessageWithEvent publishes a message failure and its lifecycle event in
+
 // one transaction. The event trace is derived output and is written only
+
 // after the database commit.
-func (db *DB) FailMessageWithEvent(ctx context.Context, taskID, messageID, reason string, event Event, taskDir string) (Message, error) {
-	return db.failMessage(ctx, taskID, messageID, reason, &event, taskDir)
+
+func (r *MessageRepository) FailWithEvent(ctx context.Context, taskID, messageID, reason string, event Event, taskDir string) (Message, error) {
+	return r.failMessage(ctx, taskID, messageID, reason, &event, taskDir)
 }
 
-func (db *DB) failMessage(ctx context.Context, taskID, messageID, reason string, event *Event, taskDir string) (Message, error) {
-	tx, err := db.BeginTx(ctx, nil)
+func (r *MessageRepository) failMessage(ctx context.Context, taskID, messageID, reason string, event *Event, taskDir string) (Message, error) {
+	tx, err := r.db.BeginTxx(ctx, nil)
 	if err != nil {
-		return Message{}, wrap("begin fail message", err)
+		return Message{}, wrap("begin fail message",
+			err)
 	}
 	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, `update messages set delivery_status='failed',failure_reason=?,failed_at=? where task_id=? and id=? and delivery_status in ('queued','delivered')`, reason, now(), taskID, messageID)
+	query := `update messages set delivery_status='failed',failure_reason=:failure_reason,failed_at=:failed_at where task_id=:task_id and id=:id and delivery_status in ('queued','delivered')`
+	result, err := tx.NamedExecContext(ctx, query, Message{ID: messageID, TaskID: taskID, FailureReason: reason, FailedAt: now()})
 	if err != nil {
-		return Message{}, wrap("fail message", err)
+		return Message{},
+			wrap("fail message", err)
 	}
 	if count, _ := result.RowsAffected(); count != 1 {
 		return Message{}, ErrConflict
 	}
 	var key string
-	if err = tx.QueryRowContext(ctx, `select idempotency_key from messages where task_id=? and id=?`, taskID, messageID).Scan(&key); err != nil {
-		return Message{}, wrap("read failed message", err)
+	query2 := `select idempotency_key from messages where task_id=? and id=?`
+	if err = tx.QueryRowContext(ctx, query2,
+		taskID, messageID,
+	).Scan(&key); err != nil {
+		return Message{}, wrap("read failed message",
+			err)
 	}
 	if event != nil {
 		sequence, appendErr := appendEventTx(ctx, tx, *event)
@@ -267,61 +353,31 @@ func (db *DB) failMessage(ctx context.Context, taskID, messageID, reason string,
 	if err = tx.Commit(); err != nil {
 		return Message{}, wrap("commit failed message", err)
 	}
-	stored, err := db.messageByKey(ctx, taskID, key)
+	stored, err := r.messageByKey(ctx, taskID, key)
 	if err != nil {
 		return Message{}, err
 	}
 	if event != nil {
 		if err = writeEventTrace(taskDir, *event, event.Sequence); err != nil {
-			slog.Error("write derived event trace", "task_id", taskID, "event_id", event.ID, "error", err)
+			slog.Error("write derived event trace", "task_id",
+				taskID, "event_id", event.ID, "error", err)
 		}
 	}
 	return stored, nil
 }
-func (db *DB) AbortTask(ctx context.Context, taskID, from, activePhase string) ([]Message, error) {
-	tx, err := db.BeginTx(ctx, nil)
+
+func (r *MessageRepository) FailQueuedForStages(ctx context.Context, taskID, reason string, stages ...string) error {
+	if len(stages) == 0 {
+		return nil
+	}
+	query, args, err := sqlx.Named(`update messages set delivery_status='failed',failure_reason=:reason,failed_at=:failed_at where task_id=:task_id and delivery_status='queued' and stage_id in (:stages)`, map[string]any{"task_id": taskID, "reason": reason, "failed_at": now(), "stages": stages})
 	if err != nil {
-		return nil, wrap("begin abort", err)
+		return wrap("bind queued stage messages", err)
 	}
-	defer tx.Rollback()
-	rows, err := tx.QueryContext(ctx, `select sequence,id,task_id,actor,text,idempotency_key,coalesce(target_type,''),coalesce(target_id,''),coalesce(stage_id,''),recipient_role,agent_session_id,delivery_status,coalesce(failure_reason,''),created_at,coalesce(delivered_at,''),coalesce(failed_at,'') from messages where task_id=? and delivery_status='queued' order by sequence`, taskID)
+	query, args, err = sqlx.In(query, args...)
 	if err != nil {
-		return nil, wrap("read abort messages", err)
+		return wrap("expand queued stage messages", err)
 	}
-	messages := make([]Message, 0)
-	for rows.Next() {
-		message, scanErr := scanMessage(rows)
-		if scanErr != nil {
-			rows.Close()
-			return nil, scanErr
-		}
-		messages = append(messages, message)
-	}
-	if err = rows.Err(); err != nil {
-		rows.Close()
-		return nil, wrap("scan abort messages", err)
-	}
-	if err = rows.Close(); err != nil {
-		return nil, wrap("close abort messages", err)
-	}
-	timestamp := now()
-	result, err := tx.ExecContext(ctx, `update tasks set previous_state=state,state='aborted',active_phase=?,error=null,ended_at=? where id=? and state=?`, nullIfEmpty(activePhase), timestamp, taskID, from)
-	if err != nil {
-		return nil, wrap("abort task", err)
-	}
-	if count, _ := result.RowsAffected(); count != 1 {
-		return nil, ErrConflict
-	}
-	if _, err = tx.ExecContext(ctx, `update messages set delivery_status='failed',failure_reason='task_aborted',failed_at=? where task_id=? and delivery_status='queued'`, timestamp, taskID); err != nil {
-		return nil, wrap("fail aborted messages", err)
-	}
-	if err = tx.Commit(); err != nil {
-		return nil, wrap("commit abort", err)
-	}
-	for index := range messages {
-		messages[index].DeliveryStatus = "failed"
-		messages[index].FailureReason = "task_aborted"
-		messages[index].FailedAt = timestamp
-	}
-	return messages, nil
+	_, err = r.db.ExecContext(ctx, r.db.Rebind(query), args...)
+	return wrap("fail queued stage messages", err)
 }
