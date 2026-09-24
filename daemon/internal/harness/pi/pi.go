@@ -420,9 +420,7 @@ func (h Harness) Stats(_ context.Context, ref harness.SessionRef) (harness.Stats
 	return stats, nil
 }
 
-func (h Harness) Report(_ context.Context, ref harness.SessionRef, requestID string) (
-	harness.Report, bool, error,
-) {
+func (h Harness) Report(_ context.Context, ref harness.SessionRef, requestID string) (harness.Report, bool, error) {
 	if requestID == "" {
 		return harness.Report{}, false, nil
 	}

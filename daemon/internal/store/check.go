@@ -35,10 +35,7 @@ func (r *CheckRepository) Save(ctx context.Context, check Check) error {
 		err)
 }
 
-func (r *CheckRepository) List(ctx context.Context,
-	taskID string) (
-	[]Check, error,
-) {
+func (r *CheckRepository) List(ctx context.Context, taskID string) ([]Check, error) {
 	rows, err := r.db.QueryContext(ctx, `select id,task_id,coalesce(phase_id,''),coalesce(stage_id,''),coalesce(check_phase,'primary'),coalesce(comparison_baseline,''),name,command,attempt,status,coalesce(exit_code,-1),coalesce(output,''),coalesce(output_path,''),coalesce(duration_ms,0),coalesce(started_at,''),coalesce(ended_at,'') from checks where task_id=? order by rowid`, taskID)
 	if err != nil {
 		return nil, err

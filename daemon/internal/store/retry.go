@@ -15,10 +15,7 @@ type RetryResult struct {
 
 type RetryRepository struct{ db *sql.DB }
 
-func (r *RetryRepository) Apply(
-	ctx context.Context, key string,
-	branch Branch, phase Phase, nextState string,
-) (RetryResult, bool, error) {
+func (r *RetryRepository) Apply(ctx context.Context, key string, branch Branch, phase Phase, nextState string) (RetryResult, bool, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return RetryResult{}, false, err
@@ -64,9 +61,7 @@ func (r *RetryRepository) Apply(
 	}, true, nil
 }
 
-func (r *RetryRepository) ByIdempotencyKey(ctx context.Context, taskID,
-	key string,
-) (RetryResult, error) {
+func (r *RetryRepository) ByIdempotencyKey(ctx context.Context, taskID, key string) (RetryResult, error) {
 	var value RetryResult
 	err := r.db.QueryRowContext(ctx, `select source_attempt_id,branch_id,attempt_id,created_at from retry_requests where task_id=? and idempotency_key=?`, taskID,
 		key).Scan(&value.SourceAttemptID, &value.BranchID, &value.AttemptID, &value.CreatedAt)

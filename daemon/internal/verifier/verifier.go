@@ -532,9 +532,7 @@ func CopyOverlayPath(sourceRoot, destinationRoot, relative string) error {
 	return os.Chmod(destination, info.Mode().Perm())
 }
 
-func (s service) savedVerification(ctx context.Context,
-	taskID, buildAttemptID string) (stage.VerificationResult, bool, error,
-) {
+func (s service) savedVerification(ctx context.Context, taskID, buildAttemptID string) (stage.VerificationResult, bool, error) {
 	task, err := s.kit.Task(ctx, taskID)
 	if err != nil {
 		return stage.VerificationResult{}, false, err
@@ -616,8 +614,7 @@ func (s service) beginVerification(ctx context.Context, taskID, planAttemptID, b
 	return task, phase, nil
 }
 
-func (s service) publishVerification(ctx context.Context, phase store.Phase, checks []store.Check, comparisons []store.Comparison, report string, passed bool,
-) (stage.VerificationResult, error) {
+func (s service) publishVerification(ctx context.Context, phase store.Phase, checks []store.Check, comparisons []store.Comparison, report string, passed bool) (stage.VerificationResult, error) {
 	status, to := "success", stagekit.Reviewing
 	if !passed {
 		status, to = "failed", stagekit.Blocked

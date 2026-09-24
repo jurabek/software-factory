@@ -55,8 +55,7 @@ type AgentSession struct {
 
 type AgentSessionRepository struct{ db *sql.DB }
 
-func (r *AgentSessionRepository) Reserve(ctx context.Context, taskID string, value AgentSession,
-) (AgentSession, error) {
+func (r *AgentSessionRepository) Reserve(ctx context.Context, taskID string, value AgentSession) (AgentSession, error) {
 	timestamp := now()
 	stageID := value.StageID
 	if stageID == "" {
@@ -130,10 +129,7 @@ func (r *AgentSessionRepository) List(ctx context.Context, taskID string) ([]Age
 	return values, nil
 }
 
-func (r *AgentSessionRepository) BeginInvocation(ctx context.Context, taskID,
-	role,
-	invocationID, requestID, phaseID string,
-) error {
+func (r *AgentSessionRepository) BeginInvocation(ctx context.Context, taskID, role, invocationID, requestID, phaseID string) error {
 	result, err := r.db.ExecContext(ctx, `update agent_sessions set pending_invocation_id=?,pending_request_id=?,pending_phase_id=?,last_used_at=? where task_id=? and stage_id=? and pending_invocation_id is null`, invocationID,
 		nullIfEmpty(requestID), nullIfEmpty(phaseID), now(), taskID, role)
 	if err != nil {
@@ -151,10 +147,7 @@ func (r *AgentSessionRepository) BeginInvocation(ctx context.Context, taskID,
 	return nil
 }
 
-func (r *AgentSessionRepository) FinalizeInvocation(ctx context.Context,
-	taskID, role,
-	invocationID string, value AgentSession,
-) error {
+func (r *AgentSessionRepository) FinalizeInvocation(ctx context.Context, taskID, role, invocationID string, value AgentSession) error {
 	usage, err := json.Marshal(value.Usage)
 	if err != nil {
 		return fmt.Errorf("encode agent session usage: %w",
@@ -278,9 +271,7 @@ func (r *AgentSessionRepository) ReconcileStats(ctx context.Context, taskID, sta
 
 // usable native turn, leaving the session settled and ready to re-drive.
 
-func (r *AgentSessionRepository) ClearInvocation(ctx context.Context, taskID, stageID,
-	invocationID string,
-) error {
+func (r *AgentSessionRepository) ClearInvocation(ctx context.Context, taskID, stageID, invocationID string) error {
 	result, err := r.db.ExecContext(ctx, `update agent_sessions set pending_invocation_id=null,pending_request_id=null,pending_phase_id=null,last_used_at=? where task_id=? and stage_id=? and pending_invocation_id=?`, now(), taskID, stageID, invocationID)
 	if err != nil {
 		return wrap("clear agent invocation", err)
@@ -295,8 +286,7 @@ func (r *AgentSessionRepository) ClearInvocation(ctx context.Context, taskID, st
 
 // explicit resume reuses it instead of creating a replacement attempt.
 
-func (r *AgentSessionRepository) Reset(ctx context.Context, taskID, stageID, newSessionID string,
-) error {
+func (r *AgentSessionRepository) Reset(ctx context.Context, taskID, stageID, newSessionID string) error {
 	result, err := r.db.ExecContext(ctx, `update agent_sessions set harness_session_id=?,session_ready=0,native_transcript_path=null,last_entry_id=null,pending_invocation_id=null,pending_request_id=null,pending_phase_id=null,last_used_at=? where task_id=? and stage_id=? and pending_invocation_id is null`, newSessionID,
 		now(), taskID, stageID)
 	if err != nil {
@@ -322,10 +312,7 @@ func (r *AgentSessionRepository) Reset(ctx context.Context, taskID, stageID, new
 	return nil
 }
 
-func (r *AgentSessionRepository) Replace(ctx context.Context, taskID,
-	role,
-	newSessionID, newDirectory string,
-) (priorID string, err error) {
+func (r *AgentSessionRepository) Replace(ctx context.Context, taskID, role, newSessionID, newDirectory string) (priorID string, err error) {
 	var current AgentSession
 	current, err = r.Get(ctx, taskID, role)
 	if err != nil {

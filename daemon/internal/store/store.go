@@ -116,9 +116,7 @@ func New(db *sql.DB) *Store {
 	return s
 }
 
-func (s *Store) TaskSessionsWithAgents(ctx context.Context,
-	taskID string,
-) ([]TaskSession, error) {
+func (s *Store) TaskSessionsWithAgents(ctx context.Context, taskID string) ([]TaskSession, error) {
 	tasks, err := s.Tasks.Sessions(ctx, taskID)
 	if err != nil {
 		return nil,

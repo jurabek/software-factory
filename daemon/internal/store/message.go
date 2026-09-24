@@ -98,9 +98,7 @@ func (r *MessageRepository) Save(ctx context.Context, value Message) (Message, b
 
 // event trace is derived output and is written only after the commit.
 
-func (r *MessageRepository) AcceptWithEvent(ctx context.Context, value Message, event Event, invalidateApproval, reopen bool,
-	reopenState, taskDir string,
-) (Message, bool, error) {
+func (r *MessageRepository) AcceptWithEvent(ctx context.Context, value Message, event Event, invalidateApproval, reopen bool, reopenState, taskDir string) (Message, bool, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Message{}, false, wrap("begin message acceptance", err)
@@ -166,9 +164,7 @@ func (r *MessageRepository) messageByKey(ctx context.Context, taskID, key string
 	return scanMessage(r.db.QueryRowContext(ctx, `select sequence,id,task_id,actor,text,idempotency_key,coalesce(target_type,''),coalesce(target_id,''),coalesce(stage_id,''),recipient_role,agent_session_id,delivery_status,coalesce(failure_reason,''),created_at,coalesce(delivered_at,''),coalesce(failed_at,'') from messages where task_id=? and idempotency_key=?`, taskID, key))
 }
 
-func (r *MessageRepository) ByIdempotencyKey(ctx context.Context,
-	taskID, key string,
-) (Message, error) {
+func (r *MessageRepository) ByIdempotencyKey(ctx context.Context, taskID, key string) (Message, error) {
 	return r.messageByKey(ctx, taskID, key)
 }
 
@@ -189,15 +185,11 @@ func (r *MessageRepository) List(ctx context.Context, taskID string) ([]Message,
 	return values, rows.Err()
 }
 
-func (r *MessageRepository) NextQueued(ctx context.Context, taskID,
-	role string) (
-	Message, error,
-) {
+func (r *MessageRepository) NextQueued(ctx context.Context, taskID, role string) (Message, error) {
 	return scanMessage(r.db.QueryRowContext(ctx, `select sequence,id,task_id,actor,text,idempotency_key,coalesce(target_type,''),coalesce(target_id,''),coalesce(stage_id,''),recipient_role,agent_session_id,delivery_status,coalesce(failure_reason,''),created_at,coalesce(delivered_at,''),coalesce(failed_at,'') from messages where task_id=? and stage_id=? and delivery_status='queued' order by sequence limit 1`, taskID, role))
 }
 
-func (r *MessageRepository) NextQueuedForTask(ctx context.Context, taskID string,
-) (Message, error) {
+func (r *MessageRepository) NextQueuedForTask(ctx context.Context, taskID string) (Message, error) {
 	return scanMessage(r.db.QueryRowContext(ctx, `select sequence,id,task_id,actor,text,idempotency_key,coalesce(target_type,''),coalesce(target_id,''),coalesce(stage_id,''),recipient_role,agent_session_id,delivery_status,coalesce(failure_reason,''),created_at,coalesce(delivered_at,''),coalesce(failed_at,'') from messages where task_id=? and delivery_status='queued' order by sequence limit 1`, taskID))
 }
 
@@ -205,9 +197,7 @@ func (r *MessageRepository) NextQueuedForTask(ctx context.Context, taskID string
 
 // the given stage identifiers.
 
-func (r *MessageRepository) QueuedForStages(ctx context.Context,
-	taskID string, stages ...string,
-) (bool, error) {
+func (r *MessageRepository) QueuedForStages(ctx context.Context, taskID string, stages ...string) (bool, error) {
 	if len(stages) == 0 {
 		return false, nil
 	}
@@ -226,10 +216,7 @@ func (r *MessageRepository) QueuedForStages(ctx context.Context,
 	return count > 0, nil
 }
 
-func (r *MessageRepository) BeginInvocation(ctx context.Context,
-	taskID, role,
-	invocationID, messageID string,
-) error {
+func (r *MessageRepository) BeginInvocation(ctx context.Context, taskID, role, invocationID, messageID string) error {
 	return r.beginMessageInvocation(ctx, taskID, role, invocationID,
 		messageID, nil, "")
 }
@@ -240,9 +227,7 @@ func (r *MessageRepository) BeginInvocation(ctx context.Context,
 
 // output and is written only after the transaction commits.
 
-func (r *MessageRepository) BeginInvocationWithEvent(ctx context.Context, taskID, role, invocationID, messageID string, event Event,
-	taskDir string,
-) error {
+func (r *MessageRepository) BeginInvocationWithEvent(ctx context.Context, taskID, role, invocationID, messageID string, event Event, taskDir string) error {
 	return r.beginMessageInvocation(ctx, taskID, role, invocationID, messageID, &event, taskDir)
 }
 
@@ -258,10 +243,7 @@ func (r *MessageRepository) DeliverWithEvent(ctx context.Context, taskID, messag
 	return r.beginMessageInvocation(ctx, taskID, "", "", messageID, &event, taskDir)
 }
 
-func (r *MessageRepository) beginMessageInvocation(ctx context.Context,
-	taskID, role,
-	invocationID, messageID string, event *Event, taskDir string,
-) error {
+func (r *MessageRepository) beginMessageInvocation(ctx context.Context, taskID, role, invocationID, messageID string, event *Event, taskDir string) error {
 	tx, err := r.db.BeginTx(ctx,
 		nil)
 	if err != nil {
@@ -316,9 +298,7 @@ func (r *MessageRepository) beginMessageInvocation(ctx context.Context,
 	return nil
 }
 
-func (r *MessageRepository) Fail(ctx context.Context, taskID, messageID,
-	reason string,
-) (Message, error) {
+func (r *MessageRepository) Fail(ctx context.Context, taskID, messageID, reason string) (Message, error) {
 	return r.failMessage(ctx, taskID, messageID, reason, nil, "")
 }
 
@@ -332,9 +312,7 @@ func (r *MessageRepository) FailWithEvent(ctx context.Context, taskID, messageID
 	return r.failMessage(ctx, taskID, messageID, reason, &event, taskDir)
 }
 
-func (r *MessageRepository) failMessage(ctx context.Context, taskID, messageID,
-	reason string, event *Event, taskDir string,
-) (Message, error) {
+func (r *MessageRepository) failMessage(ctx context.Context, taskID, messageID, reason string, event *Event, taskDir string) (Message, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Message{}, wrap("begin fail message",

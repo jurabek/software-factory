@@ -271,10 +271,7 @@ func (s service) beginReview(ctx context.Context, taskID, planAttemptID, buildAt
 	return task, phase, nil
 }
 
-func (s service) publishReview(ctx context.Context, task store.Task, phase store.Phase,
-	turn harness.TurnResult, before string) (stage.ReviewResult,
-	error,
-) {
+func (s service) publishReview(ctx context.Context, task store.Task, phase store.Phase, turn harness.TurnResult, before string) (stage.ReviewResult, error) {
 	return s.kit.DeliverAndFinalize(ctx, stagekit.Delivery{
 		Task: task, Phase: phase, Role: "review", ReadOnly: true, Instructions: Instructions(), Validate: func(text string) (any, error) {
 			return Validate(text)

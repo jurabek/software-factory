@@ -223,8 +223,7 @@ func (s *Service) handleEvent(ctx context.Context, id string) error {
 	return err
 }
 
-func (s *Service) progress(ctx context.Context, taskID string,
-) error {
+func (s *Service) progress(ctx context.Context, taskID string) error {
 	if s.workflow == nil {
 		return nil
 	}
@@ -249,8 +248,7 @@ func (s *Service) launch(id string, run func(context.Context, string) error) {
 	s.runExecution(ctx, id, active, run)
 }
 
-func (s *Service) runExecution(ctx context.Context, id string, active *execution, run func(context.Context, string) error,
-) {
+func (s *Service) runExecution(ctx context.Context, id string, active *execution, run func(context.Context, string) error) {
 	go func() {
 		var runErr error
 		defer func() {
@@ -293,8 +291,7 @@ func (s *Service) runExecution(ctx context.Context, id string, active *execution
 	}()
 }
 
-func (s *Service) Shutdown(ctx context.Context,
-) {
+func (s *Service) Shutdown(ctx context.Context) {
 	s.mu.Lock()
 	workers := make(map[string]*execution, len(s.cancel))
 	for id, worker := range s.cancel {

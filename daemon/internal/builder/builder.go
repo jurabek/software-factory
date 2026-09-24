@@ -260,9 +260,7 @@ func CheckProtectedPaths(repoPath, base string, protected []string) error {
 	return nil
 }
 
-func (s service) savedBuild(ctx context.Context, taskID,
-	planAttemptID string,
-) (stage.BuildResult, bool, error) {
+func (s service) savedBuild(ctx context.Context, taskID, planAttemptID string) (stage.BuildResult, bool, error) {
 	task, err := s.kit.Task(ctx, taskID)
 	if err != nil {
 		return stage.BuildResult{}, false, err
@@ -304,9 +302,7 @@ func (s service) savedBuild(ctx context.Context, taskID,
 	return stage.BuildResult{Payload: payload, AttemptID: phase.ID, SnapshotID: phase.OutputSnapshot}, true, nil
 }
 
-func (s service) beginBuild(ctx context.Context, taskID,
-	planAttemptID string) (store.Task, store.Phase, error,
-) {
+func (s service) beginBuild(ctx context.Context, taskID, planAttemptID string) (store.Task, store.Phase, error) {
 	task, err := s.kit.Task(ctx, taskID)
 	if err != nil {
 		return store.Task{}, store.Phase{}, err
@@ -341,18 +337,14 @@ func (s service) beginBuild(ctx context.Context, taskID,
 	return task, phase, nil
 }
 
-func (s service) publishBuild(ctx context.Context, task store.Task, phase store.Phase, turn harness.TurnResult, profile workspace.Materialization,
-) (stage.BuildResult, error) {
+func (s service) publishBuild(ctx context.Context, task store.Task, phase store.Phase, turn harness.TurnResult, profile workspace.Materialization) (stage.BuildResult, error) {
 	return s.kit.DeliverAndFinalize(ctx, stagekit.Delivery{Task: task, Phase: phase, Role: "build", ReadOnly: readOnly(
 		phase), Instructions: Instructions(), Validate: func(text string) (any, error) {
 		return ValidateWithEvidence(task.RepositoryPath, workspace.ReviewBase(task), profile.Tests, text)
-	}, OnValid: func(ctx context.Context, text string,
-	) error {
+	}, OnValid: func(ctx context.Context, text string) error {
 		return PersistEvidence(ctx, s.kit.DB(), task, phase,
 			text)
-	}}, turn, func(turn harness.TurnResult) (
-		stage.BuildResult, error,
-	) {
+	}}, turn, func(turn harness.TurnResult) (stage.BuildResult, error) {
 		if err := s.validatePaths(task, profile); err != nil {
 			s.kit.Fail(ctx, phase, err)
 			return stage.BuildResult{}, err

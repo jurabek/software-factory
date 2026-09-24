@@ -125,9 +125,7 @@ func (r *PhaseRepository) StartWithEvent(ctx context.Context, taskDir string, ph
 
 // atomically. Task progression, when needed, uses the transition variant.
 
-func (r *PhaseRepository) EndWithEvent(ctx context.Context, taskDir string, phaseID,
-	status, message, outputSnapshot string, event Event,
-) error {
+func (r *PhaseRepository) EndWithEvent(ctx context.Context, taskDir string, phaseID, status, message, outputSnapshot string, event Event) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return wrap("begin phase completion", err)
@@ -173,9 +171,7 @@ func (r *PhaseRepository) End(ctx context.Context, id, status, message string) e
 
 // trace is derived output and is written only after the database commit.
 
-func (r *PhaseRepository) CompleteWithTransitionAndEvent(ctx context.Context, taskDir string, phaseID, taskID, from, to, status,
-	message, outputSnapshot string, event Event,
-) error {
+func (r *PhaseRepository) CompleteWithTransitionAndEvent(ctx context.Context, taskDir string, phaseID, taskID, from, to, status, message, outputSnapshot string, event Event) error {
 	return r.completeWithEvidenceAndTransitionAndEvent(ctx, taskDir, phaseID, taskID, from, to, status, message,
 		outputSnapshot, nil, nil, event)
 }
@@ -184,10 +180,7 @@ func (r *PhaseRepository) CompleteWithTransitionAndEvent(ctx context.Context, ta
 
 // candidate together with the phase transition and event.
 
-func (r *PhaseRepository) CompletePlannerWithApproval(ctx context.Context, taskDir string, phaseID,
-	taskID, from, to, status, message, outputSnapshot,
-	approval string, event Event,
-) error {
+func (r *PhaseRepository) CompletePlannerWithApproval(ctx context.Context, taskDir string, phaseID, taskID, from, to, status, message, outputSnapshot, approval string, event Event) error {
 	return r.completeWithEvidenceAndTransitionAndEvent(ctx, taskDir, phaseID,
 		taskID, from, to, status, message, outputSnapshot,
 		nil, nil, event, approval)
@@ -201,15 +194,12 @@ func (r *PhaseRepository) CompletePlannerWithApproval(ctx context.Context, taskD
 
 // final publication is the authoritative successful verification boundary.
 
-func (r *PhaseRepository) CompleteVerificationWithEvidenceAndEvent(ctx context.Context, taskDir string, phaseID, taskID, from, to, status, message,
-	outputSnapshot string, checks []Check, comparisons []Comparison, event Event,
-) error {
+func (r *PhaseRepository) CompleteVerificationWithEvidenceAndEvent(ctx context.Context, taskDir string, phaseID, taskID, from, to, status, message, outputSnapshot string, checks []Check, comparisons []Comparison, event Event) error {
 	return r.completeWithEvidenceAndTransitionAndEvent(ctx, taskDir, phaseID, taskID, from, to, status,
 		message, outputSnapshot, checks, comparisons, event)
 }
 
-func (r *PhaseRepository) completeWithEvidenceAndTransitionAndEvent(ctx context.Context, taskDir, phaseID, taskID, from, to, status, message, outputSnapshot string, checks []Check, comparisons []Comparison, event Event, approval ...string,
-) error {
+func (r *PhaseRepository) completeWithEvidenceAndTransitionAndEvent(ctx context.Context, taskDir, phaseID, taskID, from, to, status, message, outputSnapshot string, checks []Check, comparisons []Comparison, event Event, approval ...string) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return wrap("begin phase completion", err)
@@ -273,9 +263,7 @@ func (r *PhaseRepository) completeWithEvidenceAndTransitionAndEvent(ctx context.
 	return nil
 }
 
-func (r *PhaseRepository) StartQueued(ctx context.Context, taskID,
-	phaseID string,
-) error {
+func (r *PhaseRepository) StartQueued(ctx context.Context, taskID, phaseID string) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return wrap("begin queued phase start",
@@ -304,10 +292,7 @@ func (r *PhaseRepository) StartQueued(ctx context.Context, taskID,
 	return nil
 }
 
-func (r *PhaseRepository) List(ctx context.Context,
-	taskID string) (
-	[]Phase, error,
-) {
+func (r *PhaseRepository) List(ctx context.Context, taskID string) ([]Phase, error) {
 	rows, err := r.db.QueryContext(ctx, `select id,task_id,sequence,name,kind,owner,coalesce(description,''),status,attempt,retries,coalesce(error,''),started_at,coalesce(ended_at,''),coalesce(branch_id,''),coalesce(definition_id,''),coalesce(input_snapshot,''),coalesce(output_snapshot,''),coalesce(superseded,0),coalesce(native_base_entry_id,''),coalesce(fork_native,0) from phases where task_id=? order by sequence`, taskID)
 	if err != nil {
 		return nil, err
@@ -329,8 +314,7 @@ func (r *PhaseRepository) List(ctx context.Context,
 		rows.Err()
 }
 
-func (r *PhaseRepository) ByID(ctx context.Context, taskID, phaseID string) (Phase, error,
-) {
+func (r *PhaseRepository) ByID(ctx context.Context, taskID, phaseID string) (Phase, error) {
 	var value Phase
 	var superseded, forkNative int
 	err := r.db.QueryRowContext(ctx, `select id,task_id,sequence,name,kind,owner,coalesce(description,''),status,attempt,retries,coalesce(error,''),started_at,coalesce(ended_at,''),coalesce(branch_id,''),coalesce(definition_id,''),coalesce(input_snapshot,''),coalesce(output_snapshot,''),coalesce(superseded,0),coalesce(native_base_entry_id,''),coalesce(fork_native,0) from phases where task_id=? and id=?`, taskID, phaseID).Scan(&value.ID, &value.TaskID, &value.Sequence, &value.Name, &value.Kind, &value.Owner, &value.Description, &value.Status, &value.Attempt, &value.Retries, &value.Error, &value.StartedAt, &value.EndedAt, &value.BranchID, &value.DefinitionID, &value.InputSnapshot, &value.OutputSnapshot, &superseded, &value.NativeBaseEntryID, &forkNative)
@@ -348,9 +332,7 @@ func (r *PhaseRepository) ByID(ctx context.Context, taskID, phaseID string) (Pha
 
 // attempt's recorded boundary.
 
-func (r *PhaseRepository) SetNativeBase(
-	ctx context.Context, taskID, phaseID, entryID string,
-) error {
+func (r *PhaseRepository) SetNativeBase(ctx context.Context, taskID, phaseID, entryID string) error {
 	if entryID == "" {
 		return nil
 	}
@@ -366,9 +348,7 @@ func (r *PhaseRepository) SetOutputSnapshot(ctx context.Context, phaseID, snapsh
 	return wrap("save phase output snapshot", err)
 }
 
-func (r *PhaseRepository) MarkSuperseded(ctx context.Context, taskID,
-	branchID string, keepID string,
-) error {
+func (r *PhaseRepository) MarkSuperseded(ctx context.Context, taskID, branchID string, keepID string) error {
 	_, err := r.db.ExecContext(ctx, `update phases set superseded=1 where task_id=? and coalesce(branch_id,'')=? and id<>?`, taskID,
 		branchID, keepID)
 	return wrap("mark superseded",

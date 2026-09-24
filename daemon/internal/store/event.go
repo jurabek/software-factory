@@ -162,9 +162,7 @@ func (r *EventRepository) Append(ctx context.Context, taskDir string, event Even
 	return sequence, nil
 }
 
-func (r *EventRepository) List(ctx context.Context,
-	taskID string, after int64, limit int,
-) ([]Event, error) {
+func (r *EventRepository) List(ctx context.Context, taskID string, after int64, limit int) ([]Event, error) {
 	limit = eventLimit(limit)
 	rows, err := r.db.QueryContext(ctx, `select sequence,id,task_id,coalesce(phase_id,''),coalesce(parent_event_id,''),kind,format_version,coalesce(name,''),coalesce(native_entry_id,''),coalesce(request_id,''),payload_json,display_json,token_count,started_at,ended_at,coalesce(attempt_id,''),coalesce(branch_id,''),coalesce(actions_json,'[]') from events where task_id=? and sequence>? order by sequence limit ?`, taskID, after, limit)
 	if err != nil {
@@ -174,9 +172,7 @@ func (r *EventRepository) List(ctx context.Context,
 	return scanEvents(rows)
 }
 
-func (r *EventRepository) Recent(ctx context.Context, taskID string, limit int) (
-	[]Event, error,
-) {
+func (r *EventRepository) Recent(ctx context.Context, taskID string, limit int) ([]Event, error) {
 	limit = eventLimit(limit)
 	rows, err := r.db.QueryContext(ctx, `select sequence,id,task_id,phase_id,parent_event_id,kind,format_version,name,native_entry_id,request_id,payload_json,display_json,token_count,started_at,ended_at,attempt_id,branch_id,actions_json from (select sequence,id,task_id,coalesce(phase_id,'') as phase_id,coalesce(parent_event_id,'') as parent_event_id,kind,format_version,coalesce(name,'') as name,coalesce(native_entry_id,'') as native_entry_id,coalesce(request_id,'') as request_id,payload_json,display_json,token_count,started_at,ended_at,coalesce(attempt_id,'') as attempt_id,coalesce(branch_id,'') as branch_id,coalesce(actions_json,'[]') as actions_json from events where task_id=? order by sequence desc limit ?) order by sequence`, taskID, limit)
 	if err != nil {
@@ -186,8 +182,7 @@ func (r *EventRepository) Recent(ctx context.Context, taskID string, limit int) 
 	return scanEvents(rows)
 }
 
-func (r *EventRepository) ByID(ctx context.Context, taskID, eventID string) (Event, error,
-) {
+func (r *EventRepository) ByID(ctx context.Context, taskID, eventID string) (Event, error) {
 	var event Event
 	var payload, display, started, actions string
 	var ended sql.NullString
@@ -221,8 +216,7 @@ func (r *EventRepository) ByID(ctx context.Context, taskID, eventID string) (Eve
 
 // request in append order.
 
-func (r *EventRepository) ByRequest(ctx context.Context, taskID, requestID string,
-) ([]Event, error) {
+func (r *EventRepository) ByRequest(ctx context.Context, taskID, requestID string) ([]Event, error) {
 	rows, err := r.db.QueryContext(ctx, `select sequence,id,task_id,coalesce(phase_id,''),coalesce(parent_event_id,''),kind,format_version,coalesce(name,''),coalesce(native_entry_id,''),coalesce(request_id,''),payload_json,display_json,token_count,started_at,ended_at,coalesce(attempt_id,''),coalesce(branch_id,''),coalesce(actions_json,'[]') from events where task_id=? and request_id=? order by sequence`, taskID, requestID)
 	if err != nil {
 		return nil, err

@@ -97,8 +97,7 @@ func (s *Service) ensureBranch(ctx context.Context, taskID, parent string) error
 	return s.deps.Store.Branches.Select(ctx, taskID, branch.ID)
 }
 
-func (s *Service) Create(ctx context.Context, request CreateRequest) (store.Task, error,
-) {
+func (s *Service) Create(ctx context.Context, request CreateRequest) (store.Task, error) {
 	task, err := s.create(ctx, request, "")
 	if err != nil {
 		return store.Task{}, err
@@ -144,8 +143,7 @@ func (s *Service) CreateSession(ctx context.Context, taskID string, request Crea
 	return created, nil
 }
 
-func (s *Service) create(ctx context.Context, request CreateRequest, parentTaskID string) (store.Task, error,
-) {
+func (s *Service) create(ctx context.Context, request CreateRequest, parentTaskID string) (store.Task, error) {
 	request.Request = strings.TrimSpace(request.Request)
 	if request.Request == "" {
 		return store.Task{}, fmt.Errorf("task description is required")
@@ -273,8 +271,7 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 		id)
 }
 
-func (s *Service) Diff(ctx context.Context, id string,
-) (Diff, error) {
+func (s *Service) Diff(ctx context.Context, id string) (Diff, error) {
 	task, err := s.deps.Store.Tasks.Get(ctx, id)
 	if err != nil {
 		return Diff{}, err
@@ -283,9 +280,7 @@ func (s *Service) Diff(ctx context.Context, id string,
 		false)
 }
 
-func (s *Service) diffRepository(
-	task store.Task, reviewBase bool,
-) (Diff, error) {
+func (s *Service) diffRepository(task store.Task, reviewBase bool) (Diff, error) {
 	base := task.BaseSHA
 	if reviewBase && task.ReviewBaseSHA != "" {
 		base = task.ReviewBaseSHA

@@ -23,12 +23,7 @@ type Envelope struct {
 
 type EnvelopeRepository struct{ db *sql.DB }
 
-func (r *EnvelopeRepository) Save(ctx context.Context, id, taskID,
-	phaseID,
-	role,
-	outputType,
-	payload string, valid bool, attempt int,
-) error {
+func (r *EnvelopeRepository) Save(ctx context.Context, id, taskID, phaseID, role, outputType, payload string, valid bool, attempt int) error {
 	_, err := r.db.ExecContext(ctx, `insert into envelopes(id,task_id,phase_id,stage_id,agent_role,output_type,payload_json,valid,attempt,created_at) values(?,?,?,?,?,?,?,?,?,?)`, id, taskID, phaseID, role, role,
 		outputType, payload, valid, attempt, now())
 	if err == nil && valid && role == "planner" {

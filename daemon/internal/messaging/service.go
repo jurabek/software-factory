@@ -133,8 +133,7 @@ func (s *Service) taskDir(id string) string {
 	return filepath.Join(s.deps.Root, "tasks", id)
 }
 
-func (s *Service) messageRecipient(ctx context.Context, task store.Task, target *store.Phase) (string, *store.Phase, error,
-) {
+func (s *Service) messageRecipient(ctx context.Context, task store.Task, target *store.Phase) (string, *store.Phase, error) {
 	if target != nil && target.Kind == "agent" {
 		return target.Owner, target, nil
 	}
@@ -261,8 +260,7 @@ func (s *Service) ensureAgentSession(ctx context.Context, task store.Task, role 
 	return s.deps.Store.AgentSessions.Reserve(ctx, task.ID, store.AgentSession{StageID: role, AgentName: agentName, Role: agentName, Harness: harnessName, Model: agent.Model, Thinking: agent.Thinking, Color: agent.Color, HarnessSessionID: uuid.New().String(), SessionDirectory: filepath.Join(s.taskDir(task.ID), "sessions", role, harnessName)})
 }
 
-func (s *Service) Resolve(ctx context.Context, taskID string, target Target,
-) (string, string, *store.Phase, error) {
+func (s *Service) Resolve(ctx context.Context, taskID string, target Target) (string, string, *store.Phase, error) {
 	count := 0
 	if target.EventID != "" {
 		count++
