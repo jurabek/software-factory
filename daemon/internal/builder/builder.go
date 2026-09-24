@@ -333,7 +333,7 @@ func (s service) beginBuild(ctx context.Context, taskID,
 	if err = s.kit.Transition(ctx, task, stagekit.Building, ""); err != nil {
 		return store.Task{}, store.Phase{}, err
 	}
-	task.State = string(stagekit.Building)
+	task.State = stagekit.Building
 	phase, err := s.kit.BeginOrReusePhase(ctx, task.ID, stageDef.ID, stageDef.Kind, stageDef.Agent, "Execute "+stageDef.ID)
 	if err != nil {
 		return store.Task{}, store.Phase{}, err

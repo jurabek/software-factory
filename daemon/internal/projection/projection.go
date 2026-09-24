@@ -67,7 +67,7 @@ func (s *Service) StageProjection(ctx context.Context, task store.Task) ([]store
 			break
 		}
 		if task.ActiveStage == stage.ID {
-			switch stagekit.State(task.State) {
+			switch task.State {
 			case stagekit.Paused:
 				value.Status = "paused"
 			case stagekit.Aborted:

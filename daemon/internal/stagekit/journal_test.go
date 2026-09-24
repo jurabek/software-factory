@@ -23,7 +23,7 @@ func TestBeginOrReusePhaseStartsQueuedRetryAttempt(t *testing.T) {
 	createdAt := time.Now().UTC().Format(time.RFC3339Nano)
 	task := store.Task{
 		ID: "SF-1", Request: "fix", WorkspacePath: filepath.Join(root, "tasks", "SF-1"),
-		RepositoryType: "github", RepositorySource: "owner/repository", State: string(Blocked),
+		RepositoryType: "github", RepositorySource: "owner/repository", State: Blocked,
 		CreatedAt: createdAt, StartedAt: createdAt,
 	}
 	if err = db.Tasks.CreateActive(ctx, task); err != nil {

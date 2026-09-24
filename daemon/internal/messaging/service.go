@@ -65,41 +65,40 @@ func New(deps Deps) *Service {
 	return &Service{deps: deps}
 }
 
-// Send persists a message and reports whether the task should be handed back to
-// the workflow. It is idempotent per idempotency key.
-func (s *Service) Send(ctx context.Context, taskID, actor string, request Request) (store.Message, bool, error) {
+// Send persists a message. It is idempotent per idempotency key.
+func (s *Service) Send(ctx context.Context, taskID, actor string, request Request) (store.Message, error) {
 	request.Text = strings.TrimSpace(request.Text)
 	request.IdempotencyKey = strings.TrimSpace(request.IdempotencyKey)
 	if request.Text == "" {
-		return store.Message{}, false, fmt.Errorf("text is required")
+		return store.Message{}, fmt.Errorf("text is required")
 	}
 	if request.IdempotencyKey == "" {
-		return store.Message{}, false, fmt.Errorf("idempotency_key is required")
+		return store.Message{}, fmt.Errorf("idempotency_key is required")
 	}
 	if existing, err := s.deps.Store.Messages.ByIdempotencyKey(ctx, taskID, request.IdempotencyKey); err == nil {
-		return existing, false, nil
+		return existing, nil
 	} else if !errors.Is(err, store.ErrNotFound) {
-		return store.Message{}, false, err
+		return store.Message{}, err
 	}
 	task, err := s.deps.Store.Tasks.Get(ctx, taskID)
 	if err != nil {
-		return store.Message{}, false, err
+		return store.Message{}, err
 	}
-	if task.State == string(stagekit.Aborted) {
-		return store.Message{}, false, store.ErrConflict
+	if task.State == stagekit.Aborted {
+		return store.Message{}, store.ErrConflict
 	}
 	target := request.Target
 	targetType, targetID, targetPhase, err := s.Resolve(ctx, taskID, target)
 	if err != nil {
-		return store.Message{}, false, err
+		return store.Message{}, err
 	}
 	role, phase, err := s.messageRecipient(ctx, task, targetPhase)
 	if err != nil {
-		return store.Message{}, false, err
+		return store.Message{}, err
 	}
 	agentSession, err := s.ensureAgentSession(ctx, task, role)
 	if err != nil {
-		return store.Message{}, false, err
+		return store.Message{}, err
 	}
 	if targetType == "task" {
 		targetType, targetID = "", ""
@@ -110,24 +109,24 @@ func (s *Service) Send(ctx context.Context, taskID, actor string, request Reques
 		StageID: role, RecipientRole: agentSession.AgentName, AgentSessionID: agentSession.HarnessSessionID,
 		DeliveryStatus: "queued", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
 	}
-	reopen := task.State == string(stagekit.AwaitingApproval) || task.State == string(stagekit.Blocked) || task.State == string(stagekit.Completed)
+	reopen := task.State == stagekit.AwaitingApproval || task.State == stagekit.Blocked || task.State == stagekit.Completed
 	event, err := stagekit.MessageEvent(ctx, s.deps.Store, value, phase)
 	if err != nil {
-		return store.Message{}, false, err
+		return store.Message{}, err
 	}
-	stored, created, err := s.deps.Store.Messages.AcceptWithEvent(ctx, value, event, role == "planner", reopen, string(stagekit.StateForRole(role)), s.taskDir(taskID))
+	stored, created, err := s.deps.Store.Messages.AcceptWithEvent(ctx, value, event, role == "planner", reopen, stagekit.StateForRole(role), s.taskDir(taskID))
 	if err != nil {
-		return store.Message{}, false, err
+		return store.Message{}, err
 	}
 	if !created {
-		return stored, false, nil
+		return stored, nil
 	}
 	if s.deps.Events != nil {
 		if err = s.deps.Events.Publish(ctx, taskID, store.TaskMessaged); err != nil {
-			return store.Message{}, false, err
+			return store.Message{}, err
 		}
 	}
-	return stored, true, nil
+	return stored, nil
 }
 
 func (s *Service) taskDir(id string) string {
@@ -161,9 +160,9 @@ func (s *Service) messageRecipient(ctx context.Context, task store.Task, target 
 		value := phases[len(phases)-1]
 		latest = &value
 	}
-	state := stagekit.State(task.State)
+	state := task.State
 	if state == stagekit.Paused {
-		state = stagekit.State(task.PreviousState)
+		state = task.PreviousState
 	}
 	if _, pipeline, pipelineErr := config.TaskPipeline(s.deps.Config,
 		s.deps.ConfigPath, task.ConfigSnapshot,

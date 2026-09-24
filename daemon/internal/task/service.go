@@ -223,7 +223,7 @@ func (s *Service) create(ctx context.Context, request CreateRequest, parentTaskI
 	task := store.Task{
 		ID: id, ParentTaskID: parentTaskID, Request: request.Request,
 		WorkspacePath:  workspace,
-		RepositoryType: request.Repository.Type, RepositorySource: source, SubmittedRepositoryPath: submitted, State: string(stagekit.Preparing), Pipeline: selectedPipeline.Name, ConfigSnapshot: configSnapshot, CreatedAt: createdAt, StartedAt: createdAt, CodingAgent: request.CodingAgent, Model: request.Model, Thinking: request.Thinking,
+		RepositoryType: request.Repository.Type, RepositorySource: source, SubmittedRepositoryPath: submitted, State: stagekit.Preparing, Pipeline: selectedPipeline.Name, ConfigSnapshot: configSnapshot, CreatedAt: createdAt, StartedAt: createdAt, CodingAgent: request.CodingAgent, Model: request.Model, Thinking: request.Thinking,
 	}
 	metadata, err := json.MarshalIndent(task, "",
 		"  ")
@@ -256,7 +256,7 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 		}
 	}
 	for _, session := range tasks {
-		if stagekit.IsActive(stagekit.State(session.State)) {
+		if stagekit.IsActive(session.State) {
 			return store.ErrConflict
 		}
 	}

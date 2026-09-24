@@ -146,7 +146,7 @@ func (s service) Approve(ctx context.Context, taskID, actor, expectedDigest stri
 	if err != nil {
 		return err
 	}
-	if task.State != string(stagekit.AwaitingApproval) {
+	if task.State != stagekit.AwaitingApproval {
 		return store.ErrConflict
 	}
 	stageDef, err := s.kit.StageByKind(task, "plan")
@@ -219,12 +219,12 @@ func (s service) beginPlan(ctx context.Context, taskID string) (store.Task, stor
 	if err != nil {
 		return store.Task{}, store.Phase{}, err
 	}
-	if task.State == string(stagekit.Preparing) {
+	if task.State == stagekit.Preparing {
 		if err = s.kit.Transition(ctx,
 			task, stagekit.Planning, ""); err != nil {
 			return store.Task{}, store.Phase{}, err
 		}
-		task.State = string(stagekit.Planning)
+		task.State = stagekit.Planning
 	}
 	stageDef, err := s.kit.StageByKind(task, "plan")
 	if err != nil {

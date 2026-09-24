@@ -263,7 +263,7 @@ func (s service) beginReview(ctx context.Context, taskID, planAttemptID, buildAt
 			store.Phase{},
 			err
 	}
-	task.State = string(stagekit.Reviewing)
+	task.State = stagekit.Reviewing
 	phase, err := s.kit.BeginOrReusePhase(ctx, task.ID, stageDef.ID, stageDef.Kind, stageDef.Agent, "Execute "+stageDef.ID)
 	if err != nil {
 		return store.Task{}, store.Phase{}, err

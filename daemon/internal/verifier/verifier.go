@@ -608,7 +608,7 @@ func (s service) beginVerification(ctx context.Context, taskID, planAttemptID, b
 		""); err != nil {
 		return store.Task{}, store.Phase{}, err
 	}
-	task.State = string(stagekit.Checking)
+	task.State = stagekit.Checking
 	phase, err := s.kit.BeginOrReusePhase(ctx, task.ID, stageDef.ID, stageDef.Kind, stageDef.Agent, "Execute "+stageDef.ID)
 	if err != nil {
 		return store.Task{}, store.Phase{}, err

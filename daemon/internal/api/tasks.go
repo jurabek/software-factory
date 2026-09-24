@@ -210,10 +210,10 @@ func (h tasksHandler) resume(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	if task.State != string(stagekit.Paused) && task.State != string(stagekit.Blocked) {
+	if task.State != stagekit.Paused && task.State != stagekit.Blocked {
 		return store.ErrConflict
 	}
-	if task.State == string(stagekit.Blocked) && task.Error == "unresolved_questions" {
+	if task.State == stagekit.Blocked && task.Error == "unresolved_questions" {
 		return store.ErrConflict
 	}
 	return h.communicators.Events.Publish(ctx, id, store.TaskResumed)
@@ -223,12 +223,12 @@ func (h tasksHandler) abort(ctx context.Context, id string) error {
 	return h.publishControl(ctx, id, stagekit.Aborted, store.TaskCancelled)
 }
 
-func (h tasksHandler) publishControl(ctx context.Context, id string, target stagekit.State, kind string) error {
+func (h tasksHandler) publishControl(ctx context.Context, id, target, kind string) error {
 	task, err := h.db.Tasks.Get(ctx, id)
 	if err != nil {
 		return err
 	}
-	if task.State != string(target) && !stagekit.CanTransition(stagekit.State(task.State), target) {
+	if task.State != target && !stagekit.CanTransition(task.State, target) {
 		return store.ErrConflict
 	}
 	return h.communicators.Events.Publish(ctx, id, kind)
@@ -264,7 +264,7 @@ func (h tasksHandler) sendMessage(w http.ResponseWriter, r *http.Request) {
 	if actor == "" {
 		actor = "local-user"
 	}
-	value, _, err := h.communicators.Messages.Send(r.Context(), r.PathValue("id"), actor, request)
+	value, err := h.communicators.Messages.Send(r.Context(), r.PathValue("id"), actor, request)
 	if err != nil {
 		storeError(w, err)
 		return

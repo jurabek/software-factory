@@ -105,11 +105,11 @@ func (k *Kit) TaskDir(id string) string { return filepath.Join(k.root, "tasks", 
 func (k *Kit) Lock(id string) *sync.Mutex { return k.locks.Lock(id) }
 
 // Transition advances a task if needed and records the reason.
-func (k *Kit) Transition(ctx context.Context, task store.Task, to State, message string) error {
-	if task.State == string(to) {
+func (k *Kit) Transition(ctx context.Context, task store.Task, to string, message string) error {
+	if task.State == to {
 		return nil
 	}
-	return k.db.Tasks.Transition(ctx, task.ID, task.State, string(to), task.ActivePhase, message)
+	return k.db.Tasks.Transition(ctx, task.ID, task.State, to, task.ActivePhase, message)
 }
 
 // SetActiveStage records the active stage for a task.
@@ -244,14 +244,14 @@ func (k *Kit) Trace(ctx context.Context, taskID, phaseID string, entry session.E
 func AvailableActions(phase *store.Phase, taskState string) []string {
 	actions := make([]string, 0, 3)
 	switch taskState {
-	case string(AwaitingApproval):
+	case AwaitingApproval:
 		actions = append(actions, "approve", "abort")
-	case string(Paused):
+	case Paused:
 		actions = append(actions, "resume", "abort")
-	case string(Blocked):
+	case Blocked:
 		actions = append(actions, "resume", "abort")
-	case string(Aborted), string(Completed):
-	case string(Preparing), string(Planning), string(Building), string(Checking), string(Reviewing):
+	case Aborted, Completed:
+	case Preparing, Planning, Building, Checking, Reviewing:
 		actions = append(actions, "pause", "abort")
 	}
 	return actions

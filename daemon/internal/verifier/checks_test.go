@@ -28,7 +28,7 @@ func verifierTestKit(t *testing.T, root string) (*stagekit.Kit, *store.Store) {
 
 func verifierTask(t *testing.T, db *store.Store, root, repositoryPath, base string) store.Task {
 	t.Helper()
-	task := store.Task{ID: "task-1", Request: "quality", WorkspacePath: filepath.Join(root, "task"), RepositoryType: "local", RepositorySource: repositoryPath, RepositoryPath: repositoryPath, BaseSHA: base, ReviewBaseSHA: base, State: string(stagekit.Preparing), CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	task := store.Task{ID: "task-1", Request: "quality", WorkspacePath: filepath.Join(root, "task"), RepositoryType: "local", RepositorySource: repositoryPath, RepositoryPath: repositoryPath, BaseSHA: base, ReviewBaseSHA: base, State: stagekit.Preparing, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
 	if err := os.MkdirAll(task.WorkspacePath, 0o700); err != nil {
 		t.Fatal(err)
 	}

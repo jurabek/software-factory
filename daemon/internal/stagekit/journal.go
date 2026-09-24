@@ -29,7 +29,7 @@ func trimSpace(value string) string { return strings.TrimSpace(value) }
 // Completion describes an atomic phase completion and optional transition.
 type Completion struct {
 	Phase       store.Phase
-	From, To    State
+	From, To    string
 	Status      string
 	Cause       error
 	Approval    string

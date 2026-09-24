@@ -10,24 +10,20 @@ import (
 	"github.com/jurabek/software-factory/daemon/internal/store"
 )
 
-// State is a task lifecycle state. Stage modules apply transitions through Kit;
-// the orchestrator never sets state.
-type State string
-
 const (
-	Preparing        State = "preparing"
-	Planning         State = "planning"
-	AwaitingApproval State = "awaiting_plan_approval"
-	Building         State = "building"
-	Checking         State = "checking"
-	Reviewing        State = "reviewing"
-	Completed        State = "completed"
-	Blocked          State = "blocked"
-	Paused           State = "paused"
-	Aborted          State = "aborted"
+	Preparing        = "preparing"
+	Planning         = "planning"
+	AwaitingApproval = "awaiting_plan_approval"
+	Building         = "building"
+	Checking         = "checking"
+	Reviewing        = "reviewing"
+	Completed        = "completed"
+	Blocked          = "blocked"
+	Paused           = "paused"
+	Aborted          = "aborted"
 )
 
-var transitions = map[State]map[State]bool{
+var transitions = map[string]map[string]bool{
 	Preparing:        {Planning: true, Building: true, Blocked: true, Paused: true, Aborted: true},
 	Planning:         {Planning: true, AwaitingApproval: true, Building: true, Blocked: true, Paused: true, Aborted: true},
 	AwaitingApproval: {Planning: true, Building: true, Blocked: true, Aborted: true},
@@ -39,10 +35,10 @@ var transitions = map[State]map[State]bool{
 }
 
 // CanTransition reports whether from may legally advance to to.
-func CanTransition(from, to State) bool { return transitions[from][to] }
+func CanTransition(from, to string) bool { return transitions[from][to] }
 
 // IsActive reports whether state is an in-flight task state.
-func IsActive(state State) bool {
+func IsActive(state string) bool {
 	switch state {
 	case Preparing, Planning, AwaitingApproval, Building, Checking, Reviewing:
 		return true
@@ -51,7 +47,7 @@ func IsActive(state State) bool {
 }
 
 // CheckTransition returns an error for an illegal task transition.
-func CheckTransition(from, to State) error {
+func CheckTransition(from, to string) error {
 	if !CanTransition(from, to) {
 		return fmt.Errorf("invalid task transition %q to %q", from, to)
 	}
@@ -61,7 +57,7 @@ func CheckTransition(from, to State) error {
 // StateForRole maps a stage role to the state a reopened task resumes in.
 // Control-plane operations (reopen on message) use it to seed a stage that
 // then owns its own transition.
-func StateForRole(role string) State {
+func StateForRole(role string) string {
 	switch role {
 	case "planner":
 		return Planning
@@ -74,7 +70,7 @@ func StateForRole(role string) State {
 
 // StateForPhase maps an attempt to the state a retried task resumes in so the
 // owning stage can begin from a legal transition origin.
-func StateForPhase(phase store.Phase) State {
+func StateForPhase(phase store.Phase) string {
 	switch phase.Kind {
 	case "plan":
 		return Planning

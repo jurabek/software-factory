@@ -16,7 +16,6 @@ func TestValidateTestPatternRecursiveGlobSegments(t *testing.T) {
 		{name: "prefixed recursive wildcard", pattern: "prefix**", wantErr: true},
 		{name: "suffixed recursive wildcard", pattern: "**suffix", wantErr: true},
 	} {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			err := validateTestPattern(test.pattern)
