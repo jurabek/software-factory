@@ -410,10 +410,11 @@ func (s *Service) kickQueuedMessage(taskID string) {
 		string(stagekit.Completed) {
 		return
 	}
-	if _, err := s.db.Messages.NextQueuedForTask(ctx, taskID); err != nil {
+	message, err := s.db.Messages.NextQueuedForTask(ctx, taskID)
+	if err != nil {
 		return
 	}
-	_ = s.scheduleMessage(ctx, task, "")
+	_ = s.scheduleMessage(ctx, task, message.StageID)
 }
 
 func (s *Service) traceMessage(ctx context.Context, message store.Message, phase *store.Phase) error {
