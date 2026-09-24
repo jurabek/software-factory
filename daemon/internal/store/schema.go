@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 )
 
 const schema = `
@@ -135,33 +136,8 @@ func isDuplicateColumn(err error) bool {
 	if err == nil {
 		return false
 	}
-	message := err.Error()
-	return containsFold(message, "duplicate column") || containsFold(message, "already exists")
-}
-
-func containsFold(haystack, needle string) bool {
-	if len(haystack) < len(needle) {
-		return false
-	}
-	lowerHay, lowerNeedle := lower(haystack), lower(needle)
-	for index := 0; index+len(lowerNeedle) <= len(lowerHay); index++ {
-		if lowerHay[index:index+len(lowerNeedle)] == lowerNeedle {
-			return true
-		}
-	}
-	return false
-}
-
-func lower(value string) string {
-	out := make([]byte, len(value))
-	for index := 0; index < len(value); index++ {
-		char := value[index]
-		if char >= 'A' && char <= 'Z' {
-			char += 'a' - 'A'
-		}
-		out[index] = char
-	}
-	return string(out)
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "duplicate column") || strings.Contains(message, "already exists")
 }
 
 func tableExists(ctx context.Context, db *sql.DB, name string) (bool, error) {

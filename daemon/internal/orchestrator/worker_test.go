@@ -17,7 +17,7 @@ func TestExecutionOwnerAdmitsOneSuccessorAfterCurrentSettlement(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	created := store.Task{ID: "task-1", Request: "change", WorkspacePath: filepath.Join(root, "tasks", "task-1"), State: string(Preparing), CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	created := store.Task{ID: "task-1", Request: "change", WorkspacePath: filepath.Join(root, "tasks", "task-1"), State: string(stagekit.Preparing), CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
 	if err = db.CreateTask(context.Background(), created); err != nil {
 		t.Fatal(err)
 	}
@@ -75,9 +75,9 @@ func TestHandleEventsStopsWhenContextIsCanceled(t *testing.T) {
 
 func TestAvailableActionsContainControlsOnly(t *testing.T) {
 	for _, actions := range [][]string{
-		stagekit.AvailableActions(nil, string(Preparing)),
-		stagekit.AvailableActions(&store.Phase{Status: "running", Kind: "agent"}, string(Building)),
-		stagekit.AvailableActions(&store.Phase{Status: "failed", Kind: "check"}, string(Blocked)),
+		stagekit.AvailableActions(nil, string(stagekit.Preparing)),
+		stagekit.AvailableActions(&store.Phase{Status: "running", Kind: "agent"}, string(stagekit.Building)),
+		stagekit.AvailableActions(&store.Phase{Status: "failed", Kind: "check"}, string(stagekit.Blocked)),
 	} {
 		for _, action := range actions {
 			switch action {

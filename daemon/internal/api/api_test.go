@@ -14,6 +14,7 @@ import (
 	"github.com/jurabek/software-factory/daemon/internal/config"
 	"github.com/jurabek/software-factory/daemon/internal/orchestrator"
 	"github.com/jurabek/software-factory/daemon/internal/session"
+	"github.com/jurabek/software-factory/daemon/internal/stagekit"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 	"github.com/jurabek/software-factory/daemon/internal/task"
 )
@@ -102,9 +103,9 @@ func TestControlsReturnAfterEnqueueWithoutWaitingForOrchestration(t *testing.T) 
 	tests := []struct {
 		id, command, state, eventType string
 	}{
-		{id: "pause-task", command: "pause", state: string(orchestrator.Building), eventType: store.TaskPaused},
-		{id: "resume-task", command: "resume", state: string(orchestrator.Paused), eventType: store.TaskResumed},
-		{id: "abort-task", command: "abort", state: string(orchestrator.Building), eventType: store.TaskCancelled},
+		{id: "pause-task", command: "pause", state: string(stagekit.Building), eventType: store.TaskPaused},
+		{id: "resume-task", command: "resume", state: string(stagekit.Paused), eventType: store.TaskResumed},
+		{id: "abort-task", command: "abort", state: string(stagekit.Building), eventType: store.TaskCancelled},
 	}
 	for _, test := range tests {
 		createdAt := time.Now().UTC().Format(time.RFC3339Nano)
@@ -153,8 +154,8 @@ func TestRestartRecoveryIsVisibleThroughTaskHTTPReads(t *testing.T) {
 	}
 	defer db.Close()
 	createdAt := time.Now().UTC().Format(time.RFC3339Nano)
-	active := store.Task{ID: "active-task", Request: "request", WorkspacePath: t.TempDir(), State: string(orchestrator.Building), CreatedAt: createdAt}
-	paused := store.Task{ID: "paused-task", Request: "paused", WorkspacePath: t.TempDir(), State: string(orchestrator.Paused), CreatedAt: createdAt}
+	active := store.Task{ID: "active-task", Request: "request", WorkspacePath: t.TempDir(), State: string(stagekit.Building), CreatedAt: createdAt}
+	paused := store.Task{ID: "paused-task", Request: "paused", WorkspacePath: t.TempDir(), State: string(stagekit.Paused), CreatedAt: createdAt}
 	for _, task := range []store.Task{active, paused} {
 		if err = db.CreateTask(ctx, task); err != nil {
 			t.Fatal(err)
@@ -190,10 +191,10 @@ func TestRestartRecoveryIsVisibleThroughTaskHTTPReads(t *testing.T) {
 		return task
 	}
 	recovered := readTask(active.ID)
-	if recovered.State != string(orchestrator.Blocked) || recovered.PreviousState != string(orchestrator.Building) || recovered.Error == "" {
+	if recovered.State != string(stagekit.Blocked) || recovered.PreviousState != string(stagekit.Building) || recovered.Error == "" {
 		t.Fatalf("recovered task = %+v", recovered)
 	}
-	if current := readTask(paused.ID); current.State != string(orchestrator.Paused) {
+	if current := readTask(paused.ID); current.State != string(stagekit.Paused) {
 		t.Fatalf("paused task = %+v, want unchanged", current)
 	}
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/tasks/"+active.ID+"/attempts", nil)

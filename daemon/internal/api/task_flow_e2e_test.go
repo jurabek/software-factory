@@ -240,7 +240,7 @@ func (s *taskFlowSuite) TestCreateApproveBuildAndCheck() {
 	}, http.StatusCreated, &created)
 	s.Require().NotEmpty(created.ID)
 
-	planned := s.awaitState(created.ID, string(orchestrator.AwaitingApproval))
+	planned := s.awaitState(created.ID, string(stagekit.AwaitingApproval))
 	s.Require().NotEmpty(planned.PlanDigest)
 	s.Contains(planned.AvailableActions, "approve")
 
@@ -279,7 +279,7 @@ func (s *taskFlowSuite) TestCreateApproveBuildAndCheck() {
 	s.Equal("queued", messageDeliveryStatus(queued))
 	queuedStream.Close()
 	close(s.harness.releaseBuild)
-	completed := s.awaitState(created.ID, string(orchestrator.Completed))
+	completed := s.awaitState(created.ID, string(stagekit.Completed))
 	s.Equal("flow-e2e", completed.ApprovalActor)
 	s.NotEmpty(completed.ApprovalAt)
 	delivered, deliveredStream := s.readStreamEvent(created.ID, 0, queued.Sequence)
@@ -408,7 +408,7 @@ func (s *taskFlowSuite) awaitState(taskID, expected string) taskResponse {
 		if task.State == expected {
 			return task
 		}
-		if task.State == string(orchestrator.Blocked) || task.State == string(orchestrator.Aborted) {
+		if task.State == string(stagekit.Blocked) || task.State == string(stagekit.Aborted) {
 			s.T().Fatalf("task reached %s while awaiting %s: %s", task.State, expected, task.Error)
 		}
 		time.Sleep(10 * time.Millisecond)
