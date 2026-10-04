@@ -25,7 +25,7 @@ export default async function LoginPage() {
 	}
 	if (session) redirect("/tasks");
 	return (
-		<main className="grid min-h-dvh place-items-center bg-[radial-gradient(circle_at_top_right,#35294d,transparent_36rem)] p-5">
+		<main className="grid min-h-dvh place-items-center bg-[radial-gradient(circle_at_top_right,var(--accent),transparent_36rem)] p-5">
 			<Card className="w-full max-w-lg border-input shadow-2xl">
 				<CardHeader>
 					<p className="text-primary text-xs uppercase tracking-[0.12em]">

@@ -200,7 +200,7 @@ export function TaskOverview({
 					</div>
 					<div className="flex min-w-0 items-center gap-2">
 						<Avatar className="size-6 rounded-md">
-							<AvatarFallback className="rounded-md bg-gradient-to-br from-[#5b4b78] to-[#37506a] text-[0.62rem] font-semibold text-[#efe9ff]">
+							<AvatarFallback className="rounded-md bg-gradient-to-br from-primary/30 to-info/20 text-[0.62rem] font-semibold text-primary">
 								{monogram(login)}
 							</AvatarFallback>
 						</Avatar>

@@ -990,7 +990,7 @@ export function TaskDetail({
 									key={block.item.key}
 								>
 									<Avatar className="size-8 rounded-md">
-										<AvatarFallback className="rounded-md bg-gradient-to-br from-[#5b4b78] to-[#37506a] text-[0.62rem] font-semibold text-[#efe9ff]">
+										<AvatarFallback className="rounded-md bg-gradient-to-br from-primary/30 to-info/20 text-[0.62rem] font-semibold text-primary">
 											{monogram(author)}
 										</AvatarFallback>
 									</Avatar>
