@@ -3,51 +3,51 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* Software Factory palette. Dark-only surface stack tuned for a monospace UI. */
+/* Midnight Workshop: dark navy surfaces, teal actions, amber signals. */
 :root {
-	--radius: 0.25rem;
+	--radius: 0.375rem;
 
-	--background: #15131f;
-	--foreground: #ddd8eb;
-	--card: #1d1a29;
-	--card-foreground: #ddd8eb;
-	--popover: #1d1a29;
-	--popover-foreground: #ddd8eb;
-	--primary: #c8a6e8;
-	--primary-foreground: #15131f;
-	--secondary: #242131;
-	--secondary-foreground: #aaa3bb;
-	--muted: #242131;
-	--muted-foreground: #756e87;
-	--accent: #2c283a;
-	--accent-foreground: #ddd8eb;
-	--destructive: #c77989;
-	--destructive-foreground: #15131f;
-	--border: #393448;
-	--input: #57506a;
-	--ring: #c8a6e8;
+	--background: #0d1926;
+	--foreground: #e7f1f4;
+	--card: #162738;
+	--card-foreground: #e7f1f4;
+	--popover: #162738;
+	--popover-foreground: #e7f1f4;
+	--primary: #65ddcb;
+	--primary-foreground: #0d1926;
+	--secondary: #1c3041;
+	--secondary-foreground: #c5d6df;
+	--muted: #1c3041;
+	--muted-foreground: #a1b6c4;
+	--accent: #254353;
+	--accent-foreground: #e7f1f4;
+	--destructive: #f39795;
+	--destructive-foreground: #0d1926;
+	--border: #344c5d;
+	--input: #4c6675;
+	--ring: #65ddcb;
 
-	--subtle: #aaa3bb;
-	--info: #8bcbd4;
-	--success: #83c7a0;
-	--warning: #d2ae72;
-	--rail-line: #7c86ad;
-	--surface-sunken: #12101a;
+	--subtle: #c5d6df;
+	--info: #87cfe8;
+	--success: #7ee2ae;
+	--warning: #f2c47e;
+	--rail-line: #e1ae69;
+	--surface-sunken: #09131e;
 
-	--chart-1: #c8a6e8;
-	--chart-2: #8bcbd4;
-	--chart-3: #83c7a0;
-	--chart-4: #d2ae72;
-	--chart-5: #c77989;
+	--chart-1: #65ddcb;
+	--chart-2: #87cfe8;
+	--chart-3: #7ee2ae;
+	--chart-4: #f2c47e;
+	--chart-5: #f39795;
 
-	--sidebar: #1c1926;
-	--sidebar-foreground: #aaa3bb;
-	--sidebar-primary: #c8a6e8;
-	--sidebar-primary-foreground: #15131f;
-	--sidebar-accent: #242131;
-	--sidebar-accent-foreground: #ddd8eb;
-	--sidebar-border: #393448;
-	--sidebar-ring: #c8a6e8;
+	--sidebar: #122232;
+	--sidebar-foreground: #c5d6df;
+	--sidebar-primary: #65ddcb;
+	--sidebar-primary-foreground: #0d1926;
+	--sidebar-accent: #1c3041;
+	--sidebar-accent-foreground: #e7f1f4;
+	--sidebar-border: #344c5d;
+	--sidebar-ring: #65ddcb;
 }
 
 .dark {
