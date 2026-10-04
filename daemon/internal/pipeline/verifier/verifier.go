@@ -20,6 +20,7 @@ import (
 	"github.com/jurabek/software-factory/daemon/internal/stage"
 	"github.com/jurabek/software-factory/daemon/internal/stagekit"
 	"github.com/jurabek/software-factory/daemon/internal/store"
+	"github.com/jurabek/software-factory/daemon/internal/task"
 	"github.com/jurabek/software-factory/daemon/internal/workspace"
 )
 
@@ -61,9 +62,12 @@ func (capture *tailCapture) String() string {
 	return string(capture.data)
 }
 
-type service struct{ kit *stagekit.Kit }
+type service struct {
+	kit   *stagekit.Kit
+	tasks *task.Service
+}
 
-func New(kit *stagekit.Kit) service { return service{kit: kit} }
+func New(kit *stagekit.Kit, tasks *task.Service) service { return service{kit: kit, tasks: tasks} }
 
 // Verify resumes a durable result when present, otherwise runs primary checks
 // and baseline/test-overlay comparisons, then publishes the report.
@@ -518,7 +522,7 @@ func CopyOverlayPath(sourceRoot, destinationRoot, relative string) error {
 }
 
 func (s service) savedVerification(ctx context.Context, taskID, buildAttemptID string) (stage.VerificationResult, bool, error) {
-	task, err := s.kit.Task(ctx, taskID)
+	task, err := s.tasks.Get(ctx, taskID)
 	if err != nil {
 		return stage.VerificationResult{}, false, err
 	}
@@ -555,7 +559,7 @@ func (s service) savedVerification(ctx context.Context, taskID, buildAttemptID s
 }
 
 func (s service) beginVerification(ctx context.Context, taskID, planAttemptID, buildAttemptID string) (store.Task, store.Phase, error) {
-	task, err := s.kit.Task(ctx, taskID)
+	task, err := s.tasks.Get(ctx, taskID)
 	if err != nil {
 		return store.Task{}, store.Phase{}, err
 	}
@@ -578,12 +582,12 @@ func (s service) beginVerification(ctx context.Context, taskID, planAttemptID, b
 	if err != nil {
 		return store.Task{}, store.Phase{}, err
 	}
-	if err = s.kit.SetActiveStage(ctx,
+	if err = s.kit.DB().Tasks.SetActiveStage(ctx,
 		task.ID, stageDef.ID,
 	); err != nil {
 		return store.Task{}, store.Phase{}, err
 	}
-	task, err = s.kit.Task(ctx, task.ID)
+	task, err = s.tasks.Get(ctx, task.ID)
 	if err != nil {
 		return store.Task{}, store.Phase{}, err
 	}

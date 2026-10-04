@@ -413,7 +413,7 @@ export function TaskDetail({
 	const [selectedAttempt, setSelectedAttempt] = useState<string | null>(null);
 	const [selectedReport, setSelectedReport] = useState<string | null>(null);
 	const [selectedEvent, setSelectedEvent] = useState<SessionEvent | null>(null);
-	const [autoScroll] = useState(true);
+	const [autoScroll, setAutoScroll] = useState(true);
 	const [events, setEvents] = useState<SessionEvent[]>([]);
 	const [availableActions, setAvailableActions] = useState<string[]>([]);
 	const [, setCursor] = useState<number | undefined>(undefined);
@@ -584,6 +584,7 @@ export function TaskDetail({
 		setDiff({ files: [], patch: "" });
 		setSessions([]);
 		setMessages([]);
+		setAutoScroll(true);
 		setSelectedAttempt(null);
 		setSelectedReport(null);
 		setSelectedEvent(null);
@@ -1022,6 +1023,13 @@ export function TaskDetail({
 				<div
 					className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-4 pt-6 pb-8"
 					ref={chatScroll}
+					onScroll={(event) => {
+						const element = event.currentTarget;
+						setAutoScroll(
+							element.scrollHeight - element.scrollTop - element.clientHeight <
+								48,
+						);
+					}}
 				>
 					{hiddenEventCount ? (
 						<p className="text-muted-foreground text-xs">

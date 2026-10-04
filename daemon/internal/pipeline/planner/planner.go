@@ -15,6 +15,7 @@ import (
 	"github.com/jurabek/software-factory/daemon/internal/stage"
 	"github.com/jurabek/software-factory/daemon/internal/stagekit"
 	"github.com/jurabek/software-factory/daemon/internal/store"
+	"github.com/jurabek/software-factory/daemon/internal/task"
 	"github.com/jurabek/software-factory/daemon/internal/workspace"
 )
 
@@ -71,12 +72,13 @@ type eventPublisher interface {
 
 type service struct {
 	kit    *stagekit.Kit
+	tasks  *task.Service
 	events eventPublisher
 }
 
 // New constructs the planning stage.
-func New(kit *stagekit.Kit, events eventPublisher) service {
-	return service{kit: kit, events: events}
+func New(kit *stagekit.Kit, tasks *task.Service, events eventPublisher) service {
+	return service{kit: kit, tasks: tasks, events: events}
 }
 
 // Plan resumes a durable plan when present, otherwise renders planning prompts,
@@ -138,7 +140,7 @@ func (s service) Approve(ctx context.Context, taskID, actor, expectedDigest stri
 	if expectedDigest == "" {
 		return fmt.Errorf("plan_digest is required")
 	}
-	task, err := s.kit.Task(ctx, taskID)
+	task, err := s.tasks.Get(ctx, taskID)
 	if err != nil {
 		return err
 	}
@@ -181,7 +183,7 @@ func (s service) Approve(ctx context.Context, taskID, actor, expectedDigest stri
 }
 
 func (s service) savedPlan(ctx context.Context, taskID string) (stage.PlanResult, bool, error) {
-	task, err := s.kit.Task(ctx, taskID)
+	task, err := s.tasks.Get(ctx, taskID)
 	if err != nil {
 		return stage.PlanResult{}, false, err
 	}
@@ -211,7 +213,7 @@ func (s service) savedPlan(ctx context.Context, taskID string) (stage.PlanResult
 }
 
 func (s service) beginPlan(ctx context.Context, taskID string) (store.Task, store.Phase, error) {
-	task, err := s.kit.Task(ctx, taskID)
+	task, err := s.tasks.Get(ctx, taskID)
 	if err != nil {
 		return store.Task{}, store.Phase{}, err
 	}
@@ -226,7 +228,7 @@ func (s service) beginPlan(ctx context.Context, taskID string) (store.Task, stor
 	if err != nil {
 		return store.Task{}, store.Phase{}, err
 	}
-	if err = s.kit.SetActiveStage(ctx, task.ID, stageDef.ID); err != nil {
+	if err = s.kit.DB().Tasks.SetActiveStage(ctx, task.ID, stageDef.ID); err != nil {
 		return store.Task{}, store.Phase{}, err
 	}
 	phase, err := s.kit.BeginOrReusePhase(ctx, task.ID, stageDef.ID, stageDef.Kind, stageDef.Agent, "Execute "+stageDef.ID)
@@ -271,13 +273,7 @@ func (s service) publishPlan(ctx context.Context, task store.Task, phase store.P
 					completeErr)
 				return stage.PlanResult{}, completeErr
 			}
-			refreshed, err := s.kit.Task(ctx,
-				task.ID)
-			if err != nil {
-				return stage.PlanResult{}, err
-			}
-			result, ok, err := s.savedPlan(ctx,
-				refreshed.ID)
+			result, ok, err := s.savedPlan(ctx, task.ID)
 			if err != nil {
 				return stage.PlanResult{}, err
 			}

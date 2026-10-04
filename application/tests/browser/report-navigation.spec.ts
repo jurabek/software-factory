@@ -100,6 +100,22 @@ function startMockDaemon(): Promise<Server> {
 		if (path.endsWith("/events"))
 			return json(response, { events: [], cursor: 0 });
 		if (path.endsWith("/diff")) return json(response, { files: [], patch: "" });
+		if (path === `/api/v1/tasks/${taskID}/messages`)
+			return json(
+				response,
+				Array.from({ length: 40 }, (_, index) => ({
+					id: `message-${index}`,
+					task_id: taskID,
+					actor: "owner",
+					text: `Message ${index}: ${"long text ".repeat(20)}`,
+					recipient_role: "builder",
+					agent_session_id: "session-1",
+					delivery_status: "delivered",
+					created_at: new Date(
+						Date.parse(timestamp) + index * 1000,
+					).toISOString(),
+				})),
+			);
 		if (/\/(attempts|checks|sessions|messages)$/.test(path))
 			return json(response, []);
 		response.statusCode = 404;
@@ -168,6 +184,33 @@ test.afterAll(async () => {
 	await new Promise<void>((resolve, reject) =>
 		daemon.close((error) => (error ? reject(error) : resolve())),
 	);
+});
+
+test("reading older messages survives the next refresh", async ({ page }) => {
+	await login(page);
+	const daemonConnectionID = await registerDaemon(page);
+	try {
+		await page.goto(
+			`/tasks?daemon=${daemonConnectionID}&task=${rootTaskID}&session=${taskID}`,
+		);
+		const scroll = page.locator("div.overflow-y-auto", {
+			has: page.getByText("Message 0:", { exact: false }),
+		});
+		await expect(scroll).toBeVisible();
+		await expect
+			.poll(() => scroll.evaluate((element) => element.scrollTop))
+			.toBeGreaterThan(0);
+		await scroll.evaluate((element) => {
+			element.scrollTop = 0;
+		});
+		await expect
+			.poll(() => scroll.evaluate((element) => element.scrollTop))
+			.toBe(0);
+		await page.waitForTimeout(5_500);
+		expect(await scroll.evaluate((element) => element.scrollTop)).toBe(0);
+	} finally {
+		await removeDaemon(page, daemonConnectionID);
+	}
 });
 
 test("report navigation renders Markdown safely", async ({ page }) => {

@@ -112,16 +112,6 @@ func (k *Kit) Transition(ctx context.Context, task store.Task, to string, messag
 	return k.db.Tasks.Transition(ctx, task.ID, task.State, to, task.ActivePhase, message)
 }
 
-// SetActiveStage records the active stage for a task.
-func (k *Kit) SetActiveStage(ctx context.Context, taskID, stageID string) error {
-	return k.db.Tasks.SetActiveStage(ctx, taskID, stageID)
-}
-
-// Task loads a task.
-func (k *Kit) Task(ctx context.Context, id string) (store.Task, error) {
-	return k.db.Tasks.Get(ctx, id)
-}
-
 // TaskConfig resolves a task's frozen configuration so stages render prompts
 // without the orchestrator.
 func (k *Kit) TaskConfig(ctx context.Context, task store.Task) (TaskConfig, error) {

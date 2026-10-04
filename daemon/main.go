@@ -235,13 +235,13 @@ func run(rootCtx context.Context) error {
 	events := orchestrator.NewEvents(db)
 	taskService := task.New(root, task.Deps{Store: db, Config: configured, ConfigPath: configPath, Harnesses: registry, Sandbox: sandbox})
 	creationStage := creation.New(taskService, kit, events)
-	plannerStage := planner.New(kit, events)
+	plannerStage := planner.New(kit, taskService, events)
 	messages := messaging.New(messaging.Deps{Store: db, Config: configured, ConfigPath: configPath, Harnesses: registry, Root: root, Events: events})
 	workflow := pipeline.New(
 		plannerStage,
-		builder.New(kit),
-		verifier.New(kit),
-		reviewer.New(kit),
+		builder.New(kit, taskService),
+		verifier.New(kit, taskService),
+		reviewer.New(kit, taskService),
 		creationStage,
 	)
 	service := orchestrator.New(root, orchestrator.Dependencies{
