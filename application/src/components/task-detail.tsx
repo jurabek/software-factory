@@ -466,6 +466,35 @@ export function TaskDetail({
 	];
 	const selectedReportValue =
 		reportViews.find((report) => report.id === selectedReport) ?? null;
+	const failedAttempt = attempts.findLast(
+		(attempt) => attempt.status === "failed" && !attempt.superseded,
+	);
+	const review = results
+		.filter(
+			(result) =>
+				result.phase_id === failedAttempt?.id &&
+				result.agent_role === "review" &&
+				result.valid,
+		)
+		.map((result) => parseAgentEnvelope(result.payload))
+		.findLast((envelope) => envelope?.approved === false);
+	const failure =
+		failedAttempt?.error ||
+		(typeof currentTask.error === "string" ? currentTask.error : "");
+	const templateFailure =
+		failure.includes("range can't iterate over ") ||
+		failure.includes("range target is not iterable");
+	const failureDetail = templateFailure
+		? failure.split("range can't iterate over ")[0].trim() +
+			" range target is not iterable"
+		: failure;
+	const nextStep = templateFailure
+		? "The task uses a frozen prompt. Fix its snapshot to use .Diff.Files or .Diff.Patch before resuming, or fix the prompt file and create a new task. Editing the prompt file alone will not fix this task."
+		: review
+			? "Send the blocking findings to the builder in a message to request changes."
+			: availableActions.includes("resume")
+				? "Use Resume to retry, or send a message with instructions for the next attempt."
+				: "Check the failed attempt and its event history for details.";
 	const meaningfulEvents = meaningfulWorkEvents(events, selectedAttempt);
 	const visibleEvents = visibleWorkEvents(
 		events,
@@ -918,6 +947,25 @@ export function TaskDetail({
 						className="mx-4 mt-3 w-auto"
 					>
 						<AlertDescription>{error}</AlertDescription>
+					</Alert>
+				) : null}
+				{currentTask.state === "blocked" ? (
+					<Alert
+						role="alert"
+						variant="destructive"
+						className="mx-4 mt-3 w-auto"
+					>
+						<AlertDescription className="grid gap-1 break-words">
+							<strong>
+								{failedAttempt?.name ?? currentTask.active_stage ?? "Task"}{" "}
+								blocked
+							</strong>
+							{review?.blocking?.map((finding) => (
+								<span key={finding}>{finding}</span>
+							))}
+							{!review && failureDetail ? <span>{failureDetail}</span> : null}
+							<span>{nextStep}</span>
+						</AlertDescription>
 					</Alert>
 				) : null}
 				{offline ? (

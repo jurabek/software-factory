@@ -1,6 +1,7 @@
 package stagekit
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,6 +44,9 @@ func executeTemplate(name, body string, data map[string]any) (string, error) {
 	}
 	var output strings.Builder
 	if err = parsed.Execute(&output, data); err != nil {
+		if prefix, _, ok := strings.Cut(err.Error(), "range can't iterate over "); ok {
+			return "", fmt.Errorf("%srange target is not iterable; check the prompt template against the stage data", prefix)
+		}
 		return "", err
 	}
 	return output.String(), nil

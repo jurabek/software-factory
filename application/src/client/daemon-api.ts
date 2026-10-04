@@ -200,6 +200,7 @@ export type TaskCheck = {
 };
 export type TaskResult = {
 	id: string;
+	phase_id?: string;
 	agent_role: string;
 	payload: string;
 	valid: boolean;

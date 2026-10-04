@@ -95,7 +95,7 @@ func (p *sessionPool) open(ctx context.Context, runner *Runner, spec harness.Ses
 			continue
 		}
 		p.mu.Unlock()
-		session, err := startRPCSession(ctx, runner, spec)
+		session, err := startRPCSession(runner, spec)
 		if err != nil {
 			return nil, err
 		}
@@ -207,7 +207,7 @@ type sessionSnapshot struct {
 	leaf    string
 }
 
-func startRPCSession(ctx context.Context, runner *Runner, spec harness.SessionSpec) (*rpcSession, error) {
+func startRPCSession(runner *Runner, spec harness.SessionSpec) (*rpcSession, error) {
 	if spec.SessionDirectory != "" {
 		if err := os.MkdirAll(spec.SessionDirectory, 0o700); err != nil {
 			return nil, fmt.Errorf("create pi session directory: %w", err)
