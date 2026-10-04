@@ -1,6 +1,12 @@
 import { redirect } from "next/navigation";
 import { SignInPanel } from "@/components/sign-in-panel.tsx";
-import { Card, CardContent, CardHeader } from "@/components/ui/card.tsx";
+import {
+	Card,
+	CardContent,
+	CardDescription,
+	CardHeader,
+	CardTitle,
+} from "@/components/ui/card.tsx";
 import {
 	validateAuthenticationEnvironment,
 	validateEnvironment,
@@ -25,37 +31,63 @@ export default async function LoginPage() {
 	}
 	if (session) redirect("/tasks");
 	return (
-		<main className="grid min-h-dvh place-items-center bg-[radial-gradient(circle_at_top_right,#35294d,transparent_36rem)] p-5">
-			<Card className="w-full max-w-lg border-input shadow-2xl">
-				<CardHeader>
-					<p className="text-primary text-xs uppercase tracking-[0.12em]">
-						Software Factory
+		<main className="flex min-h-dvh items-center bg-[radial-gradient(ellipse_at_15%_15%,var(--accent),transparent_55%)] px-5 py-12 sm:px-8">
+			<div className="mx-auto grid w-full max-w-5xl items-center gap-12 lg:grid-cols-[minmax(0,1fr)_minmax(0,27rem)] lg:gap-20">
+				<div className="max-w-xl">
+					<div className="mb-12 flex items-center gap-3 lg:mb-20">
+						<span
+							aria-hidden="true"
+							className="grid size-10 place-items-center rounded-md border border-primary/40 bg-primary/10 text-sm font-semibold text-primary"
+						>
+							SY
+						</span>
+						<span className="font-semibold tracking-tight">Switchyard</span>
+					</div>
+					<p className="mb-5 text-xs font-medium uppercase tracking-[0.2em] text-primary">
+						Your workspace
 					</p>
-				</CardHeader>
-				<CardContent>
-					{!environment.ok ? (
-						<section aria-labelledby="setup-heading" className="border-t pt-4">
-							<h2 id="setup-heading" className="text-base font-medium">
-								Deployment configuration
-							</h2>
-							<ul className="mt-4 space-y-0">
-								{environment.issues.map((issue) => (
-									<li
-										key={issue.variable}
-										className="grid gap-1 border-t py-3 sm:grid-cols-[15rem_minmax(0,1fr)] sm:gap-4"
-									>
-										<code className="break-words">{issue.variable}</code>
-										<span className="text-subtle text-[0.8rem]">
-											{issue.message}
-										</span>
-									</li>
-								))}
-							</ul>
-						</section>
-					) : null}
-					<SignInPanel />
-				</CardContent>
-			</Card>
+					<h1 className="max-w-lg text-4xl font-semibold leading-tight tracking-tight sm:text-5xl">
+						Keep the work moving.
+					</h1>
+					<p className="mt-5 max-w-md text-base leading-relaxed text-subtle">
+						Coordinate tasks and connected daemons in one place.
+					</p>
+				</div>
+				<Card className="w-full border-input/60 shadow-2xl shadow-background/40">
+					<CardHeader className="gap-3 pb-2">
+						<CardTitle className="text-2xl tracking-tight">Sign in</CardTitle>
+						<CardDescription className="text-subtle">
+							Use the initial-user credentials configured on this server.
+						</CardDescription>
+					</CardHeader>
+					<CardContent>
+						{!environment.ok ? (
+							<section
+								aria-labelledby="setup-heading"
+								className="mb-6 border-t pt-4"
+							>
+								<h2 id="setup-heading" className="text-base font-medium">
+									Deployment configuration
+								</h2>
+								<ul className="mt-4">
+									{environment.issues.map((issue) => (
+										<li
+											key={issue.variable}
+											className="grid gap-1 border-t py-3"
+										>
+											<code className="break-words">{issue.variable}</code>
+											<span className="text-xs text-subtle">
+												{issue.message}
+											</span>
+										</li>
+									))}
+								</ul>
+							</section>
+						) : null}
+						<SignInPanel />
+					</CardContent>
+				</Card>
+			</div>
 		</main>
 	);
 }

@@ -1,31 +1,35 @@
 "use client";
 
-import { ChevronRight } from "lucide-react";
+import { Bot, Brain, FolderGit2, Send } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
 	daemonCreateTask,
 	daemonCreationOptions,
 	type QualifiedTask,
 } from "@/client/daemon-api.ts";
-import { PipelineSelector } from "@/components/pipeline-selector.tsx";
 import { Alert, AlertDescription } from "@/components/ui/alert.tsx";
 import { Button } from "@/components/ui/button.tsx";
 import {
-	Collapsible,
-	CollapsibleContent,
-	CollapsibleTrigger,
-} from "@/components/ui/collapsible.tsx";
+	DropdownMenu,
+	DropdownMenuContent,
+	DropdownMenuGroup,
+	DropdownMenuLabel,
+	DropdownMenuRadioGroup,
+	DropdownMenuRadioItem,
+	DropdownMenuSeparator,
+	DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu.tsx";
 import { Input } from "@/components/ui/input.tsx";
 import { Label } from "@/components/ui/label.tsx";
 import {
 	Select,
 	SelectContent,
+	SelectGroup,
 	SelectItem,
 	SelectTrigger,
 	SelectValue,
 } from "@/components/ui/select.tsx";
 import { Textarea } from "@/components/ui/textarea.tsx";
-import type { DaemonPipeline } from "@/server/daemon-client.ts";
 import type { DaemonConnection } from "@/server/daemon-registry.ts";
 
 const thinkingLevels = [
@@ -39,29 +43,6 @@ const thinkingLevels = [
 ] as const;
 function recentKey(daemonId: string): string {
 	return `software-factory.recent-directories.${daemonId}`;
-}
-
-function Section({
-	title,
-	defaultOpen = false,
-	children,
-}: {
-	title: string;
-	defaultOpen?: boolean;
-	children: React.ReactNode;
-}) {
-	return (
-		<Collapsible
-			defaultOpen={defaultOpen}
-			className="bg-card mt-3 rounded-md border"
-		>
-			<CollapsibleTrigger className="text-subtle hover:text-foreground group flex w-full items-center gap-2 px-3 py-2.5 text-left">
-				<ChevronRight className="size-4 transition-transform group-data-[state=open]:rotate-90" />
-				{title}
-			</CollapsibleTrigger>
-			<CollapsibleContent className="p-3 pt-0">{children}</CollapsibleContent>
-		</Collapsible>
-	);
 }
 
 export function TaskCreation({
@@ -81,9 +62,7 @@ export function TaskCreation({
 	const [harness, setHarness] = useState("");
 	const [model, setModel] = useState("");
 	const [thinking, setThinking] = useState("");
-	const [pipeline, setPipeline] = useState("");
 	const [harnesses, setHarnesses] = useState<string[]>([]);
-	const [pipelines, setPipelines] = useState<DaemonPipeline[]>([]);
 	const [models, setModels] = useState<
 		{ provider: string; id: string; thinking?: string[] }[]
 	>([]);
@@ -126,8 +105,6 @@ export function TaskCreation({
 		setHarness("");
 		setModel("");
 		setThinking("");
-		setPipeline("");
-		setPipelines([]);
 		setRecentDirectories([]);
 		void daemonCreationOptions(daemon.id, undefined, controller.signal)
 			.then((options) => {
@@ -137,10 +114,6 @@ export function TaskCreation({
 				setHarness(options.defaults.coding_agent);
 				setModel(options.defaults.model);
 				setThinking(options.defaults.thinking);
-				setPipelines(options.pipelines);
-				setPipeline(
-					options.pipelines.find((entry) => entry.default)?.name ?? "",
-				);
 				setLoading(false);
 			})
 			.catch((failure: unknown) => {
@@ -191,14 +164,6 @@ export function TaskCreation({
 				)
 					return;
 				setHarnesses(options.harnesses);
-				if (options.pipelines.length) {
-					setPipelines(options.pipelines);
-					setPipeline((previous) =>
-						options.pipelines.some((entry) => entry.name === previous)
-							? previous
-							: (options.pipelines.find((entry) => entry.default)?.name ?? ""),
-					);
-				}
 				setModels(options.models.models);
 				const available = options.models.models.map(
 					(entry) => `${entry.provider}/${entry.id}`,
@@ -274,10 +239,6 @@ export function TaskCreation({
 						repositoryType === "local"
 							? { type: "local", path: repositoryValue.trim() }
 							: { type: "github", repo: repositoryValue.trim() },
-					...(pipeline &&
-					pipeline !== pipelines.find((entry) => entry.default)?.name
-						? { pipeline }
-						: {}),
 					...(harness ? { coding_agent: harness } : {}),
 					...(model ? { model } : {}),
 					...(thinking ? { thinking } : {}),
@@ -344,69 +305,189 @@ export function TaskCreation({
 				</Alert>
 			) : null}
 
-			<Label className="bg-secondary block border-l-2 border-l-primary">
-				<span className="sr-only">Task request</span>
-				<Textarea
-					value={request}
-					onChange={(event) => setRequest(event.target.value)}
-					onKeyDown={(event) => {
-						if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
-							event.preventDefault();
-							event.currentTarget.form?.requestSubmit();
-						}
-					}}
-					required
-					maxLength={20000}
-					placeholder="Coordinate the change..."
-					className="min-h-48 resize-y rounded-none border-0 bg-transparent p-6 text-base shadow-none focus-visible:ring-0 dark:bg-transparent"
-				/>
-			</Label>
-
-			<Section title="Repository source" defaultOpen>
-				<div className="grid gap-3 border-t pt-3">
-					<div className="grid items-end gap-3 md:grid-cols-[minmax(8rem,.6fr)_minmax(0,1fr)]">
-						<div className="grid gap-1.5">
-							<Label htmlFor="repository-type">Type</Label>
-							<Select
-								value={repositoryType}
-								onValueChange={(value) =>
-									setRepositoryType(value as "local" | "github")
-								}
+			<div className="bg-secondary rounded-md border border-l-2 border-l-primary">
+				<Label className="block">
+					<span className="sr-only">Task request</span>
+					<Textarea
+						value={request}
+						onChange={(event) => setRequest(event.target.value)}
+						onKeyDown={(event) => {
+							if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+								event.preventDefault();
+								event.currentTarget.form?.requestSubmit();
+							}
+						}}
+						required
+						maxLength={20000}
+						placeholder="Coordinate the change..."
+						className="min-h-48 resize-y rounded-none border-0 bg-transparent p-6 text-base shadow-none focus-visible:ring-0 dark:bg-transparent"
+					/>
+				</Label>
+				<div className="flex flex-wrap items-center gap-2 border-t px-3 py-3">
+					<DropdownMenu>
+						<DropdownMenuTrigger asChild>
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								className="max-w-full"
 							>
-								<SelectTrigger id="repository-type" className="w-full">
-									<SelectValue />
-								</SelectTrigger>
-								<SelectContent>
-									<SelectItem value="github">GitHub</SelectItem>
-									<SelectItem value="local">Local daemon path</SelectItem>
-								</SelectContent>
-							</Select>
-						</div>
-						<div className="grid gap-1.5">
-							<Label htmlFor="repository-value">
-								{repositoryType === "local"
-									? "Absolute daemon path"
-									: "owner/repository"}
-							</Label>
-							<Input
-								id="repository-value"
-								value={repositoryValue}
-								onChange={(event) => setRepositoryValue(event.target.value)}
-								list={
-									repositoryType === "local"
-										? `recent-directories-${daemon.id}`
-										: undefined
-								}
-								required
-								placeholder={
-									repositoryType === "local" ? "/srv/sandbox/repo" : "owner/app"
-								}
-							/>
-						</div>
-					</div>
+								<FolderGit2 data-icon="inline-start" />
+								<span className="max-w-48 truncate">
+									{repositoryValue || "Repository"}
+								</span>
+							</Button>
+						</DropdownMenuTrigger>
+						<DropdownMenuContent
+							align="start"
+							className="w-[min(22rem,calc(100vw-3rem))] p-2"
+						>
+							<DropdownMenuLabel>Repository source</DropdownMenuLabel>
+							<DropdownMenuGroup>
+								<DropdownMenuRadioGroup
+									value={repositoryType}
+									onValueChange={(value) => {
+										if (value === repositoryType) return;
+										setRepositoryType(value as "local" | "github");
+										setRepositoryValue("");
+									}}
+								>
+									<DropdownMenuRadioItem value="github">
+										GitHub
+									</DropdownMenuRadioItem>
+									<DropdownMenuRadioItem value="local">
+										Local daemon path
+									</DropdownMenuRadioItem>
+								</DropdownMenuRadioGroup>
+							</DropdownMenuGroup>
+							<div className="flex flex-col gap-2 p-2">
+								<Label htmlFor="repository-value">
+									{repositoryType === "local"
+										? "Absolute daemon path"
+										: "owner/repository"}
+								</Label>
+								<Input
+									id="repository-value"
+									value={repositoryValue}
+									onChange={(event) => setRepositoryValue(event.target.value)}
+									onKeyDown={(event) => {
+										if (event.key.length === 1) event.stopPropagation();
+									}}
+									list={
+										repositoryType === "local"
+											? `recent-directories-${daemon.id}`
+											: undefined
+									}
+									placeholder={
+										repositoryType === "local"
+											? "/srv/sandbox/repo"
+											: "owner/app"
+									}
+								/>
+							</div>
+						</DropdownMenuContent>
+					</DropdownMenu>
+					<Select
+						value={harness}
+						onValueChange={(value) => {
+							if (value === harness) return;
+							setHarness(value);
+							setModel("");
+							setThinking("");
+							setModels([]);
+							setModelsError(null);
+						}}
+						disabled={loading || harnesses.length === 0}
+					>
+						<SelectTrigger aria-label="Harness" size="sm" className="max-w-44">
+							<Bot data-icon="inline-start" />
+							<SelectValue placeholder="Harness" />
+						</SelectTrigger>
+						<SelectContent>
+							<SelectGroup>
+								{harnesses.map((entry) => (
+									<SelectItem key={entry} value={entry}>
+										{entry}
+									</SelectItem>
+								))}
+							</SelectGroup>
+						</SelectContent>
+					</Select>
+					<DropdownMenu>
+						<DropdownMenuTrigger asChild>
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								className="max-w-full"
+								aria-label="Model and thinking"
+								disabled={loading || modelsLoading}
+							>
+								<Brain data-icon="inline-start" />
+								<span className="max-w-40 truncate">{model || "Model"}</span>
+								<span className="text-subtle">· {thinking || "Thinking"}</span>
+							</Button>
+						</DropdownMenuTrigger>
+						<DropdownMenuContent
+							align="start"
+							className="w-[min(22rem,calc(100vw-3rem))]"
+						>
+							<DropdownMenuLabel>Model</DropdownMenuLabel>
+							<DropdownMenuGroup>
+								<DropdownMenuRadioGroup value={model} onValueChange={setModel}>
+									{showCustomModel ? (
+										<DropdownMenuRadioItem
+											value={model}
+											onSelect={(event) => event.preventDefault()}
+										>
+											{model}
+										</DropdownMenuRadioItem>
+									) : null}
+									{modelOptions.map((entry) => (
+										<DropdownMenuRadioItem
+											key={entry}
+											value={entry}
+											onSelect={(event) => event.preventDefault()}
+										>
+											{entry}
+										</DropdownMenuRadioItem>
+									))}
+								</DropdownMenuRadioGroup>
+							</DropdownMenuGroup>
+							<DropdownMenuSeparator />
+							<DropdownMenuLabel>Thinking level</DropdownMenuLabel>
+							<DropdownMenuGroup>
+								<DropdownMenuRadioGroup
+									value={thinking}
+									onValueChange={setThinking}
+								>
+									{effectiveThinkingChoices.map((level) => (
+										<DropdownMenuRadioItem
+											key={level}
+											value={level}
+											onSelect={(event) => event.preventDefault()}
+										>
+											{level}
+										</DropdownMenuRadioItem>
+									))}
+								</DropdownMenuRadioGroup>
+							</DropdownMenuGroup>
+						</DropdownMenuContent>
+					</DropdownMenu>
+					<Button
+						type="submit"
+						variant="outline"
+						size="sm"
+						className="border-primary text-primary ml-auto"
+						disabled={
+							offline || submitting || optionsUnresolved || !!modelsError
+						}
+					>
+						<Send data-icon="inline-start" />
+						{submitting ? "Creating..." : "Create task"}
+					</Button>
 				</div>
-			</Section>
-
+			</div>
 			{recentDirectories.length ? (
 				<datalist id={`recent-directories-${daemon.id}`}>
 					{recentDirectories.map((path) => (
@@ -414,118 +495,17 @@ export function TaskCreation({
 					))}
 				</datalist>
 			) : null}
-
 			{loading ? (
 				<p className="text-subtle mt-3">Loading harness options…</p>
-			) : (
-				<Section title="Harness and model">
-					<div className="grid gap-3 border-t pt-3 md:grid-cols-3">
-						<div className="grid gap-1.5">
-							<Label htmlFor="harness">Harness</Label>
-							<Select
-								value={harness}
-								onValueChange={(value) => {
-									if (value === harness) return;
-									setHarness(value);
-									setModel("");
-									setThinking("");
-									setModels([]);
-									setModelsError(null);
-								}}
-							>
-								<SelectTrigger id="harness" className="w-full">
-									<SelectValue />
-								</SelectTrigger>
-								<SelectContent>
-									{harnesses.map((entry) => (
-										<SelectItem key={entry} value={entry}>
-											{entry}
-										</SelectItem>
-									))}
-								</SelectContent>
-							</Select>
-						</div>
-						<div className="grid gap-1.5">
-							<Label htmlFor="model">Model</Label>
-							<Select
-								value={model}
-								onValueChange={setModel}
-								disabled={modelOptions.length === 0 && !showCustomModel}
-							>
-								<SelectTrigger id="model" className="w-full">
-									<SelectValue placeholder="No models available" />
-								</SelectTrigger>
-								<SelectContent>
-									{showCustomModel ? (
-										<SelectItem key={model} value={model}>
-											{model}
-										</SelectItem>
-									) : null}
-									{modelOptions.map((entry) => (
-										<SelectItem key={entry} value={entry}>
-											{entry}
-										</SelectItem>
-									))}
-								</SelectContent>
-							</Select>
-						</div>
-						<div className="grid gap-1.5">
-							<Label htmlFor="thinking">Thinking</Label>
-							<Select value={thinking} onValueChange={setThinking}>
-								<SelectTrigger id="thinking" className="w-full">
-									<SelectValue placeholder="Select effort" />
-								</SelectTrigger>
-								<SelectContent>
-									{effectiveThinkingChoices.map((level) => (
-										<SelectItem key={level} value={level}>
-											{level}
-										</SelectItem>
-									))}
-								</SelectContent>
-							</Select>
-						</div>
-					</div>
-					{modelsError ? (
-						<p className="text-destructive mt-2 text-xs" role="alert">
-							Could not load models for {harness || "this harness"}:{" "}
-							{modelsError}
-						</p>
-					) : null}
-					{modelsLoading ? (
-						<p className="text-subtle mt-2 text-xs">
-							Loading {harness} models…
-						</p>
-					) : null}
-				</Section>
-			)}
-
-			<Section title="Pipeline" defaultOpen>
-				<PipelineSelector
-					pipelines={pipelines}
-					loading={loading}
-					value={pipeline}
-					onChange={setPipeline}
-				/>
-			</Section>
-
-			<footer className="bg-secondary text-muted-foreground mt-3 flex items-center gap-4 rounded-md border px-3 py-2.5 text-xs">
-				<span>Ctrl/Cmd + Enter to create</span>
-				<Button
-					type="submit"
-					variant="outline"
-					size="sm"
-					className="border-primary text-primary ml-auto"
-					disabled={
-						offline ||
-						submitting ||
-						loading ||
-						optionsUnresolved ||
-						!!modelsError
-					}
-				>
-					{submitting ? "Creating..." : "Create task"}
-				</Button>
-			</footer>
+			) : null}
+			{modelsError ? (
+				<p className="text-destructive mt-2 text-xs" role="alert">
+					Could not load models for {harness || "this harness"}: {modelsError}
+				</p>
+			) : null}
+			{modelsLoading ? (
+				<p className="text-subtle mt-2 text-xs">Loading {harness} models…</p>
+			) : null}
 		</form>
 	);
 }

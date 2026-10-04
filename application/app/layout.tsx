@@ -4,7 +4,7 @@ import { TooltipProvider } from "@/components/ui/tooltip.tsx";
 import "./globals.css";
 
 export const metadata: Metadata = {
-	title: "Software Factory",
+	title: "Switchyard",
 	description: "Coordinate software work across connected daemons.",
 	robots: { index: false, follow: false },
 };
