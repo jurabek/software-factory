@@ -151,41 +151,27 @@ func (r *PhaseRepository) End(ctx context.Context, id, status, message string) e
 	return wrap("end phase", err)
 }
 
-// CompletePhaseWithTransitionAndEvent publishes a phase result, its Task
-
-// transition, and the corresponding lifecycle event atomically. The event
-
-// trace is derived output and is written only after the database commit.
-
-func (r *PhaseRepository) CompleteWithTransitionAndEvent(ctx context.Context, taskDir string, phaseID, taskID, from, to, status, message, outputSnapshot string, event Event) error {
-	return r.completeWithEvidenceAndTransitionAndEvent(ctx, taskDir, phaseID, taskID, from, to, status, message,
-		outputSnapshot, nil, nil, event)
+// PhaseCompletion is one atomic phase publication: the phase result, the Task
+// transition, optional verification evidence and plan approval candidate, and
+// the lifecycle event.
+type PhaseCompletion struct {
+	PhaseID, TaskID string
+	From, To        string
+	Status, Message string
+	OutputSnapshot  string
+	Approval        string
+	Checks          []Check
+	Comparisons     []Comparison
+	Event           Event
 }
 
-// CompletePlannerPhaseWithApproval publishes a planner result and approval
-
-// candidate together with the phase transition and event.
-
-func (r *PhaseRepository) CompletePlannerWithApproval(ctx context.Context, taskDir string, phaseID, taskID, from, to, status, message, outputSnapshot, approval string, event Event) error {
-	return r.completeWithEvidenceAndTransitionAndEvent(ctx, taskDir, phaseID,
-		taskID, from, to, status, message, outputSnapshot,
-		nil, nil, event, approval)
-}
-
-// CompleteVerificationPhaseWithEvidenceAndEvent publishes verification
-
-// evidence, the phase result, the Task transition, and the lifecycle event in
-
-// one transaction. Individual check observations may already be durable; the
-
-// final publication is the authoritative successful verification boundary.
-
-func (r *PhaseRepository) CompleteVerificationWithEvidenceAndEvent(ctx context.Context, taskDir string, phaseID, taskID, from, to, status, message, outputSnapshot string, checks []Check, comparisons []Comparison, event Event) error {
-	return r.completeWithEvidenceAndTransitionAndEvent(ctx, taskDir, phaseID, taskID, from, to, status,
-		message, outputSnapshot, checks, comparisons, event)
-}
-
-func (r *PhaseRepository) completeWithEvidenceAndTransitionAndEvent(ctx context.Context, taskDir, phaseID, taskID, from, to, status, message, outputSnapshot string, checks []Check, comparisons []Comparison, event Event, approval ...string) error {
+// Complete publishes a phase completion in one transaction. Individual check
+// observations may already be durable; the final publication is the
+// authoritative boundary. The event trace is derived output and is written
+// only after the database commit.
+func (r *PhaseRepository) Complete(ctx context.Context, taskDir string, c PhaseCompletion) error {
+	phaseID, taskID, from, to, status, message, outputSnapshot := c.PhaseID, c.TaskID, c.From, c.To, c.Status, c.Message, c.OutputSnapshot
+	checks, comparisons, event := c.Checks, c.Comparisons, c.Event
 	tx, err := r.db.BeginTxx(ctx, nil)
 	if err != nil {
 		return wrap("begin phase completion", err)
@@ -227,9 +213,9 @@ func (r *PhaseRepository) completeWithEvidenceAndTransitionAndEvent(ctx context.
 	if count, _ := result.RowsAffected(); count != 1 {
 		return ErrConflict
 	}
-	if len(approval) > 0 && approval[0] != "" {
+	if c.Approval != "" {
 		query5 := `update tasks set plan_digest=:plan_digest where id=:id`
-		if _, err = tx.NamedExecContext(ctx, query5, Task{ID: taskID, PlanDigest: approval[0]}); err != nil {
+		if _, err = tx.NamedExecContext(ctx, query5, Task{ID: taskID, PlanDigest: c.Approval}); err != nil {
 			return wrap("save approval candidate", err)
 		}
 	}

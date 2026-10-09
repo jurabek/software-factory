@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jurabek/software-factory/daemon/internal/attempt"
 	"github.com/jurabek/software-factory/daemon/internal/config"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 )
@@ -20,7 +21,7 @@ func budgetTestDB(t *testing.T) (*store.Store, *Kit, store.Task) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
-	kit := New(db, nil, nil, config.Config{}, "", filepath.Join(root, "tasks"))
+	kit := New(db, nil, nil, config.Config{}, "", filepath.Join(root, "tasks"), &attempt.Locks{})
 
 	createdAt := time.Now().UTC().Format(time.RFC3339Nano)
 	task := store.Task{

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/jurabek/software-factory/daemon/internal/attempt"
 	"github.com/jurabek/software-factory/daemon/internal/pipeline"
 	"github.com/jurabek/software-factory/daemon/internal/stagekit"
 	"github.com/jurabek/software-factory/daemon/internal/store"
@@ -40,17 +41,19 @@ type Dependencies struct {
 	Store    *store.Store
 	Workflow *pipeline.Pipeline
 	Events   *Events
+	// Locks is the per-task lock shared with stages.
+	Locks *attempt.Locks
 }
 
 // Service is the factory control plane.
 type Service struct {
-	root      string
-	db        *store.Store
-	mu        sync.Mutex
-	cancel    map[string]*execution
-	taskLocks sync.Map
-	workflow  *pipeline.Pipeline
-	events    *Events
+	root     string
+	db       *store.Store
+	mu       sync.Mutex
+	cancel   map[string]*execution
+	locks    *attempt.Locks
+	workflow *pipeline.Pipeline
+	events   *Events
 }
 
 // New constructs the orchestrator.
@@ -59,7 +62,12 @@ func New(root string, dependencies Dependencies) *Service {
 	if events == nil {
 		events = NewEvents(dependencies.Store)
 	}
+	locks := dependencies.Locks
+	if locks == nil {
+		locks = &attempt.Locks{}
+	}
 	return &Service{
+		locks:    locks,
 		root:     root,
 		db:       dependencies.Store,
 		cancel:   map[string]*execution{},
@@ -132,10 +140,7 @@ func (s *Service) abort(ctx context.Context, id string) error {
 
 func (s *Service) taskDir(id string) string { return filepath.Join(s.root, "tasks", id) }
 
-func (s *Service) taskLock(id string) *sync.Mutex {
-	value, _ := s.taskLocks.LoadOrStore(id, &sync.Mutex{})
-	return value.(*sync.Mutex)
-}
+func (s *Service) taskLock(id string) *sync.Mutex { return s.locks.For(id) }
 
 func (s *Service) HandleEvents(ctx context.Context) {
 	pending, err := s.db.Orchestration.Pending(ctx)

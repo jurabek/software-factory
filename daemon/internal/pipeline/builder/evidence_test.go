@@ -56,7 +56,7 @@ func TestPersistEvidenceRetainsChangeKindAndReason(t *testing.T) {
 		t.Fatal(err)
 	}
 	payload := `{"status":"success","summary":"built","notes_for_next_agent":"","report_markdown":"# Build\n\nDone.","changed_files":["example_test.go"],"commit_message":"test","test_changes":[{"path":"example_test.go","reason":"covers the changed behavior"}]}`
-	if err = PersistEvidence(context.Background(), db, task, store.Phase{ID: "build-attempt", Attempt: 1}, payload); err != nil {
+	if err = PersistEvidence(context.Background(), db.Evidence, task, store.Phase{ID: "build-attempt", Attempt: 1}, payload); err != nil {
 		t.Fatal(err)
 	}
 	changes, err := db.Evidence.TestChanges(context.Background(), task.ID)

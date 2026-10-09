@@ -8,14 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
-	"sync"
-	"syscall"
 	"time"
 
+	"github.com/jurabek/software-factory/daemon/internal/checkrun"
 	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
 	"github.com/jurabek/software-factory/daemon/internal/stage"
 	"github.com/jurabek/software-factory/daemon/internal/stagekit"
@@ -23,8 +20,6 @@ import (
 	"github.com/jurabek/software-factory/daemon/internal/task"
 	"github.com/jurabek/software-factory/daemon/internal/workspace"
 )
-
-const maxCapturedOutput = 64 << 10
 
 func randomID() string {
 	var bytes [12]byte
@@ -37,29 +32,6 @@ func nowString() string { return time.Now().UTC().Format(time.RFC3339Nano) }
 func withinPath(root, candidate string) bool {
 	relative, err := filepath.Rel(root, candidate)
 	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
-}
-
-type tailCapture struct {
-	mu    sync.Mutex
-	data  []byte
-	limit int
-}
-
-func (capture *tailCapture) Write(data []byte) (int, error) {
-	capture.mu.Lock()
-	defer capture.mu.Unlock()
-	length := len(data)
-	capture.data = append(capture.data, data...)
-	if len(capture.data) > capture.limit {
-		capture.data = capture.data[len(capture.data)-capture.limit:]
-	}
-	return length, nil
-}
-
-func (capture *tailCapture) String() string {
-	capture.mu.Lock()
-	defer capture.mu.Unlock()
-	return string(capture.data)
 }
 
 type service struct {
@@ -75,7 +47,7 @@ func (s service) Verify(ctx context.Context, input stage.Input, plan stage.PlanR
 	if result, ok, err := s.savedVerification(ctx, input.TaskID, build.AttemptID); err != nil || ok {
 		return result, err
 	}
-	task, phase, err := s.beginVerification(ctx, input.TaskID, plan.AttemptID, build.AttemptID)
+	task, phase, err := s.kit.BeginStage(ctx, input.TaskID, stagekit.Entry{Kind: "verify", Requires: []stagekit.Upstream{{Kind: "plan", AttemptID: plan.AttemptID}, {Kind: "build", AttemptID: build.AttemptID}}, Enter: stagekit.Checking})
 	if err != nil {
 		return stage.VerificationResult{}, err
 	}
@@ -92,7 +64,7 @@ func (s service) Verify(ctx context.Context, input stage.Input, plan stage.PlanR
 		s.kit.Fail(ctx, phase, err)
 		return stage.VerificationResult{}, err
 	}
-	checks, err := s.kit.DB().Checks.List(ctx, task.ID)
+	checks, err := s.kit.Checks(ctx, task.ID)
 	if err != nil {
 		s.kit.Fail(ctx, phase, err)
 		return stage.VerificationResult{}, err
@@ -103,7 +75,7 @@ func (s service) Verify(ctx context.Context, input stage.Input, plan stage.PlanR
 			phaseChecks = append(phaseChecks, check)
 		}
 	}
-	comparisons, err := s.kit.DB().Evidence.Comparisons(ctx, task.ID)
+	comparisons, err := s.kit.Comparisons(ctx, task.ID)
 	if err != nil {
 		s.kit.Fail(ctx, phase, err)
 		return stage.VerificationResult{}, err
@@ -188,48 +160,34 @@ func (s service) runCheck(ctx context.Context, task store.Task, phase store.Phas
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
 		return check, err
 	}
-	capture := &tailCapture{limit: maxCapturedOutput}
-	command := exec.Command("/bin/sh", "-c", declared.Command)
-	command.Dir = workingPath
-	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	command.Stdout = capture
-	command.Stderr = capture
-	if err := command.Start(); err != nil {
-		check.Status = "inconclusive"
-		check.Output = err.Error()
-		check.EndedAt = time.Now().UTC().Format(time.RFC3339Nano)
-		check.DurationMS = int(time.Since(started).Milliseconds())
-		if saveErr := s.kit.DB().Checks.Save(context.WithoutCancel(ctx), check); saveErr != nil {
-			return check, saveErr
-		}
-		return check, &checkRunError{kind: "inconclusive", err: fmt.Errorf("start check %s: %w", declared.ID, err)}
-	}
-	pid := command.Process.Pid
-	if _, err := s.kit.DB().Processes.Start(context.WithoutCancel(ctx), task.ID, phase.ID, "check", declared.ID, pid, declared.Command); err != nil {
-		terminateProcessGroup(pid)
-		_, _ = command.Wait(), s.kit.DB().Processes.End(context.WithoutCancel(ctx), task.ID, pid, -1)
+	run, err := checkrun.Run(ctx, checkrun.Check{Command: declared.Command, Dir: workingPath}, func(pid int) error {
+		return s.kit.StartProcess(context.WithoutCancel(ctx), task.ID, phase.ID, "check", declared.ID, pid, declared.Command)
+	})
+	if err != nil {
+		_ = s.kit.EndProcess(context.WithoutCancel(ctx), task.ID, run.PID, -1)
 		return check, err
 	}
-	waitErr, cancelled := waitForProcess(ctx, command)
-	check.ExitCode = processExitCode(waitErr)
-	check.Output = capture.String()
-	if cancelled || errors.Is(ctx.Err(), context.Canceled) {
-		check.Status = "cancelled"
-	} else if waitErr != nil {
-		check.Status = "failed"
-		if checkSetupFailure(check.ExitCode, check.Output) {
-			check.Status = "inconclusive"
+	if run.StartErr != nil {
+		check.Status = run.Status
+		check.Output = run.Output
+		check.EndedAt = run.EndedAt.Format(time.RFC3339Nano)
+		check.DurationMS = int(run.EndedAt.Sub(started).Milliseconds())
+		if saveErr := s.kit.SaveCheck(context.WithoutCancel(ctx), check); saveErr != nil {
+			return check, saveErr
 		}
-	} else {
-		check.Status = "passed"
+		return check, &checkRunError{kind: "inconclusive", err: fmt.Errorf("start check %s: %w", declared.ID, run.StartErr)}
 	}
+	pid := run.PID
+	check.ExitCode = run.ExitCode
+	check.Output = run.Output
+	check.Status = run.Status
 	check.EndedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	check.DurationMS = int(time.Since(started).Milliseconds())
 	if err := os.WriteFile(logPath, []byte(check.Output), 0o600); err != nil {
 		return check, err
 	}
-	endErr := s.kit.DB().Processes.End(context.WithoutCancel(ctx), task.ID, pid, check.ExitCode)
-	saveErr := s.kit.DB().Checks.Save(context.WithoutCancel(ctx), check)
+	endErr := s.kit.EndProcess(context.WithoutCancel(ctx), task.ID, pid, check.ExitCode)
+	saveErr := s.kit.SaveCheck(context.WithoutCancel(ctx), check)
 	if endErr != nil {
 		return check, endErr
 	}
@@ -246,51 +204,6 @@ func (s service) runCheck(ctx context.Context, task store.Task, phase store.Phas
 		return check, &checkRunError{kind: "inconclusive", err: fmt.Errorf("check %s could not establish a runnable environment", declared.ID)}
 	}
 	return check, nil
-}
-
-func checkSetupFailure(exitCode int, output string) bool {
-	if exitCode == 126 || exitCode == 127 {
-		return true
-	}
-	lower := strings.ToLower(output)
-	for _, marker := range []string{"command not found", "no such file or directory", "module not found", "could not resolve"} {
-		if strings.Contains(lower, marker) {
-			return true
-		}
-	}
-	return false
-}
-
-func waitForProcess(ctx context.Context, command *exec.Cmd) (error, bool) {
-	done := make(chan error, 1)
-	go func() { done <- command.Wait() }()
-	select {
-	case err := <-done:
-		return err, false
-	case <-ctx.Done():
-		terminateProcessGroup(command.Process.Pid)
-		select {
-		case err := <-done:
-			return err, true
-		case <-time.After(250 * time.Millisecond):
-			_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
-			return <-done, true
-		}
-	}
-}
-
-func terminateProcessGroup(pid int) {
-	_ = syscall.Kill(-pid, syscall.SIGTERM)
-}
-
-func processExitCode(err error) int {
-	if err == nil {
-		return 0
-	}
-	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
-		return exitErr.ExitCode()
-	}
-	return -1
 }
 
 func safeFileName(value string) string {
@@ -310,7 +223,7 @@ func safeFileName(value string) string {
 }
 
 func (s service) runComparisons(ctx context.Context, task store.Task, phase store.Phase, profile workspace.Materialization) error {
-	baseline, err := s.comparisonBaseline(ctx, task)
+	baseline, err := s.kit.BuildBaseline(ctx, task.ID)
 	if err != nil {
 		return err
 	}
@@ -332,7 +245,7 @@ func (s service) runComparisons(ctx context.Context, task store.Task, phase stor
 		}
 		return nil
 	}
-	entries, entriesErr := ChangedTestEntries(task.RepositoryPath, workspace.ReviewBase(task), profile.Tests)
+	entries, entriesErr := factorygit.ChangedTests(task.RepositoryPath, workspace.ReviewBase(task), profile.Tests)
 	if entriesErr != nil {
 		comparison.Status, comparison.Reason = "inconclusive", entriesErr.Error()
 		comparison.DurationMS = int(time.Since(started).Milliseconds())
@@ -424,35 +337,14 @@ func (s service) saveComparison(ctx context.Context, comparison *store.Compariso
 		comparison.Status = "cancelled"
 		comparison.Reason = ctx.Err().Error()
 	}
-	return s.kit.DB().Evidence.SaveComparison(context.WithoutCancel(ctx), *comparison)
-}
-
-// ExpectedTestChange is a Git-derived changed test entry.
-type ExpectedTestChange struct {
-	Change factorygit.Change
-}
-
-// ChangedTestEntries returns Git-derived changed tests for a base.
-func ChangedTestEntries(repoPath, base string, tests []string) ([]ExpectedTestChange, error) {
-	entries, err := factorygit.ChangedEntries(repoPath, base)
-	if err != nil {
-		return nil, err
-	}
-	result := make([]ExpectedTestChange, 0)
-	for _, entry := range entries {
-		if factorygit.MatchesGlob(entry.Path, tests) {
-			result = append(result, ExpectedTestChange{Change: entry})
-		}
-	}
-	return result, nil
+	return s.kit.SaveComparison(context.WithoutCancel(ctx), *comparison)
 }
 
 // ComparisonPaths resolves overlay paths from changed test entries.
-func ComparisonPaths(entries []ExpectedTestChange) []string {
+func ComparisonPaths(entries []factorygit.Change) []string {
 	paths := make([]string, 0, len(entries))
 	seen := map[string]bool{}
-	for _, entry := range entries {
-		change := entry.Change
+	for _, change := range entries {
 		if change.Kind == "deleted" || change.Path == change.RenameFrom {
 			continue
 		}
@@ -462,19 +354,6 @@ func ComparisonPaths(entries []ExpectedTestChange) []string {
 		}
 	}
 	return paths
-}
-
-func (s service) comparisonBaseline(ctx context.Context, task store.Task) (string, error) {
-	phases, err := s.kit.DB().Phases.List(ctx, task.ID)
-	if err != nil {
-		return "", err
-	}
-	for _, candidate := range slices.Backward(phases) {
-		if candidate.Kind == "build" && candidate.InputSnapshot != "" && !candidate.Superseded {
-			return candidate.InputSnapshot, nil
-		}
-	}
-	return "", nil
 }
 
 // CopyOverlayPath copies a repository-relative path into an overlay root.
@@ -531,18 +410,11 @@ func (s service) savedVerification(ctx context.Context, taskID, buildAttemptID s
 		return stage.VerificationResult{}, false,
 			err
 	}
-	phase, ok, err := s.kit.SuccessfulPhase(ctx, task.ID, stageDef.ID)
+	phase, ok, err := s.kit.Attempts().Resume(ctx, task.ID, stageDef.ID, buildAttemptID)
 	if err != nil || !ok {
 		return stage.VerificationResult{}, false, err
 	}
-	eligible, err := s.kit.AttemptAfter(ctx, task.ID, phase.ID, buildAttemptID)
-	if err != nil {
-		return stage.VerificationResult{}, false, err
-	}
-	if !eligible {
-		return stage.VerificationResult{}, false, nil
-	}
-	checks, err := s.kit.DB().Checks.List(ctx, task.ID)
+	checks, err := s.kit.Checks(ctx, task.ID)
 	if err != nil {
 		return stage.VerificationResult{},
 			false, err
@@ -556,51 +428,6 @@ func (s service) savedVerification(ctx context.Context, taskID, buildAttemptID s
 	return stage.VerificationResult{
 		AttemptID: phase.ID, SnapshotID: phase.OutputSnapshot, Passed: passed,
 	}, true, nil
-}
-
-func (s service) beginVerification(ctx context.Context, taskID, planAttemptID, buildAttemptID string) (store.Task, store.Phase, error) {
-	task, err := s.tasks.Get(ctx, taskID)
-	if err != nil {
-		return store.Task{}, store.Phase{}, err
-	}
-	planStage, err := s.kit.StageByKind(task, "plan")
-	if err != nil {
-		return store.Task{}, store.Phase{}, err
-	}
-	if err = s.kit.RequireAttempt(ctx, task.ID, planStage.ID, planAttemptID); err != nil {
-		return store.Task{}, store.Phase{},
-			err
-	}
-	buildStage, err := s.kit.StageByKind(task, "build")
-	if err != nil {
-		return store.Task{}, store.Phase{}, err
-	}
-	if err = s.kit.RequireAttempt(ctx, task.ID, buildStage.ID, buildAttemptID); err != nil {
-		return store.Task{}, store.Phase{}, err
-	}
-	stageDef, err := s.kit.StageByKind(task, "verify")
-	if err != nil {
-		return store.Task{}, store.Phase{}, err
-	}
-	if err = s.kit.DB().Tasks.SetActiveStage(ctx,
-		task.ID, stageDef.ID,
-	); err != nil {
-		return store.Task{}, store.Phase{}, err
-	}
-	task, err = s.tasks.Get(ctx, task.ID)
-	if err != nil {
-		return store.Task{}, store.Phase{}, err
-	}
-	if err = s.kit.Transition(ctx, task, stagekit.Checking,
-		""); err != nil {
-		return store.Task{}, store.Phase{}, err
-	}
-	task.State = stagekit.Checking
-	phase, err := s.kit.BeginOrReusePhase(ctx, task.ID, stageDef.ID, stageDef.Kind, stageDef.Agent, "Execute "+stageDef.ID)
-	if err != nil {
-		return store.Task{}, store.Phase{}, err
-	}
-	return task, phase, nil
 }
 
 func (s service) publishVerification(ctx context.Context, phase store.Phase, checks []store.Check, comparisons []store.Comparison, report string, passed bool) (stage.VerificationResult, error) {

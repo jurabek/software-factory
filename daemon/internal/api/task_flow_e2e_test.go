@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jurabek/software-factory/daemon/internal/attempt"
 	"github.com/jurabek/software-factory/daemon/internal/config"
 	"github.com/jurabek/software-factory/daemon/internal/creation"
 	"github.com/jurabek/software-factory/daemon/internal/harness"
@@ -187,13 +188,14 @@ func (s *taskFlowSuite) SetupSuite() {
 	configPath := filepath.Join(configRoot, "config.yaml")
 	registry := harness.Registry{"pi": s.harness}
 	sandboxRunner := workspace.Git{}
-	kit := stagekit.New(s.db, registry, sandboxRunner, cfg, configPath, taskRoot)
+	locks := &attempt.Locks{}
+	kit := stagekit.New(s.db, registry, sandboxRunner, cfg, configPath, taskRoot, locks)
 	events := orchestrator.NewEvents(s.db)
 	taskService := task.New(taskRoot, task.Deps{Store: s.db, Config: cfg, ConfigPath: configPath, Harnesses: registry, Sandbox: sandboxRunner})
 	creationStage := creation.New(taskService, kit, events)
 	plannerStage := planner.New(kit, taskService, events)
 	s.service = orchestrator.New(taskRoot, orchestrator.Dependencies{
-		Store: s.db, Events: events, Workflow: pipeline.New(
+		Store: s.db, Events: events, Locks: locks, Workflow: pipeline.New(
 			plannerStage,
 			builder.New(kit, taskService),
 			verifier.New(kit, taskService),

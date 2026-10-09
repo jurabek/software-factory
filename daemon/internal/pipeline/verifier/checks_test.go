@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jurabek/software-factory/daemon/internal/attempt"
 	"github.com/jurabek/software-factory/daemon/internal/config"
 	"github.com/jurabek/software-factory/daemon/internal/stagekit"
 	"github.com/jurabek/software-factory/daemon/internal/store"
@@ -23,7 +24,7 @@ func verifierTestKit(t *testing.T, root string) (*stagekit.Kit, *store.Store) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
-	return stagekit.New(db, nil, nil, config.Config{}, "", root), db
+	return stagekit.New(db, nil, nil, config.Config{}, "", root, &attempt.Locks{}), db
 }
 
 func verifierTask(t *testing.T, db *store.Store, root, repositoryPath, base string) store.Task {

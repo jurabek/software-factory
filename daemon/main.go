@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/jurabek/software-factory/daemon/internal/api"
+	"github.com/jurabek/software-factory/daemon/internal/attempt"
 	"github.com/jurabek/software-factory/daemon/internal/config"
 	"github.com/jurabek/software-factory/daemon/internal/creation"
 	"github.com/jurabek/software-factory/daemon/internal/harness"
@@ -231,7 +232,8 @@ func run(rootCtx context.Context) error {
 		}
 	}
 	sandbox := workspace.Git{}
-	kit := stagekit.New(db, registry, sandbox, configured, configPath, root)
+	locks := &attempt.Locks{}
+	kit := stagekit.New(db, registry, sandbox, configured, configPath, root, locks)
 	events := orchestrator.NewEvents(db)
 	taskService := task.New(root, task.Deps{Store: db, Config: configured, ConfigPath: configPath, Harnesses: registry, Sandbox: sandbox})
 	creationStage := creation.New(taskService, kit, events)
@@ -245,7 +247,7 @@ func run(rootCtx context.Context) error {
 		creationStage,
 	)
 	service := orchestrator.New(root, orchestrator.Dependencies{
-		Store: db, Workflow: workflow, Events: events,
+		Store: db, Workflow: workflow, Events: events, Locks: locks,
 	})
 	eventsDone := make(chan struct{})
 	go func() {

@@ -84,67 +84,43 @@ func New(kit *stagekit.Kit, tasks *task.Service) service { return service{kit: k
 // implementation prompts from the exact upstream plan, runs the build turn
 // with Git-derived test evidence validation, and publishes the payload.
 func (s service) Build(ctx context.Context, input stage.Input, plan stage.PlanResult) (stage.BuildResult, error) {
-	if result, ok, err := s.savedBuild(ctx, input.TaskID, plan.AttemptID); err != nil || ok {
-		return result, err
-	}
-	task, phase, err := s.beginBuild(ctx, input.TaskID, plan.AttemptID)
-	if err != nil {
-		return stage.BuildResult{}, err
-	}
-	configured, err := s.kit.TaskConfig(ctx, task)
-	if err != nil {
-		s.kit.Fail(ctx, phase, err)
-		return stage.BuildResult{}, err
-	}
-	agent, ok := configured.Config.Agent(phase.Owner)
-	if !ok {
-		err = fmt.Errorf("agent %s not configured", phase.Owner)
-		s.kit.Fail(ctx, phase, err)
-		return stage.BuildResult{}, err
-	}
-	profile, err := workspace.ReadProfile(task)
-	if err != nil {
-		s.kit.Fail(ctx, phase, err)
-		return stage.BuildResult{}, err
-	}
-	data := map[string]any{"TaskID": task.ID, "Request": task.Request, "Repository": task.RepositoryPath, "Workspace": task.WorkspacePath, "Plan": plan.Payload}
-	systemPrompt, userPrompt, err := stagekit.RenderPrompts(
-		agent.Name,
-		agent.PromptEngineering.SystemContent, agent.PromptEngineering.System,
-		agent.PromptEngineering.UserContent, agent.PromptEngineering.User,
-		data, filepath.Dir(configured.ConfigPath),
-		Instructions(),
-	)
-	if err != nil {
-		s.kit.Fail(ctx, phase, err)
-		return stage.BuildResult{}, err
-	}
-	harnessName := configured.Config.Defaults.CodingAgent
-	turner := s.kit.AgentExec()
-	turner.AgentDeadlineMS = configured.Config.Runtime.AgentDeadlineMS
-	turner.JSONFixAttempts = configured.Config.Runtime.JSONFixAttempts
-	validate := func(text string) (any, error) {
-		return ValidateWithEvidence(task.RepositoryPath, workspace.ReviewBase(task), profile.Tests, text)
-	}
-	turn, err := harness.RunTurn(ctx, turner, harness.TurnInput{
-		TaskID: task.ID, RequestID: stagekit.RandomID(), Phase: phase, Role: phase.Name,
-		HarnessName: harnessName, Model: agent.Model, Thinking: agent.Thinking, Color: agent.Color,
-		RepoPath:     task.RepositoryPath,
-		SessionDir:   filepath.Join(configured.TaskDir, "sessions", phase.Name, harnessName),
-		SystemPrompt: systemPrompt, UserPrompt: userPrompt,
-		ReadOnly: readOnly(phase), EnvelopeKind: "build", CorrectionSuffix: Instructions(),
-		Validate: validate,
-		Sink:     s.kit.Sink(task.ID, phase.ID, harnessName),
+	return s.kit.RunAgentStage(ctx, input.TaskID, stagekit.AgentStage[stage.BuildResult]{
+		Entry: stagekit.Entry{Kind: "build", Requires: []stagekit.Upstream{{Kind: "plan", AttemptID: plan.AttemptID}}, Enter: stagekit.Building},
+		After: plan.AttemptID,
+		Role:  "build", Instructions: Instructions(),
+		Data: func(_ context.Context, task store.Task) (map[string]any, error) {
+			if _, err := workspace.ReadProfile(task); err != nil {
+				return nil, err
+			}
+			return map[string]any{"TaskID": task.ID, "Request": task.Request, "Repository": task.RepositoryPath, "Workspace": task.WorkspacePath, "Plan": plan.Payload}, nil
+		},
+		Validate: func(task store.Task, text string) (any, error) {
+			profile, err := workspace.ReadProfile(task)
+			if err != nil {
+				return nil, err
+			}
+			return ValidateWithEvidence(task.RepositoryPath, workspace.ReviewBase(task), profile.Tests, text)
+		},
+		OnValid: func(ctx context.Context, task store.Task, phase store.Phase, payload string) error {
+			return PersistEvidence(ctx, s.kit, task, phase, payload)
+		},
+		Finalize: func(ctx context.Context, task store.Task, phase store.Phase, turn harness.TurnResult) (stagekit.Completion, error) {
+			profile, err := workspace.ReadProfile(task)
+			if err != nil {
+				return stagekit.Completion{}, err
+			}
+			if err = CheckProtectedPaths(task.RepositoryPath, workspace.ReviewBase(task), profile.Protected); err != nil {
+				return stagekit.Completion{}, err
+			}
+			if err = PersistEvidence(ctx, s.kit, task, phase, turn.Payload); err != nil {
+				return stagekit.Completion{}, err
+			}
+			return stagekit.Completion{To: stagekit.Checking, Status: "success"}, nil
+		},
+		Result: func(_ store.Task, phase store.Phase, payload string) (stage.BuildResult, error) {
+			return stage.BuildResult{Payload: payload, AttemptID: phase.ID, SnapshotID: phase.OutputSnapshot}, nil
+		},
 	})
-	if err != nil {
-		s.kit.Fail(ctx, phase, err)
-		return stage.BuildResult{}, err
-	}
-	return s.publishBuild(ctx, task, phase, turn, profile)
-}
-
-func readOnly(phase store.Phase) bool {
-	return phase.Kind == "review" || phase.Owner == "planner" || phase.Owner == "reviewer"
 }
 
 // ValidateWithEvidence validates the envelope and requires test_changes to
@@ -166,15 +142,13 @@ func ValidateWithEvidence(repoPath, base string, tests []string, text string) (R
 
 // ChangedTestSet returns the Git-derived changed tests for a base.
 func ChangedTestSet(repoPath, base string, tests []string) (map[string]factorygit.Change, error) {
-	entries, err := factorygit.ChangedEntries(repoPath, base)
+	entries, err := factorygit.ChangedTests(repoPath, base, tests)
 	if err != nil {
 		return nil, fmt.Errorf("read changes: %w", err)
 	}
-	expected := make(map[string]factorygit.Change)
+	expected := make(map[string]factorygit.Change, len(entries))
 	for _, entry := range entries {
-		if factorygit.MatchesGlob(entry.Path, tests) {
-			expected[entry.Path] = entry
-		}
+		expected[entry.Path] = entry
 	}
 	return expected, nil
 }
@@ -207,9 +181,14 @@ func ValidateTestChangeSet(changes []TestChange, expected map[string]factorygit.
 	return nil
 }
 
+// EvidenceSaver records test evidence for an attempt.
+type EvidenceSaver interface {
+	SaveTestChanges(context.Context, []store.TestChange) error
+}
+
 // PersistEvidence validates test evidence against Git-derived changes and
 // stores it for the attempt.
-func PersistEvidence(ctx context.Context, db *store.Store, task store.Task, phase store.Phase, payload string) error {
+func PersistEvidence(ctx context.Context, saver EvidenceSaver, task store.Task, phase store.Phase, payload string) error {
 	build, err := Validate(payload)
 	if err != nil {
 		return err
@@ -241,7 +220,7 @@ func PersistEvidence(ctx context.Context, db *store.Store, task store.Task, phas
 			CreatedAt:  time.Now().UTC().Format(time.RFC3339Nano),
 		})
 	}
-	return db.Evidence.SaveTestChanges(ctx, changes)
+	return saver.SaveTestChanges(ctx, changes)
 }
 
 // CheckProtectedPaths rejects builds touching protected paths.
@@ -257,127 +236,3 @@ func CheckProtectedPaths(repoPath, base string, protected []string) error {
 	}
 	return nil
 }
-
-func (s service) savedBuild(ctx context.Context, taskID, planAttemptID string) (stage.BuildResult, bool, error) {
-	task, err := s.tasks.Get(ctx, taskID)
-	if err != nil {
-		return stage.BuildResult{}, false, err
-	}
-	planStage, err := s.kit.StageByKind(task, "plan")
-	if err != nil {
-		return stage.BuildResult{}, false, err
-	}
-	if err = s.kit.RequireAttempt(ctx, task.ID, planStage.ID, planAttemptID); err != nil {
-		return stage.BuildResult{}, false, err
-	}
-	stageDef, err := s.kit.StageByKind(task, "build")
-	if err != nil {
-		return stage.BuildResult{}, false, err
-	}
-	queued, err := s.kit.DB().Messages.QueuedForStages(ctx, taskID, stageDef.ID, "builder")
-	if err != nil {
-		return stage.BuildResult{}, false, err
-	}
-	if queued {
-		return stage.BuildResult{}, false, nil
-	}
-	phase, ok, err := s.kit.SuccessfulPhase(ctx, task.ID, stageDef.ID)
-	if err != nil || !ok {
-		return stage.BuildResult{}, false, err
-	}
-	payload, err := s.kit.PhaseEnvelope(ctx, task.ID, phase.ID)
-	if err != nil {
-		return stage.BuildResult{},
-			false, err
-	}
-	eligible, err := s.kit.AttemptAfter(ctx, task.ID, phase.ID, planAttemptID)
-	if err != nil {
-		return stage.BuildResult{}, false, err
-	}
-	if !eligible {
-		return stage.BuildResult{}, false, nil
-	}
-	return stage.BuildResult{Payload: payload, AttemptID: phase.ID, SnapshotID: phase.OutputSnapshot}, true, nil
-}
-
-func (s service) beginBuild(ctx context.Context, taskID, planAttemptID string) (store.Task, store.Phase, error) {
-	task, err := s.tasks.Get(ctx, taskID)
-	if err != nil {
-		return store.Task{}, store.Phase{}, err
-	}
-	planStage, err := s.kit.StageByKind(task, "plan")
-	if err != nil {
-		return store.Task{}, store.Phase{}, err
-	}
-	if err = s.kit.RequireAttempt(ctx, task.ID, planStage.ID, planAttemptID); err != nil {
-		return store.Task{}, store.Phase{}, err
-	}
-	stageDef, err := s.kit.StageByKind(
-		task, "build")
-	if err != nil {
-		return store.Task{}, store.Phase{}, err
-	}
-	if err = s.kit.DB().Tasks.SetActiveStage(ctx, task.ID, stageDef.ID); err != nil {
-		return store.Task{}, store.Phase{}, err
-	}
-	task, err = s.tasks.Get(ctx, task.ID)
-	if err != nil {
-		return store.Task{}, store.Phase{}, err
-	}
-	if err = s.kit.Transition(ctx, task, stagekit.Building, ""); err != nil {
-		return store.Task{}, store.Phase{}, err
-	}
-	task.State = stagekit.Building
-	phase, err := s.kit.BeginOrReusePhase(ctx, task.ID, stageDef.ID, stageDef.Kind, stageDef.Agent, "Execute "+stageDef.ID)
-	if err != nil {
-		return store.Task{}, store.Phase{}, err
-	}
-	return task, phase, nil
-}
-
-func (s service) publishBuild(ctx context.Context, task store.Task, phase store.Phase, turn harness.TurnResult, profile workspace.Materialization) (stage.BuildResult, error) {
-	return s.kit.DeliverAndFinalize(ctx, stagekit.Delivery{Task: task, Phase: phase, Role: "build", ReadOnly: readOnly(
-		phase), Instructions: Instructions(), Validate: func(text string) (any, error) {
-		return ValidateWithEvidence(task.RepositoryPath, workspace.ReviewBase(task), profile.Tests, text)
-	}, OnValid: func(ctx context.Context, text string) error {
-		return PersistEvidence(ctx, s.kit.DB(), task, phase,
-			text)
-	}}, turn, func(turn harness.TurnResult) (stage.BuildResult, error) {
-		if err := s.validatePaths(task, profile); err != nil {
-			s.kit.Fail(ctx, phase, err)
-			return stage.BuildResult{}, err
-		}
-		if err := PersistEvidence(ctx, s.kit.DB(), task, phase, turn.Payload); err != nil {
-			s.kit.Fail(ctx, phase, err)
-			return stage.BuildResult{},
-				err
-		}
-		if err := s.kit.Complete(ctx, stagekit.Completion{
-			Phase: phase, From: stagekit.Building,
-			To: stagekit.Checking, Status: "success",
-		}); err != nil {
-			s.kit.Fail(ctx, phase, err)
-			return stage.BuildResult{}, err
-		}
-		resultPhase,
-			ok, err := s.kit.SuccessfulPhase(ctx, task.ID, phase.Name)
-		if err != nil {
-			return stage.BuildResult{}, err
-		}
-		if !ok {
-			return stage.BuildResult{}, errNoDurableResult
-		}
-		resultPayload, err := s.kit.PhaseEnvelope(ctx, task.ID, resultPhase.ID)
-		if err != nil {
-			return stage.BuildResult{}, err
-		}
-		return stage.BuildResult{Payload: resultPayload, AttemptID: resultPhase.ID, SnapshotID: resultPhase.OutputSnapshot}, nil
-	})
-}
-
-func (s service) validatePaths(task store.Task, profile workspace.Materialization) error {
-	return CheckProtectedPaths(task.RepositoryPath,
-		workspace.ReviewBase(task), profile.Protected)
-}
-
-var errNoDurableResult = fmt.Errorf("builder completed without a durable result")

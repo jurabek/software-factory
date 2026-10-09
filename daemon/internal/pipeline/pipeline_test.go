@@ -6,8 +6,8 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/jurabek/software-factory/daemon/internal/attempt"
 	"github.com/jurabek/software-factory/daemon/internal/stage"
-	"github.com/jurabek/software-factory/daemon/internal/stagekit"
 )
 
 type stages struct {
@@ -225,13 +225,13 @@ func TestUpstreamChangeInvalidatesDownstream(t *testing.T) {
 	// Lineage rule: a downstream result is eligible only when produced after
 	// its upstream result. A changed plan therefore requires a fresh build,
 	// and a changed build requires fresh verification and review.
-	if !stagekit.EligibleAfter(3, 2) {
+	if !attempt.EligibleAfter(3, 2) {
 		t.Fatal("downstream produced after upstream must be eligible")
 	}
-	if stagekit.EligibleAfter(2, 3) {
+	if attempt.EligibleAfter(2, 3) {
 		t.Fatal("downstream produced before upstream change must be ineligible")
 	}
-	if stagekit.EligibleAfter(2, 2) {
+	if attempt.EligibleAfter(2, 2) {
 		t.Fatal("same-sequence result must be ineligible")
 	}
 	first := &lineageStages{planID: "p1"}

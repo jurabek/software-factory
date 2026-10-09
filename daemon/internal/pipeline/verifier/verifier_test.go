@@ -25,9 +25,9 @@ func TestReportRendersCheckOutcomes(t *testing.T) {
 }
 
 func TestComparisonPathsSkipsDeletions(t *testing.T) {
-	entries := []ExpectedTestChange{
-		{Change: factorygit.Change{Path: "added_test.go", Kind: "added"}},
-		{Change: factorygit.Change{Path: "removed_test.go", Kind: "deleted"}},
+	entries := []factorygit.Change{
+		{Path: "added_test.go", Kind: "added"},
+		{Path: "removed_test.go", Kind: "deleted"},
 	}
 	paths := ComparisonPaths(entries)
 	if len(paths) != 1 || paths[0] != "added_test.go" {

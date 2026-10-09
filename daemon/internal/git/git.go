@@ -582,6 +582,21 @@ func ChangedEntries(root, base string) ([]Change, error) {
 	return changedEntries(repository, baseTree)
 }
 
+// ChangedTests lists changes since base whose path matches a test glob.
+func ChangedTests(root, base string, tests []string) ([]Change, error) {
+	entries, err := ChangedEntries(root, base)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]Change, 0)
+	for _, entry := range entries {
+		if MatchesGlob(entry.Path, tests) {
+			result = append(result, entry)
+		}
+	}
+	return result, nil
+}
+
 func changedEntries(repository *gogit.Repository, baseTree *object.Tree) ([]Change, error) {
 	headRef, err := repository.Head()
 	if err != nil {

@@ -5,7 +5,6 @@ package reviewer
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	factorygit "github.com/jurabek/software-factory/daemon/internal/git"
@@ -79,77 +78,47 @@ func New(kit *stagekit.Kit, tasks *task.Service) service { return service{kit: k
 // Review resumes a durable result when present, otherwise assembles upstream
 // evidence, runs the review turn, and publishes the verdict.
 func (s service) Review(ctx context.Context, input stage.Input, plan stage.PlanResult, build stage.BuildResult, verification stage.VerificationResult) (stage.ReviewResult, error) {
-	if result, ok, err := s.savedReview(ctx, input.TaskID, verification.AttemptID); err != nil || ok {
-		return result, err
-	}
-	task, phase, err := s.beginReview(ctx, input.TaskID, plan.AttemptID, build.AttemptID, verification.AttemptID)
-	if err != nil {
-		return stage.ReviewResult{}, err
-	}
-	configured, err := s.kit.TaskConfig(ctx, task)
-	if err != nil {
-		s.kit.Fail(ctx, phase, err)
-		return stage.ReviewResult{}, err
-	}
-	agent, ok := configured.Config.Agent(phase.Owner)
-	if !ok {
-		err = fmt.Errorf("agent %s not configured", phase.Owner)
-		s.kit.Fail(ctx, phase, err)
-		return stage.ReviewResult{}, err
-	}
-	before, err := workspace.Fingerprint(task)
-	if err != nil {
-		s.kit.Fail(ctx, phase, err)
-		return stage.ReviewResult{}, err
-	}
-	data, err := s.evidence(ctx, task, plan)
-	if err != nil {
-		s.kit.Fail(ctx, phase, err)
-		return stage.ReviewResult{}, err
-	}
-	systemPrompt, userPrompt, err := stagekit.RenderPrompts(
-		agent.Name,
-		agent.PromptEngineering.SystemContent, agent.PromptEngineering.System,
-		agent.PromptEngineering.UserContent, agent.PromptEngineering.User,
-		data, filepath.Dir(configured.ConfigPath),
-		Instructions(),
-	)
-	if err != nil {
-		s.kit.Fail(ctx, phase, err)
-		return stage.ReviewResult{}, err
-	}
-	harnessName := configured.Config.Defaults.CodingAgent
-	turner := s.kit.AgentExec()
-	turner.AgentDeadlineMS = configured.Config.Runtime.AgentDeadlineMS
-	turner.JSONFixAttempts = configured.Config.Runtime.JSONFixAttempts
-	turn, err := harness.RunTurn(ctx, turner, harness.TurnInput{
-		TaskID: task.ID, RequestID: stagekit.RandomID(), Phase: phase, Role: phase.Name,
-		HarnessName: harnessName, Model: agent.Model, Thinking: agent.Thinking, Color: agent.Color,
-		RepoPath:     task.RepositoryPath,
-		SessionDir:   filepath.Join(configured.TaskDir, "sessions", phase.Name, harnessName),
-		SystemPrompt: systemPrompt, UserPrompt: userPrompt,
-		ReadOnly: true, EnvelopeKind: "review", CorrectionSuffix: Instructions(),
-		Validate: func(text string) (any, error) { return Validate(text) },
-		Sink:     s.kit.Sink(task.ID, phase.ID, harnessName),
+	return s.kit.RunAgentStage(ctx, input.TaskID, stagekit.AgentStage[stage.ReviewResult]{
+		Entry: stagekit.Entry{Kind: "review", Requires: []stagekit.Upstream{
+			{Kind: "plan", AttemptID: plan.AttemptID}, {Kind: "build", AttemptID: build.AttemptID}, {Kind: "verify", AttemptID: verification.AttemptID},
+		}, Enter: stagekit.Reviewing},
+		After: verification.AttemptID,
+		Role:  "review", ReadOnly: true, Instructions: Instructions(),
+		Data: func(ctx context.Context, task store.Task) (map[string]any, error) {
+			return s.evidence(ctx, task, plan)
+		},
+		Validate: func(_ store.Task, text string) (any, error) { return Validate(text) },
+		Finalize: func(_ context.Context, _ store.Task, _ store.Phase, turn harness.TurnResult) (stagekit.Completion, error) {
+			review, err := Validate(turn.Payload)
+			if err != nil {
+				return stagekit.Completion{}, err
+			}
+			if !review.Approved {
+				return stagekit.Completion{To: stagekit.Blocked, Status: "failed", Cause: fmt.Errorf("reviewer rejected implementation")}, nil
+			}
+			return stagekit.Completion{To: stagekit.Completed, Status: "success"}, nil
+		},
+		Result: func(_ store.Task, phase store.Phase, payload string) (stage.ReviewResult, error) {
+			review, err := Validate(payload)
+			if err != nil {
+				return stage.ReviewResult{}, err
+			}
+			return stage.ReviewResult{Payload: payload, AttemptID: phase.ID, SnapshotID: phase.OutputSnapshot, Approved: review.Approved}, nil
+		},
 	})
-	if err != nil {
-		s.kit.Fail(ctx, phase, err)
-		return stage.ReviewResult{}, err
-	}
-	return s.publishReview(ctx, task, phase, turn, before)
 }
 
 // evidence assembles the review prompt payload from upstream results.
 func (s service) evidence(ctx context.Context, task store.Task, plan stage.PlanResult) (map[string]any, error) {
-	checks, err := s.kit.DB().Checks.List(ctx, task.ID)
+	checks, err := s.kit.Checks(ctx, task.ID)
 	if err != nil {
 		return nil, err
 	}
-	testChanges, err := s.kit.DB().Evidence.TestChanges(ctx, task.ID)
+	testChanges, err := s.kit.TestChanges(ctx, task.ID)
 	if err != nil {
 		return nil, err
 	}
-	comparisons, err := s.kit.DB().Evidence.Comparisons(ctx, task.ID)
+	comparisons, err := s.kit.Comparisons(ctx, task.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -170,147 +139,4 @@ func (s service) evidence(ctx context.Context, task store.Task, plan stage.PlanR
 		"Plan": plan.Payload, "Checks": checks, "TestChanges": testChanges, "Comparisons": comparisons,
 		"ChangedFiles": changedFiles, "Diff": Diff{Files: files, Patch: patch},
 	}, nil
-}
-
-func (s service) savedReview(ctx context.Context, taskID, verificationAttemptID string) (stage.ReviewResult, bool, error) {
-	task, err := s.tasks.Get(ctx, taskID)
-	if err != nil {
-		return stage.ReviewResult{}, false, err
-	}
-	stageDef, err := s.kit.StageByKind(task, "review")
-	if err != nil {
-		return stage.ReviewResult{}, false,
-			err
-	}
-	queued, err := s.kit.DB().Messages.QueuedForStages(ctx, taskID, stageDef.ID, stageDef.Agent)
-	if err != nil {
-		return stage.ReviewResult{},
-			false, err
-	}
-	if queued {
-		return stage.ReviewResult{}, false, nil
-	}
-	phase, ok, err := s.kit.SuccessfulPhase(ctx, task.ID, stageDef.ID)
-	if err != nil || !ok {
-		return stage.ReviewResult{}, false, err
-	}
-	payload, err := s.kit.PhaseEnvelope(ctx, task.ID, phase.ID)
-	if err != nil {
-		return stage.ReviewResult{}, false,
-			err
-	}
-	review, err := Validate(payload)
-	if err != nil {
-		return stage.ReviewResult{}, false, err
-	}
-	eligible, err := s.kit.AttemptAfter(ctx, task.ID, phase.ID, verificationAttemptID)
-	if err != nil {
-		return stage.ReviewResult{},
-			false,
-			err
-	}
-	if !eligible {
-		return stage.ReviewResult{}, false,
-			nil
-	}
-	return stage.ReviewResult{Payload: payload, AttemptID: phase.ID, SnapshotID: phase.OutputSnapshot, Approved: review.Approved}, true, nil
-}
-
-func (s service) beginReview(ctx context.Context, taskID, planAttemptID, buildAttemptID, verificationAttemptID string) (store.Task, store.Phase, error) {
-	task, err := s.tasks.Get(ctx, taskID)
-	if err != nil {
-		return store.Task{}, store.Phase{}, err
-	}
-	planStage, err := s.kit.StageByKind(task, "plan")
-	if err != nil {
-		return store.Task{}, store.Phase{}, err
-	}
-	if err = s.kit.RequireAttempt(ctx, task.ID, planStage.ID, planAttemptID); err != nil {
-		return store.Task{}, store.Phase{}, err
-	}
-	buildStage, err := s.kit.StageByKind(task, "build")
-	if err != nil {
-		return store.Task{}, store.Phase{},
-			err
-	}
-	if err = s.kit.RequireAttempt(ctx, task.ID, buildStage.ID, buildAttemptID); err != nil {
-		return store.Task{}, store.Phase{}, err
-	}
-	verifyStage, err := s.kit.StageByKind(task, "verify")
-	if err != nil {
-		return store.Task{}, store.Phase{}, err
-	}
-	if err = s.kit.RequireAttempt(ctx, task.ID, verifyStage.ID, verificationAttemptID); err != nil {
-		return store.Task{}, store.Phase{}, err
-	}
-	stageDef, err := s.kit.StageByKind(task, "review")
-	if err != nil {
-		return store.Task{}, store.Phase{}, err
-	}
-	if err = s.kit.DB().Tasks.SetActiveStage(ctx, task.ID, stageDef.ID); err != nil {
-		return store.Task{}, store.Phase{}, err
-	}
-	task, err = s.tasks.Get(ctx, task.ID)
-	if err != nil {
-		return store.Task{}, store.Phase{}, err
-	}
-	if err = s.kit.Transition(ctx, task,
-		stagekit.Reviewing,
-		""); err != nil {
-		return store.Task{},
-			store.Phase{},
-			err
-	}
-	task.State = stagekit.Reviewing
-	phase, err := s.kit.BeginOrReusePhase(ctx, task.ID, stageDef.ID, stageDef.Kind, stageDef.Agent, "Execute "+stageDef.ID)
-	if err != nil {
-		return store.Task{}, store.Phase{}, err
-	}
-	return task, phase, nil
-}
-
-func (s service) publishReview(ctx context.Context, task store.Task, phase store.Phase, turn harness.TurnResult, before string) (stage.ReviewResult, error) {
-	return s.kit.DeliverAndFinalize(ctx, stagekit.Delivery{
-		Task: task, Phase: phase, Role: "review", ReadOnly: true, Instructions: Instructions(), Validate: func(text string) (any, error) {
-			return Validate(text)
-		},
-	}, turn, func(turn harness.TurnResult) (stage.ReviewResult, error) {
-		payload := turn.Payload
-		review, validationErr := Validate(payload)
-		if validationErr != nil {
-			s.kit.Fail(ctx, phase, validationErr)
-			return stage.ReviewResult{}, validationErr
-		}
-		if !review.Approved {
-			rejected := fmt.Errorf("reviewer rejected implementation")
-			if err := s.kit.Complete(ctx, stagekit.Completion{
-				Phase: phase, From: stagekit.Reviewing,
-				To: stagekit.Blocked, Status: "failed", Cause: rejected,
-			}); err != nil {
-				return stage.ReviewResult{}, err
-			}
-			return stage.ReviewResult{
-				Payload: payload, AttemptID: phase.ID,
-				SnapshotID: phase.OutputSnapshot, Approved: false,
-			}, nil
-		}
-		after, fingerprintErr := workspace.Fingerprint(task)
-		if fingerprintErr != nil {
-			s.kit.Fail(ctx, phase, fingerprintErr)
-			return stage.ReviewResult{},
-				fingerprintErr
-		}
-		if before != after {
-			readonlyErr := fmt.Errorf("%s modified repository",
-				phase.Name)
-			s.kit.Fail(ctx, phase, readonlyErr)
-			return stage.ReviewResult{}, readonlyErr
-		}
-		if err := s.kit.Complete(ctx, stagekit.Completion{Phase: phase, From: stagekit.Reviewing, To: stagekit.Completed, Status: "success"}); err != nil {
-			s.kit.Fail(ctx, phase, err)
-			return stage.ReviewResult{},
-				err
-		}
-		return stage.ReviewResult{Payload: payload, AttemptID: phase.ID, SnapshotID: phase.OutputSnapshot, Approved: true}, nil
-	})
 }

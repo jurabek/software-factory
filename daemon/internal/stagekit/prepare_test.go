@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jurabek/software-factory/daemon/internal/attempt"
 	"github.com/jurabek/software-factory/daemon/internal/config"
 	"github.com/jurabek/software-factory/daemon/internal/store"
 	"github.com/jurabek/software-factory/daemon/internal/workspace"
@@ -52,7 +53,7 @@ func prepareTestKit(t *testing.T, sandbox workspace.Sandbox) (*Kit, store.Task) 
 	if err = db.Tasks.Create(context.Background(), task); err != nil {
 		t.Fatal(err)
 	}
-	return New(db, nil, sandbox, config.Config{}, "", root), task
+	return New(db, nil, sandbox, config.Config{}, "", root, &attempt.Locks{}), task
 }
 
 func TestPrepareRepositoryUsesTaskIdentity(t *testing.T) {
