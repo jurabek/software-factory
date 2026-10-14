@@ -202,10 +202,6 @@ func (s *Service) create(ctx context.Context, request CreateRequest, parentTaskI
 	return task, nil
 }
 
-func (s *Service) Get(ctx context.Context, id string) (store.Task, error) {
-	return s.deps.Store.Tasks.Get(ctx, id)
-}
-
 func (s *Service) Delete(ctx context.Context, id string) error {
 	task, err := s.deps.Store.Tasks.Get(ctx, id)
 	if err != nil {

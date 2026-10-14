@@ -13,7 +13,6 @@ import (
 	"github.com/jurabek/software-factory/daemon/internal/stage"
 	"github.com/jurabek/software-factory/daemon/internal/stagekit"
 	"github.com/jurabek/software-factory/daemon/internal/store"
-	"github.com/jurabek/software-factory/daemon/internal/task"
 	"github.com/jurabek/software-factory/daemon/internal/workspace"
 )
 
@@ -69,12 +68,9 @@ type Diff struct {
 	Patch string   `json:"patch"`
 }
 
-type service struct {
-	kit   *stagekit.Kit
-	tasks *task.Service
-}
+type service struct{ kit *stagekit.Kit }
 
-func New(kit *stagekit.Kit, tasks *task.Service) service { return service{kit: kit, tasks: tasks} }
+func New(kit *stagekit.Kit) service { return service{kit: kit} }
 
 // Review resumes a durable result when present, otherwise assembles upstream
 // evidence, runs the review turn, and publishes the verdict.
@@ -173,7 +169,7 @@ func (s service) evidence(ctx context.Context, task store.Task, plan stage.PlanR
 }
 
 func (s service) savedReview(ctx context.Context, taskID, verificationAttemptID string) (stage.ReviewResult, bool, error) {
-	task, err := s.tasks.Get(ctx, taskID)
+	task, err := s.kit.DB().Tasks.Get(ctx, taskID)
 	if err != nil {
 		return stage.ReviewResult{}, false, err
 	}
@@ -217,7 +213,7 @@ func (s service) savedReview(ctx context.Context, taskID, verificationAttemptID 
 }
 
 func (s service) beginReview(ctx context.Context, taskID, planAttemptID, buildAttemptID, verificationAttemptID string) (store.Task, store.Phase, error) {
-	task, err := s.tasks.Get(ctx, taskID)
+	task, err := s.kit.DB().Tasks.Get(ctx, taskID)
 	if err != nil {
 		return store.Task{}, store.Phase{}, err
 	}
@@ -250,7 +246,7 @@ func (s service) beginReview(ctx context.Context, taskID, planAttemptID, buildAt
 	if err = s.kit.DB().Tasks.SetActiveStage(ctx, task.ID, stageDef.ID); err != nil {
 		return store.Task{}, store.Phase{}, err
 	}
-	task, err = s.tasks.Get(ctx, task.ID)
+	task, err = s.kit.DB().Tasks.Get(ctx, task.ID)
 	if err != nil {
 		return store.Task{}, store.Phase{}, err
 	}

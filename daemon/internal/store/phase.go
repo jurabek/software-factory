@@ -281,35 +281,21 @@ func (r *PhaseRepository) StartQueued(ctx context.Context, taskID, phaseID strin
 }
 
 func (r *PhaseRepository) List(ctx context.Context, taskID string) ([]Phase, error) {
-	query := `select id,task_id,sequence,name,kind,owner,coalesce(description,''),status,attempt,retries,coalesce(error,''),started_at,coalesce(ended_at,''),coalesce(definition_id,''),coalesce(input_snapshot,''),coalesce(output_snapshot,''),coalesce(superseded,0) from phases where task_id=? order by sequence`
-	rows, err := r.db.QueryContext(ctx, query, taskID)
-	if err != nil {
+	query := `select id,task_id,sequence,name,kind,owner,coalesce(description,'') as description,status,attempt,retries,coalesce(error,'') as error,started_at,coalesce(ended_at,'') as ended_at,coalesce(definition_id,'') as definition_id,coalesce(input_snapshot,'') as input_snapshot,coalesce(output_snapshot,'') as output_snapshot,coalesce(superseded,0) as superseded from phases where task_id=? order by sequence`
+	values := make([]Phase, 0)
+	if err := r.db.SelectContext(ctx, &values, query, taskID); err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	values := make([]Phase, 0)
-	for rows.Next() {
-		var value Phase
-		var superseded int
-		if err := rows.Scan(&value.ID, &value.TaskID, &value.Sequence, &value.Name, &value.Kind, &value.Owner, &value.Description, &value.Status, &value.Attempt, &value.Retries, &value.Error, &value.StartedAt, &value.EndedAt, &value.DefinitionID, &value.InputSnapshot, &value.OutputSnapshot, &superseded); err != nil {
-			return nil, err
-		}
-		value.Superseded = superseded != 0
-		values = append(values, value)
-	}
-	return values,
-		rows.Err()
+	return values, nil
 }
 
 func (r *PhaseRepository) ByID(ctx context.Context, taskID, phaseID string) (Phase, error) {
 	var value Phase
-	var superseded int
-	query := `select id,task_id,sequence,name,kind,owner,coalesce(description,''),status,attempt,retries,coalesce(error,''),started_at,coalesce(ended_at,''),coalesce(definition_id,''),coalesce(input_snapshot,''),coalesce(output_snapshot,''),coalesce(superseded,0) from phases where task_id=? and id=?`
-	err := r.db.QueryRowContext(ctx, query, taskID, phaseID).Scan(&value.ID, &value.TaskID, &value.Sequence, &value.Name, &value.Kind, &value.Owner, &value.Description, &value.Status, &value.Attempt, &value.Retries, &value.Error, &value.StartedAt, &value.EndedAt, &value.DefinitionID, &value.InputSnapshot, &value.OutputSnapshot, &superseded)
+	query := `select id,task_id,sequence,name,kind,owner,coalesce(description,'') as description,status,attempt,retries,coalesce(error,'') as error,started_at,coalesce(ended_at,'') as ended_at,coalesce(definition_id,'') as definition_id,coalesce(input_snapshot,'') as input_snapshot,coalesce(output_snapshot,'') as output_snapshot,coalesce(superseded,0) as superseded from phases where task_id=? and id=?`
+	err := r.db.GetContext(ctx, &value, query, taskID, phaseID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Phase{}, ErrNotFound
 	}
-	value.Superseded = superseded != 0
 	return value, wrap("read phase", err)
 }
 

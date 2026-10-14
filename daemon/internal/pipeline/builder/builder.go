@@ -14,7 +14,6 @@ import (
 	"github.com/jurabek/software-factory/daemon/internal/stage"
 	"github.com/jurabek/software-factory/daemon/internal/stagekit"
 	"github.com/jurabek/software-factory/daemon/internal/store"
-	"github.com/jurabek/software-factory/daemon/internal/task"
 	"github.com/jurabek/software-factory/daemon/internal/workspace"
 )
 
@@ -73,12 +72,9 @@ func Instructions() string {
 	return `Return exactly one JSON object: {` + stage.CommonInstructions() + `,"changed_files":[],"commit_message":"...","test_changes":[{"path":"...","reason":"..."}]}. Put the human-readable report in report_markdown.`
 }
 
-type service struct {
-	kit   *stagekit.Kit
-	tasks *task.Service
-}
+type service struct{ kit *stagekit.Kit }
 
-func New(kit *stagekit.Kit, tasks *task.Service) service { return service{kit: kit, tasks: tasks} }
+func New(kit *stagekit.Kit) service { return service{kit: kit} }
 
 // Build resumes a durable result when present, otherwise renders
 // implementation prompts from the exact upstream plan, runs the build turn
@@ -259,7 +255,7 @@ func CheckProtectedPaths(repoPath, base string, protected []string) error {
 }
 
 func (s service) savedBuild(ctx context.Context, taskID, planAttemptID string) (stage.BuildResult, bool, error) {
-	task, err := s.tasks.Get(ctx, taskID)
+	task, err := s.kit.DB().Tasks.Get(ctx, taskID)
 	if err != nil {
 		return stage.BuildResult{}, false, err
 	}
@@ -301,7 +297,7 @@ func (s service) savedBuild(ctx context.Context, taskID, planAttemptID string) (
 }
 
 func (s service) beginBuild(ctx context.Context, taskID, planAttemptID string) (store.Task, store.Phase, error) {
-	task, err := s.tasks.Get(ctx, taskID)
+	task, err := s.kit.DB().Tasks.Get(ctx, taskID)
 	if err != nil {
 		return store.Task{}, store.Phase{}, err
 	}
@@ -320,7 +316,7 @@ func (s service) beginBuild(ctx context.Context, taskID, planAttemptID string) (
 	if err = s.kit.DB().Tasks.SetActiveStage(ctx, task.ID, stageDef.ID); err != nil {
 		return store.Task{}, store.Phase{}, err
 	}
-	task, err = s.tasks.Get(ctx, task.ID)
+	task, err = s.kit.DB().Tasks.Get(ctx, task.ID)
 	if err != nil {
 		return store.Task{}, store.Phase{}, err
 	}

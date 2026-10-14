@@ -20,7 +20,6 @@ import (
 	"github.com/jurabek/software-factory/daemon/internal/stage"
 	"github.com/jurabek/software-factory/daemon/internal/stagekit"
 	"github.com/jurabek/software-factory/daemon/internal/store"
-	"github.com/jurabek/software-factory/daemon/internal/task"
 	"github.com/jurabek/software-factory/daemon/internal/workspace"
 )
 
@@ -62,12 +61,9 @@ func (capture *tailCapture) String() string {
 	return string(capture.data)
 }
 
-type service struct {
-	kit   *stagekit.Kit
-	tasks *task.Service
-}
+type service struct{ kit *stagekit.Kit }
 
-func New(kit *stagekit.Kit, tasks *task.Service) service { return service{kit: kit, tasks: tasks} }
+func New(kit *stagekit.Kit) service { return service{kit: kit} }
 
 // Verify resumes a durable result when present, otherwise runs primary checks
 // and baseline/test-overlay comparisons, then publishes the report.
@@ -522,7 +518,7 @@ func CopyOverlayPath(sourceRoot, destinationRoot, relative string) error {
 }
 
 func (s service) savedVerification(ctx context.Context, taskID, buildAttemptID string) (stage.VerificationResult, bool, error) {
-	task, err := s.tasks.Get(ctx, taskID)
+	task, err := s.kit.DB().Tasks.Get(ctx, taskID)
 	if err != nil {
 		return stage.VerificationResult{}, false, err
 	}
@@ -559,7 +555,7 @@ func (s service) savedVerification(ctx context.Context, taskID, buildAttemptID s
 }
 
 func (s service) beginVerification(ctx context.Context, taskID, planAttemptID, buildAttemptID string) (store.Task, store.Phase, error) {
-	task, err := s.tasks.Get(ctx, taskID)
+	task, err := s.kit.DB().Tasks.Get(ctx, taskID)
 	if err != nil {
 		return store.Task{}, store.Phase{}, err
 	}
@@ -587,7 +583,7 @@ func (s service) beginVerification(ctx context.Context, taskID, planAttemptID, b
 	); err != nil {
 		return store.Task{}, store.Phase{}, err
 	}
-	task, err = s.tasks.Get(ctx, task.ID)
+	task, err = s.kit.DB().Tasks.Get(ctx, task.ID)
 	if err != nil {
 		return store.Task{}, store.Phase{}, err
 	}

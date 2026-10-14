@@ -99,6 +99,37 @@ func TestRepositoryFieldsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestPhaseReadsPreserveNullableFields(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "factory.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	task := Task{ID: "task", Request: "request", WorkspacePath: t.TempDir(), RepositoryType: "local", RepositorySource: "/source", State: "preparing", CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
+	if err := db.Tasks.Create(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	phase := Phase{ID: "phase", TaskID: task.ID, Sequence: 1, Name: "plan", Kind: "plan", Owner: "planner", Status: "success", Attempt: 1}
+	if err := db.Phases.Add(ctx, phase); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `update phases set superseded=1,definition_id='def' where id=?`, phase.ID); err != nil {
+		t.Fatal(err)
+	}
+	phases, err := db.Phases.List(ctx, task.ID)
+	if err != nil || len(phases) != 1 || !phases[0].Superseded || phases[0].DefinitionID != "def" || phases[0].Description != "" {
+		t.Fatalf("phases = %#v, err = %v", phases, err)
+	}
+	stored, err := db.Phases.ByID(ctx, task.ID, phase.ID)
+	if err != nil || stored != phases[0] {
+		t.Fatalf("phase = %#v, err = %v", stored, err)
+	}
+	if _, err := db.Phases.ByID(ctx, task.ID, "missing"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing phase: %v", err)
+	}
+}
+
 func TestOpenRejectsLegacyState(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "factory.db")
 	db, err := sql.Open("sqlite", path)

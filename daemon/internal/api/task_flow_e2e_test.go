@@ -191,13 +191,13 @@ func (s *taskFlowSuite) SetupSuite() {
 	events := orchestrator.NewEvents(s.db)
 	taskService := task.New(taskRoot, task.Deps{Store: s.db, Config: cfg, ConfigPath: configPath, Harnesses: registry, Sandbox: sandboxRunner})
 	creationStage := creation.New(taskService, kit, events)
-	plannerStage := planner.New(kit, taskService, events)
+	plannerStage := planner.New(kit, events)
 	s.service = orchestrator.New(taskRoot, orchestrator.Dependencies{
 		Store: s.db, Events: events, Workflow: pipeline.New(
 			plannerStage,
-			builder.New(kit, taskService),
-			verifier.New(kit, taskService),
-			reviewer.New(kit, taskService),
+			builder.New(kit),
+			verifier.New(kit),
+			reviewer.New(kit),
 			creationStage,
 		),
 	})

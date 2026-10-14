@@ -44,7 +44,7 @@ func (s *Service) CreateSession(ctx context.Context, taskID string, request task
 // Prepare completes the internal creation stage. It is safe to repeat because
 // stagekit reuses an already materialized repository.
 func (s *Service) Prepare(ctx context.Context, input stage.Input) error {
-	task, err := s.tasks.Get(ctx, input.TaskID)
+	task, err := s.kit.DB().Tasks.Get(ctx, input.TaskID)
 	if err != nil {
 		return err
 	}
